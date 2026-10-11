@@ -1,0 +1,60 @@
+# Every pull request and every push to main, once per commit: `pwsh tools/verify.ps1`, which is
+# what a session ran before it pushed (S-10: local first; CI confirms). One job, nothing parallel
+# to it, in the image tools/idf-image.txt pins by digest - the same image, the same script, the
+# same mounts as on the bench machine. The images and the logs are kept 14 days.
+#
+# One run per commit: a branch push and its pull request are two refs, so the concurrency group
+# alone cannot collapse them; the triggers below are the pull request and the push to main, and a
+# plain branch push is not one. A red job blocks the merge (branch protection on main requires it).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The one step that matters. pwsh is on the runner; docker is on the runner; the image is
+      # pulled by digest from the pin. The build directory is a volume, as on a laptop.
+      - name: tools/verify.ps1
+        shell: pwsh
+        run: ./tools/verify.ps1
+
+      - name: What was built
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### verify'
+            echo '```'
+            cat out/verify/summary.txt 2>/dev/null || echo "no summary"
+            echo
+            grep -E 'banner in image|application image is' out/verify/build.log out/verify/partitions.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the images and the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twinoak-walter-${{ github.sha }}
+          path: |
+            out/images/
+            out/verify/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,32 @@
+# The Walter's flash: 16 MB (walter_datasheet.tex: ESP32-S3-WROOM-1-N16R2, "Flash: 16MB"), laid out
+# to docs/ARCHITECTURE.md §11 and held to it by tools/check_partitions.py on every build.
+#
+# The bootloader is at 0x0 and this table at 0x8000 (CONFIG_PARTITION_TABLE_OFFSET). 0x9000-0xDFFF
+# is left empty on purpose: a factory (merged) image fills the span between the table and otadata
+# with 0xFF, so nothing that must survive a bench flash may live there (the agent firmware's
+# lesson, meshmaster-agent-firmware tasks/phase-1.2/11).
+#
+# Two equal application slots (S-6: A/B with rollback), 3 MB each with room to grow, and above
+# them - where a factory image, which ends where the application ends, can never reach -
+# everything that must survive a reflash of the Walter: the settings, the journal, the radio images.
+#
+#   nvs      the settings (64 KB: ESP-IDF needs 3 pages of 4 KB; the rest is wear room)
+#   journal  the update journal - its own partition, not a namespace in nvs: its own wear, its own
+#            failure modes (ARCHITECTURE §11). Subtype 0x41, ours.
+#   rakfw    the image store (ARCHITECTURE §6): two radio slots x (golden + candidate + scanner),
+#            each record at most 1 MB - the whole flash of an nRF52840 - so 6 MB. Subtype 0x40.
+#   coredump the core dump the panic handler writes (CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH).
+#
+# The modem library's own firmware update (MOTA) wants a FAT partition named `ffat` large enough
+# for the modem image - 9 MB for LR8.2.1.0 - and there is no such room beside the above in 16 MB.
+# MOTA is off (sdkconfig.defaults) and nothing is allocated for it; 0xC30000-0xFEFFFF (3.75 MB) is
+# unallocated. tasks/phase-0/reports/01.md says what a modem firmware update is instead.
+#
+# Name,     Type, SubType,  Offset,    Size,      Flags
+otadata,    data, ota,      0xE000,    0x2000,
+ota_0,      app,  ota_0,    0x10000,   0x300000,
+ota_1,      app,  ota_1,    0x310000,  0x300000,
+nvs,        data, nvs,      0x610000,  0x10000,
+journal,    data, 0x41,     0x620000,  0x10000,
+rakfw,      data, 0x40,     0x630000,  0x600000,
+coredump,   data, coredump, 0xFF0000,  0x10000,

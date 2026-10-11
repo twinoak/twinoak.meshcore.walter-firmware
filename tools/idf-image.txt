@@ -1,0 +1,7 @@
+# The one image this firmware is built and tested in, on this machine and in CI (S-9, S-10).
+# tools/verify.ps1 and .github/workflows/ci.yml read this file and nothing else decides the image.
+# The tag is for people; the digest is what docker pulls (espressif/idf:<tag>@<digest>). The
+# digest is the multi-architecture manifest list's, so the same line resolves on an amd64 runner
+# and an arm64 laptop. Why this one: tasks/phase-0/reports/01.md.
+tag=v5.5.5
+digest=sha256:a9231d0697ab8f7517cc072e93b7c83e04907bfbfba80b6440d7dbbf90665cf2

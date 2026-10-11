@@ -1,0 +1,93 @@
+# sdkconfig.defaults - every line with its reason (task p0-01). This file is the configuration:
+# tools/verify.sh regenerates sdkconfig from it whenever it changes, so an edit here is the build's,
+# and sdkconfig itself is never committed. Facts from the Walter datasheet cite
+# QuickSpot/walter-hardware walter/datasheet/walter_datasheet.tex by section.
+
+# ---- The chip and its flash --------------------------------------------------------------------
+# Walter "is based on an ESP32-S3-WROOM-1-N16R2 module" (datasheet §1 Introduction) with
+# "Flash: 16MB (Quad SPI) Flash memory" (§1, Specifications).
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Quad SPI flash, read in QIO mode at the default 80 MHz: the fastest mode the WROOM-1's flash
+# offers, and what QuickSpot's own examples set (walter-esp-idf examples/https/sdkconfig.defaults).
+# ESP-IDF's "choose flash mode automatically" is off: it exists to tell quad from octal flash on an
+# unknown board, writes DIO into the image header and costs ~900 bytes of IRAM (its Kconfig help);
+# the datasheet has already told us. esptool still flashes with --flash-mode dio, which is right:
+# the header and the bootloader are what put the chip in QIO.
+CONFIG_ESPTOOLPY_FLASH_MODE_AUTO_DETECT=n
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+# PSRAM stays off. The N16R2 has 2 MB of quad PSRAM, but the datasheet (§Ordering) also lists
+# Walter variants with 8 MB (octal) PSRAM, and a firmware configured for one kind aborts its boot on
+# the other. Nothing here needs PSRAM; the task that first does decides (report 01, decisions).
+# CONFIG_SPIRAM is not set
+
+# ---- The partition table ------------------------------------------------------------------------
+# partitions.csv (docs/ARCHITECTURE.md §11), checked by tools/check_partitions.py on every build.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# The default offset, stated because partitions.csv and the checker both assume it.
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ---- The console --------------------------------------------------------------------------------
+# The module's USB-C goes to the ESP32-S3's own USB: IO19 is "USB D-" and IO20 "USB D+" among the
+# internally connected pins (datasheet, Table "internal pins"); there is no USB-UART bridge. So the
+# console is the USB Serial/JTAG peripheral, and UART0 (IO43/IO44, the RX0/TX0 header pins) is free.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# ---- Booting and staying up ---------------------------------------------------------------------
+# S-6: the Walter updates itself A/B with rollback. With this on, the bootloader marks a new image
+# pending-verify at its first boot and goes back to the previous slot if it sees it still pending at
+# the next reset ($IDF_PATH/components/bootloader_support/src/bootloader_utility.c, the
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE blocks). The firmware confirms an image only after it has
+# booted, spoken to the radio and reached the server (docs/ARCHITECTURE.md §7).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# The task watchdog: on, started at boot, watching both idle tasks, and a panic (so a reset and a
+# core dump) when it fires. A Walter wedged in a task is a radio without its supervisor.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+# The brownout detector: on, at ESP-IDF's default threshold for the S3. The unit runs from a battery
+# through a converter; a clean reset beats a flash write at a sagging rail.
+CONFIG_ESP_BROWNOUT_DET=y
+# A core dump to the coredump partition, in ELF form with a CRC, so a crash on a mast can be read
+# at the next check-in rather than guessed at.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+# Logging at info: what the bench reads. A task that needs debug output raises it locally.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+
+# ---- The compiler -------------------------------------------------------------------------------
+# Optimise for size, asserts kept: 3 MB slots are generous today and will not stay so, and an
+# assertion that fires is a core dump, which is better than the alternative. (ESP-IDF's default is
+# -Og, for debugging on a desk; this firmware runs on a mast.)
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# C++17, no exceptions, no RTTI (tasks/phase-0/01): the two below are ESP-IDF's defaults, stated.
+# CONFIG_COMPILER_CXX_EXCEPTIONS is not set
+# CONFIG_COMPILER_CXX_RTTI is not set
+
+# ---- Radios -------------------------------------------------------------------------------------
+# Nothing enables WiFi or Bluetooth at boot: no component here calls esp_wifi_start or starts the
+# Bluetooth controller, and the controller is not even compiled in. The WiFi driver (ESP_WIFI_ENABLED)
+# is a non-optional library on this chip; it does nothing until called, and nothing calls it.
+# CONFIG_BT_ENABLED is not set
+
+# ---- walter-modem (managed component, 1.5.0) ----------------------------------------------------
+# What this firmware uses of the modem is HTTP with TLS and the sockets underneath (docs/ARCHITECTURE
+# §9). The task asked for the unused protocols - MQTT, GNSS, CoAP, BlueCherry, MOTA - to be off
+# where the library's Kconfig allows; at 1.5.0 it allows none of them in practice. Each switch
+# was tried in the build (report 01, deviations): MQTT or GNSS off breaks WalterModem.h, whose
+# WMMQTTEventData and WMGNSSEventData name types that exist only under the switch, and
+# WalterModem.cpp:4011 touches gnssHandler outside its guard; CoAP off (which takes BlueCherry)
+# leaves WalterModem.cpp:615ff. and :3779ff. referring to _blueCherry and the MOTA handlers;
+# MOTA off leaves WalterHTTP.cpp without esp_log.h, which it only got through MOTA's includes.
+# So every library switch keeps its default, nothing of it is called, and the pin stays exactly
+# 1.5.0 as the task says. MOTA compiled in is MOTA never run: it is driven by BlueCherry events and
+# would need a 9 MB FAT partition named ffat that partitions.csv does not have.
+# The pinout defaults - RX 14, TX 48, RTS 21, CTS 47, reset 45 - are the module's internal wiring
+# (datasheet, Table "internal pins": LTE_UART0_RX/TX/RTS/CTS and LTE_RESET) and are left as they are.
+# CONFIG_WALTER_MODEM_ENABLE_MQTT, _GNSS, _COAP, _BLUECHERRY, _MOTA: the library's defaults (y).

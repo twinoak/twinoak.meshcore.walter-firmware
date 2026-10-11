@@ -26,15 +26,50 @@ The plan, the decisions and the two protocols are in [`spec/`](spec/README.md)
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). How it gets built is
 [`tasks/`](tasks/README.md).
 
-## State
+## Building it
 
-Nothing is built yet. This repository holds the specification, the
-architecture and the task piles; phase 0's first task turns it into something
-that compiles.
+[Docker](https://docs.docker.com/get-docker/) and PowerShell (Windows PowerShell 5.1, or
+`pwsh` on Linux and macOS) — and nothing of ESP-IDF on the machine. The firmware is built and
+tested inside Espressif's `espressif/idf` image at one tag and digest
+([`tools/idf-image.txt`](tools/idf-image.txt)), the same image CI uses:
 
 ```powershell
-.\tasks\run-pile.ps1          # phases 0 to 3, one headless session per task
-.\tasks\run-all.ps1 -Phase 0  # one phase
+.	oolserify.ps1                # everything: the spec copy, the host tests, the firmware, the partition table
+.	oolserify.ps1 -Only build    # one step (spec, spec-tools, host-tests, build, partitions)
+.	oolserify.ps1 -Clean         # a cold run: throw the build and cache volumes away first
+.	oolserify.ps1 -Shell         # a bash inside the same container, same mounts
+```
+
+The first run pulls a 5 GB image and builds everything (minutes); the second is seconds, because
+the build directory and `ccache` live in Docker volumes rather than on the bind-mounted checkout.
+Each step logs to `out/verify/<step>.log` and the images land in `out/images/`:
+`twinoak-walter.bin` (the application, what an update carries), `twinoak-walter-factory.bin`
+(bootloader, table, OTA data and application as one file from `0x0`), the `.elf` and `.map`.
+
+**Flashing a Walter from the host**, over the module's USB-C, which is the ESP32-S3's own USB
+(`pip install esptool`; hold BOOT while plugging in if the port does not appear):
+
+```
+esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 out/images/twinoak-walter-factory.bin
+```
+
+Then open the port (any baud; USB Serial/JTAG ignores it): the console prints
+`twinoak-walter 0.0.0-dev`, which slot it runs from, and idles.
+
+**Where things are.** `components/core/` is the logic — no ESP-IDF include, enforced by the
+build — tested on the host by `host_test/` (CMake + [doctest](host_test/third_party/doctest/README.md),
+under the address and undefined-behaviour sanitizers). `components/interfaces/` is what `core/`
+asks of the world, `components/platform/` the ESP-IDF answers, `components/modem/` the LTE modem
+(`dptechnics/walter-modem`, a managed component pinned in `dependencies.lock`), `main/` the
+start-up. `sdkconfig.defaults` carries a reason per line; `partitions.csv` is checked by
+`tools/check_partitions.py` against every build. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+is the map; [`docs/bench.md`](docs/bench.md) is what only a Walter on a desk can confirm.
+
+The task piles that build the rest, one headless session per task:
+
+```powershell
+.	asksun-pile.ps1          # phases 0 to 3
+.	asksun-all.ps1 -Phase 0  # one phase
 ```
 
 ## What it will be, in one table
@@ -42,7 +77,7 @@ that compiles.
 | | |
 |---|---|
 | Module | QuickSpot Walter: ESP32-S3, 16 MB flash, Sequans GM02SP (LTE-M / NB-IoT) |
-| Built with | ESP-IDF, pinned, in Espressif's Docker image; the `walter-modem` component |
+| Built with | ESP-IDF v5.5.5 in Espressif's Docker image, pinned by digest (`tools/idf-image.txt`); the `walter-modem` component at 1.5.0 |
 | Verified by | `tools/verify.ps1` — host tests and the firmware build, in that image; CI runs the same script |
 | Tested | on the host: the link, the debug port, the nRF52's flash controller and the update procedure, against simulators |
 | Flashed | at a bench: its own USB-C. In service: by itself, A/B, with rollback |

@@ -1,0 +1,9 @@
+## The managed components this component consumes. Each pinned to one exact version
+## (tasks/README.md: small, deliberate dependencies); dependencies.lock in the repository root holds
+## the resolved version and hash, and the component manager refuses to drift from it.
+dependencies:
+  idf: ">=5.5.0"
+  # The Walter's modem driver, from QuickSpot/walter-esp-idf via the component registry. Exactly
+  # 1.5.0: the version the task names and the one whose source was read (tasks/phase-0/01).
+  dptechnics/walter-modem:
+    version: "==1.5.0"

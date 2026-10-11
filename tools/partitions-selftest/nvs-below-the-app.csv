@@ -1,0 +1,9 @@
+# A table tools/check_partitions.py must refuse (its self-test): ESP-IDF's own two-OTA layout,
+# with nvs at 0x9000 - below the application and inside the span a factory image fills with 0xFF -
+# and nothing for the radio images or the journal. Three refusals, each naming its partition.
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x5000,
+otadata,    data, ota,      0xE000,    0x2000,
+ota_0,      app,  ota_0,    0x10000,   0x300000,
+ota_1,      app,  ota_1,    0x310000,  0x300000,
+coredump,   data, coredump, 0xFF0000,  0x10000,
