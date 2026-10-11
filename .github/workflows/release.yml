@@ -1,0 +1,279 @@
+# The release: a GitHub Release with the two images, the manifest that says what they are, the
+# signature over it and SHA256SUMS.
+#
+#   push a tag vX.Y.Z   -> ci must be green on that commit, and the commit must be one of main's
+#                          -> build it in the pinned image with the version baked in -> make the
+#                          release files -> sign with the RELEASE_SIGNING_KEY secret -> verify the
+#                          signature against keys/release-keys.txt -> publish
+#   Run workflow        -> the same jobs, signed with the specification's public test key and
+#                          published nowhere: the files are the run's artifact. Input "ref" is the
+#                          commit to rehearse on. This is the proof that the tag path works, and it
+#                          is also run on every verified commit by tools/verify.ps1's `release`
+#                          step, locally (S-10: local first).
+#
+# Merging never releases. Pushing the tag IS the approval; an older commit re-tagged is a
+# rollback. Nothing is published whose ci is red or unknown, and nothing is published that
+# tools/release/verify_release.py has not taken through spec/FIRMWARE-MANIFEST.md §5.
+#
+# **A tag fails today, on purpose.** The release key does not exist yet - it is Thomas's to make,
+# once (spec/SYSTEM.md §10 item 1, keys/README.md). With no RELEASE_SIGNING_KEY secret,
+# sign_manifest.py stops with the instructions; with keys/release-keys.txt empty,
+# verify_release.py stops with them too. Both happen before `gh release create`, so a tag cannot
+# publish something nobody can check. The dry run is unaffected.
+#
+# The version a release reports is the tag with the commit after it: `X.Y.Z+<sha7>`, passed into
+# the build as PROJECT_VER, which is what core/version.cpp prints, what the 96-byte descriptor
+# inside the image carries (spec/FIRMWARE-MANIFEST.md §4) and what the manifest's `version` says -
+# one string, held to the other two by build_release.py. A dry run is `0.0.0-dryrun+<sha7>`, so an
+# artifact can never be mistaken for a release.
+
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit or branch to rehearse the release on. Empty: this workflow's ref."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One release at a time, and none is ever cancelled half-way through a publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  # What is being released, and whether it may be.
+  ci-green:
+    name: ci is green for this commit
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.commit.outputs.version }}
+      tag: ${{ steps.commit.outputs.tag }}
+      release: ${{ steps.commit.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: The commit, and the version it is released as
+        id: commit
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}+${sha:0:7}"
+            tag="$GITHUB_REF_NAME"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            version="0.0.0-dryrun+${sha:0:7}"
+            tag="v0.0.0-dryrun"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "$GITHUB_REF_NAME -> $version (files named $tag)" >> "$GITHUB_STEP_SUMMARY"
+
+      # The commit a tag names must be one of main's: a tag on a side branch is not a release.
+      - name: And that it is a commit of main
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          git merge-base --is-ancestor "$(git rev-parse HEAD)" origin/main \
+            || { echo "::error::$(git rev-parse HEAD) is not a commit of main"; exit 1; }
+
+      # Nothing is released whose verification is red or unknown. ci.yml runs `tools/verify.ps1`
+      # on every push to main, so a commit of main has a run of its own to wait for.
+      - name: Wait for the ci workflow of that commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push --limit 1 --json status,conclusion,url --jq '.[0] // empty')
+            status=$(echo "$run" | jq -r '.status // "none"')
+            conclusion=$(echo "$run" | jq -r '.conclusion // ""')
+            echo "ci for $SHA: $status $conclusion"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then exit 0; fi
+              echo "::error::ci ended as '$conclusion' for $SHA: $(echo "$run" | jq -r '.url'). Nothing is released."
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::ci has not completed for $SHA (no green push run within 20 minutes). A tag on a commit ci has not passed is refused."
+          exit 1
+
+      # A rehearsal may be run on a branch, where ci ran for the pull request and not for a push.
+      # It is reported and not waited for: a dry run publishes nothing, so it cannot release
+      # something red. The tag path above is where the gate is.
+      - name: What ci says about that commit (a dry run does not wait)
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --limit 5 \
+            --json event,status,conclusion,url --jq '.[] | "ci \(.event): \(.status) \(.conclusion) \(.url)"' \
+            || echo "no ci run found for $SHA"
+
+  # The firmware, at the version it is released as, in the image tools/idf-image.txt pins - the
+  # same script, the same image and the same mounts as on a laptop and in ci.
+  build:
+    name: build ${{ needs.ci-green.outputs.version }}
+    needs: ci-green
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.ci-green.outputs.sha }}
+
+      # The whole verification, not only the build: the thing being published is then verified at
+      # its own version, which is not the version ci verified. Its `release` step is a dry run
+      # signed with the test key; the real files are made in the next job, from out/images/.
+      - name: tools/verify.ps1 -Version ${{ needs.ci-green.outputs.version }}
+        shell: pwsh
+        run: ./tools/verify.ps1 -Version '${{ needs.ci-green.outputs.version }}'
+
+      - name: What was built
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### verify'
+            echo '```'
+            cat out/verify/summary.txt 2>/dev/null || echo "no summary"
+            grep -E 'banner in image|descriptor in|application image is' out/verify/build.log out/verify/partitions.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images-${{ needs.ci-green.outputs.sha }}
+          path: |
+            out/images/
+            out/verify/
+          if-no-files-found: error
+          retention-days: 14
+
+  # The release files, the signature, the gate, and then - only on a tag - the publish.
+  publish:
+    name: ${{ needs.ci-green.outputs.release == 'true' && 'publish the release' || 'dry run (nothing published)' }}
+    needs: [ci-green, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.ci-green.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: images-${{ needs.ci-green.outputs.sha }}
+          path: out
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The same pin tools/verify.sh installs inside the image: manifestref.py's Ed25519.
+      - name: cryptography, pinned
+        run: pip install --disable-pip-version-check --quiet -r tools/requirements-verify.txt
+
+      # out/images/ is what the build produced, project_description.json included, so this is the
+      # application and the factory image of that very build and nothing else.
+      - name: The release files
+        env:
+          VERSION: ${{ needs.ci-green.outputs.version }}
+          TAG: ${{ needs.ci-green.outputs.tag }}
+          SHA: ${{ needs.ci-green.outputs.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf out/release
+          python tools/release/build_release.py --version "$VERSION" --commit "$SHA" --tag "$TAG" \
+                 --build-dir out/images --out out/release --require-descriptor
+
+      # A tag signs with the secret and nothing else; a dry run with the specification's public
+      # test key, which sign_manifest.py refuses for a release version. A tag with no secret stops
+      # here, with the instructions for making the key.
+      - name: Sign the manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.ci-green.outputs.release }}" = "true" ]; then
+            python tools/release/sign_manifest.py out/release/manifest.json
+          else
+            unset RELEASE_SIGNING_KEY
+            python tools/release/sign_manifest.py --test-key out/release/manifest.json
+          fi
+
+      # The last gate: every check of spec/FIRMWARE-MANIFEST.md §5 that applies, with the keys a
+      # firmware build would trust - keys/release-keys.txt for a release, the test key for a
+      # rehearsal. Nothing is published that does not pass it.
+      - name: Verify it as a Walter would
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.ci-green.outputs.release }}" = "true" ]; then
+            python tools/release/verify_release.py out/release
+          else
+            python tools/release/verify_release.py --test-key out/release
+          fi
+
+      - name: What would be published
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo '### out/release'
+            echo '```'
+            ls -la out/release 2>/dev/null || echo "nothing"
+            cat out/release/SHA256SUMS 2>/dev/null || true
+            cat out/release/manifest.json.sig 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish
+        if: needs.ci-green.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.ci-green.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "TwinOak Walter firmware $TAG" \
+            --notes-file out/release/NOTES.md \
+            out/release/twinoak-walter-*.bin \
+            out/release/manifest.json \
+            out/release/manifest.json.sig \
+            out/release/SHA256SUMS
+
+      # The files themselves, for the record on a tag and as the whole point on a dry run.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-${{ needs.ci-green.outputs.tag }}-${{ needs.ci-green.outputs.sha }}
+          path: out/release/*
+          if-no-files-found: error
+          retention-days: 14

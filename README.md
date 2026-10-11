@@ -34,10 +34,14 @@ tested inside Espressif's `espressif/idf` image at one tag and digest
 ([`tools/idf-image.txt`](tools/idf-image.txt)), the same image CI uses:
 
 ```powershell
-.	oolserify.ps1                # everything: the spec copy, the host tests, the firmware, the partition table
-.	oolserify.ps1 -Only build    # one step (spec, spec-tools, host-tests, build, partitions)
-.	oolserify.ps1 -Clean         # a cold run: throw the build and cache volumes away first
-.	oolserify.ps1 -Shell         # a bash inside the same container, same mounts
+.\tools\verify.ps1                # everything: the spec copy, the host tests, the release
+                                  # tooling, the firmware, the partition table, a dry-run release
+.\tools\verify.ps1 -Only build    # one step (spec, spec-tools, host-tests, release-tests,
+                                  # build, partitions, release)
+.\tools\verify.ps1 -Clean         # a cold run: throw the build and cache volumes away first
+.\tools\verify.ps1 -Shell         # a bash inside the same container, same mounts
+.\tools\verify.ps1 -Version 0.3.1+1a2b3c4
+                                  # everything, at the version a release would be built with
 ```
 
 The first run pulls a 5 GB image and builds everything (minutes); the second is seconds, because
@@ -45,6 +49,10 @@ the build directory and `ccache` live in Docker volumes rather than on the bind-
 Each step logs to `out/verify/<step>.log` and the images land in `out/images/`:
 `twinoak-walter.bin` (the application, what an update carries), `twinoak-walter-factory.bin`
 (bootloader, table, OTA data and application as one file from `0x0`), the `.elf` and `.map`.
+`out/release/` holds a **dry run of the release** over that build — the two images named after the
+version, `manifest.json`, a signature by the specification's public test key and `SHA256SUMS` — so
+the release path is exercised on every verified commit and is never run for the first time on a
+tag ([`docs/release.md`](docs/release.md)).
 
 **Flashing a Walter from the host**, over the module's USB-C, which is the ESP32-S3's own USB
 (`pip install esptool`; hold BOOT while plugging in if the port does not appear):
@@ -54,7 +62,12 @@ esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 1
 ```
 
 Then open the port (any baud; USB Serial/JTAG ignores it): the console prints
-`twinoak-walter 0.0.0-dev`, which slot it runs from, and idles.
+`twinoak-walter 0.0.0-dev`, which slot it runs from, what the descriptor inside the image says it
+is, and idles.
+
+**Releasing it** is a person pushing a tag `vX.Y.Z`:
+[`docs/release.md`](docs/release.md). Nothing else releases anything — not a merge, not a green
+CI run — and a tag fails until the release key exists ([`keys/README.md`](keys/README.md)).
 
 **Where things are.** `components/core/` is the logic — no ESP-IDF include, enforced by the
 build — tested on the host by `host_test/` (CMake + [doctest](host_test/third_party/doctest/README.md),
@@ -62,14 +75,17 @@ under the address and undefined-behaviour sanitizers). `components/interfaces/` 
 asks of the world, `components/platform/` the ESP-IDF answers, `components/modem/` the LTE modem
 (`dptechnics/walter-modem`, a managed component pinned in `dependencies.lock`), `main/` the
 start-up. `sdkconfig.defaults` carries a reason per line; `partitions.csv` is checked by
-`tools/check_partitions.py` against every build. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-is the map; [`docs/bench.md`](docs/bench.md) is what only a Walter on a desk can confirm.
+`tools/check_partitions.py` against every build. `tools/release/` makes a release and refuses the
+ways one can be wrong; `keys/` holds the public halves of the keys a release may be signed with.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the map;
+[`docs/release.md`](docs/release.md) is how a tag becomes a release;
+[`docs/bench.md`](docs/bench.md) is what only a Walter on a desk can confirm.
 
 The task piles that build the rest, one headless session per task:
 
 ```powershell
-.	asksun-pile.ps1          # phases 0 to 3
-.	asksun-all.ps1 -Phase 0  # one phase
+.\tasks\run-pile.ps1          # phases 0 to 3
+.\tasks\run-all.ps1 -Phase 0  # one phase
 ```
 
 ## What it will be, in one table
@@ -78,10 +94,10 @@ The task piles that build the rest, one headless session per task:
 |---|---|
 | Module | QuickSpot Walter: ESP32-S3, 16 MB flash, Sequans GM02SP (LTE-M / NB-IoT) |
 | Built with | ESP-IDF v5.5.5 in Espressif's Docker image, pinned by digest (`tools/idf-image.txt`); the `walter-modem` component at 1.5.0 |
-| Verified by | `tools/verify.ps1` — host tests and the firmware build, in that image; CI runs the same script |
+| Verified by | `tools/verify.ps1` — host tests, the release tooling, the firmware build and a dry-run release, in that image; CI runs the same script |
 | Tested | on the host: the link, the debug port, the nRF52's flash controller and the update procedure, against simulators |
 | Flashed | at a bench: its own USB-C. In service: by itself, A/B, with rollback |
-| Released as | a GitHub Release: the OTA image, a factory image, `manifest.json`, its signature, `SHA256SUMS` |
+| Released as | a GitHub Release, made by pushing a tag: the OTA image, a factory image, `manifest.json`, its signature, `SHA256SUMS` (`docs/release.md`) |
 
 ## Rails that hold in every task
 

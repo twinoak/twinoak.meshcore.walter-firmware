@@ -20,9 +20,10 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
 
   Open the port at any baud (USB Serial/JTAG ignores it). After a reset the console prints
   `twinoak-walter 0.0.0-dev` on its own line, then `running from ota_0 at 0x010000 (3072 KB), ota
-  state undefined (...)`, then `console on USB; nothing to do yet - idling`. `--flash-mode dio` is
-  esptool's way in; the image's header says QIO and the bootloader switches to it
-  (`sdkconfig.defaults`).
+  state undefined (...)`, then `image descriptor at <address>: role manager, board walter, band
+  lte-m, version 0.0.0-dev, link 1.0` (task p0-02), then `console on USB; nothing to do yet -
+  idling`. `--flash-mode dio` is esptool's way in; the image's header says QIO and the bootloader
+  switches to it (`sdkconfig.defaults`).
 
 - [ ] **A reset runs the same image** (task p0-01; S-6). Press reset, or unplug and replug, three
   times. Every time the same banner and `running from ota_0`, and the ota state stays `undefined`:
@@ -34,3 +35,24 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
 - [ ] **Nothing else on the pins** (task p0-01, until task 03). With a meter: GPIO1 (nRESET), 2
   (SWDCLK), 4 (SWDIO), 5 (KILL), 7 (TX) read as inputs (high-impedance, pulled by nothing of ours)
   after boot. Task 03 owns their rules; this only confirms that task 01's image drives none of them.
+
+- [ ] **A released factory image says on the console what its manifest says about it** (task
+  p0-02). Take the `release-*` artifact of a *Run workflow* dry run (or `out/release/` of a local
+  `tools/verify.ps1`), flash the `-factory.bin` with the `esptool` line in its `NOTES.md`, and
+  hold what the console prints against the files beside it:
+
+  ```
+  python spec/tools/manifestref.py descriptor twinoak-walter-<tag>-factory.bin
+  sha256sum -c SHA256SUMS
+  ```
+
+  The console's third line is `image descriptor at <address>: role manager, board walter, band
+  lte-m, version <the manifest's version>, link 1.0` — the same role, board, band and version the
+  descriptor and `manifest.json` give. Everything here is checked on every build except that a
+  board flashed with the released file boots and prints it: that is what only a Walter on a desk
+  shows.
+
+- [ ] **A release's OTA image is not for esptool** (task p0-02; checked properly in phase 2, task
+  04). `twinoak-walter-<tag>.bin` is written into the *other* application slot by a running Walter,
+  not flashed at `0x0`. Nothing on the bench needs it yet; it is listed so that nobody flashes it
+  to `0x0` and concludes the release is broken.

@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 # The definition of "verified", run inside the ESP-IDF image (S-10). tools/verify.ps1 starts it
 # there with the repository at /project, a build volume at /build and a cache volume at /ccache;
-# CI runs verify.ps1 and nothing else. Five steps, each to out/verify/<step>.log, one summary line
-# each, exit 1 when anything failed:
+# CI runs verify.ps1 and nothing else. Seven steps, each to out/verify/<step>.log, one summary
+# line each, exit 1 when anything failed:
 #
-#   spec        python spec/tools/specsync.py verify spec     - the copy is byte for byte the spec's
-#   spec-tools  linkref.py check, manifestref.py check        - the spec's own reference code agrees
-#               with its fixtures (cryptography pinned in tools/requirements-verify.txt)
-#   host-tests  host_test/ under ASan+UBSan, ctest            - the logic
-#   build       idf.py build, merge-bin, size                 - the firmware, images to out/images/
-#   partitions  tools/check_partitions.py --self-test, then against the build
+#   spec          python spec/tools/specsync.py verify spec   - the copy is byte for byte the spec's
+#   spec-tools    linkref.py check, manifestref.py check      - the spec's own reference code agrees
+#                 with its fixtures (cryptography pinned in tools/requirements-verify.txt)
+#   host-tests    host_test/ under ASan+UBSan, ctest          - the logic
+#   release-tests tools/release/test_release.py               - what the release tooling refuses
+#   build         idf.py build, merge-bin, size               - the firmware, images to out/images/
+#   partitions    tools/check_partitions.py --self-test, then against the build
+#   release       a dry run of the whole release over the build just made, into out/release/:
+#                 build_release.py, signed with the specification's public test key, then verified
 #
-#   tools/verify.sh            all five
+#   tools/verify.sh            all seven
 #   tools/verify.sh <step>     one of them (verify.ps1 -Only <step>)
+#
+# TWINOAK_VERSION (verify.ps1 -Version, and the release workflow) is the version baked into the
+# build and carried by the dry run's manifest and by the descriptor inside the image. Without it,
+# "0.0.0-dev" - one string for all three, so that they cannot disagree.
 #
 # The build directory is /build/fw, in the volume and never on the bind-mounted tree: a build over
 # a Windows bind mount is several times slower. ccache lives in /ccache so the second run is quick.
@@ -24,9 +31,15 @@ CACHE=${TWINOAK_CACHE_DIR:-/ccache}
 OUT=$ROOT/out
 LOGS=$OUT/verify
 IMAGES=$OUT/images
+RELEASE=$OUT/release
 PROJECT_NAME=twinoak-walter
-STEPS="spec spec-tools host-tests build partitions"
+STEPS="spec spec-tools host-tests release-tests build partitions release"
 ONLY=${1:-}
+# One version string for the build, the descriptor inside the image and the dry run's manifest
+# (spec/FIRMWARE-MANIFEST.md §4: the three must say the same thing), and the tag that names the
+# files - the part of the version before the "+", as vX.Y.Z.
+VERSION=${TWINOAK_VERSION:-0.0.0-dev}
+RELEASE_TAG=v${VERSION%%+*}
 
 mkdir -p "$LOGS" "$IMAGES" "$BUILD" "$CACHE"
 export CCACHE_DIR=$CACHE/ccache
@@ -71,24 +84,40 @@ step_build() {
   fi
   mkdir -p "$dir" && echo "$want" > "$stamp"
   local t0; t0=$(date +%s)
-  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" build || return 1
+  # -DPROJECT_VER is always given, even when it is the default: it is a cmake cache variable, and a
+  # build that inherited one from an earlier run would say a version nobody asked for.
+  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" build || return 1
   echo "idf.py build: $(( $(date +%s) - t0 )) s"
   # The factory image: bootloader, table, otadata and application as one file from 0x0 (what a
-  # board out of the box is flashed with; the release names it in task 02).
-  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" merge-bin -o "$PROJECT_NAME-factory.bin" || return 1
-  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" size || return 1
+  # board out of the box is flashed with; the release publishes it as -factory.bin).
+  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
+         merge-bin -o "$PROJECT_NAME-factory.bin" || return 1
+  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" size || return 1
   # Evidence to out/images/: what a bench flashes, and what task 02 releases.
   cp "$dir/$PROJECT_NAME.bin" "$dir/$PROJECT_NAME.elf" "$dir/$PROJECT_NAME.map" \
      "$dir/$PROJECT_NAME-factory.bin" "$dir/bootloader/bootloader.bin" \
      "$dir/partition_table/partition-table.bin" "$dir/ota_data_initial.bin" \
-     "$dir/flasher_args.json" "$dir/sdkconfig" "$IMAGES/" || return 1
+     "$dir/flasher_args.json" "$dir/project_description.json" "$dir/sdkconfig" \
+     "$IMAGES/" || return 1
+  # project_description.json travels with the images so that out/images/ is enough for
+  # tools/release/build_release.py --build-dir: the release workflow runs it on the runner, over
+  # the artifact this step produced, and the build directory itself is a docker volume.
   ls -la "$IMAGES"
   # The banner is in the image once: the version string the console prints (core/version.cpp).
-  local banner="twinoak-walter "
+  local banner="twinoak-walter $VERSION"
   if ! grep -a -q "$banner" "$dir/$PROJECT_NAME.bin"; then
-    echo "the application image does not contain the banner '$banner...'"; return 1
+    echo "the application image does not contain the banner '$banner'"; return 1
   fi
   echo "banner in image: $(strings -n 8 "$dir/$PROJECT_NAME.bin" | grep -m1 '^twinoak-walter ')"
+  # And the 96 bytes with which the image says what it is (spec/FIRMWARE-MANIFEST.md §4, task
+  # p0-02): exactly one in each file, which is what manifestref.py descriptor insists on. The
+  # release step then holds it against the manifest entry; this is the build's own check that the
+  # linker kept the object and that its offset is on a 4-byte boundary.
+  for d in "$dir/$PROJECT_NAME.bin" "$dir/$PROJECT_NAME-factory.bin"; do
+    local line
+    line=$(python spec/tools/manifestref.py descriptor "$d") || { echo "no single descriptor in $d"; return 1; }
+    echo "descriptor in $(basename "$d") $line"
+  done
   # The modem library was compiled: its objects are in the build, and the anchor is in the map.
   local lib=$dir/esp-idf/dptechnics__walter-modem/libdptechnics__walter-modem.a
   if [ ! -f "$lib" ]; then echo "walter-modem was not built: $lib missing"; return 1; fi
@@ -105,6 +134,58 @@ step_partitions() {
   python tools/check_partitions.py --table partitions.csv --sdkconfig "$dir/sdkconfig" \
          --bin "$dir/partition_table/partition-table.bin" --app "$dir/$PROJECT_NAME.bin" \
          --factory "$dir/$PROJECT_NAME-factory.bin"
+}
+
+step_release_tests() {
+  # The release tooling's own tests: what it refuses, and why (tools/release/test_release.py).
+  # They need no firmware - a stand-in image with a descriptor in it is enough - so they run
+  # before the build, where a mistake in them is cheapest to find.
+  python tools/release/test_release.py
+}
+
+step_release() {
+  # A dry run of the release over the build just made, end to end, exactly as
+  # .github/workflows/release.yml does it on a tag - except that it signs with the specification's
+  # public test key and publishes nothing. The point is that the tag path is not run for the first
+  # time on a tag (S-10: local first).
+  local dir=$BUILD/fw
+  if [ ! -f "$dir/$PROJECT_NAME.bin" ]; then
+    echo "no build to release ($dir/$PROJECT_NAME.bin); run the build step first"; return 1
+  fi
+  local commit
+  commit=$(git rev-parse HEAD 2>/dev/null || true)
+  case $commit in
+    *[!0-9a-f]* | "") commit=0000000000000000000000000000000000000000 ;;
+  esac
+  rm -rf "$RELEASE"
+  python tools/release/build_release.py --version "$VERSION" --commit "$commit" \
+         --tag "$RELEASE_TAG" --build-dir "$dir" --out "$RELEASE" --require-descriptor || return 1
+  # The signature. --test-key takes the key pair the specification publishes, so a rehearsal has
+  # no secret anywhere near it and nothing to print; it refuses a release version.
+  python tools/release/sign_manifest.py --test-key "$RELEASE/manifest.json" || return 1
+  # The gate the workflow runs before `gh release create`: all of §5 that applies here.
+  python tools/release/verify_release.py --test-key "$RELEASE" || return 1
+  # And the specification's own tool, by itself, over what was written - the task's acceptance
+  # criterion. The public test key comes from the fixtures, never written down a second time.
+  local public
+  public=$(python -c 'import json;print(json.load(open("spec/fixtures/manifest/index.json"))["test_public_key"])') || return 1
+  python spec/tools/manifestref.py verify "$public" "$RELEASE/manifest.json" || return 1
+  local f line
+  for f in "$RELEASE/$PROJECT_NAME-$RELEASE_TAG.bin" "$RELEASE/$PROJECT_NAME-$RELEASE_TAG-factory.bin"; do
+    line=$(python spec/tools/manifestref.py descriptor "$f") || return 1
+    echo "$(basename "$f") $line"
+    case $line in
+      *'"role": "manager"'*) ;;
+      *) echo "the descriptor in $f does not say role manager"; return 1 ;;
+    esac
+  done
+  ls -la "$RELEASE"
+  echo "--- manifest.json"
+  cat "$RELEASE/manifest.json"
+  echo "--- manifest.json.sig"
+  cat "$RELEASE/manifest.json.sig"
+  echo "--- SHA256SUMS"
+  cat "$RELEASE/SHA256SUMS"
 }
 
 run_step() {
@@ -127,14 +208,17 @@ if [ -n "$ONLY" ]; then
 fi
 
 echo "verify: ESP-IDF $(cd "$IDF_PATH" && git describe --tags 2>/dev/null || cat version.txt) in $(grep PRETTY_NAME /etc/os-release | cut -d= -f2), build dir $BUILD, cache $CACHE"
+echo "        version $VERSION, release files named $RELEASE_TAG"
 T0=$(date +%s)
 for s in $STEPS; do
   case $s in
     spec)        run_step spec step_spec ;;
     spec-tools)  run_step spec-tools step_spec_tools ;;
     host-tests)  run_step host-tests step_host_tests ;;
+    release-tests) run_step release-tests step_release_tests ;;
     build)       run_step build step_build ;;
     partitions)  run_step partitions step_partitions ;;
+    release)     run_step release step_release ;;
   esac
 done
 echo

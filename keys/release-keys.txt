@@ -1,0 +1,25 @@
+# The keys a release of this firmware may be signed with, and that a Walter build trusts.
+# Public halves only: the private half of the release key is the RELEASE_SIGNING_KEY secret of the
+# release workflow and is never in this repository (keys/README.md,
+# spec/FIRMWARE-MANIFEST.md section 3).
+#
+# One key a line, # to end of line a comment, at most three (section 3: room for three, so that a
+# key can be replaced by shipping a build that trusts both the old and the new, then one that
+# trusts only the new):
+#
+#   ed25519 <key id> <public hex>   # who made it, when
+#
+# <key id> is the first eight bytes of SHA-256 over the 32-byte public key, 16 lowercase hex
+# characters; tools/release/verify_release.py recomputes it and refuses a line where it is wrong.
+#
+# EMPTY ON PURPOSE. The release key does not exist yet - it is Thomas's to make, once
+# (spec/SYSTEM.md section 10, item 1; the instructions are in keys/README.md). While this file
+# names no key:
+#
+#   * a tag fails in .github/workflows/release.yml, at verify_release.py, before anything is
+#     published, with those instructions;
+#   * the firmware - once phase 2 generates its trust table from this file - accepts no update at
+#     all, which is the safe state (section 3, last bullet).
+#
+# The specification's test key (spec/fixtures/manifest/TEST-KEY.txt) is never added here. It is
+# public, so a build that trusted it would accept anybody's firmware.
