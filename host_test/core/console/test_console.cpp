@@ -106,6 +106,7 @@ TEST_CASE("help lists every command") {
 TEST_CASE("trust says this build accepts no update, because keys/release-keys.txt names no key (task p2-01)") {
   Rig rig;
   const std::string text = rig.run("trust");
+  CHECK(contains(text, "ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, "));
   CHECK(contains(text, "trust: none: no update will be accepted (keys/release-keys.txt names no key;\n"));
   CHECK(contains(text, "spec/SYSTEM.md section 10 item 1"));
   CHECK_FALSE(contains(text, "TEST KEY"));

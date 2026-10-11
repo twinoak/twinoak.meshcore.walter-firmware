@@ -101,6 +101,10 @@ TEST_CASE("Ed25519: RFC 8032's first three vectors verify, and so does index.jso
   CHECK(std::string(fixtures::kRfc8032Test1.public_key) == kRfc[0].public_key);
 }
 
+TEST_CASE("Ed25519: the self-test the console runs passes here, and would fail on a wrong answer") {
+  CHECK(core::image::ed25519SelfTest());
+}
+
 TEST_CASE("Ed25519: a flipped bit anywhere in the signature, the message or the key is refused") {
   const Case base = load(kRfc[2]);  // two bytes of message: every part has something to flip
   REQUIRE(ours(base));

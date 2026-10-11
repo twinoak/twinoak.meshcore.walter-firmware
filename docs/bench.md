@@ -69,8 +69,11 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   does not survive a power cut.
 
 - [ ] **`trust` says no update will be accepted** (task p2-01). On a normal build the console
-  prints `trust: none: no update will be accepted (keys/release-keys.txt names no key; ...)` and
-  the boot lines carry no `WARNING`. That is the unit's state until Thomas makes the release key
+  prints `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` — **write
+  `<n>` down**: it is the first measurement of TweetNaCl's Ed25519 on the ESP32-S3, and a
+  `FAILED` here means the vendored arithmetic is wrong on the board's compiler — then `trust:
+  none: no update will be accepted (keys/release-keys.txt names no key; ...)`, and the boot
+  lines carry no `WARNING`. That is the unit's state until Thomas makes the release key
   (`spec/SYSTEM.md` §10 item 1, `keys/README.md`); after the key is in `keys/release-keys.txt`
   and a build is flashed, `trust` prints `1 key this build accepts a release signed with:
   <key id>` — the id `manifestref.py keygen` printed. If a board on the bench is ever flashed

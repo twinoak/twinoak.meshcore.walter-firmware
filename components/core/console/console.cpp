@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/image/crypto/ed25519.h"
 #include "core/image/trust.h"
 #include "core/link/client/words.h"
 #include "core/nrf52/nrf52.h"
@@ -919,6 +920,12 @@ void Console::rakFlashTest() {
 // every manifest). A build that trusts the specification's public test key says so loudly.
 void Console::trust() {
   const image::TrustTable& table = image::buildTrust();
+  // The arithmetic itself, on this compiler: RFC 8032's first vector verified and a changed bit
+  // refused. A few hundred milliseconds of TweetNaCl on the ESP32-S3; the bench writes it down.
+  const std::uint64_t t0 = clock_.nowMs();
+  const bool crypto_ok = image::ed25519SelfTest();
+  printf("ed25519 self-test (RFC 8032 test 1, and one bit changed): %s, %lu ms\n",
+         crypto_ok ? "passed" : "FAILED - this build cannot check a signature", static_cast<unsigned long>(clock_.nowMs() - t0));
   if (table.empty()) {
     print("trust: none: no update will be accepted (keys/release-keys.txt names no key;\n"
           "  the release key is made once, by a person: spec/SYSTEM.md section 10 item 1)\n");

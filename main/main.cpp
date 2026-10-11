@@ -15,6 +15,7 @@
 #include "core/health/health.h"
 #include "core/image/this_image.h"
 #include "core/image/trust.h"
+#include "core/image/verdict.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
 #include "core/version.h"
@@ -125,6 +126,14 @@ extern "C" void app_main() {
   // Linked, not called (components/modem/modem_anchor.cpp). The volatile keeps the reference.
   const void* volatile anchor = twinoak_modem_library_anchor();
   (void)anchor;
+  // The verdict (task p2-01, core/image/verdict.h), the same way: nothing calls it until the
+  // image store (task p2-02) has something to judge, and a function nothing references is
+  // dropped by --gc-sections. Keeping its anchor keeps the six checks - the manifest parser,
+  // the signature, Ed25519 over the vendored TweetNaCl extract - in the image, so that the
+  // build proves they compile and link for the board and tools/verify.sh's reading of the
+  // linker map (no signing symbol) is about an image that holds the verifier.
+  const void* volatile verdict_anchor = core::image::verdictAnchor();
+  (void)verdict_anchor;
 
   std::fflush(stdout);
 

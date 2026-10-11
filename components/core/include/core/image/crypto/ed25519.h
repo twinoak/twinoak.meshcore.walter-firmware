@@ -50,5 +50,10 @@ bool ed25519Verify(const std::uint8_t public_key[kEd25519PublicKeySize],
                    const std::uint8_t signature[kEd25519SignatureSize], const std::uint8_t* message,
                    std::size_t size);
 
+// RFC 8032 section 7.1 TEST 1 verified, and the same signature with one bit changed refused:
+// what `trust` on the console runs, so that a bench can see the arithmetic is right on the
+// board's compiler, where no host test runs.
+bool ed25519SelfTest();
+
 }  // namespace image
 }  // namespace core

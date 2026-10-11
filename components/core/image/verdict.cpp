@@ -117,5 +117,22 @@ Outcome ImageVerdict::judge(const std::uint8_t* manifest, std::size_t manifest_s
   return Outcome{};
 }
 
+namespace {
+
+using Judge = Outcome (ImageVerdict::*)(const std::uint8_t*, std::size_t, const char*, std::size_t,
+                                        const SlotNeeds&, Use, const flasher::BoardProfile*,
+                                        const flasher::ImageSource&);
+
+}  // namespace
+
+const void* verdictAnchor() {
+  // A volatile read of a pointer to judge(): the compiler must load it, so the reference to the
+  // function is in this object's data and the linker keeps the function and all it calls.
+  static Judge volatile keep = &ImageVerdict::judge;
+  static const char kAnchored = 0;
+  const Judge loaded = keep;
+  return loaded == nullptr ? nullptr : &kAnchored;
+}
+
 }  // namespace image
 }  // namespace core

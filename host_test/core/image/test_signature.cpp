@@ -161,8 +161,9 @@ TEST_CASE("every entry of index.json's signatures: the valid ones accepted, each
         CHECK(status == SignatureStatus::kBadSignature);  // tampered, or another manifest's
         CHECK(used == &trust.keys[0]);
       }
-      MESSAGE("check 1 refuses " << c.manifest << " with " << c.sig << ": " << core::image::describe(status)
-                                 << " (index.json: " << why << ")");
+      // std::string: doctest prints a const char* variable as a pointer (or "1"), not as text.
+      MESSAGE("check 1 refuses " << std::string(c.manifest) << " with " << std::string(c.sig) << ": "
+                                 << std::string(core::image::describe(status)) << " (index.json: " << why << ")");
       ++invalid;
     }
   }

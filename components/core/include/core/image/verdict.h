@@ -121,5 +121,11 @@ class ImageVerdict {
   bool has_accepted_ = false;
 };
 
+// Linked, not called, until the image store (task p2-02) has something to judge: main/main.cpp
+// keeps this function's result in a volatile, the way it keeps the modem library's anchor, and
+// this function reads judge()'s address through a volatile - so --gc-sections keeps the six
+// checks in the image and the build proves they compile and link for the board.
+const void* verdictAnchor();
+
 }  // namespace image
 }  // namespace core

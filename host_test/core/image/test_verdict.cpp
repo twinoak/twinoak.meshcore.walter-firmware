@@ -126,7 +126,7 @@ TEST_CASE("the fixture images are accepted against their manifests: the repeater
     CHECK(accepted.linkMinor() == 0);
     CHECK(fixtures::toHex(accepted.keyId(), 8) == std::string(fixtures::kTestKeyId));
     CHECK(std::string(accepted.image().id) == (walter ? "manager.walter.lte-m" : "repeater.rak4630-single.868"));
-    MESSAGE("accepted: " << f.name << " for " << accepted.image().id << ", descriptor at " << accepted.descriptorOffset()
+    MESSAGE("accepted: " << std::string(f.name) << " for " << std::string(accepted.image().id) << ", descriptor at " << accepted.descriptorOffset()
                          << ", signed by " << fixtures::toHex(accepted.keyId(), 8));
   }
 }
@@ -178,7 +178,7 @@ TEST_CASE("check 1: every invalid signature case of index.json is refused there,
     CHECK(o.failed == Check::kSignature);
     // Nothing was parsed: the verdict's manifest is blank.
     CHECK_FALSE(b.verdict.manifest().has_schema);
-    MESSAGE("check 1 refused " << c.manifest << " + " << c.sig << ": " << o.why);
+    MESSAGE("check 1 refused " << std::string(c.manifest) << " + " << std::string(c.sig) << ": " << std::string(o.why));
   }
 }
 
@@ -209,7 +209,7 @@ TEST_CASE("a refusal at each check, from the signed variants and from what the c
     CAPTURE(e.variant);
     CHECK(o.failed == e.check);
     CHECK(std::string(o.why) == e.why);
-    MESSAGE(core::image::describe(o.failed) << " refused " << e.variant << ": " << o.why);
+    MESSAGE(std::string(core::image::describe(o.failed)) << " refused " << std::string(e.variant) << ": " << std::string(o.why));
   }
 
   // Check 3 from the slot's side: no image for this board, this band, this role.
@@ -217,7 +217,7 @@ TEST_CASE("a refusal at each check, from the signed variants and from what the c
   Outcome o = b.judge(repeaterSlot("rak4630-dual-a"), Use::kSwd, &core::flasher::kRak4630Single);
   CHECK(o.failed == Check::kImage);
   CHECK(std::string(o.why) == "no image in the manifest has this slot's role, board and band");
-  MESSAGE(core::image::describe(o.failed) << " refused the repeater manifest for board rak4630-dual-a: " << o.why);
+  MESSAGE(std::string(core::image::describe(o.failed)) << " refused the repeater manifest for board rak4630-dual-a: " << std::string(o.why));
   o = b.judge(repeaterSlot("rak4630-single", "433"), Use::kSwd, &core::flasher::kRak4630Single);
   CHECK(o.failed == Check::kImage);
   o = b.judge(repeaterSlot("rak4630-single", "868", "scanner"), Use::kSwd, &core::flasher::kRak4630Single);
@@ -228,7 +228,7 @@ TEST_CASE("a refusal at each check, from the signed variants and from what the c
   o = dev.judge(repeaterSlot(), Use::kSwd, &core::flasher::kRak4630Single);
   CHECK(o.failed == Check::kImage);
   CHECK(std::string(o.why) == "the image requires a newer Walter than this build");
-  MESSAGE(core::image::describe(o.failed) << " refused the repeater manifest on a 0.0.0-dev build: " << o.why);
+  MESSAGE(std::string(core::image::describe(o.failed)) << " refused the repeater manifest on a 0.0.0-dev build: " << std::string(o.why));
 
   // Check 4: a wrong size, a wrong hash.
   Bench c;
@@ -237,13 +237,13 @@ TEST_CASE("a refusal at each check, from the signed variants and from what the c
   o = c.judge(repeaterSlot(), Use::kSwd, &core::flasher::kRak4630Single);
   CHECK(o.failed == Check::kFile);
   CHECK(std::string(o.why) == "the file's size is not the manifest's");
-  MESSAGE(core::image::describe(o.failed) << " refused image-repeater.bin one byte short: " << o.why);
+  MESSAGE(std::string(core::image::describe(o.failed)) << " refused image-repeater.bin one byte short: " << std::string(o.why));
   c.spec("manifest-repeater.json", "manifest-repeater.json.sig", "image-repeater.bin");
   c.file[4000] ^= 0x80;
   o = c.judge(repeaterSlot(), Use::kSwd, &core::flasher::kRak4630Single);
   CHECK(o.failed == Check::kFile);
   CHECK(std::string(o.why) == "the file's SHA-256 is not the manifest's");
-  MESSAGE(core::image::describe(o.failed) << " refused image-repeater.bin with one bit changed: " << o.why);
+  MESSAGE(std::string(core::image::describe(o.failed)) << " refused image-repeater.bin with one bit changed: " << std::string(o.why));
   // The two-descriptor image, under the manifest that names the good one: it is the hash that
   // refuses it, at check 4, before its descriptors are counted.
   c.spec("manifest-repeater.json", "manifest-repeater.json.sig", "image-two-descriptors.bin");
