@@ -8,5 +8,7 @@ include. Included as `"interfaces/<name>.h"`.
 | `retained.h` | small records that survive a reset and a deep sleep, not a power cut | RTC memory with a CRC-32 (`platform/retained`) | `fake_retained` — a map, with a power cut |
 | `text_out.h` | bytes to the console | the USB serial port (`platform/usb_console`) | `capture_out` — a string |
 | `restart.h` | restart the board | `esp_restart()` (`platform/boot`) | `fake_restart` — records that it was asked |
+| `byte_stream.h` | the UART to the radio: open and close (the pins are RadioPins'), read what is there, write, flush, "has the line been idle" | UART1 at 115200 8N1 on GPIO7/8 (`platform/uart`) | `host_test/sim/scripted_radio` — a radio driven by the link's fixtures |
+| `wall_clock.h` | the time of day and where it came from, or "I have no time to give" | nothing yet: phase 3's modem reads it from the network (`main/main.cpp` answers false) | `fake_wall_clock` — a time a test hands over |
 
-Phase 1 adds the byte stream (the UART), phase 3 the key-value store, the uplink and the sleeper.
+Phase 3 adds the key-value store, the uplink and the sleeper.

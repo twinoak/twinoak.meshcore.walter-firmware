@@ -13,7 +13,8 @@ components/
   core/                 everything that is logic. No ESP-IDF include, no FreeRTOS, no heap after start-up.
     board/              the pin map and RadioPins: the seven pins and their rules (§2) - task p0-03
     health/             why the last boot happened: the reset reason, a boot counter, the last five - task p0-03
-    link/               the box link: codec, client, events, telling a repeater from a scanner
+    link/               the box link: codec, client (the UART, retries, events, the session,
+                        telling a repeater from a scanner), the protocol's numbers in words
     swd/                the debug port: wire protocol, DP, MEM-AP
     nrf52/              identification, access-port protection, the flash controller, core control
     flasher/            an image and a region in; erases, writes, verify out
@@ -21,18 +22,22 @@ components/
     update/             the radio's update and its journal; the Walter's own update policy
     supervisor/         the radio's heartbeat and the ladder of remedies
     power/              what the battery allows; the check-in interval
-    console/            the line parser and the commands' text (from task p0-03: help, status, reboots, pins, rak reset, rak kill, reboot)
+    console/            the line parser and the commands' text (task p0-03: help, status, reboots,
+                        pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
+                        time, power, env, cli, events, text)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
-                        (task p0-03); a byte stream, flash regions, a key-value store, an uplink, a
-                        sleeper (later). ("hal/" when this file was written; ESP-IDF owns a
-                        component of that name - task p0-01)
+                        (task p0-03); a byte stream and the time of day (task p1-02); flash regions,
+                        a key-value store, an uplink, a sleeper (later). ("hal/" when this file was
+                        written; ESP-IDF owns a component of that name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
-                        RTC memory, the USB console, the reset reason (task p0-03)
+                        RTC memory, the USB console, the reset reason (task p0-03), the radio's
+                        UART (task p1-02)
   modem/                the Walter's LTE modem behind interfaces/' uplink
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained storage as a map
-  sim/                  the simulated SWD target (wire level and nRF52), the simulated flash, the scripted RAK
+  sim/                  the scripted RAK on a fake UART (task p1-02); the simulated SWD target
+                        (wire level and nRF52) and the simulated flash (later)
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
 tools/                  verify.ps1, release/ (the release tooling), bench tools
 keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02)
@@ -127,17 +132,36 @@ those and that unknown ones are ignored. It is tested against `spec/fixtures/lin
 which the radio firmware's own codec is tested against too; neither sees the other's source, and
 if both pass every case they agree on the wire.
 
-**The client** owns the UART (115200 8N1 on GPIO7/8) and gives the rest of
-the firmware typed calls: *hello*, *ping*, *status*, *set time*, *run this console line*, *read
-power*, and the mesh client's calls. Underneath: one request at a time, a response awaited for one
-second, the same frame sent again up to twice more, then "the link is down" — reported, not acted
-on; acting is the supervisor's.
+**The client** (`core/link/client/`, task p1-02) owns the UART (115200 8N1 on GPIO7/8) and gives
+the rest of the firmware typed calls: *hello*, *ping*, *status*, *set time*, *run this console
+line*, *read power*, and the mesh client's calls — one per request type of §4, each answering with
+the decoded response or the reason there is none (link down, refused with which status, malformed,
+a capability the radio does not have, the UART not ours). Underneath: one request at a time, a
+`seq` different from the last, a response awaited for one second in slices of a tick, the same
+frame sent again up to twice more, then "the link is down" — reported, not acted on; acting is the
+supervisor's. A response of another type or `seq`, and one that arrives with nothing in flight, are
+counted and ignored. A decoded answer's variable-length fields are views into the client's own
+response buffer, valid until the next call.
+
+**Its two pins are taken and given back as one thing with the UART.** `core/link/client/port.h` is
+the only caller of `RadioPins::uartEnable()` and `uartRelease()` and the only caller of the byte
+stream: the peripheral is routed to the pads after the board logic has enabled them and away before
+it releases them, and every read and write asks the board whether the UART is still enabled — a
+`rak kill` takes the lines without telling anyone (§2 rule 3), and the port then closes the stream
+itself and counts the loss. So "TX is driven only between `uartEnable()` and `uartRelease()`" is a
+property of the code's shape and not of everybody's care.
 
 It keeps the radio's `boot_id` and treats a change as "everything I knew about that radio's state
-is gone". It sets the radio's clock after every restart it sees, before anything else.
+is gone"; a changed `boot_id` or an `EV_BOOT` is raised to whoever subscribed. It sets the radio's
+clock after every restart it sees, before anything else — from `interfaces::WallClock`, which
+answers "I have no time to give" until phase 3's modem fills it. `EV_BOOT`, `EV_MESH_REPLY` and
+`EV_ATTENTION` are decoded and queued as they arrive — a small bounded queue, its overflow counted,
+their sequence numbers watched for gaps — whenever the client reads the port, which the main task
+does every time round.
 
-If `HELLO` gets no answer but lines beginning with `{` arrive, the radio is running NoiseScope: the
-client says so and switches to passing text lines through. It never mixes the two.
+If `HELLO` gets no answer three times and lines beginning with `{` arrive — or one answers an
+`info\n` probe — the radio is running NoiseScope: the client says *scanner (text)*, sends no more
+frames, and offers the lines to whoever subscribed until the radio is reset. It never mixes the two.
 
 ## 4. SWD
 

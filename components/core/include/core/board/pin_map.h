@@ -35,5 +35,14 @@ constexpr std::size_t kRadioPinCount = 7;
 constexpr PinDef kRadioPins[kRadioPinCount] = {kNReset, kSwdClk, kSwdIo, kPwrKill,
                                                kSpare,  kWalterTx, kWalterRx};
 
+// The two pins the UART peripheral is routed to while RadioPins has enabled it (task p1-02,
+// platform/uart.cpp). The peripheral is the one thing outside this directory that drives one of
+// the seven - it cannot be helped, a UART drives its own TX - so the numbers it needs come from
+// the table above through these two functions, and the names stay in here (tools/verify.sh greps
+// for them). Nothing but platform/uart.cpp calls them, and only between uartEnable() and
+// uartRelease().
+constexpr std::uint8_t uartTxGpio() { return kWalterTx.gpio; }
+constexpr std::uint8_t uartRxGpio() { return kWalterRx.gpio; }
+
 }  // namespace board
 }  // namespace core

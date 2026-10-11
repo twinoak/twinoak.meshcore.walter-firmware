@@ -63,9 +63,11 @@ esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 1
 
 Then open the port (any baud; USB Serial/JTAG ignores it): the console prints
 `twinoak-walter 0.0.0-dev`, which slot it runs from, what the descriptor inside the image says it
-is, why it booted, and a `>` prompt — `help`, `status`, `pins`, `rak reset`, `rak kill <seconds>`,
-`reboots`, `reboot` ([`docs/console.md`](docs/console.md)). Before any of that, the seven pins it
-shares with the radio are in their safe state (`docs/ARCHITECTURE.md` §2).
+is, whether the radio's UART came up, why it booted, and a `>` prompt — `help`, `status`, `pins`,
+`rak reset`, `rak kill <seconds>`, `reboots`, `reboot`, and the radio over the box link:
+`rak hello`, `rak ping`, `rak status`, `rak id`, `rak time`, `rak power`, `rak env`,
+`rak cli <line>`, `rak events`, `rak text` ([`docs/console.md`](docs/console.md)). Before any of
+that, the seven pins it shares with the radio are in their safe state (`docs/ARCHITECTURE.md` §2).
 
 **Releasing it** is a person pushing a tag `vX.Y.Z`:
 [`docs/release.md`](docs/release.md). Nothing else releases anything — not a merge, not a green

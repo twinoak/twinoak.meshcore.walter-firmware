@@ -12,6 +12,9 @@ idf_component_register(
        "link/codec/packet.cpp"
        "link/codec/frame.cpp"
        "link/codec/messages.cpp"
+       "link/client/port.cpp"
+       "link/client/client.cpp"
+       "link/client/words.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

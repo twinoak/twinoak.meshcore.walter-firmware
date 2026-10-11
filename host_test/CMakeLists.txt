@@ -67,9 +67,12 @@ target_include_directories(doctest SYSTEM INTERFACE ${CMAKE_CURRENT_LIST_DIR}/th
 
 # The fakes (fakes/): what stands behind the interfaces on the host. The fake pins check the pin
 # rules themselves and fail the running test through doctest, so they are part of the test binary.
+# The simulators (sim/) are the other half of a test: the scripted radio (task p1-02), and from
+# phase 1's task 03 the SWD target.
 file(GLOB_RECURSE FAKE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/fakes/*.cpp)
+file(GLOB_RECURSE SIM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/sim/*.cpp)
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp)
-add_executable(core_tests main.cpp ${FAKE_SOURCES} ${TEST_SOURCES} ${FIXTURE_HEADER})
+add_executable(core_tests main.cpp ${FAKE_SOURCES} ${SIM_SOURCES} ${TEST_SOURCES} ${FIXTURE_HEADER})
 target_link_libraries(core_tests PRIVATE core doctest)
 target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated ${CMAKE_CURRENT_LIST_DIR})
 twinoak_ours(core_tests)

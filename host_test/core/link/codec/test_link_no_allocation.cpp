@@ -1,11 +1,13 @@
-// The codec allocates nothing - the task's third acceptance criterion, as a test and not a
-// promise. It reads every file of the codec, strips the comments and the string literals, and
-// fails on a word that allocates or on an include that could bring one in.
+// The codec allocates nothing - task p1-01's third acceptance criterion, as a test and not a
+// promise - and neither does the client above it (task p1-02: core/ has no heap, and a client
+// whose buffers are members is one a reader can size). It reads every file of both, strips the
+// comments and the string literals, and fails on a word that allocates or on an include that
+// could bring one in.
 //
 // A grep would do the same thing, but a grep lives in a script somebody has to keep running;
 // this runs with the rest of the host tests, names the file and the line, and fails the build
-// through them. The two directories are the codec's sources and its headers - `core/` keeps its
-// public headers under `include/core/`, so "under components/core/link/codec/" is both.
+// through them. Each part has two directories - its sources and its headers - because `core/`
+// keeps its public headers under `include/core/`.
 #include <doctest.h>
 
 #include <cstddef>
@@ -22,6 +24,11 @@ const char* const kCodecDirectories[] = {
     "components/core/include/core/link/codec",
 };
 
+const char* const kClientDirectories[] = {
+    "components/core/link/client",
+    "components/core/include/core/link/client",
+};
+
 // What a line may not contain once the comments and the literals are gone. Each is matched as a
 // whole word, so "renew" and "delete_me" would not be mistaken for one.
 const char* const kForbiddenWords[] = {
@@ -31,7 +38,7 @@ const char* const kForbiddenWords[] = {
 
 // What the codec may include: the two freestanding headers it needs, its own, and the one
 // interface the frame writer takes (a clock, for §2's idle 0x00).
-const char* const kAllowedIncludes[] = {
+const char* const kCodecIncludes[] = {
     "cstddef",
     "cstdint",
     "interfaces/clock.h",
@@ -44,6 +51,28 @@ const char* const kAllowedIncludes[] = {
     "core/link/codec/view.h",
     "core/link/codec/wire.h",
     "core/link/codec/writer.h",
+};
+
+// What the client may include: the codec's public headers, the four interfaces it is written
+// against, the board object that owns its two pins, its own headers, and the version string it
+// puts in a HELLO. Nothing of ESP-IDF, nothing of the standard library but the two freestanding
+// headers (tools/cmake/no_idf_include.cmake checks the first half of that for all of core/).
+const char* const kClientIncludes[] = {
+    "cstddef",
+    "cstdint",
+    "core/board/radio_pins.h",
+    "core/link/client/client.h",
+    "core/link/client/port.h",
+    "core/link/client/words.h",
+    "core/link/codec/frame.h",
+    "core/link/codec/messages.h",
+    "core/link/codec/packet.h",
+    "core/link/codec/view.h",
+    "core/link/codec/wire.h",
+    "core/version.h",
+    "interfaces/byte_stream.h",
+    "interfaces/clock.h",
+    "interfaces/wall_clock.h",
 };
 
 bool isWordByte(char c) {
@@ -92,10 +121,10 @@ std::string codeOnly(const std::string& line, bool* in_block_comment) {
   return out;
 }
 
-std::vector<std::string> codecFiles() {
+std::vector<std::string> filesUnder(const char* const* directories, std::size_t count) {
   std::vector<std::string> files;
-  for (const char* directory : kCodecDirectories) {
-    const std::filesystem::path path = std::filesystem::path(TWINOAK_REPO_ROOT) / directory;
+  for (std::size_t i = 0; i < count; ++i) {
+    const std::filesystem::path path = std::filesystem::path(TWINOAK_REPO_ROOT) / directories[i];
     REQUIRE_MESSAGE(std::filesystem::is_directory(path), "no such directory: " << path.string());
     for (const auto& entry : std::filesystem::directory_iterator(path)) {
       if (entry.is_regular_file()) {
@@ -123,12 +152,13 @@ std::string includedBy(const std::string& code) {
   return code.substr(open + 1, end - open - 1);
 }
 
-}  // namespace
-
-TEST_CASE("nothing under components/core/link/codec/ allocates") {
-  const std::vector<std::string> files = codecFiles();
-  // A guard on the test: a path that stopped matching anything would pass by doing nothing.
-  CHECK(files.size() >= 10);
+// One part of core/link/: every file of it read, every line checked. `what` names the part in the
+// failure message, `least_files` and `least_lines` are the guards on the test itself - a path that
+// stopped matching anything, or a file read as empty, would otherwise pass by doing nothing.
+void checkNoAllocation(const std::string& what, const std::vector<std::string>& files,
+                       const char* const* allowed_includes, std::size_t allowed_count,
+                       std::size_t least_files, std::size_t least_lines) {
+  CHECK_MESSAGE(files.size() >= least_files, what);
 
   std::size_t lines = 0;
   for (const std::string& file : files) {
@@ -161,12 +191,30 @@ TEST_CASE("nothing under components/core/link/codec/ allocates") {
         continue;
       }
       bool allowed = false;
-      for (const char* candidate : kAllowedIncludes) {
-        allowed = allowed || included == candidate;
+      for (std::size_t i = 0; i < allowed_count; ++i) {
+        allowed = allowed || included == allowed_includes[i];
       }
       CHECK_MESSAGE(allowed, file << ":" << number << " includes <" << included
-                                 << ">, which is not one of the headers the codec may use");
+                                 << ">, which is not one of the headers " << what << " may use");
     }
   }
-  CHECK(lines >= 500);  // the codec is about a thousand lines; a file read as empty would pass
+  CHECK_MESSAGE(lines >= least_lines, what);
+}
+
+}  // namespace
+
+TEST_CASE("nothing under components/core/link/codec/ allocates") {
+  // The codec is about a thousand lines in thirteen files (task p1-01).
+  checkNoAllocation("the codec",
+                    filesUnder(kCodecDirectories,
+                               sizeof kCodecDirectories / sizeof kCodecDirectories[0]),
+                    kCodecIncludes, sizeof kCodecIncludes / sizeof kCodecIncludes[0], 10, 500);
+}
+
+TEST_CASE("nothing under components/core/link/client/ allocates") {
+  // The client is six files: the port, the client, the words and their headers (task p1-02).
+  checkNoAllocation("the client",
+                    filesUnder(kClientDirectories,
+                               sizeof kClientDirectories / sizeof kClientDirectories[0]),
+                    kClientIncludes, sizeof kClientIncludes / sizeof kClientIncludes[0], 6, 500);
 }

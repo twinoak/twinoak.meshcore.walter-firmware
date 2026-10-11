@@ -85,8 +85,10 @@ TEST_CASE("a bad number is refused with the text that was given") {
 TEST_CASE("unknown commands and subcommands are named in the refusal") {
   CHECK(errorOf("foo") == "unknown command (try 'help'): foo");
   CHECK(errorOf("Status") == "unknown command (try 'help'): Status");
-  CHECK(errorOf("rak") == "rak needs a subcommand: rak reset, rak kill <seconds>");
-  CHECK(errorOf("rak dance") == "unknown rak subcommand (reset, kill <seconds>): dance");
+  // The list of subcommands outgrew a 96-character refusal when the link arrived (task p1-02):
+  // `help` lists them, and the refusal names what was wrong and points at it.
+  CHECK(errorOf("rak") == "rak needs a subcommand (try 'help')");
+  CHECK(errorOf("rak dance") == "unknown rak subcommand (try 'help'): dance");
   CHECK(errorOf("rak reset now") == "rak reset takes no argument");
   CHECK(errorOf("help me") == "help takes no argument");
   CHECK(errorOf("status please") == "status takes no argument");
@@ -107,4 +109,55 @@ TEST_CASE("a refusal fits one line") {
   CHECK(!p.ok);
   CHECK(std::string(p.error).size() < sizeof p.error);
   CHECK(std::string(p.error).find('\n') == std::string::npos);
+}
+
+// ---------------------------------------------------------------------------- the link (p1-02)
+
+TEST_CASE("the link's subcommands parse, and none of them takes an argument but two") {
+  CHECK(verbOf("rak hello") == Verb::kRakHello);
+  CHECK(verbOf("rak ping") == Verb::kRakPing);
+  CHECK(verbOf("rak status") == Verb::kRakStatus);
+  CHECK(verbOf("rak id") == Verb::kRakId);
+  CHECK(verbOf("rak power") == Verb::kRakPower);
+  CHECK(verbOf("rak env") == Verb::kRakEnv);
+  CHECK(verbOf("rak events") == Verb::kRakEvents);
+  CHECK(verbOf("rak text") == Verb::kRakText);
+  CHECK(verbOf("  rak   hello  \r\n") == Verb::kRakHello);
+  for (const char* line : {"rak hello now", "rak ping 1", "rak status x", "rak id 2",
+                           "rak power on", "rak env 3", "rak events all", "rak text 4"}) {
+    const Parsed p = parseLine(line);
+    CHECK_MESSAGE(!p.ok, line);
+    CHECK_MESSAGE(std::string(p.error).find("takes no argument") != std::string::npos, p.error);
+  }
+}
+
+TEST_CASE("rak time and rak time set <epoch>") {
+  CHECK(verbOf("rak time") == Verb::kRakTime);
+  CHECK(verbOf("rak time set 1791720000") == Verb::kRakTimeSet);
+  CHECK(parseLine("rak time set 1791720000").command.epoch == 1791720000u);
+  // §5.4's `epoch` is a u32, so ten digits are allowed and the range is the type's.
+  CHECK(parseLine("rak time set 4294967295").command.epoch == 4294967295u);
+  CHECK(errorOf("rak time set 4294967296") == "rak time set: not a unix epoch in seconds: 4294967296");
+  CHECK(errorOf("rak time set 99999999999") == "rak time set: not a unix epoch in seconds: 99999999999");
+  CHECK(errorOf("rak time set -1") == "rak time set: not a unix epoch in seconds: -1");
+  CHECK(errorOf("rak time set now") == "rak time set: not a unix epoch in seconds: now");
+  CHECK(errorOf("rak time set") == "rak time set needs a unix epoch: rak time set <epoch>");
+  CHECK(errorOf("rak time set 1 2") == "rak time set takes one number: rak time set <epoch>");
+  CHECK(errorOf("rak time get") == "rak time: unknown word (rak time, rak time set <epoch>): get");
+}
+
+TEST_CASE("rak cli takes the rest of the line verbatim, up to §5.7's 160 bytes") {
+  const Parsed one = parseLine("rak cli get radio");
+  REQUIRE(one.ok);
+  CHECK(one.command.verb == Verb::kRakCli);
+  CHECK(std::string(one.command.text) == "get radio");
+  CHECK(one.command.text_size == 9);
+  // Internal spacing is the radio's business, not the parser's.
+  CHECK(std::string(parseLine("rak cli  set  name   TwinOak Risskov ").command.text) ==
+        "set  name   TwinOak Risskov");
+  CHECK(errorOf("rak cli") == "rak cli needs a line: rak cli <line>");
+  const std::string longest = "rak cli " + std::string(core::console::kMaxCliLine, 'x');
+  CHECK(parseLine(longest.c_str()).command.text_size == core::console::kMaxCliLine);
+  const std::string over = "rak cli " + std::string(core::console::kMaxCliLine + 1, 'x');
+  CHECK(errorOf(over.c_str()) == "rak cli: the line is 1 to 160 bytes");
 }
