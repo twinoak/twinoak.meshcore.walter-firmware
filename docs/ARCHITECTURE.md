@@ -1,0 +1,261 @@
+# How this firmware is put together
+
+The design the task piles build, written before a line of this repository compiled. Numbers that
+come from a datasheet or a specification are marked *(verify)*: the task that first uses one reads
+the document, cites it in the code, and corrects this file if it was wrong.
+
+## 1. Layout
+
+```
+CMakeLists.txt, sdkconfig.defaults, partitions.csv, idf_component.yml + lock
+main/                   app_main: construct the real things, hand them to the core, run
+components/
+  core/                 everything that is logic. No ESP-IDF include, no FreeRTOS, no heap after start-up.
+    link/               the box link: codec, client, events, telling a repeater from a scanner
+    swd/                the debug port: wire protocol, DP, MEM-AP
+    nrf52/              identification, access-port protection, the flash controller, core control
+    flasher/            an image and a region in; erases, writes, verify out
+    image/              manifest, signature, descriptor, the image store's records
+    update/             the radio's update and its journal; the Walter's own update policy
+    supervisor/         the radio's heartbeat and the ladder of remedies
+    power/              what the battery allows; the check-in interval
+    console/            the line parser and the commands' text
+    cycle/              one wake, start to finish, against interfaces
+  hal/                  the interfaces core/ needs: pins, a byte stream, a clock, flash regions,
+                        a key-value store, an uplink, a sleeper
+  platform/             ESP-IDF implementations of hal/ - thin
+  modem/                the Walter's LTE modem behind hal/'s uplink
+host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
+  sim/                  the simulated SWD target (wire level and nRF52), the simulated flash, the scripted RAK
+tools/                  verify.ps1, release tooling, bench tools
+spec/                   a copy of the system specification and its fixtures - never edited here
+docs/                   this file, bench.md, console.md, field.md
+tasks/                  the piles
+```
+
+The rule the layout enforces: **if it can go wrong in the field, it is in `core/` and has a host
+test that makes it go wrong.** `platform/` is the part no session can test; it is kept so thin that
+reading it is the test.
+
+## 2. The board: seven pins and their rules
+
+From the hardware repository's `INTERCONNECT.md` (frozen) and `BENCH-BREADBOARD.md`:
+
+| Net | Walter GPIO | Direction | Rule |
+|---|---:|---|---|
+| `LORA_nRESET` | 1 | open-drain | **output-low to assert, input to release. Never output-high.** The nRF52 has its own pull-up |
+| `LORA_SWDCLK` | 2 | out | idle low; must not toggle while nRESET is held low (reserved for the dual adapter's selector) |
+| `LORA_SWDIO` | 4 | bidirectional | input unless a transfer is driving it |
+| `LORA_PWR_KILL` | 5 | out | **high = the LoRa 3.3 V rail is off.** Floating or low = on. Default at every boot and in sleep: not driving |
+| spare | 6 | — | input, unused |
+| `WALTER_TX` → radio RX | 7 | out | UART idle high while the radio is powered; input (not driving) when it is not |
+| `WALTER_RX` ← radio TX | 8 | in | an RTC-capable pin: a start bit can wake the Walter from deep sleep |
+
+Each line has 470 Ω in series and about 2.2 nF to ground (two bulkhead filters): a time constant
+near 1 µs.
+
+**Rules, each enforced in one place (`core`'s board logic) and tested against fake pins:**
+
+1. **Safe state.** At boot, before anything else, and whenever this firmware has nothing to say to
+   the radio: nRESET input, SWDCLK and SWDIO inputs, KILL not driving, TX high if the radio is
+   believed powered and input if not.
+2. **Reset is a pulse of output-low** of 100 ms, then input. **Two resets are at least one second
+   apart** — two inside half a second put the Adafruit bootloader into UF2 mode, where it stays.
+   The spacing is enforced across deep sleep too (the time of the last reset is kept).
+3. **Before the kill line goes high, every other radio-facing pin is an input**, TX included. The
+   series resistors limit back-feed into a dead radio to a few milliamps; the firmware's job is to
+   make it zero. After the rail is back, wait for it to settle before driving anything.
+4. **A kill is bounded**: at least long enough for the rail to collapse, at most a configured
+   maximum; the firmware cannot leave the radio off by crashing — the line floats to *on* when the
+   Walter resets, by hardware.
+5. **Across deep sleep the pads are held** in the safe state, so that waking does not glitch the
+   reset line. (A *power-up* of the ESP32-S3 does glitch GPIO1–14 low for about 60 µs, and that
+   reaches nRESET: a Walter power cycle reboots the radio. That is expected, documented in the
+   hardware repository, and the supervisor does not mistake it for a fault.)
+
+## 3. The link, from this end
+
+`spec/LINK-PROTOCOL.md`. The client owns the UART (115200 8N1 on GPIO7/8) and gives the rest of
+the firmware typed calls: *hello*, *ping*, *status*, *set time*, *run this console line*, *read
+power*, and the mesh client's calls. Underneath: one request at a time, a response awaited for one
+second, the same frame sent again up to twice more, then "the link is down" — reported, not acted
+on; acting is the supervisor's.
+
+It keeps the radio's `boot_id` and treats a change as "everything I knew about that radio's state
+is gone". It sets the radio's clock after every restart it sees, before anything else.
+
+If `HELLO` gets no answer but lines beginning with `{` arrive, the radio is running NoiseScope: the
+client says so and switches to passing text lines through. It never mixes the two.
+
+## 4. SWD
+
+Three layers, each tested against the layer below it in simulation:
+
+**The wire** *(verify against Arm's ADIv5 specification)*. Bit-banged, clocked entirely by us, so
+only the minimum half-period matters, not jitter. **Start at 100 kHz; the filtered lines are
+predicted to carry about 300 kHz and no more**; the speed is a setting. Line reset (at least 50
+clocks with SWDIO high), the JTAG-to-SWD sequence `0xE79E`, another line reset, idle cycles. A
+transfer: eight request bits (start, APnDP, RnW, two address bits, parity, stop, park), a
+turnaround, three ACK bits (OK, WAIT, FAULT), then 32 data bits and a parity bit in the direction
+of the transfer, with turnarounds where the bus changes hands. SWDIO's turnaround is the tight
+spot through the filters: sample late.
+
+**The debug port and the memory access port.** `DPIDR` (the nRF52840's reads `0x2BA01477`),
+power-up through `CTRL/STAT`, `SELECT`, `RDBUFF`; WAIT retried a bounded number of times; a FAULT
+cleared through `ABORT` and reported; a parity error treated as a failed transfer. Memory access
+through AP 0: `CSW` for 32-bit accesses with auto-increment, `TAR`, `DRW`; reads are posted, so the
+value comes one transfer later; the address auto-increment wraps inside a 1 KB block, so `TAR` is
+rewritten at every boundary.
+
+**The nRF52** *(verify against Nordic's product specification)*:
+
+- identification from `FICR` (`0x10000000`): part, variant, flash size, page size, device id;
+- **access-port protection** read from the control access port (AP 1, `APPROTECTSTATUS`). A
+  protected chip answers on the debug port and refuses memory access. **The firmware detects it,
+  says so, and stops.** Opening it needs `ERASEALL`, which destroys the bootloader, the SoftDevice,
+  the node's identity and UICR; that is a bench procedure for a person with a debug probe (hardware
+  repository, `BENCH-BREADBOARD.md` caveat 6), once per module. This firmware has no code for it;
+- the core: halt, reset-and-halt, run, system reset — through `DHCSR`, `DEMCR`, `AIRCR`;
+- the flash controller (`NVMC`, `0x4001E000`): `CONFIG` to enable erase or write, `ERASEPAGE`,
+  `READY`; 4096-byte pages on the nRF52840. `ERASEALL` and `ERASEUICR` exist in the header as
+  named constants that nothing calls.
+
+**The simulator** (`host_test/sim/`) is the other half of this section: a wire-level SWD target
+that decodes our bit stream — so a wrong parity bit or a missing turnaround fails a test — with a
+debug port, two access ports and behind them a memory map: flash that needs an erase before a
+write and can only clear bits, an `NVMC` with its ready flag and enable states, `FICR`, `UICR`, the
+debug registers. It can be told to answer WAIT, to FAULT, to lose power at the Nth write, to be
+protected. Everything in this section and the next is developed against it.
+
+## 5. The flasher
+
+Input: an image (a raw binary and its load address) and the region it may occupy. The region is
+**this firmware's own table, per board** — for `rak4630-single`, from the end of the SoftDevice to
+the start of the file system — and the manifest's `app_region` must agree with it, not replace it.
+
+1. Identify the chip; refuse anything but the expected part. Refuse a protected chip.
+2. Check the image lies inside the region. Refuse otherwise — before anything is erased.
+3. Halt the core.
+4. Erase the image's first page — the vector table — first, and write it last: the bootloader will
+   not start an application whose first word is blank, so an interrupted flash leaves the radio in
+   its bootloader, never in half an application.
+5. For each other page the image covers: skip it if it already holds the image's bytes (a resumed
+   or repeated flash converges quickly); otherwise erase it and write it. Read everything back and
+   compare.
+6. **The bootloader's settings.** The Adafruit bootloader records the size and CRC of the
+   application it last installed and refuses to start one that does not match — but treats an
+   erased settings page as "installed by a debugger" and checks the vector table instead. The
+   flasher leaves that page in a state the bootloader accepts. Which state, and the page's address,
+   are read from the bootloader's source at the version the modules ship with, by the task that
+   writes this step.
+7. Reset and release the pins to the safe state.
+
+It **never** erases a page the image does not cover, never touches the file system (the node's
+identity and settings), the SoftDevice, the bootloader's code or UICR. A power loss at any point
+leaves a radio with a broken application and an intact bootloader and identity; running the same
+flash again finishes it.
+
+## 6. Images
+
+**The store**: a data partition holding, per radio slot, a **golden** image (the last one that
+passed its health check), a **candidate** (verified, not yet proven) and one **scanner** image.
+Each is a header — what it is, its size and SHA-256, a copy of its descriptor, its state — and the
+bytes. A record becomes valid by a final small write after everything else is in place, so a power
+loss leaves the previous valid record or none, never half of one.
+
+**What may enter the store**: only what passed all six checks of `spec/FIRMWARE-MANIFEST.md` §5 —
+the signature by a key compiled into this build, the manifest, the right image for this radio, the
+file's hash, the one descriptor inside it, and the region. The trusted keys are a small table
+(room for three); a build with none accepts nothing.
+
+## 7. Updates
+
+**The radio's** (`spec/SYSTEM.md` §6): preconditions (battery, link, clock, nothing else in
+progress) → flash the candidate → reset → health check (`HELLO` within a window; version, role and
+board as the descriptor said; the link steady for a while; the clock set; the radio initialised)
+→ the candidate becomes golden — or the golden image is flashed back and the candidate's hash is
+remembered as bad and never tried again. **The journal is written before each step**, so a Walter
+that resets mid-update knows where it was: it resumes a flash, repeats a health check, or rolls
+back. It never assumes.
+
+**Its own**: ESP-IDF's two application slots with rollback. A new image is marked valid only after
+it has booted, exchanged `HELLO` with the radio, and reached the server within a window; otherwise
+the bootloader returns to the previous one at the next reset — which this firmware asks for.
+
+**Never both in one wake** (S-7). When the link's major version changes, the Walter goes first and
+speaks both majors until the radio has followed; the order is enforced here, not left to whoever
+starts the update.
+
+## 8. The supervisor
+
+The radio is healthy when it answers `PING`. When it does not, a ladder, each rung tried only
+after the one before failed, each with a wait and a cap:
+
+1. ask again (the link's own retries, then again after a pause);
+2. a reset pulse;
+3. a power cycle through the kill line;
+4. flash the golden image, then 2;
+5. stop, record, report at the next check-in. A radio that does not answer after the golden image
+   is back is a hardware fault and is left alone.
+
+Caps are per day and survive a restart of the Walter. A radio that restarts by itself over and
+over (many `EV_BOOT`s) is a boot loop and takes the same ladder from rung 3. A radio whose restart
+followed the Walter's own power-up is not a fault. Before any rung that cuts power or flashes: the
+battery must allow it.
+
+## 9. The uplink
+
+The modem (`walter-modem`) behind an interface: power up, check the SIM, attach on LTE-M, read the
+network's time, signal quality; power-saving modes; a taxonomy of failures (no SIM, not
+registered, no data, no route) with a backoff for each. Every modem call has a timeout.
+
+HTTPS through the modem's own HTTP and TLS, with the server's chain **verified** against a root
+loaded into the modem — never "validate nothing". Requests are small; a download is in ranges,
+resumable, hashed as it arrives, written straight to the image store.
+
+## 10. One wake
+
+The Walter sleeps deeply and wakes for one of three reasons: its timer, a start bit from the radio
+(attention), or USB being plugged in (a person; stay awake). One wake is one pass of a fixed
+sequence, each step bounded in time and energy:
+
+```
+why did I wake → is the radio alive (supervisor) → set its clock → read power
+     → may I use the modem (battery) → attach → talk to the backend → act on what it said
+     → at most one update step → tell the radio I am going → sleep until the next time
+```
+
+How long until the next time comes from the battery: a table from state of charge and its trend to
+an interval, with hysteresis. Readings taken while there was no uplink are kept in a bounded ring
+and sent later.
+
+**The backend is an interface.** In these piles its implementation does nothing. The MeshMaster
+agent goes behind it when the server side is decided (`spec/proposals/01` and `03`).
+
+## 11. Flash layout
+
+16 MB. The table is phase 0's to write; its constraints:
+
+- two application slots with room to grow (3 MB each);
+- **settings (NVS) and the image store above the application slots**, so that a factory image,
+  which ends where the application ends, cannot reach them — the agent firmware learned this the
+  expensive way;
+- the image store sized for two radios (golden + candidate + scanner each, a radio image being at
+  most the size of its application region);
+- a journal that is not the settings store (its own wear, its own failure modes);
+- whatever the modem library needs for a modem-firmware update;
+- a core-dump partition.
+
+## 12. What is tested where
+
+| | Host tests | Build only | Bench |
+|---|---|---|---|
+| pin rules | ✔ fake pins | GPIO calls, sleep holds | a scope on nRESET and KILL |
+| link | ✔ fixtures, scripted radio | UART driver | through the bulkheads |
+| SWD wire, DP, AP | ✔ wire-level simulator | bit-bang timing | IDCODE, the speed ceiling |
+| nRF52, flasher | ✔ simulated chip, power loss | — | a real flash, the bootloader starts it |
+| manifest, signature, descriptor | ✔ spec fixtures, RFC vectors | — | — |
+| image store, journal | ✔ simulated flash, power loss | partition access | — |
+| updates, supervisor | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
+| modem, HTTPS | policy against a fake | every modem call | a SIM, a tower, a server |
+| duty cycle | ✔ the policy | sleep entry and wake | current asleep; wake by UART |
