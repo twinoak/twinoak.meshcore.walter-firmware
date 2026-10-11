@@ -4,8 +4,14 @@
 // against the simulated chip with the power cut at every flash operation (host_test/core/flasher/).
 // No ESP-IDF include, no heap, every loop bounded by the image's size or a constant.
 //
+// Every call takes the slot it is for (task p1-06), default 0 - the only radio of a unit today
+// (spec/SYSTEM.md S-11). The slot is selected and held for the whole of the call, before a pin
+// moves, so the wires cannot be steered to the other radio of a dual adapter in the middle of a
+// flash; kSelect is the step that failed when they could not be.
+//
 // The steps of flash(), each a name in the result when it fails (the comments in flasher.cpp say
 // what each does and why in that order):
+//   0  kSelect                                              - the slot: selected and held
 //   1  kPins, kConnect, kProtected, kIdentify, kSoftDevice   - the lines, the port, the chip
 //   2  kImage, kScan                                        - the image checked and every page
 //                                                             classified; nothing written yet
@@ -37,6 +43,7 @@ namespace flasher {
 
 enum class Step : std::uint8_t {
   kNone,
+  kSelect,
   kPins,
   kConnect,
   kProtected,
@@ -117,11 +124,12 @@ constexpr std::uint32_t kSoftDeviceMagic = 0x51B1E5DB;
 
 class Flasher {
  public:
-  Flasher(board::RadioPins& pins, interfaces::Clock& clock);
+  Flasher(board::RadioPins& pins, interfaces::Clock& clock, board::SlotLock& slots);
 
-  Result flash(const Image& image, const BoardProfile& profile, ProgressSink* progress);
-  Result verify(const Image& image, const BoardProfile& profile);
-  Result flashTest(const BoardProfile& profile, ProgressSink* progress);
+  Result flash(const Image& image, const BoardProfile& profile, ProgressSink* progress,
+               board::Slot slot = {});
+  Result verify(const Image& image, const BoardProfile& profile, board::Slot slot = {});
+  Result flashTest(const BoardProfile& profile, ProgressSink* progress, board::Slot slot = {});
 
   static constexpr std::uint32_t kTestPages = 2;
   static constexpr std::uint32_t kMaxPages = nrf52::flash::kPagesNrf52840;
@@ -134,6 +142,8 @@ class Flasher {
   enum class PageClass : std::uint8_t { kEqual, kInPlace, kErase };
 
   struct Plan {
+    board::Slot slot{};
+    bool slot_held = false;  // the hold begin() took and finish() gives back (task p1-06)
     const BoardProfile* profile = nullptr;
     const Image* image = nullptr;
     std::uint32_t size = 0;    // the image's bytes
@@ -147,7 +157,7 @@ class Flasher {
     PageClass klass[kMaxPages] = {};
   };
 
-  Result begin(const Image& image, const BoardProfile& profile, Plan* plan);  // steps 1 and 2 (kImage)
+  Result begin(const Image& image, const BoardProfile& profile, board::Slot slot, Plan* plan);  // steps 1 and 2 (kImage)
   Result scan(Plan* plan, ProgressSink* progress);
   Result programPages(Plan* plan, ProgressSink* progress);
   Result programPage(Plan* plan, std::uint32_t page_addr, Step step);
@@ -168,6 +178,7 @@ class Flasher {
 
   board::RadioPins& pins_;
   interfaces::Clock& clock_;
+  board::SlotLock& slots_;
   swd::Wire wire_;
   swd::Dp dp_;
   nrf52::Nrf52 nrf_;

@@ -209,3 +209,38 @@ TEST_CASE("rak cli takes the rest of the line verbatim, up to §5.7's 160 bytes"
   const std::string over = "rak cli " + std::string(core::console::kMaxCliLine + 1, 'x');
   CHECK(errorOf(over.c_str()) == "rak cli: the line is 1 to 160 bytes");
 }
+
+// ------------------------------------------------------------------ the slot (task p1-06)
+
+TEST_CASE("every rak command takes an optional slot after the word rak, @0 without one") {
+  CHECK(parseLine("rak hello").command.slot == 0);
+  CHECK(parseLine("rak @0 hello").command.slot == 0);
+  CHECK(parseLine("rak @1 hello").command.slot == 1);
+  CHECK(verbOf("rak @1 hello") == Verb::kRakHello);
+  CHECK(verbOf("rak @1 reset") == Verb::kRakReset);
+  CHECK(verbOf("rak @1 swd id") == Verb::kRakSwdId);
+  CHECK(verbOf("rak @1 flash-test") == Verb::kRakFlashTest);
+  CHECK(parseLine("rak @1 kill 5").command.seconds == 5);
+  CHECK(parseLine("rak @1 kill 5").command.slot == 1);
+  CHECK(parseLine("rak @1 swd mem 0x10000100 4").command.address == 0x10000100);
+  CHECK(parseLine("rak @1 swd mem 0x10000100 4").command.words == 4);
+  CHECK(parseLine("rak @1 time set 1760000000").command.epoch == 1760000000);
+  // The slot is in front, not behind, so `rak cli` can still take the rest of the line verbatim.
+  CHECK(std::string(parseLine("rak @1 cli get radio").command.text) == "get radio");
+  CHECK(std::string(parseLine("rak cli get radio @1").command.text) == "get radio @1");
+  CHECK(parseLine("rak cli get radio @1").command.slot == 0);
+  // Spacing is a line's own business here too.
+  CHECK(parseLine("rak   @1   ping").command.slot == 1);
+}
+
+TEST_CASE("a slot that is not a position of any adapter is refused, and so is a slot alone") {
+  CHECK(errorOf("rak @2 hello") == "rak: not a slot (@0 or @1): @2");
+  CHECK(errorOf("rak @9 hello") == "rak: not a slot (@0 or @1): @9");
+  CHECK(errorOf("rak @ hello") == "rak: not a slot (@0 or @1): @");
+  CHECK(errorOf("rak @a hello") == "rak: not a slot (@0 or @1): @a");
+  CHECK(errorOf("rak @-1 hello") == "rak: not a slot (@0 or @1): @-1");
+  CHECK(errorOf("rak @1") == "rak needs a subcommand (try 'help')");
+  CHECK(errorOf("rak") == "rak needs a subcommand (try 'help')");
+  // An @ anywhere but in front of the subcommand is the subcommand's own text.
+  CHECK(errorOf("rak hello @1") == "rak hello takes no argument");
+}

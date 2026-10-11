@@ -85,9 +85,31 @@ check_pin_ownership() {
   echo "the seven radio pins are named only in components/core/board/"
 }
 
+# The dual adapter's selector is switched off (task p1-06, docs/ARCHITECTURE.md §2 rule 6): the
+# firmware constructs a SingleTarget and nothing else, so the sequence that steers a dual
+# adapter's flip-flops - the one sanctioned "SWDCLK toggles while nRESET is asserted" - cannot
+# reach the wires of a unit with one radio. DualTarget and selectorProgram() are compiled and
+# tested on the host; they are named here only where they are defined. A grep, not a promise;
+# host_test/core/board/test_slot_single.cpp is the other half.
+check_selector_off() {
+  local hits
+  # Comment lines are dropped: main/main.cpp says in words that it builds a SingleTarget and not
+  # this, and saying so must not be what trips the check.
+  hits=$(grep -rnE '\b(DualTarget|selectorProgram)\b' components main \
+           --include='*.cpp' --include='*.h' \
+           | grep -vE ':[[:space:]]*(//|\*)' \
+           | grep -v -E '^components/core/(board/(dual_target|radio_pins)\.cpp|include/core/board/(dual_target|radio_pins)\.h)' || true)
+  if [ -n "$hits" ]; then
+    echo "the dual adapter's selector is named outside core/board/dual_target and radio_pins:"
+    echo "$hits"; return 1
+  fi
+  echo "the dual adapter's selector is compiled and constructed nowhere (SingleTarget only)"
+}
+
 step_host_tests() {
   local dir=$BUILD/host
   check_pin_ownership || return 1
+  check_selector_off || return 1
   cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
   cmake --build "$dir" &&

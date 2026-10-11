@@ -351,3 +351,23 @@ radio, and the simulator can only show the documents were followed, not that the
   written `APPROTECT.DISABLE`; whether the bootloader alone does that is what this shows. If it
   says *protected*, the module cannot be re-flashed by the Walter after an interruption without a
   power cycle and a bootloader that opens the port — note it, loudly.
+
+## 6. The slot
+
+Task p1-06 adds **no bench step**, and that is its result. A unit has one radio, slot 0, and every
+`rak …` command means that slot without saying so; the dual adapter it makes room for does not
+exist, and the firmware constructs no object that can steer one (`ARCHITECTURE.md` §2 rule 6). Two
+lines are worth typing once while the rig is up, because they cost nothing:
+
+- [ ] **`rak @0 hello` prints what `rak hello` prints, to the byte**, and `rak @1 hello` answers
+  *error: slot 1: this adapter has 1 radio, so slot 0 is the only one* — with no frame on the
+  UART and nothing on the seven pins. `rak @2 hello` is refused by the parser instead.
+
+- [ ] **Every other item of §§1–5 behaves as it reads.** Nothing in this task changes a pin, a
+  timing or a command's output except `rak flash-test`, whose first line now begins `flash-test:
+  slot 0, rak4630-single, …`.
+
+When a dual adapter is built, this is where its bring-up goes: the selector programmed with a
+scope on SWDCLK and nRESET (a window of 100–500 µs, two edges, and *no* reset at either module's
+pin), the power-on default read back as module A, and `rak @1 hello` answering from the second
+radio. None of it is verifiable today.

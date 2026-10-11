@@ -7,6 +7,7 @@
 #include <string>
 
 #include "core/board/radio_pins.h"
+#include "core/board/slot.h"
 #include "core/console/console.h"
 #include "core/console/parser.h"
 #include "core/flasher/flasher.h"
@@ -48,9 +49,12 @@ struct Rig {
   Health health{retained, clock};
   sim::ScriptedRadio rak{clock};
   fakes::FakeWallClock wall;
+  // The slot seam (task p1-06): a single-radio unit, as the firmware builds it.
+  core::board::SingleTarget single;
+  core::board::SlotLock slots{single};
   core::link::client::LinkPort port{radio, rak};
-  core::link::client::Client link{port, clock, wall};
-  Console console{out, radio, health, clock, restart, link};
+  core::link::client::Client link{port, clock, wall, slots};
+  Console console{out, radio, health, clock, restart, link, slots};
 
   Rig() {
     chip.attachTo(target);
@@ -96,7 +100,7 @@ bool contains(const std::string& text, const char* needle) { return text.find(ne
 TEST_CASE("rak flash-test on blank top pages: written, verified, erased again, the radio reset, nothing else touched") {
   Rig rig;
   const std::string text = rig.run("rak flash-test");
-  CHECK(contains(text, "flash-test: rak4630-single, two pages at 0x000eb000..0x000ed000"));
+  CHECK(contains(text, "flash-test: slot 0, rak4630-single, two pages at 0x000eb000..0x000ed000"));
   CHECK(contains(text, "reading the pages the image covers: page 1/2"));
   CHECK(contains(text, "writing and verifying the first page: page 2/2"));
   CHECK(contains(text, "reading the whole image back: page 2/2"));

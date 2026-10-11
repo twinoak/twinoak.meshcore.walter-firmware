@@ -12,6 +12,7 @@
 #include <cstddef>
 
 #include "core/board/radio_pins.h"
+#include "core/board/slot.h"
 #include "core/console/parser.h"
 #include "core/flasher/flasher.h"
 #include "core/health/health.h"
@@ -26,7 +27,8 @@ namespace console {
 class Console {
  public:
   Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
-          interfaces::Clock& clock, interfaces::Restart& restart, link::client::Client& radio);
+          interfaces::Clock& clock, interfaces::Restart& restart, link::client::Client& radio,
+          board::SlotLock& slots);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   void begin();
@@ -38,6 +40,13 @@ class Console {
   void runLine(const char* line);
 
  private:
+  // The slot a `rak ...` line is about (task p1-06), resolved once in runLine: an optional `@N`
+  // after the word `rak`, `@0` without one. slotOk() is where a slot this adapter does not have
+  // becomes one line of refusal; the selection itself is taken by whoever faces the radio - the
+  // link client around each exchange, a SlotHold around a pin or an SWD command, the flasher
+  // inside its own call.
+  bool slotOk(board::Slot slot);
+
   void prompt();
   void print(const char* text);
   void printf(const char* format, ...) __attribute__((format(printf, 2, 3)));
@@ -84,6 +93,8 @@ class Console {
   interfaces::Clock& clock_;
   interfaces::Restart& restart_;
   link::client::Client& radio_;
+  board::SlotLock& slots_;
+  board::Slot slot_{};  // the slot the line being run is about
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.
   flasher::Flasher flasher_;

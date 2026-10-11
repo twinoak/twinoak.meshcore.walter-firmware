@@ -26,13 +26,54 @@ const char* modeName(interfaces::PinMode mode) {
   return "?";
 }
 
+// Which lines are about a radio, and therefore about a slot (task p1-06). No `default`: a new
+// verb has to be put on one side or the other, and -Wswitch - a warning, and in our own
+// components an error - is what asks.
+bool isRadioVerb(Verb verb) {
+  switch (verb) {
+    case Verb::kEmpty:
+    case Verb::kHelp:
+    case Verb::kStatus:
+    case Verb::kReboots:
+    case Verb::kPins:
+    case Verb::kReboot:
+      return false;
+    case Verb::kRakReset:
+    case Verb::kRakKill:
+    case Verb::kRakHello:
+    case Verb::kRakPing:
+    case Verb::kRakStatus:
+    case Verb::kRakId:
+    case Verb::kRakTime:
+    case Verb::kRakTimeSet:
+    case Verb::kRakPower:
+    case Verb::kRakEnv:
+    case Verb::kRakCli:
+    case Verb::kRakEvents:
+    case Verb::kRakText:
+    case Verb::kRakSwdConnect:
+    case Verb::kRakSwdId:
+    case Verb::kRakSwdMem:
+    case Verb::kRakFlashTest:
+      return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
                  interfaces::Clock& clock, interfaces::Restart& restart,
-                 link::client::Client& radio)
+                 link::client::Client& radio, board::SlotLock& slots)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
-      flasher_(pins, clock) {}
+      slots_(slots), flasher_(pins, clock, slots) {}
+
+bool Console::slotOk(board::Slot slot) {
+  if (slots_.exists(slot)) return true;
+  printf("error: slot %u: this adapter has %u radio, so slot 0 is the only one\n",
+         static_cast<unsigned>(slot.index), static_cast<unsigned>(slots_.slots()));
+  return false;
+}
 
 void Console::print(const char* text) { out_.write(text, std::strlen(text)); }
 
@@ -111,6 +152,18 @@ void Console::runLine(const char* line) {
     printf("error: %s\n", p.error);
     return;
   }
+  // The slot, once, for the whole line (task p1-06): refused here when this adapter has no such
+  // radio, and handed to the link client so that the session the `rak ...` commands read and
+  // write is that radio's. Nothing is steered yet - the handlers below take the hold.
+  slot_ = board::Slot{p.command.slot};
+  if (isRadioVerb(p.command.verb)) {
+    if (!slotOk(slot_)) return;
+    if (!radio_.useSlot(slot_)) {
+      printf("error: slot %u: the link is in the middle of something on slot %u\n",
+             static_cast<unsigned>(slot_.index), static_cast<unsigned>(radio_.slot().index));
+      return;
+    }
+  }
   switch (p.command.verb) {
     case Verb::kEmpty: return;
     case Verb::kHelp: help(); return;
@@ -165,6 +218,9 @@ void Console::help() {
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
          static_cast<unsigned long>(pins_.timing().max_ms / 1000));
   print("  reboot              restart the Walter\n");
+  printf("every 'rak ...' takes an optional slot after the word rak - rak @1 hello - and @0\n"
+         "without one; this unit has %u radio and it is slot 0\n",
+         static_cast<unsigned>(slots_.slots()));
 }
 
 void Console::status() {
@@ -236,6 +292,11 @@ void Console::pins() {
 }
 
 void Console::rakReset() {
+  const board::SlotHold hold(slots_, slot_);
+  if (!hold.ok()) {
+    printf("error: rak reset: %s\n", board::describe(hold.result()));
+    return;
+  }
   const std::uint32_t wait = pins_.msUntilResetAllowed();
   if (wait > 0) printf("waiting %lu ms: two resets are a second apart\n", static_cast<unsigned long>(wait));
   const board::Outcome r = pins_.resetPulse();
@@ -249,6 +310,15 @@ void Console::rakReset() {
 }
 
 void Console::rakKill(std::uint32_t seconds) {
+  // The kill line cuts the whole rail, both radios of a dual adapter together
+  // (DUAL-RAK4630-FEASIBILITY.md §5: "You cannot power-cycle one module alone"). The hold is
+  // taken all the same, because releasing every pin and bringing it back is one operation and
+  // must not interleave with another slot's.
+  const board::SlotHold hold(slots_, slot_);
+  if (!hold.ok()) {
+    printf("error: rak kill: %s\n", board::describe(hold.result()));
+    return;
+  }
   // Bounded by the parser to nine digits; the product below cannot overflow a 64-bit value, and
   // RadioPins refuses anything over its maximum before touching a pin.
   const std::uint64_t ms = static_cast<std::uint64_t>(seconds) * 1000u;
@@ -566,6 +636,11 @@ void Console::rakText() {
 // Every exit path releases them: the wire and the port live on this stack frame and nothing
 // holds the pins after it returns.
 void Console::rakSwdConnect() {
+  const board::SlotHold hold(slots_, slot_);
+  if (!hold.ok()) {
+    printf("error: rak swd connect: %s\n", board::describe(hold.result()));
+    return;
+  }
   const board::Outcome acquired = pins_.swdAcquire();
   if (acquired != board::Outcome::kOk) {
     printf("error: rak swd connect: %s\n", board::describe(acquired));
@@ -640,6 +715,11 @@ void describeFailure(char* buf, std::size_t size, const char* what, const core::
 }  // namespace
 
 void Console::rakSwdId() {
+  const board::SlotHold hold(slots_, slot_);
+  if (!hold.ok()) {
+    printf("error: rak swd id: %s\n", board::describe(hold.result()));
+    return;
+  }
   const board::Outcome acquired = pins_.swdAcquire();
   if (acquired != board::Outcome::kOk) {
     printf("error: rak swd id: %s\n", board::describe(acquired));
@@ -650,7 +730,8 @@ void Console::rakSwdId() {
   nrf52::Nrf52 nrf(dp, clock_);
   printf("swd: %lu kHz: connect, power-up, control port, memory port, FICR\n",
          static_cast<unsigned long>(wire.frequencyHz() / 1000));
-  const nrf52::Result opened = nrf.open();
+  // The slot the line asked for; the hold above is this command's (task p1-06).
+  const nrf52::Result opened = nrf.open(slot_);
   char line[160];
   if (dp.connected()) {
     printf("  DPIDR 0x%08lx%s\n", static_cast<unsigned long>(dp.dpidr()),
@@ -714,6 +795,11 @@ void Console::rakSwdId() {
 }
 
 void Console::rakSwdMem(std::uint32_t address, std::uint32_t words) {
+  const board::SlotHold hold(slots_, slot_);
+  if (!hold.ok()) {
+    printf("error: rak swd mem: %s\n", board::describe(hold.result()));
+    return;
+  }
   const board::Outcome acquired = pins_.swdAcquire();
   if (acquired != board::Outcome::kOk) {
     printf("error: rak swd mem: %s\n", board::describe(acquired));
@@ -723,7 +809,7 @@ void Console::rakSwdMem(std::uint32_t address, std::uint32_t words) {
   swd::Dp dp(wire);
   nrf52::Nrf52 nrf(dp, clock_);
   char line[160];
-  nrf52::Result r = nrf.open();
+  nrf52::Result r = nrf.open(slot_);
   if (!r.ok()) {
     describeFailure(line, sizeof line, "rak swd mem", r);
     printf("%s\n", line);
@@ -803,12 +889,21 @@ void Console::printFlashResult(const char* what, const flasher::Result& r) {
 }
 
 void Console::rakFlashTest() {
-  const flasher::BoardProfile& profile = flasher::kRak4630Single;
-  printf("flash-test: %s, two pages at 0x%08lx..0x%08lx (the top of the application region), only if blank\n",
-         profile.name, static_cast<unsigned long>(profile.app.end - flasher::Flasher::kTestPages * nrf52::flash::kPageSize),
+  // The board in that slot, from the table rather than from one name written here (task p1-06).
+  const flasher::BoardProfile* found = flasher::profileForSlot(slot_);
+  if (found == nullptr) {
+    printf("error: rak flash-test: no board profile for slot %u\n",
+           static_cast<unsigned>(slot_.index));
+    return;
+  }
+  const flasher::BoardProfile& profile = *found;
+  printf("flash-test: slot %u, %s, two pages at 0x%08lx..0x%08lx (the top of the application region), only if blank\n",
+         static_cast<unsigned>(slot_.index), profile.name,
+         static_cast<unsigned long>(profile.app.end - flasher::Flasher::kTestPages * nrf52::flash::kPageSize),
          static_cast<unsigned long>(profile.app.end));
   PrintProgress progress(out_);
-  const flasher::Result r = flasher_.flashTest(profile, &progress);
+  // The flasher takes the slot and holds it for the whole call.
+  const flasher::Result r = flasher_.flashTest(profile, &progress, slot_);
   printFlashResult("rak flash-test", r);
 }
 

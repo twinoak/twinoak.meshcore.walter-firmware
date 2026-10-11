@@ -18,6 +18,7 @@ const char* describe(Status status) {
     case Status::kBadArgument: return "no data";
     case Status::kNvmcTimeout: return "the flash controller did not become ready in time; CONFIG is read-only again";
     case Status::kCoreTimeout: return "the core did not reach the state asked for in time";
+    case Status::kSlotBusy: return "refused: no such slot, or another slot is in the middle of something";
   }
   return "?";
 }
@@ -53,7 +54,8 @@ Result refused(Status status, std::uint32_t address = 0) {
 
 }  // namespace
 
-Nrf52::Nrf52(swd::Dp& dp, interfaces::Clock& clock) : dp_(dp), clock_(clock), mem_ap_(dp, 0) {}
+Nrf52::Nrf52(swd::Dp& dp, interfaces::Clock& clock, board::SlotLock* slots)
+    : dp_(dp), clock_(clock), slots_(slots), mem_ap_(dp, 0) {}
 
 Result Nrf52::fromMem(const swd::MemResult& m) {
   Result r;
@@ -92,11 +94,20 @@ Result Nrf52::readProtection() {
 // debugger from read and write access to all CPU registers and memory-mapped addresses" - before
 // a single memory access is attempted. Only on an open chip is the memory access port opened and
 // FICR read.
-Result Nrf52::open() {
+Result Nrf52::open(board::Slot slot) {
   open_ = false;
   protection_ = Protection::kUnknown;
   identity_ = Identity{};
   ctrl_ap_idr_ = 0;
+  // The slot before the port (task p1-06): the debug lines are steered to that radio and held
+  // until close(), so nothing can point them at the other one mid-session. A caller that holds
+  // the slot already (the flasher) passes no lock, and the hold it took stands for this too.
+  if (slots_ != nullptr && !slot_held_) {
+    const board::SelectResult selected = slots_->take(slot);
+    if (selected != board::SelectResult::kOk) return refused(Status::kSlotBusy);
+    slot_held_ = true;
+  }
+  slot_ = slot;
   Result r = fromDp(dp_.connect());
   if (!r.ok()) return r;
   r = fromDp(dp_.powerUp());
@@ -125,7 +136,12 @@ Result Nrf52::open() {
 // as the caller left it.
 Result Nrf52::close() {
   open_ = false;
-  return fromDp(dp_.powerDown());
+  const Result r = fromDp(dp_.powerDown());
+  if (slots_ != nullptr && slot_held_) {
+    slots_->release();
+    slot_held_ = false;
+  }
+  return r;
 }
 
 // PS "FICR": CODEPAGESIZE "Code memory page size", CODESIZE "Code memory size in number of

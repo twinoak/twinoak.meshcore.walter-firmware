@@ -5,6 +5,7 @@
 #pragma once
 
 #include "core/board/radio_pins.h"
+#include "core/board/slot.h"
 #include "core/swd/dp.h"
 #include "core/swd/wire.h"
 #include "fakes/fake_clock.h"
@@ -20,6 +21,10 @@ struct SwdBench {
   SwdTarget target{pins};
   fakes::FakeRetained retained;
   core::board::RadioPins board{target, clock, retained};
+  // The slot seam (task p1-06): a single-radio unit, as built. Selecting slot 0 moves no pin, so
+  // every test below behaves exactly as it did before the seam existed.
+  core::board::SingleTarget single;
+  core::board::SlotLock slots{single};
   core::swd::Wire wire{board.swd(), clock};
   core::swd::Dp dp{wire};
 

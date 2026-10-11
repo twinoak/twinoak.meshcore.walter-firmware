@@ -128,6 +128,119 @@ constexpr Simple kSimple[] = {
     {"flash-test", Verb::kRakFlashTest},
 };
 
+// `rak <subcommand> ...`, with the slot (if any) already taken off the front: see parseLine.
+Parsed parseRak(char* rest) {
+  if (*rest == 0) return refuse("rak needs a subcommand (try 'help')");
+  char* sub = rest;
+  char* arg = sub;
+  while (*arg != 0 && !isSpace(*arg)) ++arg;
+  if (*arg != 0) {
+    *arg++ = 0;
+    while (*arg != 0 && isSpace(*arg)) ++arg;
+  }
+  const bool hasArg = *arg != 0;
+  for (const Simple& simple : kSimple) {
+    if (std::strcmp(sub, simple.word) != 0) continue;
+    if (hasArg) return refuse3("rak ", simple.word, " takes no argument");
+    return accept(simple.verb);
+  }
+  // rak time, and rak time set <epoch> (§5.4: source 3, a person at a console).
+  if (std::strcmp(sub, "time") == 0) {
+    if (!hasArg) return accept(Verb::kRakTime);
+    char* word = arg;
+    char* value = word;
+    while (*value != 0 && !isSpace(*value)) ++value;
+    if (*value != 0) {
+      *value++ = 0;
+      while (*value != 0 && isSpace(*value)) ++value;
+    }
+    if (std::strcmp(word, "set") != 0) {
+      return refuse2("rak time: unknown word (rak time, rak time set <epoch>): ", word);
+    }
+    if (*value == 0) return refuse("rak time set needs a unix epoch: rak time set <epoch>");
+    for (const char* p = value; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("rak time set takes one number: rak time set <epoch>");
+    }
+    Parsed p = accept(Verb::kRakTimeSet);
+    if (!parseEpoch(value, p.command.epoch)) {
+      return refuse2("rak time set: not a unix epoch in seconds: ", value);
+    }
+    return p;
+  }
+  // rak cli <line>: the rest of the line verbatim, spaces and all (§5.7).
+  if (std::strcmp(sub, "cli") == 0) {
+    if (!hasArg) return refuse("rak cli needs a line: rak cli <line>");
+    const std::size_t n = std::strlen(arg);
+    if (n > kMaxCliLine) {
+      return refuse("rak cli: the line is 1 to 160 bytes");
+    }
+    Parsed p = accept(Verb::kRakCli);
+    std::memcpy(p.command.text, arg, n + 1);
+    p.command.text_size = n;
+    return p;
+  }
+  // rak swd <operation> (tasks p1-03, p1-04): connect, id, mem <addr> [words].
+  if (std::strcmp(sub, "swd") == 0) {
+    if (!hasArg) return refuse("rak swd needs an operation: rak swd connect | id | mem <addr> [words]");
+    char* op = arg;
+    char* operand = op;
+    while (*operand != 0 && !isSpace(*operand)) ++operand;
+    if (*operand != 0) {
+      *operand++ = 0;
+      while (*operand != 0 && isSpace(*operand)) ++operand;
+    }
+    const bool hasOperand = *operand != 0;
+    if (std::strcmp(op, "connect") == 0) {
+      if (hasOperand) return refuse("rak swd connect takes no argument");
+      return accept(Verb::kRakSwdConnect);
+    }
+    if (std::strcmp(op, "id") == 0) {
+      if (hasOperand) return refuse("rak swd id takes no argument");
+      return accept(Verb::kRakSwdId);
+    }
+    if (std::strcmp(op, "mem") == 0) {
+      if (!hasOperand) return refuse("rak swd mem needs an address: rak swd mem <addr> [words]");
+      char* count = operand;
+      while (*count != 0 && !isSpace(*count)) ++count;
+      if (*count != 0) {
+        *count++ = 0;
+        while (*count != 0 && isSpace(*count)) ++count;
+      }
+      for (const char* p = count; *p != 0; ++p) {
+        if (isSpace(*p)) return refuse("rak swd mem takes an address and a word count: rak swd mem <addr> [words]");
+      }
+      Parsed p = accept(Verb::kRakSwdMem);
+      if (!parseAddress(operand, p.command.address)) {
+        return refuse2("rak swd mem: not an address (hex 0x... or decimal, 32 bits): ", operand);
+      }
+      if ((p.command.address & 0x3u) != 0) {
+        return refuse2("rak swd mem: the address must be word-aligned (a multiple of 4): ", operand);
+      }
+      if (*count != 0) {
+        std::uint32_t words = 0;
+        if (!parseSeconds(count, words) || words < 1 || words > kMaxMemWords) {
+          return refuse2("rak swd mem: words is 1 to 32: ", count);
+        }
+        p.command.words = words;
+      }
+      return p;
+    }
+    return refuse2("rak swd: unknown operation (connect, id, mem): ", op);
+  }
+  if (std::strcmp(sub, "kill") == 0) {
+    if (!hasArg) return refuse("rak kill needs a duration: rak kill <seconds>");
+    for (const char* p = arg; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("rak kill takes one number: rak kill <seconds>");
+    }
+    Parsed p = accept(Verb::kRakKill);
+    if (!parseSeconds(arg, p.command.seconds)) {
+      return refuse2("rak kill: not a whole number of seconds: ", arg);
+    }
+    return p;
+  }
+  return refuse2("unknown rak subcommand (try 'help'): ", sub);
+}
+
 }  // namespace
 
 Parsed parseLine(const char* line) {
@@ -190,114 +303,31 @@ Parsed parseLine(const char* line) {
   }
   if (std::strcmp(verb, "rak") == 0) {
     if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
-    char* sub = rest;
-    char* arg = sub;
-    while (*arg != 0 && !isSpace(*arg)) ++arg;
-    if (*arg != 0) {
-      *arg++ = 0;
-      while (*arg != 0 && isSpace(*arg)) ++arg;
+    // The slot (task p1-06): `rak @1 hello`. Optional, and the first word after `rak` rather
+    // than the last of the line, so that every subcommand takes it the same way - `rak cli
+    // <line>`, whose argument is the rest of the line verbatim, could not have it at the end.
+    // Default @0: the only radio a unit has (spec/SYSTEM.md S-11). A number that is not a
+    // position of any adapter is refused here; whether *this* adapter has that position is the
+    // console's answer, from TargetSelect.
+    std::uint8_t slot = 0;
+    if (rest[0] == '@') {
+      char* word = rest;
+      char* after = word;
+      while (*after != 0 && !isSpace(*after)) ++after;
+      if (*after != 0) {
+        *after++ = 0;
+        while (*after != 0 && isSpace(*after)) ++after;
+      }
+      std::uint32_t number = 0;
+      if (!parseSeconds(word + 1, number) || !board::isSlot(number)) {
+        return refuse2("rak: not a slot (@0 or @1): ", word);
+      }
+      slot = static_cast<std::uint8_t>(number);
+      rest = after;
     }
-    const bool hasArg = *arg != 0;
-    for (const Simple& simple : kSimple) {
-      if (std::strcmp(sub, simple.word) != 0) continue;
-      if (hasArg) return refuse3("rak ", simple.word, " takes no argument");
-      return accept(simple.verb);
-    }
-    // rak time, and rak time set <epoch> (§5.4: source 3, a person at a console).
-    if (std::strcmp(sub, "time") == 0) {
-      if (!hasArg) return accept(Verb::kRakTime);
-      char* word = arg;
-      char* value = word;
-      while (*value != 0 && !isSpace(*value)) ++value;
-      if (*value != 0) {
-        *value++ = 0;
-        while (*value != 0 && isSpace(*value)) ++value;
-      }
-      if (std::strcmp(word, "set") != 0) {
-        return refuse2("rak time: unknown word (rak time, rak time set <epoch>): ", word);
-      }
-      if (*value == 0) return refuse("rak time set needs a unix epoch: rak time set <epoch>");
-      for (const char* p = value; *p != 0; ++p) {
-        if (isSpace(*p)) return refuse("rak time set takes one number: rak time set <epoch>");
-      }
-      Parsed p = accept(Verb::kRakTimeSet);
-      if (!parseEpoch(value, p.command.epoch)) {
-        return refuse2("rak time set: not a unix epoch in seconds: ", value);
-      }
-      return p;
-    }
-    // rak cli <line>: the rest of the line verbatim, spaces and all (§5.7).
-    if (std::strcmp(sub, "cli") == 0) {
-      if (!hasArg) return refuse("rak cli needs a line: rak cli <line>");
-      const std::size_t n = std::strlen(arg);
-      if (n > kMaxCliLine) {
-        return refuse("rak cli: the line is 1 to 160 bytes");
-      }
-      Parsed p = accept(Verb::kRakCli);
-      std::memcpy(p.command.text, arg, n + 1);
-      p.command.text_size = n;
-      return p;
-    }
-    // rak swd <operation> (tasks p1-03, p1-04): connect, id, mem <addr> [words].
-    if (std::strcmp(sub, "swd") == 0) {
-      if (!hasArg) return refuse("rak swd needs an operation: rak swd connect | id | mem <addr> [words]");
-      char* op = arg;
-      char* operand = op;
-      while (*operand != 0 && !isSpace(*operand)) ++operand;
-      if (*operand != 0) {
-        *operand++ = 0;
-        while (*operand != 0 && isSpace(*operand)) ++operand;
-      }
-      const bool hasOperand = *operand != 0;
-      if (std::strcmp(op, "connect") == 0) {
-        if (hasOperand) return refuse("rak swd connect takes no argument");
-        return accept(Verb::kRakSwdConnect);
-      }
-      if (std::strcmp(op, "id") == 0) {
-        if (hasOperand) return refuse("rak swd id takes no argument");
-        return accept(Verb::kRakSwdId);
-      }
-      if (std::strcmp(op, "mem") == 0) {
-        if (!hasOperand) return refuse("rak swd mem needs an address: rak swd mem <addr> [words]");
-        char* count = operand;
-        while (*count != 0 && !isSpace(*count)) ++count;
-        if (*count != 0) {
-          *count++ = 0;
-          while (*count != 0 && isSpace(*count)) ++count;
-        }
-        for (const char* p = count; *p != 0; ++p) {
-          if (isSpace(*p)) return refuse("rak swd mem takes an address and a word count: rak swd mem <addr> [words]");
-        }
-        Parsed p = accept(Verb::kRakSwdMem);
-        if (!parseAddress(operand, p.command.address)) {
-          return refuse2("rak swd mem: not an address (hex 0x... or decimal, 32 bits): ", operand);
-        }
-        if ((p.command.address & 0x3u) != 0) {
-          return refuse2("rak swd mem: the address must be word-aligned (a multiple of 4): ", operand);
-        }
-        if (*count != 0) {
-          std::uint32_t words = 0;
-          if (!parseSeconds(count, words) || words < 1 || words > kMaxMemWords) {
-            return refuse2("rak swd mem: words is 1 to 32: ", count);
-          }
-          p.command.words = words;
-        }
-        return p;
-      }
-      return refuse2("rak swd: unknown operation (connect, id, mem): ", op);
-    }
-    if (std::strcmp(sub, "kill") == 0) {
-      if (!hasArg) return refuse("rak kill needs a duration: rak kill <seconds>");
-      for (const char* p = arg; *p != 0; ++p) {
-        if (isSpace(*p)) return refuse("rak kill takes one number: rak kill <seconds>");
-      }
-      Parsed p = accept(Verb::kRakKill);
-      if (!parseSeconds(arg, p.command.seconds)) {
-        return refuse2("rak kill: not a whole number of seconds: ", arg);
-      }
-      return p;
-    }
-    return refuse2("unknown rak subcommand (try 'help'): ", sub);
+    Parsed p = parseRak(rest);
+    if (p.ok) p.command.slot = slot;
+    return p;
   }
   return refuse2("unknown command (try 'help'): ", verb);
 }

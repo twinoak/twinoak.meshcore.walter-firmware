@@ -11,7 +11,8 @@ CMakeLists.txt, sdkconfig.defaults, partitions.csv, idf_component.yml + lock
 main/                   app_main: construct the real things, hand them to the core, run
 components/
   core/                 everything that is logic. No ESP-IDF include, no FreeRTOS, no heap after start-up.
-    board/              the pin map and RadioPins: the seven pins and their rules (§2) - task p0-03
+    board/              the pin map and RadioPins: the seven pins and their rules (§2) - task p0-03;
+                        Slot, TargetSelect and the selection guard - task p1-06
     health/             why the last boot happened: the reset reason, a boot counter, the last five - task p0-03
     link/               the box link: codec, client (the UART, retries, events, the session,
                         telling a repeater from a scanner), the protocol's numbers in words
@@ -112,12 +113,37 @@ pins) and tested against fake pins that check them on every transition:**
    holds off. (A *power-up* of the ESP32-S3 does glitch GPIO1–14 low for about 60 µs, and that
    reaches nRESET: a Walter power cycle reboots the radio. That is expected, documented in the
    hardware repository, and the supervisor does not mistake it for a fault.)
+6. **The one exception to rule 4's "the clock cannot toggle while nRESET is asserted" is the
+   dual adapter's selector, and this firmware never takes it** (task p1-06). The dual adapter —
+   designed, not built: the hardware repository's `DUAL-RAK4630-FEASIBILITY.md` §3 at commit
+   `b798aab` — carries two flip-flops behind a gate that computes `SWDCLK AND NOT nRESET`, so
+   holding nRESET low and clocking two bits in on SWDIO says which radio the debug lines, the
+   reset and the UART reach. FF2's bit first (the UART's), FF1's second (the debug lines'); the
+   window is 100–500 µs, and the adapter's own ~2–5 ms RC and Schmitt buffer keep that reset away
+   from the radios. `RadioPins::selectorProgram()` is the only operation in this firmware that may
+   emit it, and the reset-spacing rule of rule 2 is applied to the reset it implies all the same —
+   nothing here can measure the adapter's filter, and a bootloader left in UF2 mode is how a radio
+   is lost.
+   **Where it is switched off:** `main/app_main` constructs a `core::board::SingleTarget` — slot 0
+   is the one radio, selecting it moves no pin — and nothing constructs `core::board::DualTarget`.
+   `tools/verify.sh` greps that neither `DualTarget` nor `selectorProgram` is named outside the two
+   files that define them, and `host_test/core/board/test_slot_single.cpp` fails if a single-radio
+   unit's wires ever carry the sequence (the fake pins' `swdclk-while-reset`). The dual adapter's
+   own tests declare a selector on the bench, and then the fake pins check the window's length
+   instead (`selector-window`, 100–500 µs).
+
+Everything that faces a radio takes a **slot** (`core/board/slot.h`): `Slot`, `TargetSelect`
+(`SingleTarget`, `DualTarget`) and `SlotLock`, the guard that keeps one selection at a time —
+an operation selects its slot and holds it, so two operations on different radios cannot
+interleave. With one slot the behaviour is unchanged, and a slot that does not exist is refused
+before anything is steered.
 
 The fake pins (`host_test/fakes/fake_pins`) know these rules by name — `reset-driven-high`,
 `reset-spacing`, `reset-pulse-length`, `swdclk-while-reset`, `driven-while-killed`,
-`kill-driven-low`, `kill-bounds` — and fail the running test at the transition that breaks one.
-`tools/verify.sh` greps that no GPIO call exists outside `components/platform/` and that the
-seven pins are named nowhere but `core/board/`.
+`kill-driven-low`, `kill-bounds`, `selector-window` — and fail the running test at the transition
+that breaks one. `tools/verify.sh` greps that no GPIO call exists outside
+`components/platform/`, that the seven pins are named nowhere but `core/board/`, and that the dual
+adapter's selector is named nowhere but the two files that define it (rule 6).
 
 ## 3. The link, from this end
 

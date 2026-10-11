@@ -11,9 +11,19 @@
 //   driven-while-killed   while KILL is driven high, any other radio pin drives or pulls up
 //   kill-driven-low       KILL configured push-pull with a low level, or open-drain
 //   kill-bounds           KILL driven high for less than min_ms or more than max_ms
+//   selector-window       a programming window outside DUAL-RAK4630-FEASIBILITY.md section 3's
+//                         100-500 us (checked only where one is allowed)
 //
 // A violation is recorded in `violations`; while `strict` (the default) it also fails the running
 // test at once with doctest's FAIL_CHECK. A test that wants to see a rule fire sets strict false.
+//
+// The dual adapter's selector (task p1-06) is the one sanctioned "the clock toggles while reset
+// is asserted", and a bench that has one on the wires says so with `selector_allowed`. Then an
+// assertion of nRESET during which SWDCLK moved is a *programming window*, not a reset pulse: it
+// is counted, its length is held against the document's 100-500 us in microseconds (the window is
+// shorter than a millisecond), and it does not count as a reset the next pulse must be spaced
+// from - the adapter's own RC and Schmitt buffer keep it away from the radios, so as far as these
+// wires' rules are concerned no radio was reset. RadioPins is stricter and waits anyway.
 //
 // Failures can be injected: `fail_when` is asked before every setMode/write and, when it says so,
 // the call returns false without changing anything - what a refused GPIO call does.
@@ -58,10 +68,17 @@ class FakePins final : public interfaces::Pins {
 
   bool strict = true;
   bool record_log = true;  // false: the rules are still checked, the transitions not kept (a flash is millions)
+  // A dual adapter's selector is on these wires: a clock edge while nRESET is asserted is the
+  // selector being programmed and not a broken rule. False on a single-radio unit, which is
+  // every unit today - and then swdclk-while-reset fires, which is the point.
+  bool selector_allowed = false;
   std::vector<Transition> log;
   std::vector<Violation> violations;
   std::function<bool(const Op&)> fail_when;
   int operations = 0;
+  int selector_windows = 0;  // assertions of nRESET during which SWDCLK moved
+  int selector_clocks = 0;   // SWDCLK level changes inside them
+  std::uint64_t last_selector_window_us = 0;  // how long the last one lasted
 
   // interfaces::Pins
   bool setMode(std::uint8_t gpio, interfaces::PinMode mode) override;
@@ -109,8 +126,10 @@ class FakePins final : public interfaces::Pins {
   core::board::KillTiming timing_;
   Pin pins_[kGpioCount];
   bool have_last_reset_end_ = false;
+  bool clk_moved_in_reset_ = false;  // this assertion of nRESET is a selector programming window
   std::uint64_t last_reset_end_ms_ = 0;
   std::uint64_t reset_start_ms_ = 0;
+  std::uint64_t reset_start_us_ = 0;  // the same moment in microseconds: a window is sub-millisecond
   std::uint64_t kill_start_ms_ = 0;
 };
 

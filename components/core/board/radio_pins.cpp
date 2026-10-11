@@ -244,6 +244,60 @@ Outcome RadioPins::swdAcquire() {
   return Outcome::kOk;
 }
 
+// The selector (task p1-06; DUAL-RAK4630-FEASIBILITY.md §3, at hardware commit b798aab):
+//
+//   "Programming a selection: Walter drives nRESET low, clocks 2 bits in on SWDCLK with SWDIO as
+//    data (FF2's bit first), releases nRESET. Takes microseconds."
+//
+// The adapter's shift clock is `SWDCLK AND NOT nRESET` (a 74LVC1G97), so the clock does nothing
+// at all until nRESET is low; SWDIO is the D input of FF1, whose Q is DEBUG_SEL and whose output
+// feeds FF2, whose Q is UART_SEL. Two clocks later the first bit shifted in is in FF2 and the
+// second in FF1 - hence uart_sel first.
+Outcome RadioPins::selectorProgram(bool uart_sel, bool debug_sel) {
+  if (swd_held_) return Outcome::kSwdHeld;
+  if (reset_asserted_) return Outcome::kResetAsserted;
+  if (kill_driven_) return Outcome::kRailOff;
+  waitForRail();
+  // Rule 2's spacing, applied to the reset this implies even though the adapter filters it out:
+  // see the header. A clock that went backwards is a new epoch and gets the full spacing.
+  if (last_reset_end_ms_ > clock_.nowMs()) last_reset_end_ms_ = clock_.nowMs();
+  const std::uint32_t wait = msUntilResetAllowed();
+  if (wait > 0) clock_.delayMs(wait);
+
+  // nRESET low first: until it is, the adapter's gate holds the shift clock off, so no edge of
+  // what follows can reach a flip-flop (§3's "zero firmware" selector, and its stray-clock note:
+  // "a couple of stray clocks cannot form" a valid SWD transaction on the module's own pins).
+  reset_asserted_ = true;
+  if (!reset_.assertLow()) return failed();
+  if (!pins_.write(kSwdClk.gpio, false)) return failed();
+  if (!pins_.setMode(kSwdClk.gpio, PinMode::kOutput)) return failed();
+  clock_.delayUs(kSelectorHalfUs);
+
+  const bool bits[kSelectorBits] = {uart_sel, debug_sel};  // FF2's bit first
+  for (const bool bit : bits) {
+    if (!pins_.write(kSwdIo.gpio, bit)) return failed();
+    if (!pins_.setMode(kSwdIo.gpio, PinMode::kOutput)) return failed();
+    swdio_driven_ = true;
+    clock_.delayUs(kSelectorHalfUs);
+    if (!pins_.write(kSwdClk.gpio, true)) return failed();  // the flip-flops clock on the rise
+    clock_.delayUs(kSelectorHalfUs);
+    if (!pins_.write(kSwdClk.gpio, false)) return failed();
+  }
+  clock_.delayUs(kSelectorHalfUs);
+
+  // The lines back to inputs before nRESET is released, so that the window closes with nothing
+  // of ours driving the module's SWD pins, and so that the next operation starts from the safe
+  // state rather than from half a selector.
+  swdio_driven_ = false;
+  if (!input(kSwdIo.gpio)) return failed();
+  if (!input(kSwdClk.gpio)) return failed();
+  if (!reset_.release()) return failed();
+  reset_asserted_ = false;
+  recordResetEnd();
+  selector_programs_++;
+  return Outcome::kOk;
+}
+
 void RadioPins::swdRelease() {
   swd_held_ = false;
   swdio_driven_ = false;

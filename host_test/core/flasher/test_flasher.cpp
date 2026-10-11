@@ -41,9 +41,13 @@ TEST_CASE("the board profile: the numbers from the linker script, and what a man
   CHECK(p.holds(0x26000, 0xED000 - 0x26000));
   CHECK(!p.holds(0x26000, 0xED000 - 0x26000 + 1));
   CHECK(!p.holds(0x26000, 0));
-  CHECK(sim::fl::findProfile("rak4630-single") == &p);
-  CHECK(sim::fl::findProfile("rak4630-dual-a") == nullptr);
-  CHECK(sim::fl::findProfile(nullptr) == nullptr);
+  CHECK(sim::fl::findProfile(core::board::kSlot0, "rak4630-single") == &p);
+  CHECK(sim::fl::profileForSlot(core::board::kSlot0) == &p);
+  // One slot today (S-11, task p1-06): slot 1 has no board here.
+  CHECK(sim::fl::profileForSlot(core::board::kSlot1) == nullptr);
+  CHECK(sim::fl::findProfile(core::board::kSlot1, "rak4630-single") == nullptr);
+  CHECK(sim::fl::findProfile(core::board::kSlot0, "rak4630-dual-a") == nullptr);
+  CHECK(sim::fl::findProfile(core::board::kSlot0, nullptr) == nullptr);
 }
 
 TEST_CASE("the settings record: the layout the bootloader reads, encoded and decoded") {

@@ -15,8 +15,10 @@
 //      phase 3's).
 //
 // And two rules of the task: nothing acquires SWD while the rail is believed off, and the SWD
-// clock cannot toggle while reset is asserted (that combination is the dual adapter's selector,
-// phase 1 task 06, which gets its own operation here when it comes).
+// clock cannot toggle while reset is asserted - except in the one operation that exists to do
+// exactly that, `selectorProgram()` (task p1-06): the dual adapter's selector is addressed by
+// clocking bits in while nRESET is held low, and this is the only place in the firmware that may.
+// A single-radio unit never calls it (nothing constructs board/dual_target.h).
 //
 // All of it is logic: no ESP-IDF include, no heap, and every pin operation goes through
 // interfaces::Pins so that host_test/ runs it against fake pins that record every transition and
@@ -59,6 +61,28 @@ const char* describe(RadioPower power);
 // second, from the end of one pulse to the start of the next).
 constexpr std::uint32_t kResetPulseMs = 100;
 constexpr std::uint32_t kResetSpacingMs = 1000;
+
+// The dual adapter's selector, programmed by clocking two bits in on SWDIO while nRESET is held
+// low (the hardware repository's DUAL-RAK4630-FEASIBILITY.md §3, at commit b798aab). The window
+// numbers are that section's:
+//
+//   "The pulse must exceed the ~1 µs bulkhead RC, so a 100–500 µs programming window is the
+//    sweet spot" - below 100 µs the series resistors and the two bulkhead filters swallow it,
+//    above 500 µs it starts to approach the adapter's own ~2–5 ms RC + Schmitt buffer, which is
+//    what keeps this reset away from the radios. "A real reset = Walter holds nRESET ≥ 50 ms".
+//
+// A half-period of 20 µs is 25 kHz: twenty times the bulkhead's time constant, and a tenth of
+// the ~300 kHz the same lines carry SWD at. Two bits plus the setup and the trailing edge make a
+// 120 µs window, inside the document's range with room at both ends.
+constexpr std::uint32_t kSelectorHalfUs = 20;
+constexpr std::uint32_t kSelectorBits = 2;
+constexpr std::uint32_t kSelectorWindowMinUs = 100;
+constexpr std::uint32_t kSelectorWindowMaxUs = 500;
+// What selectorProgram() spends inside the window: setup + 2 bits × 2 half-periods + the trailing
+// half-period before nRESET is released.
+constexpr std::uint32_t kSelectorWindowUs = kSelectorHalfUs * (2 + 2 * kSelectorBits);
+static_assert(kSelectorWindowUs >= kSelectorWindowMinUs && kSelectorWindowUs <= kSelectorWindowMaxUs,
+              "the selector's programming window is outside DUAL-RAK4630-FEASIBILITY.md §3's 100-500 us");
 
 // The kill's bounds and the settle time after it (ARCHITECTURE §2 rules 3 and 4). PLACEHOLDERS
 // for the bench: no hardware document gives the rail's fall or settle time (the TPS63001's output
@@ -133,6 +157,26 @@ class RadioPins {
   void swdRelease();
   SwdLines& swd() { return swd_; }
 
+  // The dual adapter's selector, and the one sanctioned "the clock toggles while reset is
+  // asserted" in this firmware (task p1-06; DUAL-RAK4630-FEASIBILITY.md §3). With nRESET held
+  // low - which is what enables the adapter's shift clock, `SWDCLK AND NOT nRESET` - two bits
+  // are clocked in on SWDIO, FF2's first: `uart_sel` reaches the second flip-flop (which radio
+  // the UART reaches) and `debug_sel` stays in the first (which radio the debug lines and the
+  // reset reach). false = module A, the position a single-radio unit's radio sits in; the
+  // flip-flops' RC clear makes that the power-on state.
+  //
+  // The reset this implies is filtered out by the adapter's own RC and Schmitt buffer and never
+  // reaches a radio, but rule 2's spacing is applied to it all the same: it is recorded like the
+  // end of a pulse and waited out before the next one, because nothing here can measure the
+  // adapter's filter and a bootloader in UF2 mode is how a radio is lost. Refused while the SWD
+  // lines are acquired (their holder releases first), while nRESET is already asserted, and while
+  // the rail is off.
+  //
+  // Only board/dual_target.h calls it, and this firmware does not construct that
+  // (host_test/core/board/test_slot_single.cpp holds it).
+  Outcome selectorProgram(bool uart_sel, bool debug_sel);
+  std::uint32_t selectorPrograms() const { return selector_programs_; }
+
   // Rule 5. safe(), then the seven pads held as they are, for the sleeper (phase 3); and the
   // reverse at wake: the pads configured to the same state first, then the holds released.
   bool holdForSleep();
@@ -201,6 +245,7 @@ class RadioPins {
   bool reset_asserted_ = false;
   bool kill_driven_ = false;
   bool last_reset_known_ = false;
+  std::uint32_t selector_programs_ = 0;
   std::uint64_t last_reset_end_ms_ = 0;
   std::uint64_t rail_on_at_ms_ = 0;  // the rail is believed on from this time
 };

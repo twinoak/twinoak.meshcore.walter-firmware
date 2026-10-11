@@ -12,10 +12,16 @@
 //   - **typed calls.** One per request type of §4, each returning the decoded response or the
 //     reason there is none (Fault). A call whose capability HELLO did not advertise fails without
 //     a byte on the wire.
-//   - **the session.** What HELLO learned: the version agreed, the role, the slot, the
-//     capabilities, the versions and `boot_id`. A changed `boot_id` or an EV_BOOT means the radio
-//     restarted - every piece of per-boot state is gone (§5.1) - and the client's first act after
-//     it is TIME_SET, when interfaces::WallClock has a time to give (§5.4).
+//   - **the session, one per slot.** What HELLO learned: the version agreed, the role, the slot,
+//     the capabilities, the versions and `boot_id` - and which firmware the radio is running.
+//     A unit has one radio (spec/SYSTEM.md S-11) and `useSlot()` is never called today, so what
+//     this reads and writes is slot 0's; a dual adapter's second radio has a session of its own
+//     and the two cannot be confused (task p1-06). The event queue and the scanner's lines are
+//     *not* per slot: §3's events carry no slot, and the Walter steers the UART to one radio at a
+//     time - whatever arrives, arrives from the radio the wires reach.
+//     A changed `boot_id` or an EV_BOOT means the radio restarted - every piece of per-boot state
+//     is gone (§5.1) - and the client's first act after it is TIME_SET, when
+//     interfaces::WallClock has a time to give (§5.4).
 //   - **events.** EV_BOOT, EV_MESH_REPLY and EV_ATTENTION, collected whenever the client reads
 //     the port - inside a response wait, or from poll() - into a small bounded queue whose
 //     overflow is counted, with their own sequence numbers watched for gaps (§3).
@@ -36,6 +42,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/board/slot.h"
 #include "core/link/client/port.h"
 #include "core/link/codec/frame.h"
 #include "core/link/codec/messages.h"
@@ -86,6 +93,7 @@ enum class Fault : std::uint8_t {
   kLinkDown,     // three attempts, no valid response (§3, §9)
   kRefused,      // the radio answered with a status that is not OK; `status` says which
   kMalformed,    // a response arrived whose CRC passed and whose payload did not decode
+  kSlotBusy,     // another slot's operation holds the selection, or this slot does not exist
 };
 
 // What this client believes it is talking to (§9). Never two of these at once.
@@ -185,7 +193,18 @@ struct Counters {
 
 class Client {
  public:
-  Client(LinkPort& port, interfaces::Clock& clock, interfaces::WallClock& wall);
+  Client(LinkPort& port, interfaces::Clock& clock, interfaces::WallClock& wall,
+         board::SlotLock& slots);
+
+  // ------------------------------------------------------------------ the slot (task p1-06)
+
+  // Which radio the calls below are about. Every exchange takes a hold on it first, so the UART
+  // is steered to that radio before a frame leaves and cannot be steered away while one is in
+  // flight. Slot 0 by default, which on a single-radio unit is the only one there is.
+  board::Slot slot() const { return slot_; }
+  // Switches to another slot's session. False when the slot does not exist on this adapter, or
+  // when an exchange is in flight on the slot held now - a request is never left half-way.
+  bool useSlot(board::Slot slot);
 
   // ------------------------------------------------------------------ the session and the state
 
@@ -194,8 +213,12 @@ class Client {
   // one answers the `info\n` probe; otherwise the link is down and the mode stays what it was.
   Answer<HelloResponse> hello();
 
-  const Session& session() const { return session_; }
-  Mode mode() const { return mode_; }
+  const Session& session() const { return slots_[slot_.index].session; }
+  Mode mode() const { return slots_[slot_.index].mode; }
+  // Another slot's, without switching to it: what the console prints and the supervisor reads.
+  // A slot that is not one answers with slot 0's, which is the only one a unit has.
+  const Session& sessionOf(board::Slot slot) const { return slots_[board::isSlot(slot.index) ? slot.index : 0].session; }
+  Mode modeOf(board::Slot slot) const { return slots_[board::isSlot(slot.index) ? slot.index : 0].mode; }
   // Whether the session advertised all of these bits (§5.1). False without a session.
   bool hasCapability(std::uint32_t bits) const;
 
@@ -206,7 +229,7 @@ class Client {
 
   // §5.4: a restart was noticed and the radio's clock has not been set since. The next call sends
   // TIME_SET first, if interfaces::WallClock has a time by then.
-  bool timePending() const { return time_pending_; }
+  bool timePending() const { return slots_[slot_.index].time_pending; }
   // Sends that TIME_SET now, if one is pending and there is a time to give. kNone when it was
   // sent and accepted; kNoSession when there is nothing to do or no time to give.
   Fault serviceTime();
@@ -322,10 +345,20 @@ class Client {
   FrameReceiver receiver_;
   FrameWriter writer_;
 
-  Session session_;
-  Mode mode_ = Mode::kUnknown;
-  bool boot_id_known_ = false;
-  bool time_pending_ = false;
+  // Everything HELLO learned about one radio, and what this end believes it is running: one of
+  // these per slot (task p1-06). With one slot the behaviour is exactly what it was.
+  struct SlotSession {
+    Session session;
+    Mode mode = Mode::kUnknown;
+    bool boot_id_known = false;
+    bool time_pending = false;
+  };
+  SlotSession& here() { return slots_[slot_.index]; }
+  const SlotSession& here() const { return slots_[slot_.index]; }
+
+  board::SlotLock& slots_lock_;
+  board::Slot slot_{};
+  SlotSession slots_[board::kSlotCount];
   bool in_time_ = false;  // a TIME_SET of our own is on the wire: do not start another
 
   std::uint8_t seq_ = 0;

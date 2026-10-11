@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/board/radio_pins.h"
+#include "core/board/slot.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
 #include "fakes/fake_clock.h"
@@ -26,8 +27,11 @@ struct LinkBench {
   core::board::RadioPins board{pins, clock, retained};
   ScriptedRadio radio{clock};
   fakes::FakeWallClock wall;
+  // A single-radio unit (task p1-06): slot 0, selecting it moves no pin.
+  core::board::SingleTarget single;
+  core::board::SlotLock slots{single};
   core::link::client::LinkPort port{board, radio};
-  core::link::client::Client client{port, clock, wall};
+  core::link::client::Client client{port, clock, wall, slots};
 
   LinkBench() {
     // The rail is "unknown" for the settle time after boot (ARCHITECTURE §2 rule 3): let it pass,
