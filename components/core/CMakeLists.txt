@@ -8,6 +8,10 @@ idf_component_register(
        "health/health.cpp"
        "console/parser.cpp"
        "console/console.cpp"
+       "link/codec/cobs.cpp"
+       "link/codec/packet.cpp"
+       "link/codec/frame.cpp"
+       "link/codec/messages.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

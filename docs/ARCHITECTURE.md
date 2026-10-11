@@ -110,7 +110,24 @@ seven pins are named nowhere but `core/board/`.
 
 ## 3. The link, from this end
 
-`spec/LINK-PROTOCOL.md`. The client owns the UART (115200 8N1 on GPIO7/8) and gives the rest of
+`spec/LINK-PROTOCOL.md`. Two layers: the codec, which is the protocol as bytes, and the client,
+which is the protocol as calls.
+
+**The codec** (`core/link/codec/`, task p1-01) touches no UART and allocates nothing:
+CRC-16/CCITT-FALSE and COBS, the packet, a `FrameReceiver` that turns bytes in any chunking into
+packets and counts what it drops, a `FrameWriter` that puts §2's one `0x00` in front of a frame
+after 100 ms of idle, a `Reader` and a `Writer` for the little-endian scalars, one struct per
+payload with an encoder for every request this end sends and a decoder for every response and
+event it receives, and one header (`codec/wire.h`) that is the specification's own tables of
+numbers. A decoded message's variable-length fields are *views* into the receiver's buffer, valid
+until the next frame is read, so keeping one means copying it. A decoder refuses a value that
+selects the layout of what follows it (`path_mode`, a reply record's `state`) and passes on one
+that is only data (a status, a role, a capability bit), because §5.1 says a minor version adds
+those and that unknown ones are ignored. It is tested against `spec/fixtures/link/link-v1.json`,
+which the radio firmware's own codec is tested against too; neither sees the other's source, and
+if both pass every case they agree on the wire.
+
+**The client** owns the UART (115200 8N1 on GPIO7/8) and gives the rest of
 the firmware typed calls: *hello*, *ping*, *status*, *set time*, *run this console line*, *read
 power*, and the mesh client's calls. Underneath: one request at a time, a response awaited for one
 second, the same frame sent again up to twice more, then "the link is down" — reported, not acted
