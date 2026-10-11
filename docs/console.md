@@ -18,6 +18,7 @@ makes it whole.
 twinoak-walter 0.0.0-dev
 running from ota_0 at 0x010000 (3072 KB), ota state undefined (flashed over USB, not by an update; rollback does not apply)
 image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.0
+link: UART1 115200 8N1 on the radio's two pins, open
 boot 1: power-on reset
 the boot record starts here (a power cut, or the first boot)
 type 'help' for the commands
@@ -32,7 +33,7 @@ constructing `RadioPins` is the first thing `app_main` does.
 | Command | What it does |
 |---|---|
 | `help` | the commands, one line each |
-| `status` | the version; the uptime and the boot count; why this boot happened; what is believed about the radio's power; whether the UART, SWD, nRESET and the kill line are in use; how long until the next reset is allowed; every pin's mode and level on one line |
+| `status` | the version; the uptime and the boot count; why this boot happened; what is believed about the radio's power; whether the UART, SWD, nRESET and the kill line are in use; how long until the next reset is allowed; the state of the box link and its counters (task p1-02); every pin's mode and level on one line |
 | `reboots` | why this board last restarted and the four before that, newest first, each with how long the run before it lasted. The record is in RTC memory: it survives a `reboot`, a panic, a watchdog and a deep sleep, and a power cut clears it (and the first line says so) |
 | `pins` | the seven pins, one line each: net, D-sub pin, GPIO, mode as this firmware configured it, the level read from the pad, and what it is in use for (`released`, `uart`, `swd`, `reset`, `kill`); then the radio's power |
 | `rak reset` | one reset pulse: nRESET open-drain low for 100 ms, then released. If the last reset ended less than a second ago the command says how long it waits and waits; it never pulses early (two resets inside half a second put the radio into its UF2 bootloader). The first reset after a boot waits a full second, because the Walter's own power-up may have reset the radio just before |
@@ -42,6 +43,35 @@ constructing `RadioPins` is the first thing `app_main` does.
 A refusal is one line starting with `error:` and names what was wrong: an unknown command or
 subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
 characters, a control character.
+
+## The radio, over the box link
+
+From task p1-02. Each of these is one request of
+[`spec/LINK-PROTOCOL.md`](../spec/LINK-PROTOCOL.md) §5, sent over the UART on GPIO7/8, and prints
+the decoded answer in words — or one `error:` line saying why there is none: *no answer to three
+attempts: the link is down* (§3's three tries of a second each, so the command can take three
+seconds), *refused:* with the radio's own status, *the radio does not advertise the capability*
+(§4: nothing was sent), *no session: say hello first*, *the radio is running the scanner: no frames
+are sent* (§9), or *the UART is not ours* (the rail is off, or a `rak kill` took the pins).
+
+| Command | What it does |
+|---|---|
+| `rak hello` | `HELLO`: the protocol version agreed, the role, the slot, the largest payload, `boot_id`, the firmware, board and upstream versions, and the capability bits by name. Says so when the radio's clock has not been set since it booted |
+| `rak ping` | `PING` with a nonce made from this board's clock; prints whether it came back, the radio's uptime, the round trip and how many attempts it took |
+| `rak status` | `STATUS`: uptime, why it booted, its clock and time state, its flags by name, the observations waiting and lost, the frames its receiver dropped, and any pending attention |
+| `rak id` | `IDENTITY`: the node's MeshCore public key and its advert name |
+| `rak time` | `TIME_GET`: the radio's clock and where it came from |
+| `rak time set <epoch>` | `TIME_SET` with source *a person at a console* (§5.4's source 3) and never *force*: a clock that goes backwards makes a MeshCore node's own traffic look replayed, and the radio refuses a backwards step — which is the right answer to a typed mistake. Prints the clock before and after |
+| `rak power` | `POWER_GET`: the three current-sense channels — panel, battery (positive = charging), total load — in millivolts and milliamps, with the shunts already applied by the radio, and which of them were read |
+| `rak env` | `ENV_GET`: temperature, humidity and pressure, and which of them were read |
+| `rak cli <line>` | `CLI`: the rest of the line, 1 to 160 bytes, run by the radio's own console interpreter as if typed on its serial port, and its reply. A line that restarts the radio (`reboot`) never answers, and the console says that is expected |
+| `rak events` | the events the radio has sent and the client has queued — `EV_BOOT`, `EV_MESH_REPLY`, `EV_ATTENTION` — decoded, newest last, and how many have been seen, dropped for want of room, or lost to a gap in their sequence numbers. Printing them takes them out of the queue |
+| `rak text` | the lines a scanner has sent instead of frames (§9), and how many were seen, dropped or truncated. Printing them clears them |
+
+`rak reset` and `rak kill` also tell the link client that the radio is starting over: the session,
+the `boot_id` and — §9 — whatever firmware it was running are forgotten, and the next `rak hello`
+finds out again. `status` has a line about the link: what the client believes it is talking to,
+whether a session is up, and the retries, timeouts, dropped frames and events since boot.
 
 ## The radio's power, as `status` says it
 
@@ -53,5 +83,7 @@ characters, a control character.
 
 ## What the port prints besides replies
 
-Nothing else yet: there is no log line and no event in this task. ESP-IDF's own boot messages come
-before the banner at the bootloader's log level.
+Nothing by itself. The radio's events are collected whenever the main loop turns - every 100 ms or
+less - and wait in the client's queue until `rak events` prints them; nothing is printed as it
+arrives, because a Walter on a mast has nobody reading. ESP-IDF's own boot messages come before the
+banner at the bootloader's log level.

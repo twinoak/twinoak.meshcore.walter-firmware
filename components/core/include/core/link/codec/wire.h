@@ -143,6 +143,43 @@ constexpr std::uint32_t kAttention = 0x20;
 constexpr std::uint32_t kTimePersist = 0x40;
 }  // namespace cap
 
+// §4's third column as code: the capability bit a message's type needs, or 0 for "always". A radio
+// without it answers ERR_UNSUPPORTED, which is how a newer Walter discovers what an older radio
+// cannot do (§3) - and a client that has a HELLO's `caps` can refuse the call without sending
+// anything first (task p1-02's client does). A type this firmware does not know is 0: there is no
+// capability it could check.
+constexpr std::uint32_t capabilityOf(std::uint8_t message_type) {
+  switch (message_type) {
+    case type::kCli:
+    case type::kLppGet:  // §4: LPP_GET asks for CLI, not a capability of its own
+      return cap::kCli;
+    case type::kPowerGet:
+      return cap::kPower;
+    case type::kEnvGet:
+      return cap::kEnv;
+    case type::kJobBegin:
+    case type::kJobEnd:
+    case type::kPathSet:
+    case type::kPathGet:
+    case type::kSendLogin:
+    case type::kSendRequest:
+    case type::kSendCli:
+    case type::kSendDiscovery:
+    case type::kSendTrace:
+    case type::kReplyGet:
+    case type::kMeshCounters:
+    case type::kEvMeshReply:
+      return cap::kMeshClient;
+    case type::kObsPull:
+      return cap::kObservations;
+    case type::kEvAttention:
+      return cap::kAttention;
+    default:
+      // HELLO, PING, STATUS, TIME_SET, TIME_GET, REBOOT, IDENTITY, SLEEP_NOTICE and EV_BOOT.
+      return 0;
+  }
+}
+
 // §5.3, the RAK's `reset_reason` - also the first byte of EV_BOOT (§5.1) and the `detail` of an
 // attention of reason 1 (§8). These are the radio's codes, not the Walter's own
 // (core/health/health.h).

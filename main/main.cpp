@@ -13,11 +13,14 @@
 #include "core/console/console.h"
 #include "core/health/health.h"
 #include "core/image/this_image.h"
+#include "core/link/client/client.h"
+#include "core/link/client/port.h"
 #include "core/version.h"
 #include "platform/boot.h"
 #include "platform/clock.h"
 #include "platform/pins.h"
 #include "platform/retained.h"
+#include "platform/uart.h"
 #include "platform/usb_console.h"
 
 // components/modem: the modem library is linked and called by nothing. See modem_anchor.cpp.
@@ -46,6 +49,18 @@ platform::EspClock g_clock;
 platform::RtcRetained g_retained;
 platform::EspRestart g_restart;
 platform::UsbConsole g_usb;
+platform::RadioUart g_uart;
+
+// The time of day, which this firmware does not know yet: phase 3's modem reads it from the
+// cellular network and fills this in (interfaces/wall_clock.h). Until then the link client has no
+// time to give the radio and does not pretend otherwise - spec/LINK-PROTOCOL.md §5.4 is explicit
+// that a clock that goes backwards makes a MeshCore node's own traffic look replayed, and a made-up
+// time is how that happens. `rak time set <epoch>` on the console is the way to set it today.
+class NoWallClock final : public interfaces::WallClock {
+ public:
+  bool now(interfaces::WallTime*) override { return false; }
+};
+NoWallClock g_wall;
 
 }  // namespace
 
@@ -93,16 +108,36 @@ extern "C" void app_main() {
 
   std::fflush(stdout);
 
-  // The console, on the USB port, in this task: one byte at a time, the uptime kept in retained
-  // storage about once a second. Returning is not an option here (the console is this task);
-  // the task watchdog watches the idle tasks, which run while this one waits for a byte.
-  static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart);
+  // The link to the radio (task p1-02): the UART behind interfaces::ByteStream, the port that
+  // takes and gives back the two pins through RadioPins, and the client that speaks
+  // spec/LINK-PROTOCOL.md over it. Opening the port is what drives TX; it is open from here on so
+  // that an EV_BOOT or an EV_ATTENTION from the radio is heard, and a `rak kill` takes it away and
+  // the next call takes it back.
+  static core::link::client::LinkPort link_port(radio_pins, g_uart);
+  static core::link::client::Client radio(link_port, g_clock, g_wall);
+  if (!g_uart.begin()) {
+    std::printf("the radio's UART would not start: no link in this boot\n");
+  } else {
+    const core::board::Outcome opened = link_port.open();
+    std::printf("link: UART1 115200 8N1 on the radio's two pins, %s\n",
+                opened == core::board::Outcome::kOk ? "open"
+                                                    : core::board::describe(opened));
+  }
+
+  // The console, on the USB port, in this task: one byte at a time, the radio's port read every
+  // time round, the uptime kept in retained storage about once a second. Returning is not an
+  // option here (the console is this task); the task watchdog watches the idle tasks, which run
+  // while this one waits for a byte.
+  static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {
     const int c = console_up ? g_usb.readByte(100) : -1;
     if (c >= 0) console.feed(static_cast<char>(c));
     if (!console_up) g_clock.delayMs(100);
+    // Whatever the radio sent while nobody was asking: events queued, scanner lines kept. It
+    // reads what is there and returns - nothing here blocks on the radio.
+    radio.poll();
     const std::uint32_t up = health.uptimeS();
     if (up != last_tick_s) {
       last_tick_s = up;

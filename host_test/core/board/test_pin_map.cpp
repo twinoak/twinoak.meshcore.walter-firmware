@@ -111,3 +111,13 @@ TEST_CASE("the seven pins are distinct GPIOs and distinct D-sub pins, on the gli
   CHECK(core::board::kNReset.gpio == 1);
   CHECK(core::board::kPwrKill.gpio == 5);
 }
+
+TEST_CASE("the UART's two pins come from the table and nowhere else") {
+  // platform/uart.cpp needs the numbers - a UART drives its own TX - and takes them through these
+  // two functions, so that the names stay inside core/board/ (tools/verify.sh greps for them) and
+  // the table above stays the one source. spec/LINK-PROTOCOL.md §1: GPIO7 TX, GPIO8 RX.
+  CHECK(core::board::uartTxGpio() == core::board::kWalterTx.gpio);
+  CHECK(core::board::uartRxGpio() == core::board::kWalterRx.gpio);
+  CHECK(core::board::uartTxGpio() == 7);
+  CHECK(core::board::uartRxGpio() == 8);
+}

@@ -119,3 +119,57 @@ of §5 last. The firmware's side is `components/core/board/radio_pins.cpp`; the 
   after KILL falls, how long until the rail is steady at 3.3 V. Replace `kKillTiming` in
   `components/core/include/core/board/radio_pins.h` (min, max, settle) — the host tests and
   `help` follow — and note the measurements in this file.
+
+## 3. The link
+
+Needs: the Walter on USB with §2 walked, the RAK4631 on the RAK19001 with the repeater firmware on
+it, and the UART wired through both bulkhead filters — D-sub 8 and 9, 470 Ω and about 2.2 nF per
+line (`BENCH-BREADBOARD.md` §3): Walter GPIO7 → RAK `Serial1` RX (P0.15), Walter GPIO8 ← RAK TX
+(P0.16), the adapter's J4/J5 jumpers on 1–2. Both consoles open: the Walter's on its USB-C, the
+RAK's on its own. The firmware's side is `components/core/link/client/`, the protocol is
+[`spec/LINK-PROTOCOL.md`](../spec/LINK-PROTOCOL.md), what the host tests proved is in
+`tasks/phase-1/reports/02.md`, and the commands are in [`console.md`](console.md).
+
+This is the first time either firmware's codec meets the other's: until now both have only passed
+the same fixtures.
+
+- [ ] **`rak hello`** (task p1-02). Prints `protocol 1.0`, `role 1 (repeater)`, `slot 0`, `max
+  payload 240`, a `boot_id`, the RAK's firmware, board and upstream versions, and its capability
+  bits by name. Hold them against what the RAK's own console says (`stats-core`, its banner): the
+  same version, the same board. Then `rak ping` — the nonce comes back, the uptime grows between
+  two of them, `1 attempt` — and `rak status`: its uptime, why it booted, its clock, its flags and
+  `link errors 0`.
+
+- [ ] **`rak cli get radio`** (task p1-02). The reply is the line the RAK's own console would have
+  printed for `get radio`. Try one the mesh refuses but this link does not (§5.7: `stats-core`),
+  and `rak cli reboot` — no answer, the console says that is expected, and the RAK restarts.
+
+- [ ] **`rak power` and `rak env`** (task p1-02). Three channels with the shunts already applied:
+  panel positive into the charger, battery negative while discharging, load positive. Against a
+  meter on the battery: the sign and the order of magnitude. `rak env` within a degree of the room.
+
+- [ ] **A reset of the RAK by its own button** (task p1-02). `rak events` then shows the boot —
+  `boot (seq 0): reset 2 (reset pin)` with the new `boot_id` — and the RAK's clock is set straight
+  afterwards: `rak time` says `time state 2 (set over this link since boot)`. There is no time to
+  give yet on a Walter with no modem (phase 3), so what sets it on the bench is `rak time set
+  <epoch>` from a person; after that, `rak hello` says the clock has been set and `rak status`
+  agrees.
+
+- [ ] **NoiseScope on the RAK** (task p1-02, §9). With the scanner firmware flashed instead of the
+  repeater: `rak hello` takes three seconds, fails with *the link is down*, and then says *the
+  radio is running the scanner: scanner (text)*. `rak text` shows its `{"t":...}` lines — at least
+  the `info` line that answered the probe, and a `stat` line within ten seconds. `rak ping` is
+  refused without sending a frame. `rak reset` puts it back to *unknown*, and with the repeater
+  firmware on it `rak hello` answers again.
+
+- [ ] **Through both filters, an hour of `rak ping` once a second** (task p1-02). From a laptop
+  script on the Walter's console, or `rak status` before and after: **no retries counted** and no
+  dropped frames (`status`'s link line: `retries 0, timeouts 0, drops 0`). A retry here would mean
+  the 470 Ω and 2.2 nF are taking the edges off 115200 baud, and the baud rate is the thing to
+  change (§1 is frozen).
+
+- [ ] **An attention wakes the Walter** (task p1-02, §8). With the RAK's admin command that asks
+  for the Walter (or a battery low enough): `rak events` shows `attention`, with its reason and
+  `repeat` counting up if the Walter was not listening at once. Deep sleep is phase 3's, so what
+  this shows now is only that the event arrives and the two zero bytes before it are not mistaken
+  for a frame.

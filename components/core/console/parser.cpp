@@ -37,6 +37,18 @@ Parsed refuse2(const char* message, const char* detail) {
   return p;
 }
 
+// out = a + b + c, bounded: a refusal that names the subcommand it is about.
+Parsed refuse3(const char* a, const char* b, const char* c) {
+  Parsed p;
+  p.ok = false;
+  put(p.error, sizeof p.error, a);
+  std::size_t n = std::strlen(p.error);
+  if (n + 1 < sizeof p.error) put(p.error + n, sizeof p.error - n, b);
+  n = std::strlen(p.error);
+  if (n + 1 < sizeof p.error) put(p.error + n, sizeof p.error - n, c);
+  return p;
+}
+
 Parsed accept(Verb verb) {
   Parsed p;
   p.ok = true;
@@ -58,6 +70,34 @@ bool parseSeconds(const char* text, std::uint32_t& out) {
   out = value;
   return true;
 }
+
+// A Unix epoch: digits only, at most ten of them (4 294 967 295 is ten digits) and inside a u32.
+// §5.4's `epoch` is a u32, and 2026 is already 1.7 billion, so the nine digits rak kill allows
+// itself are not enough here.
+bool parseEpoch(const char* text, std::uint32_t& out) {
+  if (*text == 0) return false;
+  std::uint64_t value = 0;
+  std::size_t digits = 0;
+  for (const char* p = text; *p != 0; ++p) {
+    if (*p < '0' || *p > '9') return false;
+    if (++digits > 10) return false;
+    value = value * 10 + static_cast<std::uint64_t>(*p - '0');
+    if (value > 0xFFFFFFFFull) return false;
+  }
+  out = static_cast<std::uint32_t>(value);
+  return true;
+}
+
+// The subcommands of `rak` that take nothing after them.
+struct Simple {
+  const char* word;
+  Verb verb;
+};
+constexpr Simple kSimple[] = {
+    {"reset", Verb::kRakReset},   {"hello", Verb::kRakHello},  {"ping", Verb::kRakPing},
+    {"status", Verb::kRakStatus}, {"id", Verb::kRakId},        {"power", Verb::kRakPower},
+    {"env", Verb::kRakEnv},       {"events", Verb::kRakEvents}, {"text", Verb::kRakText},
+};
 
 }  // namespace
 
@@ -120,7 +160,7 @@ Parsed parseLine(const char* line) {
     return accept(Verb::kReboot);
   }
   if (std::strcmp(verb, "rak") == 0) {
-    if (!hasRest) return refuse("rak needs a subcommand: rak reset, rak kill <seconds>");
+    if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
     char* sub = rest;
     char* arg = sub;
     while (*arg != 0 && !isSpace(*arg)) ++arg;
@@ -129,9 +169,45 @@ Parsed parseLine(const char* line) {
       while (*arg != 0 && isSpace(*arg)) ++arg;
     }
     const bool hasArg = *arg != 0;
-    if (std::strcmp(sub, "reset") == 0) {
-      if (hasArg) return refuse("rak reset takes no argument");
-      return accept(Verb::kRakReset);
+    for (const Simple& simple : kSimple) {
+      if (std::strcmp(sub, simple.word) != 0) continue;
+      if (hasArg) return refuse3("rak ", simple.word, " takes no argument");
+      return accept(simple.verb);
+    }
+    // rak time, and rak time set <epoch> (§5.4: source 3, a person at a console).
+    if (std::strcmp(sub, "time") == 0) {
+      if (!hasArg) return accept(Verb::kRakTime);
+      char* word = arg;
+      char* value = word;
+      while (*value != 0 && !isSpace(*value)) ++value;
+      if (*value != 0) {
+        *value++ = 0;
+        while (*value != 0 && isSpace(*value)) ++value;
+      }
+      if (std::strcmp(word, "set") != 0) {
+        return refuse2("rak time: unknown word (rak time, rak time set <epoch>): ", word);
+      }
+      if (*value == 0) return refuse("rak time set needs a unix epoch: rak time set <epoch>");
+      for (const char* p = value; *p != 0; ++p) {
+        if (isSpace(*p)) return refuse("rak time set takes one number: rak time set <epoch>");
+      }
+      Parsed p = accept(Verb::kRakTimeSet);
+      if (!parseEpoch(value, p.command.epoch)) {
+        return refuse2("rak time set: not a unix epoch in seconds: ", value);
+      }
+      return p;
+    }
+    // rak cli <line>: the rest of the line verbatim, spaces and all (§5.7).
+    if (std::strcmp(sub, "cli") == 0) {
+      if (!hasArg) return refuse("rak cli needs a line: rak cli <line>");
+      const std::size_t n = std::strlen(arg);
+      if (n > kMaxCliLine) {
+        return refuse("rak cli: the line is 1 to 160 bytes");
+      }
+      Parsed p = accept(Verb::kRakCli);
+      std::memcpy(p.command.text, arg, n + 1);
+      p.command.text_size = n;
+      return p;
     }
     if (std::strcmp(sub, "kill") == 0) {
       if (!hasArg) return refuse("rak kill needs a duration: rak kill <seconds>");
@@ -144,7 +220,7 @@ Parsed parseLine(const char* line) {
       }
       return p;
     }
-    return refuse2("unknown rak subcommand (reset, kill <seconds>): ", sub);
+    return refuse2("unknown rak subcommand (try 'help'): ", sub);
   }
   return refuse2("unknown command (try 'help'): ", verb);
 }

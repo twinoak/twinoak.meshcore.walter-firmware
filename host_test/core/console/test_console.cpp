@@ -10,11 +10,15 @@
 #include "core/board/radio_pins.h"
 #include "core/console/console.h"
 #include "core/health/health.h"
+#include "core/link/client/client.h"
+#include "core/link/client/port.h"
 #include "core/version.h"
 #include "fakes/capture.h"
 #include "fakes/fake_clock.h"
 #include "fakes/fake_pins.h"
 #include "fakes/fake_retained.h"
+#include "fakes/fake_wall_clock.h"
+#include "sim/scripted_radio.h"
 
 using core::board::kKillTiming;
 using core::board::kNReset;
@@ -36,7 +40,13 @@ struct Rig {
   fakes::FakeRestart restart;
   RadioPins radio{pins, clock, retained};
   Health health{retained, clock};
-  Console console{out, radio, health, clock, restart};
+  // The radio on the other end of the UART, and the client that speaks to it (task p1-02): the
+  // console's `rak hello` and the rest go through these.
+  sim::ScriptedRadio rak{clock};
+  fakes::FakeWallClock wall;
+  core::link::client::LinkPort port{radio, rak};
+  core::link::client::Client link{port, clock, wall};
+  Console console{out, radio, health, clock, restart, link};
 
   Rig() {
     health.begin(ResetReason::kPowerOn, WakeCause::kNotFromSleep);
@@ -80,7 +90,9 @@ TEST_CASE("begin prints the boot's reason and a prompt") {
 TEST_CASE("help lists every command") {
   Rig rig;
   const std::string text = rig.run("help");
-  for (const char* cmd : {"help", "status", "reboots", "pins", "rak reset", "rak kill <seconds>", "reboot"}) {
+  for (const char* cmd : {"help", "status", "reboots", "pins", "rak reset", "rak kill <seconds>",
+                          "reboot", "rak hello", "rak ping", "rak status", "rak id", "rak time",
+                          "rak power", "rak env", "rak cli <line>", "rak events", "rak text"}) {
     CHECK_MESSAGE(contains(text, cmd), cmd);
   }
   CHECK(contains(text, "(1..30)"));
@@ -163,7 +175,7 @@ TEST_CASE("reboots: this boot and the ones before") {
   CHECK(rig.restart.asked == 1);
   Health next(rig.retained, rig.clock);
   next.begin(ResetReason::kSoftware, WakeCause::kNotFromSleep);
-  Console console(rig.out, rig.radio, next, rig.clock, rig.restart);
+  Console console(rig.out, rig.radio, next, rig.clock, rig.restart, rig.link);
   rig.out.clear();
   console.runLine("reboots");
   CHECK(contains(rig.out.text, "boots since the record began: 2\n"));
@@ -178,7 +190,7 @@ TEST_CASE("unknown commands and bad arguments get one error line") {
   Rig rig;
   CHECK(rig.run("foo") == "error: unknown command (try 'help'): foo\n");
   CHECK(rig.run("rak kill x") == "error: rak kill: not a whole number of seconds: x\n");
-  CHECK(rig.run("rak") == "error: rak needs a subcommand: rak reset, rak kill <seconds>\n");
+  CHECK(rig.run("rak") == "error: rak needs a subcommand (try 'help')\n");
   CHECK(rig.run("") == "");
   const std::string long_line(core::console::kMaxLineLength + 5, 'a');
   CHECK(rig.run(long_line.c_str()) == "error: line too long (200 characters at most)\n");
@@ -219,7 +231,13 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   const char* tokens[] = {"help", "status", "reboots", "pins", "rak", "reset", "kill", "reboot",
                           "0", "1", "2", "5", "29", "30", "31", "100", "-1", "1.5", "x", "", "  ",
                           "rak reset", "rak kill 1", "rak kill 2", "rak kill 30", "rak kill 0",
-                          "rak kill 31", "rak reset rak reset", "RAK RESET", "\x01", "\xff"};
+                          "rak kill 31", "rak reset rak reset", "RAK RESET", "\x01", "\xff",
+                          // the link (task p1-02): every subcommand, and the words they are made
+                          // of, so that half-typed ones are in the bag too
+                          "hello", "ping", "id", "time", "set", "power", "env", "cli", "events",
+                          "text", "rak hello", "rak ping", "rak status", "rak id", "rak time",
+                          "rak time set 1791719000", "rak time set x", "rak power", "rak env",
+                          "rak cli get radio", "rak cli", "rak events", "rak text"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);
@@ -246,13 +264,19 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
       lines++;
       resets += rig.pins.transitionsOf(kNReset.gpio).size() > before;
       kills += rig.pins.transitionsOf(kPwrKill.gpio).size() > kill_before;
-      // After every line the board is quiet: nothing driven, nothing asserted, nothing held.
+      // After every line the board is quiet: the kill line not driven, nRESET not asserted, SWD
+      // not held, and nothing driving a pin - except WALTER_TX while the link client holds the
+      // UART, which is the one pin that is *meant* to be driven (ARCHITECTURE §2 rule 1: TX is
+      // driven only between uartEnable() and uartRelease(), and the client keeps the port open so
+      // that the radio's events are heard). Task p0-03's version of this test had no link in it
+      // and could ask for silence on all seven.
       CHECK(!rig.radio.killDriven());
       CHECK(!rig.radio.resetAsserted());
       CHECK(!rig.radio.swdHeld());
-      CHECK(!rig.radio.uartEnabled());
       for (const core::board::PinDef& pin : core::board::kRadioPins) {
-        CHECK_MESSAGE(!rig.pins.driving(pin.gpio), pin.net << " driven after '" << line << "'");
+        const bool may_drive = pin.gpio == core::board::kWalterTx.gpio && rig.radio.uartEnabled();
+        const bool quiet = may_drive ? true : !rig.pins.driving(pin.gpio);
+        CHECK_MESSAGE(quiet, pin.net << " driven after '" << line << "'");
       }
       if (rig.pins.violations.size() != 0) {
         FAIL("rule " << rig.pins.violations[0].rule << " broken by '" << line << "': "
@@ -266,8 +290,149 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   CHECK(rig.pins.violations.empty());
   CHECK(sequences == 3000);
   CHECK(lines > 3000);
-  CHECK(resets > 100);
+  // Fewer of each than task p0-03's version of this test saw: the bag of tokens grew by the
+  // link's twenty-odd (task p1-02), so a given line is less often one of these two. The run is
+  // seeded, and at this seed it is 47 resets and 151 kills in 10 482 lines.
+  CHECK(resets > 40);
   CHECK(kills > 100);
   MESSAGE(sequences << " sequences, " << lines << " lines, " << resets << " resets, " << kills
                     << " kills, " << rig.restart.asked << " reboots, no rule broken");
+}
+
+// ---------------------------------------------------------------------------- the link (p1-02)
+//
+// The answers come from spec/fixtures/link/link-v1.json through the scripted radio, so what the
+// console prints here is the specification's own numbers.
+
+TEST_CASE("rak hello prints the version, role, slot and capabilities") {
+  Rig rig;
+  const std::string text = rig.run("rak hello");
+  CHECK(contains(text, "hello: protocol 1.0, role 1 (repeater), slot 0, max payload 240"));
+  CHECK(contains(text, "firmware 0.1.0+abc1234, board rak4630-single, "
+                       "upstream repeater-v1.17.1+d9296435\n"));
+  CHECK(contains(text, "capabilities 0x3f: cli, power, env, mesh-client, observations, attention"));
+  // §5.4: a boot_id this end has not seen means the radio's clock wants setting.
+  CHECK(contains(text, "its clock has not been set since it booted"));
+  CHECK(contains(rig.run("status"), "link: frames (protocol 1.0); a session is up"));
+}
+
+TEST_CASE("rak ping, rak status, rak id, rak time, rak power, rak env in words") {
+  Rig rig;
+  REQUIRE(contains(rig.run("rak hello"), "hello: protocol 1.0"));
+
+  CHECK(contains(rig.run("rak ping"), "ping: the nonce came back"));
+  // The radio answers the fixture's PING response, whose nonce is the fixture's and not ours.
+  rig.rak.answerWith("ping response");
+  CHECK(contains(rig.run("rak ping"), "a different nonce came back, uptime 86400 s"));
+
+  std::string text = rig.run("rak status");
+  CHECK(contains(text, "radio status: uptime 3600 s, booted: 2 (reset pin)\n"));
+  CHECK(contains(text, "clock 1791720000, time state 2 (set over this link since boot)\n"));
+  CHECK(contains(text, "flags 0x10: the radio initialised\n"));
+  CHECK(contains(text, "observations 7 pending, 0 dropped; link errors 1; attention 0 (none)\n"));
+
+  text = rig.run("rak id");
+  CHECK(contains(text, "identity: public key "
+                       "7f3a9c02e1b44d9a0f6c2b7d8e9a1c3f5d7b9e0a2c4e6f8a0b1c2d3e4f5a6b7c\n"));
+  CHECK(contains(text, "name TwinOak Risskov\n"));
+
+  CHECK(contains(rig.run("rak time"), "radio clock: 1791720042, time state 2 (set over this"));
+  text = rig.run("rak time set 1791720000");
+  CHECK(contains(text, "radio clock: was 1715770400, now 1791720000, time state 2 ("));
+
+  text = rig.run("rak power");
+  CHECK(contains(text, "power (valid 0x7):\n"));
+  CHECK(contains(text, "  panel   18100 mV,    120 mA\n"));
+  CHECK(contains(text, "  battery  4012 mV,    -52 mA\n"));
+  CHECK(contains(text, "  load     3980 mV,     85 mA\n"));
+
+  // §5.8's fixture is below freezing, which is why it is the fixture: -3.50 C.
+  CHECK(contains(rig.run("rak env"), "env (valid 0x7): -3.50 C, 81.25 %rh, 101325 Pa\n"));
+}
+
+TEST_CASE("rak cli runs a line and prints the reply; silence after one is expected") {
+  Rig rig;
+  REQUIRE(rig.link.hello().ok());
+  const std::string text = rig.run("rak cli get radio");
+  CHECK(contains(text, "reply: > 869.618,62.5,8,8\n"));
+  REQUIRE(rig.rak.requests.size() >= 2);
+  const sim::ScriptedRadio::Seen& seen = rig.rak.requests.back();
+  CHECK(seen.type == core::link::type::kCli);
+  // §5.7: the request is the line itself - 1 to 160 bytes of UTF-8, no length and no terminator.
+  CHECK(std::string(seen.payload.begin(), seen.payload.end()) == "get radio");
+
+  // §5.7: `reboot` restarts the node and never answers. Three attempts, then a line that says so.
+  rig.rak.deaf = true;
+  const std::string quiet = rig.run("rak cli reboot");
+  CHECK(contains(quiet, "error: rak cli: no answer to three attempts: the link is down\n"));
+  CHECK(contains(quiet, "some lines (reboot) restart the radio and never answer"));
+}
+
+TEST_CASE("rak events prints what the radio sent, decoded") {
+  Rig rig;
+  REQUIRE(rig.link.hello().ok());
+  CHECK(contains(rig.run("rak events"), "no events queued (0 seen, 0 dropped, 0 gaps)\n"));
+
+  rig.rak.sendEvent("attention: the battery is low");
+  rig.rak.sendEvent("mesh reply: a cli reply");
+  const std::string text = rig.run("rak events");
+  CHECK(contains(text, "2 events queued (2 seen, 0 dropped, 0 gaps):\n"));
+  CHECK(contains(text, "1. attention (seq 0): 2 (battery low), detail 3450, repeat 0\n"));
+  CHECK(contains(text, "2. mesh reply (seq 1): a text reply, tag 0x00000000, snr 31/4 dB, "
+                       "rssi -80 dBm, 2890 ms\n"));
+  // Taken out of the queue by printing them.
+  CHECK(contains(rig.run("rak events"), "no events queued (2 seen"));
+}
+
+TEST_CASE("rak text prints a scanner's lines, and says so when there are none") {
+  Rig rig;
+  CHECK(contains(rig.run("rak text"), "no scanner lines (0 seen, 0 dropped; the link is unknown"));
+  rig.rak.scanner = true;
+  CHECK(contains(rig.run("rak hello"), "the radio is running the scanner: scanner (text)"));
+  rig.rak.sendLine("{\"t\":\"stat\",\"up\":12}");
+  const std::string text = rig.run("rak text");
+  CHECK(contains(text, "kept of "));
+  CHECK(contains(text, "{\"t\":\"stat\",\"up\":12}\n"));
+  // §9: a frame is never sent in a text session - every rak command says so instead.
+  CHECK(rig.run("rak ping") ==
+        "error: rak ping: the radio is running the scanner: no frames are sent\n");
+}
+
+TEST_CASE("a radio that says nothing, and one that cannot do what was asked") {
+  Rig rig;
+  rig.rak.deaf = true;
+  CHECK(rig.run("rak hello") ==
+        "error: rak hello: no answer to three attempts: the link is down\n");
+  CHECK(rig.rak.requests.size() == 3);  // §3: three attempts, the same seq
+  CHECK(rig.run("rak status") ==
+        "error: rak status: no answer to three attempts: the link is down\n");
+
+  // §4: POWER_GET needs the POWER capability. Without a session there is nothing to check it
+  // against, and with one that lacks it nothing is sent at all.
+  Rig other;
+  CHECK(other.run("rak power") == "error: rak power: no session: say hello first\n");
+  other.rak.caps = core::link::cap::kCli;
+  REQUIRE(other.link.hello().ok());
+  const std::size_t sent = other.rak.requests.size();
+  CHECK(other.run("rak power") ==
+        "error: rak power: the radio does not advertise the capability\n");
+  CHECK(other.rak.requests.size() == sent);
+}
+
+TEST_CASE("rak reset and rak kill tell the client the radio is starting over") {
+  Rig rig;
+  REQUIRE(rig.link.hello().ok());
+  REQUIRE(rig.link.session().up);
+  CHECK(contains(rig.run("rak reset"), "ok: nRESET low for 100 ms"));
+  CHECK_FALSE(rig.link.session().up);
+  CHECK(rig.link.mode() == core::link::client::Mode::kUnknown);
+
+  REQUIRE(rig.link.hello().ok());
+  CHECK(contains(rig.run("rak kill 2"), "ok: rail off 2 s"));
+  CHECK_FALSE(rig.link.session().up);
+  // The kill took the UART from under the port (ARCHITECTURE §2 rule 3): the port noticed and
+  // let the stream go with it, rather than keeping a peripheral on a pad it no longer owns.
+  CHECK_FALSE(rig.link.port().isOpen());
+  CHECK(rig.link.port().lost() == 1);
+  CHECK(rig.pins.violations.empty());
 }
