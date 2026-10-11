@@ -111,6 +111,7 @@ enum class Status : std::uint8_t {
   kParityError,     // the read data's parity is wrong; the value is not trusted
   kPowerUpTimeout,  // the acknowledges did not come in kPowerUpPolls reads
   kBadAddress,      // not a DP register address, or an AP address that is not word-aligned
+  kNoMemAp,         // the access port is not a memory access port, or is not there (task p1-04)
 };
 const char* describe(Status status);
 

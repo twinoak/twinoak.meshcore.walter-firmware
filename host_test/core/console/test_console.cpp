@@ -240,7 +240,11 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           "rak cli get radio", "rak cli", "rak events", "rak text",
                           // the debug port (task p1-03): no target behind these fake pins, so
                           // every connect fails and must still release the lines
-                          "swd", "connect", "rak swd", "rak swd connect", "rak swd connect now"};
+                          "swd", "connect", "rak swd", "rak swd connect", "rak swd connect now",
+                          // the nRF52 (task p1-04): the same, nothing answers, every session
+                          // must still release the lines
+                          "mem", "rak swd id", "rak swd mem", "rak swd mem 0x10000100 2",
+                          "rak swd mem 0x1 2", "rak swd mem 0x20000000 32", "0x10000100"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);
@@ -294,9 +298,10 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   CHECK(sequences == 3000);
   CHECK(lines > 3000);
   // Fewer of each than task p0-03's version of this test saw: the bag of tokens grew by the
-  // link's twenty-odd (task p1-02), so a given line is less often one of these two. The run is
-  // seeded, and at this seed it is 47 resets and 151 kills in 10 482 lines.
-  CHECK(resets > 40);
+  // link's twenty-odd (task p1-02) and the SWD commands' dozen (tasks p1-03, p1-04), so a given
+  // line is less often one of these two. The run is seeded, and at this seed it is 36 resets and
+  // over a hundred kills in some 10 000 lines.
+  CHECK(resets > 30);
   CHECK(kills > 100);
   MESSAGE(sequences << " sequences, " << lines << " lines, " << resets << " resets, " << kills
                     << " kills, " << rig.restart.asked << " reboots, no rule broken");

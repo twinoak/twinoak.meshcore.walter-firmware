@@ -45,13 +45,27 @@
 namespace sim {
 
 // An access port's registers, as the DP reaches them: `addr` is the byte offset 0x00..0xFC,
-// SELECT.APBANKSEL in bits [7:4] and A[3:2] in bits [3:2] (ADIv5 B4.2.8). Task 04 implements
-// the MEM-AP and the CTRL-AP against this.
+// SELECT.APBANKSEL in bits [7:4] and A[3:2] in bits [3:2] (ADIv5 B4.2.8). Task 04's simulated
+// nRF52840 (nrf52_chip.h) implements the AHB-AP and the CTRL-AP against this.
+//
+// What an access completes with: kError is a transaction that "completes with an error
+// response" - the DP sets CTRL/STAT.STICKYERR and answers FAULT to the next request (B2.2.2,
+// B4.2.4); the data phase of the read that caused it still happens, with UNKNOWN data. kWait is
+// not returned here: a port that cannot take the access now says so through stalls(), which is
+// asked at the request, before the acknowledge, as the hardware decides (B4.2.3).
+enum class ApAccess : std::uint8_t { kOk, kError };
+
 class AccessPort {
  public:
   virtual ~AccessPort() = default;
-  virtual std::uint32_t read(std::uint8_t addr) = 0;
-  virtual void write(std::uint8_t addr, std::uint32_t value) = 0;
+  virtual ApAccess read(std::uint8_t addr, std::uint32_t* out) = 0;
+  virtual ApAccess write(std::uint8_t addr, std::uint32_t value) = 0;
+  // True: the DP answers WAIT to this request (the bus behind the port is busy).
+  virtual bool stalls(std::uint8_t addr, bool write) {
+    (void)addr;
+    (void)write;
+    return false;
+  }
 };
 
 // Stores what is written, returns it on read. Enough for the DP's own tests.
@@ -60,13 +74,15 @@ class StubAp final : public AccessPort {
   std::uint32_t regs[64] = {};
   unsigned reads = 0;
   unsigned writes = 0;
-  std::uint32_t read(std::uint8_t addr) override {
+  ApAccess read(std::uint8_t addr, std::uint32_t* out) override {
     reads++;
-    return regs[(addr >> 2) & 63];
+    *out = regs[(addr >> 2) & 63];
+    return ApAccess::kOk;
   }
-  void write(std::uint8_t addr, std::uint32_t value) override {
+  ApAccess write(std::uint8_t addr, std::uint32_t value) override {
     writes++;
     regs[(addr >> 2) & 63] = value;
+    return ApAccess::kOk;
   }
 };
 
@@ -134,6 +150,8 @@ class SwdTarget final : public interfaces::Pins {
     unsigned resend_reads = 0;
     unsigned ap_reads = 0;
     unsigned ap_writes = 0;
+    unsigned ap_errors = 0;  // AP transactions that ended in an error response (STICKYERR set)
+    unsigned ap_stalls = 0;  // WAITs the access port asked for
     unsigned wdata_parity_errors = 0;
     unsigned idle_cycles = 0;           // host idle cycles seen in all
     unsigned max_idle_after_transfer = 0;

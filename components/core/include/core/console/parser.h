@@ -26,9 +26,12 @@
 //   rak events            the events the client has queued
 //   rak text              the lines a scanner has sent (§9)
 //
-// and the debug port (task p1-03):
+// and the debug port (task p1-03) and the chip behind it (task p1-04):
 //
 //   rak swd connect       acquire the SWD lines, connect, print DPIDR and the power-up, release
+//   rak swd id            connect, identify the nRF52840 (FICR), its protection, its core's state, release
+//   rak swd mem <addr> [words]
+//                         read 1 to 32 words at a word-aligned address (hex 0x... or decimal), read-only
 #pragma once
 
 #include <cstddef>
@@ -60,9 +63,14 @@ enum class Verb : std::uint8_t {
   kRakCli,
   kRakEvents,
   kRakText,
-  // The debug port (task p1-03).
+  // The debug port (task p1-03) and the nRF52 behind it (task p1-04).
   kRakSwdConnect,
+  kRakSwdId,
+  kRakSwdMem,
 };
+
+// rak swd mem reads at most this many words: eight lines of four.
+constexpr std::uint32_t kMaxMemWords = 32;
 
 // §5.7: a CLI line is 1 to 160 bytes of UTF-8. The parser refuses a longer one here rather than
 // letting the encoder refuse it later, so that the console can say which limit was passed.
@@ -74,6 +82,8 @@ struct Command {
   std::uint32_t epoch = 0;                // kRakTimeSet
   char text[kMaxCliLine + 1] = {};        // kRakCli: the rest of the line, verbatim
   std::size_t text_size = 0;
+  std::uint32_t address = 0;              // kRakSwdMem: word-aligned
+  std::uint32_t words = 1;                // kRakSwdMem: 1..kMaxMemWords
 };
 
 // The longest line the console accepts, without its line ending (the agent firmware's figure).

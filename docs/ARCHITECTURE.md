@@ -16,7 +16,9 @@ components/
     link/               the box link: codec, client (the UART, retries, events, the session,
                         telling a repeater from a scanner), the protocol's numbers in words
     swd/                the debug port: wire protocol and DP (task p1-03), MEM-AP (task p1-04)
-    nrf52/              identification, access-port protection, the flash controller, core control
+    nrf52/              identification, access-port protection, the flash controller, core control,
+                        the region guard; regs.h names every register, the forbidden ones included
+                        (task p1-04)
     flasher/            an image and a region in; erases, writes, verify out
     image/              manifest, signature, descriptor, the image store's records
     update/             the radio's update and its journal; the Walter's own update policy
@@ -24,7 +26,8 @@ components/
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text (task p0-03: help, status, reboots,
                         pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
-                        time, power, env, cli, events, text; task p1-03: rak swd connect)
+                        time, power, env, cli, events, text; task p1-03: rak swd connect; task
+                        p1-04: rak swd id, rak swd mem)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); flash regions,
@@ -37,8 +40,8 @@ components/
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained storage as a map
   sim/                  the scripted RAK on a fake UART (task p1-02); the simulated SWD target at
-                        the wire level (task p1-03), the nRF52 behind it and the simulated flash
-                        (later)
+                        the wire level (task p1-03); the simulated nRF52840 behind it - its two
+                        access ports, its flash, FICR, UICR, NVMC and core (task p1-04)
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
 tools/                  verify.ps1, release/ (the release tooling), bench tools
 keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02)
@@ -196,23 +199,55 @@ what ends debug interface mode), `SELECT` rewritten only when the port or the ba
 read's posted value collected through `RDBUFF` so a caller sees the register it asked for; WAIT
 retried ten times with idle cycles between; a FAULT reported with `CTRL/STAT`'s sticky flags and
 cleared through `ABORT`; a parity error a failed transfer, never a value (task p1-03,
-`core/swd/dp`). Memory access
-through AP 0: `CSW` for 32-bit accesses with auto-increment, `TAR`, `DRW`; reads are posted, so the
-value comes one transfer later; the address auto-increment wraps inside a 1 KB block, so `TAR` is
-rewritten at every boundary.
+`core/swd/dp`). Memory access through AP 0 (task p1-04, `core/swd/mem_ap`; ADIv5 chapter C2):
+`IDR` read once and held to class *Memory Access Port* (an IDR of zero is no AP at all), `CSW`
+written for 32-bit accesses with single auto-increment as a debug master (`0x23000012`, read back
+as `0x23000052` with the read-only `DeviceEn`; the Cortex-M4's `MasterType` bit is what lets a
+debugger set `C_DEBUGEN`, DDI 0439B Table 8-6), `TAR`,
+`DRW`; reads are posted, so the value comes one transfer later. **The auto-increment is guaranteed
+only inside a 1 KB block** (C2.2.2: "the 10 least significant bits"; beyond that IMPLEMENTATION
+DEFINED) — the Cortex-M4's own AHB-AP wraps at 4 KB (DDI 0439B Table 8-6) — so `TAR` is rewritten
+at every 1 KB boundary, which is right for both. Every result carries the address it was for. The
+nRF52840's AHB-AP reads `IDR 0x24770011` (the Cortex-M4's, from its TRM; the bench confirms).
 
-**The nRF52** *(verify against Nordic's product specification)*:
+**The nRF52** (task p1-04, `core/nrf52/`; every register in `regs.h` with its chapter of the
+nRF52840 Product Specification or the Armv7-M ARM):
 
-- identification from `FICR` (`0x10000000`): part, variant, flash size, page size, device id;
-- **access-port protection** read from the control access port (AP 1, `APPROTECTSTATUS`). A
-  protected chip answers on the debug port and refuses memory access. **The firmware detects it,
-  says so, and stops.** Opening it needs `ERASEALL`, which destroys the bootloader, the SoftDevice,
-  the node's identity and UICR; that is a bench procedure for a person with a debug probe (hardware
-  repository, `BENCH-BREADBOARD.md` caveat 6), once per module. This firmware has no code for it;
-- the core: halt, reset-and-halt, run, system reset — through `DHCSR`, `DEMCR`, `AIRCR`;
-- the flash controller (`NVMC`, `0x4001E000`): `CONFIG` to enable erase or write, `ERASEPAGE`,
-  `READY`; 4096-byte pages on the nRF52840. `ERASEALL` and `ERASEUICR` exist in the header as
-  named constants that nothing calls.
+- a **session**: connect, power-up, then the control access port (AP 1; `IDR 0x02880000`,
+  Nordic's) and its `APPROTECTSTATUS` *before any memory access*; then the memory access port and
+  `FICR`; the power-up withdrawn at close;
+- **identification** from `FICR` (`0x10000000`): `INFO.PART` (`0x52840`), `INFO.VARIANT` (four
+  ASCII characters, first in the top byte — the build code the bench must write down), `CODEPAGESIZE`,
+  `CODESIZE`, `INFO.FLASH`, `DEVICEID`. Anything but an nRF52840 with 4096-byte pages is reported
+  and refused by everything below;
+- **access-port protection**, bit 0 of `APPROTECTSTATUS` (0 = on). A protected chip answers on the
+  debug port and refuses memory access. **The firmware detects it, says so, and stops**: memory is
+  never attempted and every operation answers *protected*. Opening it needs `ERASEALL`, which
+  destroys the bootloader, the SoftDevice, the node's identity and UICR; that is a bench procedure
+  for a person with a debug probe (hardware repository, `BENCH-BREADBOARD.md` caveat 6), once per
+  module. This firmware has no code for it. **Build code Fxx modules** (rev 3, the bench core is
+  `AAF0`) ship protected unless `UICR.APPROTECT` is `0x5A` *and* their firmware writes
+  `APPROTECT.DISABLE` at start-up (Nordic's APPROTECT note): on such a module **a reset closes the
+  port again until that firmware has run**, so `resetAndHalt()` — which halts the core before its
+  start-up code — re-reads the protection afterwards and reports *protected* when it is. The
+  flasher (task p1-05) must halt a *running* core, or expect this;
+- the **core**: `halt()`, `resetAndHalt()` (C1.4.1: `C_DEBUGEN`, `DEMCR.VC_CORERESET`, then
+  `AIRCR.SYSRESETREQ`; `S_RESET_ST` and `S_HALT` say it was caught; the vector catch cleared after),
+  `run()` (C1.5.4: `C_HALT` 0, then halting debug off), `systemReset()`, `coreState()` — through
+  `DHCSR` (`0xE000EDF0`, key `0xA05F`), `DEMCR` (`0xE000EDFC`), `AIRCR` (`0xE000ED0C`, key `0x05FA`);
+- the **flash controller** (`NVMC`, `0x4001E000`): `CONFIG` (`+0x504`: 0 read-only, 1 write, 2
+  erase), `ERASEPAGE` (`+0x508`), `READY` (`+0x400`); 256 pages of 4096 bytes. `erasePage` and
+  `writeWords` take a **`FlashRegion`** and refuse anything outside it before any NVMC access —
+  there is no overload without one; a region must be page-aligned and inside the chip's flash, so
+  no region can name UICR or FICR. `CONFIG` is returned to read-only after every operation and on
+  every error path. `READY` is awaited one read a millisecond: 300 ms for an erase (typical 85 ms),
+  50 ms after a block of writes (typical 41 µs a word; the bus stalls the access port while the
+  controller is busy, which the debug port sees as WAIT and retries). A write only clears bits:
+  erasing first and verifying after is the flasher's;
+- **what does not exist**: a function that writes `NVMC.ERASEALL`, `NVMC.ERASEUICR`, the control
+  port's `ERASEALL` or any address in UICR. They are named constants in `regs.h`, for the simulator
+  and the reader; `host_test/core/nrf52/test_nrf52_forbidden.cpp` reads every source under
+  `components/` and fails if one of the names appears anywhere else.
 
 **The simulator** (`host_test/sim/`) is the other half of this section: a wire-level SWD target
 (`swd_target`, task p1-03) that stands between `RadioPins` and the fake pins as a `Pins` of its
@@ -222,13 +257,28 @@ missing turnaround, SWDIO driven while the target drives it, a request before an
 one other than `DPIDR` in the reset state, or the clock stopped under eight idle cycles after a
 transfer, fails the test with a sentence naming the section. Its debug port has `DPIDR`, `ABORT`,
 `CTRL/STAT` with the power-up handshake and the sticky flags, `SELECT`, `RESEND`, `RDBUFF` and the
-posted AP read; access ports plug in behind a register-level interface (one stub that stores what
-is written, until task 04 brings the two real ones and behind them a memory map: flash that needs
-an erase before a write and can only clear bits, an `NVMC` with its ready flag and enable states,
-`FICR`, `UICR`, the debug registers). It can be told to answer WAIT N times, to carry a sticky
-error, to return a bad parity once, to go silent, to not be there (no pull-up: the line keeps what
-was last driven), to acknowledge a power-up late or never, to start in JTAG so that only the
-switch sequence reaches it, and (later) to lose power at the Nth write and to be protected.
+posted AP read; access ports plug in behind a register-level interface that can answer with an
+error (which sets `STICKYERR`, as the hardware does) or ask for a WAIT (the bus behind the port
+is busy). It can be told to answer WAIT N times, to carry a sticky error, to return a bad parity
+once, to go silent, to not be there (no pull-up: the line keeps what was last driven), to
+acknowledge a power-up late or never, and to start in JTAG so that only the switch sequence
+reaches it.
+
+**The simulated nRF52840** (`host_test/sim/nrf52_chip`, task p1-04) plugs into it as AP 0 and
+AP 1: an AHB-AP with `CSW`/`TAR`/`DRW`/`IDR` whose auto-increment wraps inside 1 KB — the strict
+reading of ADIv5; a knob makes it the Cortex-M4's 4 KB — so that a host that forgets to rewrite
+`TAR` lands on the wrong word and a test sees it; a control access port with `RESET`, `ERASEALL`,
+`ERASEALLSTATUS`, `APPROTECTSTATUS`, `IDR`; and the memory map: 1 MB of flash in 4 KB pages that
+**only clears bits on write and needs `CONFIG` right** (a write with it wrong is nothing, and a
+failed test), 256 KB of RAM, `FICR` with the identification registers, `UICR` (read-only to the
+firmware), an `NVMC` whose `READY` takes simulated time (41 µs a word, 85 ms a page) and stalls
+the bus meanwhile, and `DHCSR`/`DEMCR`/`AIRCR` with a core that is running or halted, a vector
+catch at reset, and a Local reset's exact effect on each register. It records every flash erase
+and write, every `CONFIG` write and `READY` read. It can be told to be protected, to re-engage
+protection at a reset (the Fxx module), to be another part or page size, to report `READY` late
+or never, to lose power at the Nth flash operation (leaving a page half-erased or a word
+half-written), and which region alone may be touched. **Its tripwire**: a write to `NVMC.ERASEALL`,
+`NVMC.ERASEUICR`, the control port's `ERASEALL` or any `UICR` word fails the running test at once.
 Everything in this section and the next is developed against it.
 
 ## 5. The flasher
@@ -385,8 +435,8 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 |---|---|---|---|
 | pin rules | ✔ fake pins | GPIO calls, sleep holds | a scope on nRESET and KILL |
 | link | ✔ fixtures, scripted radio | UART driver | through the bulkheads |
-| SWD wire, DP, AP | ✔ wire-level simulator | bit-bang timing | IDCODE, the speed ceiling |
-| nRF52, flasher | ✔ simulated chip, power loss | — | a real flash, the bootloader starts it |
+| SWD wire, DP, AP | ✔ wire-level simulator | bit-bang timing | IDCODE, the AHB-AP's IDR, the speed ceiling |
+| nRF52, flasher | ✔ simulated chip, power loss | — | `rak swd id`: part, variant, protection; a real flash, the bootloader starts it |
 | manifest, signature, descriptor | ✔ spec fixtures, RFC vectors | — | — |
 | image store, journal | ✔ simulated flash, power loss | partition access | — |
 | updates, supervisor | ✔ scripted radio and flash | — | a deliberate bad image rolls back |

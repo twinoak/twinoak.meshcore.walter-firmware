@@ -75,8 +75,9 @@ whether a session is up, and the retries, timeouts, dropped frames and events si
 
 ## The radio's debug port, over SWD
 
-From task p1-03. The two SWD lines (GPIO2 SWDCLK, GPIO4 SWDIO) are acquired for the length of
-the command and released on every exit path; the clock is 125 kHz (a half-period of 4 µs, the
+From task p1-03 (`rak swd connect`) and p1-04 (`rak swd id`, `rak swd mem`). The two SWD lines
+(GPIO2 SWDCLK, GPIO4 SWDIO) are acquired for the length of the command and released on every exit
+path; the clock is 125 kHz (a half-period of 4 µs, the
 slowest the nRF52840 is specified for, and four time constants of the filtered lines). What the
 host tests proved is in `tasks/phase-1/reports/03.md`; the protocol is Arm's ADIv5, cited in
 `components/core/swd/`.
@@ -91,6 +92,25 @@ nothing answered on the line* (the radio unpowered or absent — the acknowledge
 *protocol error: an acknowledge that is none of OK, WAIT or FAULT* (the line is confused: a short,
 a wrong pin), *parity error on the data read*, *the target kept answering WAIT*. A power-up that
 is not acknowledged in time is printed and does not stop the command.
+
+## The chip behind the debug port
+
+From task p1-04. A session — connect, power-up, the control access port, the memory access port,
+`FICR` — opened and closed inside the command; both commands are **read-only**: nothing is halted,
+nothing is written, no flash controller register is touched. What the host tests proved is in
+`tasks/phase-1/reports/04.md`; the registers and their chapters are in
+`components/core/include/core/nrf52/regs.h`.
+
+| Command | What it does |
+|---|---|
+| `rak swd id` | the DPIDR; the control access port's `IDR` and whether access-port protection is **open** or **PROTECTED**; the memory access port's `IDR`; then, on an open chip, `FICR`: part, variant (the four-character build code — **write it down**, it decides whether production modules arrive protected), flash size in pages of 4096 bytes, `INFO.FLASH`, the device id; the core's state (`running`, `halted`, `sleeping`, `locked up`); the power-up withdrawn, the pins released, the counters. A protected chip gets no memory access at all: the command says so, says that opening a module is a person's bench procedure, and stops. A part other than an nRF52840 with 4096-byte pages is printed as what it is and refused |
+| `rak swd mem <addr> [words]` | 1 to 32 words from a word-aligned address — hexadecimal with `0x`, or decimal — four a line: `rak swd mem 0x10000100 2` prints the part and the variant, `rak swd mem 0x00026000 4` the start of the application's vector table, `rak swd mem 0xE000EDF0` the core's `DHCSR`. Refused on a protected chip and on another part, like everything below identification |
+
+Their refusals: the debug port's (above); *protected: access-port protection is on, memory access
+not attempted*; *not an nRF52840 with 4096-byte pages: refused*; *no Nordic control access port
+at AP 1*; *no memory access port at AP 0*; and for `mem`, a `FAULT ... at 0x...` when the address
+is nothing (the access port's error response, read and cleared), *the address must be word-aligned*,
+*words is 1 to 32*.
 
 ## The radio's power, as `status` says it
 

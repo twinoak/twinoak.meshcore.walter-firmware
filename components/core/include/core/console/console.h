@@ -68,6 +68,11 @@ class Console {
   // The debug port (task p1-03).
   void rakSwdConnect();
 
+  // The nRF52 behind the debug port (task p1-04): a session opened and closed inside the command,
+  // the pins released on every exit path.
+  void rakSwdId();
+  void rakSwdMem(std::uint32_t address, std::uint32_t words);
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
