@@ -151,13 +151,47 @@ TEST_CASE("rak swd connect parses, and rak swd with anything else is refused by 
   CHECK(verbOf("  rak   swd   connect  ") == Verb::kRakSwdConnect);
   Parsed p = parseLine("rak swd");
   CHECK(!p.ok);
-  CHECK(std::string(p.error) == "rak swd needs an operation: rak swd connect");
+  CHECK(std::string(p.error) == "rak swd needs an operation: rak swd connect | id | mem <addr> [words]");
   p = parseLine("rak swd disconnect");
   CHECK(!p.ok);
-  CHECK(std::string(p.error) == "rak swd: unknown operation (rak swd connect): disconnect");
+  CHECK(std::string(p.error) == "rak swd: unknown operation (connect, id, mem): disconnect");
   p = parseLine("rak swd connect now");
   CHECK(!p.ok);
-  CHECK(std::string(p.error) == "rak swd takes one word: rak swd connect");
+  CHECK(std::string(p.error) == "rak swd connect takes no argument");
+}
+
+TEST_CASE("rak swd id and rak swd mem <addr> [words] parse, and their refusals name the fault (task p1-04)") {
+  CHECK(verbOf("rak swd id") == Verb::kRakSwdId);
+  CHECK(errorOf("rak swd id now") == "rak swd id takes no argument");
+
+  Parsed p = parseLine("rak swd mem 0x10000100 2");
+  REQUIRE(p.ok);
+  CHECK(p.command.verb == Verb::kRakSwdMem);
+  CHECK(p.command.address == 0x10000100u);
+  CHECK(p.command.words == 2);
+  p = parseLine("rak swd mem 0x00026000");
+  REQUIRE(p.ok);
+  CHECK(p.command.address == 0x26000u);
+  CHECK(p.command.words == 1);  // the default
+  p = parseLine("rak swd mem 268435712 32");  // decimal 0x10000100, the most words allowed
+  REQUIRE(p.ok);
+  CHECK(p.command.address == 0x10000100u);
+  CHECK(p.command.words == 32);
+  p = parseLine("rak swd mem 0xE000EDF0 1");  // upper-case hex digits
+  REQUIRE(p.ok);
+  CHECK(p.command.address == 0xE000EDF0u);
+
+  CHECK(errorOf("rak swd mem") == "rak swd mem needs an address: rak swd mem <addr> [words]");
+  CHECK(errorOf("rak swd mem 0x10000102") == "rak swd mem: the address must be word-aligned (a multiple of 4): 0x10000102");
+  CHECK(errorOf("rak swd mem 0x") == "rak swd mem: not an address (hex 0x... or decimal, 32 bits): 0x");
+  CHECK(errorOf("rak swd mem 0x100000000") == "rak swd mem: not an address (hex 0x... or decimal, 32 bits): 0x100000000");
+  CHECK(errorOf("rak swd mem 0xfg") == "rak swd mem: not an address (hex 0x... or decimal, 32 bits): 0xfg");
+  CHECK(errorOf("rak swd mem 4294967296") == "rak swd mem: not an address (hex 0x... or decimal, 32 bits): 4294967296");
+  CHECK(errorOf("rak swd mem ficr") == "rak swd mem: not an address (hex 0x... or decimal, 32 bits): ficr");
+  CHECK(errorOf("rak swd mem 0x10000100 0") == "rak swd mem: words is 1 to 32: 0");
+  CHECK(errorOf("rak swd mem 0x10000100 33") == "rak swd mem: words is 1 to 32: 33");
+  CHECK(errorOf("rak swd mem 0x10000100 two") == "rak swd mem: words is 1 to 32: two");
+  CHECK(errorOf("rak swd mem 0x10000100 2 3") == "rak swd mem takes an address and a word count: rak swd mem <addr> [words]");
 }
 
 TEST_CASE("rak cli takes the rest of the line verbatim, up to §5.7's 160 bytes") {

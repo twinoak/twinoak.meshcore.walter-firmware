@@ -201,9 +201,13 @@ TEST_CASE("a JTAG target ignores a wrong switch sequence, and a line reset witho
 
 TEST_CASE("the stub access port stores what is written and the target counts the traffic") {
   sim::StubAp ap;
-  ap.write(0x04, 7);
-  CHECK(ap.read(0x04) == 7);
-  CHECK(ap.read(0xFC) == 0);
+  CHECK(ap.write(0x04, 7) == sim::ApAccess::kOk);
+  std::uint32_t value = 1;
+  CHECK(ap.read(0x04, &value) == sim::ApAccess::kOk);
+  CHECK(value == 7);
+  CHECK(ap.read(0xFC, &value) == sim::ApAccess::kOk);
+  CHECK(value == 0);
   CHECK(ap.reads == 2);
   CHECK(ap.writes == 1);
+  CHECK(!ap.stalls(0x0C, true));
 }

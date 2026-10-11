@@ -14,6 +14,7 @@ const char* describe(Status status) {
     case Status::kParityError: return "parity error on the data read";
     case Status::kPowerUpTimeout: return "the power-up was not acknowledged in time";
     case Status::kBadAddress: return "not a register address";
+    case Status::kNoMemAp: return "no memory access port there (IDR zero, or not a MEM-AP), or it was not opened";
   }
   return "?";
 }
@@ -130,7 +131,15 @@ Result Dp::connect() {
     return r;
   }
   dpidr_ = r.value;
-  const Result sel = writeDp(dp::kSelect, 0);
+  Result sel = writeDp(dp::kSelect, 0);
+  if (sel.status == Status::kFault) {
+    // A sticky flag from before - a transfer cut off by a lost line leaves WDATAERR or STICKYERR,
+    // and "a line reset ... does not reset the sticky flags" is what B4.3.3 amounts to ("Other
+    // SW-DP registers are reset only by a powerup reset") - FAULTs the first write after the
+    // DPIDR read. transfer() has read the flags and cleared them through ABORT; the write goes
+    // once more (task p1-04: seen after a kill in the middle of a flash write).
+    sel = writeDp(dp::kSelect, 0);
+  }
   if (!sel.ok()) return sel;
   connected_ = true;
   r.value = dpidr_;

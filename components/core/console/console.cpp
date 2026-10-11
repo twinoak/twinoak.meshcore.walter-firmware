@@ -5,7 +5,9 @@
 #include <cstring>
 
 #include "core/link/client/words.h"
+#include "core/nrf52/nrf52.h"
 #include "core/swd/dp.h"
+#include "core/swd/mem_ap.h"
 #include "core/swd/wire.h"
 #include "core/version.h"
 
@@ -129,6 +131,8 @@ void Console::runLine(const char* line) {
     case Verb::kRakEvents: rakEvents(); return;
     case Verb::kRakText: rakText(); return;
     case Verb::kRakSwdConnect: rakSwdConnect(); return;
+    case Verb::kRakSwdId: rakSwdId(); return;
+    case Verb::kRakSwdMem: rakSwdMem(p.command.address, p.command.words); return;
   }
 }
 
@@ -149,6 +153,9 @@ void Console::help() {
   print("  rak events          the events the radio has sent\n");
   print("  rak text            the lines a scanner has sent instead of frames\n");
   print("  rak swd connect     connect to the radio's debug port over SWD: DPIDR and the power-up\n");
+  print("  rak swd id          identify the radio's chip over SWD: part, variant, flash, protection, core\n");
+  print("  rak swd mem <addr> [words]\n");
+  print("                      read 1 to 32 words of the chip's memory (read-only; hex 0x... or decimal)\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -597,6 +604,142 @@ void Console::rakSwdConnect() {
   printf("  pins released; %lu transfers, %lu WAIT retries, %lu faults, %lu parity errors\n",
          static_cast<unsigned long>(c.transfers), static_cast<unsigned long>(c.wait_retries),
          static_cast<unsigned long>(c.faults), static_cast<unsigned long>(c.parity_errors));
+}
+
+// --------------------------------------------------------------------------- the nRF52 (p1-04)
+//
+// A session: the lines acquired, Nrf52::open() - connect, power-up, the control access port's
+// protection, the memory access port, FICR - then the command's own reads, then close() (the
+// power-up request withdrawn) and the lines released. Nothing here halts the core or writes the
+// chip: `id` and `mem` are read-only, and the flasher (task p1-05) is where writes begin.
+
+namespace {
+
+// One line for a result that is not ok: the nRF52 layer's word, the debug port's underneath it,
+// and the address when there is one.
+void describeFailure(char* buf, std::size_t size, const char* what, const core::nrf52::Result& r) {
+  if (r.status == core::nrf52::Status::kSwd) {
+    if (r.address != 0) {
+      std::snprintf(buf, size, "error: %s: %s at 0x%08lx", what, swd::describe(r.swd),
+                    static_cast<unsigned long>(r.address));
+    } else {
+      std::snprintf(buf, size, "error: %s: %s", what, swd::describe(r.swd));
+    }
+  } else if (r.address != 0) {
+    std::snprintf(buf, size, "error: %s: %s (0x%08lx)", what, core::nrf52::describe(r.status),
+                  static_cast<unsigned long>(r.address));
+  } else {
+    std::snprintf(buf, size, "error: %s: %s", what, core::nrf52::describe(r.status));
+  }
+}
+
+}  // namespace
+
+void Console::rakSwdId() {
+  const board::Outcome acquired = pins_.swdAcquire();
+  if (acquired != board::Outcome::kOk) {
+    printf("error: rak swd id: %s\n", board::describe(acquired));
+    return;
+  }
+  swd::Wire wire(pins_.swd(), clock_);
+  swd::Dp dp(wire);
+  nrf52::Nrf52 nrf(dp, clock_);
+  printf("swd: %lu kHz: connect, power-up, control port, memory port, FICR\n",
+         static_cast<unsigned long>(wire.frequencyHz() / 1000));
+  const nrf52::Result opened = nrf.open();
+  char line[160];
+  if (dp.connected()) {
+    printf("  DPIDR 0x%08lx%s\n", static_cast<unsigned long>(dp.dpidr()),
+           dp.dpidr() == swd::kNrf52840Dpidr ? " (the nRF52840's)" : " - not the nRF52840's 0x2ba01477");
+  }
+  if (nrf.ctrlApIdr() != 0) {
+    const swd::ApIdrFields f = swd::decodeApIdr(nrf.ctrlApIdr());
+    printf("  control access port: IDR 0x%08lx (%s)", static_cast<unsigned long>(nrf.ctrlApIdr()),
+           f.designer == nrf52::ctrl_ap::kDesignerNordic ? "Nordic" : "not Nordic's");
+    if (nrf.protection() == nrf52::Protection::kOpen) {
+      print("; protection: open\n");
+    } else if (nrf.protection() == nrf52::Protection::kProtected) {
+      print("; protection: PROTECTED - memory access not attempted\n");
+      print("  opening a protected module erases it whole (bootloader, SoftDevice, identity, UICR): a\n"
+            "  bench procedure for a person (hardware repository, BENCH-BREADBOARD.md caveat 6), never\n"
+            "  this firmware's\n");
+    } else {
+      print("\n");
+    }
+  }
+  if (nrf.memAp().opened()) {
+    const swd::ApIdrFields f = swd::decodeApIdr(nrf.memAp().idr());
+    printf("  memory access port: IDR 0x%08lx (%s, %s%s)\n", static_cast<unsigned long>(nrf.memAp().idr()),
+           f.designer == swd::kDesignerArm ? "Arm" : "not Arm", "class MEM-AP",
+           nrf.memAp().idr() == swd::mem_ap::kCortexM4AhbApIdr ? "; the Cortex-M4's AHB-AP" : "");
+  }
+  const nrf52::Identity& id = nrf.identity();
+  if (id.part != 0) {
+    if (id.is_nrf52840) {
+      printf("  chip: nRF52840, variant %s, flash %lu KB = %lu pages of %lu bytes (INFO.FLASH %lu KB)\n",
+             id.variant, static_cast<unsigned long>(id.flash_bytes / 1024), static_cast<unsigned long>(id.pages),
+             static_cast<unsigned long>(id.page_size), static_cast<unsigned long>(id.info_flash_kb));
+    } else {
+      printf("  chip: part 0x%lx, variant %s, %lu pages of %lu bytes - not the nRF52840 with 4096-byte pages this firmware knows: refused\n",
+             static_cast<unsigned long>(id.part), id.variant, static_cast<unsigned long>(id.pages),
+             static_cast<unsigned long>(id.page_size));
+    }
+    printf("  device id %08lx%08lx\n", static_cast<unsigned long>(id.device_id[1]),
+           static_cast<unsigned long>(id.device_id[0]));
+  }
+  if (opened.ok()) {
+    nrf52::CoreState state = nrf52::CoreState::kUnknown;
+    const nrf52::Result core = nrf.coreState(&state);
+    if (core.ok()) {
+      printf("  core: %s\n", nrf52::describe(state));
+    } else {
+      describeFailure(line, sizeof line, "rak swd id: core", core);
+      printf("%s\n", line);
+    }
+  } else {
+    describeFailure(line, sizeof line, "rak swd id", opened);
+    printf("%s\n", line);
+  }
+  const nrf52::Result closed = nrf.close();
+  pins_.swdRelease();
+  const swd::Dp::Counters& c = dp.counters();
+  printf("  %s; pins released; %lu transfers, %lu WAIT retries, %lu faults, %lu parity errors\n",
+         closed.ok() ? "power-up request withdrawn" : "power-up request withdrawn (not acknowledged)",
+         static_cast<unsigned long>(c.transfers), static_cast<unsigned long>(c.wait_retries),
+         static_cast<unsigned long>(c.faults), static_cast<unsigned long>(c.parity_errors));
+}
+
+void Console::rakSwdMem(std::uint32_t address, std::uint32_t words) {
+  const board::Outcome acquired = pins_.swdAcquire();
+  if (acquired != board::Outcome::kOk) {
+    printf("error: rak swd mem: %s\n", board::describe(acquired));
+    return;
+  }
+  swd::Wire wire(pins_.swd(), clock_);
+  swd::Dp dp(wire);
+  nrf52::Nrf52 nrf(dp, clock_);
+  char line[160];
+  nrf52::Result r = nrf.open();
+  if (!r.ok()) {
+    describeFailure(line, sizeof line, "rak swd mem", r);
+    printf("%s\n", line);
+  } else {
+    std::uint32_t data[kMaxMemWords];
+    if (words > kMaxMemWords) words = kMaxMemWords;
+    r = nrf.read(address, data, words);
+    if (!r.ok()) {
+      describeFailure(line, sizeof line, "rak swd mem", r);
+      printf("%s\n", line);
+    } else {
+      for (std::uint32_t i = 0; i < words; ++i) {
+        if (i % 4 == 0) printf("0x%08lx:", static_cast<unsigned long>(address + 4 * i));
+        printf(" %08lx", static_cast<unsigned long>(data[i]));
+        if (i % 4 == 3 || i + 1 == words) print("\n");
+      }
+    }
+  }
+  nrf.close();
+  pins_.swdRelease();
 }
 
 }  // namespace console

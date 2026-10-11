@@ -88,6 +88,34 @@ bool parseEpoch(const char* text, std::uint32_t& out) {
   return true;
 }
 
+// A 32-bit address: hexadecimal with a 0x prefix (at most eight digits), or decimal (at most ten
+// digits, inside a u32). The alignment is checked by the caller, so that the message can say so.
+bool parseAddress(const char* text, std::uint32_t& out) {
+  if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+    const char* p = text + 2;
+    if (*p == 0) return false;
+    std::uint32_t value = 0;
+    std::size_t digits = 0;
+    for (; *p != 0; ++p) {
+      std::uint32_t d;
+      if (*p >= '0' && *p <= '9') {
+        d = static_cast<std::uint32_t>(*p - '0');
+      } else if (*p >= 'a' && *p <= 'f') {
+        d = static_cast<std::uint32_t>(*p - 'a' + 10);
+      } else if (*p >= 'A' && *p <= 'F') {
+        d = static_cast<std::uint32_t>(*p - 'A' + 10);
+      } else {
+        return false;
+      }
+      if (++digits > 8) return false;
+      value = (value << 4) | d;
+    }
+    out = value;
+    return true;
+  }
+  return parseEpoch(text, out);
+}
+
 // The subcommands of `rak` that take nothing after them.
 struct Simple {
   const char* word;
@@ -209,14 +237,53 @@ Parsed parseLine(const char* line) {
       p.command.text_size = n;
       return p;
     }
-    // rak swd connect (task p1-03): the one word after swd is the operation; nothing else yet.
+    // rak swd <operation> (tasks p1-03, p1-04): connect, id, mem <addr> [words].
     if (std::strcmp(sub, "swd") == 0) {
-      if (!hasArg) return refuse("rak swd needs an operation: rak swd connect");
-      for (const char* p = arg; *p != 0; ++p) {
-        if (isSpace(*p)) return refuse("rak swd takes one word: rak swd connect");
+      if (!hasArg) return refuse("rak swd needs an operation: rak swd connect | id | mem <addr> [words]");
+      char* op = arg;
+      char* operand = op;
+      while (*operand != 0 && !isSpace(*operand)) ++operand;
+      if (*operand != 0) {
+        *operand++ = 0;
+        while (*operand != 0 && isSpace(*operand)) ++operand;
       }
-      if (std::strcmp(arg, "connect") == 0) return accept(Verb::kRakSwdConnect);
-      return refuse2("rak swd: unknown operation (rak swd connect): ", arg);
+      const bool hasOperand = *operand != 0;
+      if (std::strcmp(op, "connect") == 0) {
+        if (hasOperand) return refuse("rak swd connect takes no argument");
+        return accept(Verb::kRakSwdConnect);
+      }
+      if (std::strcmp(op, "id") == 0) {
+        if (hasOperand) return refuse("rak swd id takes no argument");
+        return accept(Verb::kRakSwdId);
+      }
+      if (std::strcmp(op, "mem") == 0) {
+        if (!hasOperand) return refuse("rak swd mem needs an address: rak swd mem <addr> [words]");
+        char* count = operand;
+        while (*count != 0 && !isSpace(*count)) ++count;
+        if (*count != 0) {
+          *count++ = 0;
+          while (*count != 0 && isSpace(*count)) ++count;
+        }
+        for (const char* p = count; *p != 0; ++p) {
+          if (isSpace(*p)) return refuse("rak swd mem takes an address and a word count: rak swd mem <addr> [words]");
+        }
+        Parsed p = accept(Verb::kRakSwdMem);
+        if (!parseAddress(operand, p.command.address)) {
+          return refuse2("rak swd mem: not an address (hex 0x... or decimal, 32 bits): ", operand);
+        }
+        if ((p.command.address & 0x3u) != 0) {
+          return refuse2("rak swd mem: the address must be word-aligned (a multiple of 4): ", operand);
+        }
+        if (*count != 0) {
+          std::uint32_t words = 0;
+          if (!parseSeconds(count, words) || words < 1 || words > kMaxMemWords) {
+            return refuse2("rak swd mem: words is 1 to 32: ", count);
+          }
+          p.command.words = words;
+        }
+        return p;
+      }
+      return refuse2("rak swd: unknown operation (connect, id, mem): ", op);
     }
     if (std::strcmp(sub, "kill") == 0) {
       if (!hasArg) return refuse("rak kill needs a duration: rak kill <seconds>");

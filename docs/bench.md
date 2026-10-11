@@ -222,4 +222,48 @@ every number; the nRF52840 Product Specification ("Debug and trace") gives the c
   interface mode while a debugger holds `CDBGPWRUPREQ`; the command withdraws it before releasing
   the pins. With a meter on the RAK's supply: the current after the command is back to what it
   was before it. If it is not, note it here: phase 2's flasher ends with a reset pulse anyway, but
-  the supervisor's `rak id` (task 04) must not leave the radio drawing more.
+  `rak swd id` (task p1-04) must not leave the radio drawing more.
+
+- [ ] **`rak swd id`: the chip, and — above all — its variant** (task p1-04). Expected, on a
+  RAK4630 that answers:
+
+  ```
+  DPIDR 0x2ba01477 (the nRF52840's)
+  control access port: IDR 0x02880000 (Nordic); protection: open
+  memory access port: IDR 0x24770011 (Arm, class MEM-AP; the Cortex-M4's AHB-AP)
+  chip: nRF52840, variant AAF0, flash 1024 KB = 256 pages of 4096 bytes (INFO.FLASH 1024 KB)
+  device id <16 hex digits>
+  core: running
+  ```
+
+  **Write the variant down here: ______.** It is `FICR.INFO.VARIANT`, the build code; `AAF0` is
+  revision 3 (build code Fx0), which ships with access-port protection on unless `UICR.APPROTECT`
+  holds `0x5A` — the module batch decides, not the board (`BENCH-BREADBOARD.md` caveat 6,
+  `PROJECT-KNOWLEDGE.md` §6), so the first production module gets the same command. Two numbers
+  the documents did not give and the simulator had to take from Arm's Cortex-M4 TRM and Nordic's
+  register table: the AHB-AP's `0x24770011` and the control port's `0x02880000` — if either
+  differs, note it; the firmware insists only on *class MEM-AP* and *designer Nordic* and prints
+  the rest. The RAK's own console keeps answering throughout: the command halts nothing. The flash
+  size says `1024 KB`; a module that says otherwise is not the one the flasher is written for.
+
+- [ ] **If `rak swd id` says `protection: PROTECTED`: stop.** The command then reads nothing
+  else and says: *opening a protected module erases it whole (bootloader, SoftDevice, identity,
+  UICR): a bench procedure for a person*. That procedure is `BENCH-BREADBOARD.md` caveat 6 —
+  CTRL-AP `ERASEALL` with a debug probe, nRESET **released** until `UICR.APPROTECT = 0x5A` is
+  written, then a full reflash of bootloader and SoftDevice — once per module, never this
+  firmware's. Note here which modules arrived protected. (And a module whose firmware opens the
+  port at run time — rev 3 with `0x5A` in UICR — is protected again from a reset until that
+  firmware has run: `rak swd id` after `rak reset`, within the first milliseconds, may say so.
+  Try it, and note whether it does: the flasher (task p1-05) halts a running core because of
+  it.)
+
+- [ ] **`rak swd mem 0x10000100 2` prints `00052840 41414630`** (task p1-04): `INFO.PART` and
+  `INFO.VARIANT`, the second being the variant as ASCII, first character in the top byte
+  (`41 41 46 30` = `AAF0`). **`rak swd mem 0x00026000 4`** prints the start of the application's
+  vector table — the initial stack pointer (`2000....`) and the reset handler (`000.....`, odd),
+  if MeshCore's application sits at `0x26000` after the S140 SoftDevice as the flasher assumes;
+  blank (`ffffffff`) means no application there, and the flasher's region table (task p1-05) needs
+  the real address. **`rak swd mem 0xE000EDF0`** prints `DHCSR` with bit 17 (`S_HALT`) clear and
+  bit 24 (`S_RETIRE_ST`) set on a running core: `0x0100000x`. **`rak swd mem 0x50000000`** says
+  `FAULT ... at 0x50000000`: nothing lives there, and the access port's error response is read
+  and cleared, after which the next command works.

@@ -198,7 +198,12 @@ void SwdTarget::onRisingEdge() {
       } else if (req_ap_) {
         const std::uint8_t apsel = static_cast<std::uint8_t>(select_ >> 24);
         const std::uint8_t addr = static_cast<std::uint8_t>((select_ & 0xF0) | req_a_);
-        if (aps_[apsel] != nullptr) aps_[apsel]->write(addr, wdata_);
+        // An AP transaction that ends in an error sets STICKYERR (B2.2.2): the write itself was
+        // acknowledged OK before its data, so the FAULT reaches the host on the next request.
+        if (aps_[apsel] != nullptr && aps_[apsel]->write(addr, wdata_) == ApAccess::kError) {
+          sticky_ |= cs::kStickyErr;
+          counters_.ap_errors++;
+        }
         counters_.ap_writes++;
       } else {
         writeDpRegister(req_a_, wdata_);
@@ -389,6 +394,21 @@ void SwdTarget::respond() {
       bit_index_ = 0;
       return;
     }
+    if (req_ap_) {
+      // The port's own reason to WAIT: the bus behind it is busy (B4.2.3, "the target is not
+      // ready to complete the transaction"; the MEM-AP's stalling accesses, C2.2.3).
+      const std::uint8_t apsel = static_cast<std::uint8_t>(select_ >> 24);
+      const std::uint8_t addr = static_cast<std::uint8_t>((select_ & 0xF0) | req_a_);
+      if (aps_[apsel] != nullptr && aps_[apsel]->stalls(addr, !req_read_)) {
+        ack_ = ack::kWait;
+        counters_.waits++;
+        counters_.ap_stalls++;
+        read_ok_ = false;
+        phase_ = Phase::kAck;
+        bit_index_ = 0;
+        return;
+      }
+    }
   }
   ack_ = ack::kOk;
   counters_.ok++;
@@ -398,7 +418,14 @@ void SwdTarget::respond() {
       const std::uint8_t apsel = static_cast<std::uint8_t>(select_ >> 24);
       const std::uint8_t addr = static_cast<std::uint8_t>((select_ & 0xF0) | req_a_);
       rdata_ = ap_result_;
-      ap_result_ = aps_[apsel] != nullptr ? aps_[apsel]->read(addr) : 0;
+      ap_result_ = 0;
+      if (aps_[apsel] != nullptr && aps_[apsel]->read(addr, &ap_result_) == ApAccess::kError) {
+        // The error response sets STICKYERR; what RDBUFF then returns is UNKNOWN, and the
+        // request for it gets FAULT (B4.2.4).
+        sticky_ |= cs::kStickyErr;
+        counters_.ap_errors++;
+        ap_result_ = kUnknownData;
+      }
       read_ok_ = true;
       last_sent_ = rdata_;
       counters_.ap_reads++;

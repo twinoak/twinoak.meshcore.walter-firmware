@@ -41,6 +41,11 @@ class FakeClock final : public interfaces::Clock {
 
   void advance(std::uint64_t ms) { now_ms += ms; }
 
+  // The same clock in microseconds, for a simulator whose timings are shorter than a millisecond
+  // (the nRF52's flash controller, task p1-04). Not part of interfaces::Clock: the firmware does
+  // not need it.
+  std::uint64_t nowUs() const { return now_ms * 1000u + us_; }
+
  private:
   bool in_hook_ = false;
   std::uint32_t us_ = 0;
