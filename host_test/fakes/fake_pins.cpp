@@ -77,7 +77,9 @@ void FakePins::record(const Op& op, bool changed) { log.push_back(Transition{clo
 void FakePins::violate(const char* rule, const std::string& detail) {
   violations.push_back(Violation{clock_.now_ms, rule, detail});
   if (strict) {
-    FAIL_CHECK("pin rule broken: " << rule << " - " << detail << " at " << clock_.now_ms << " ms");
+    // std::string, not the const char*: doctest's message stream would print the pointer as a bool.
+    FAIL_CHECK("pin rule broken: " << std::string(rule) << " - " << detail << " at "
+                                   << clock_.now_ms << " ms");
   }
 }
 
