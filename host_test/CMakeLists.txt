@@ -42,16 +42,36 @@ add_custom_target(core_no_idf_include
   VERBATIM)
 add_dependencies(core core_no_idf_include)
 
+# -- the spec's fixtures, as a table ------------------------------------------------------------
+# spec/fixtures/manifest/index.json's `descriptors`, turned into C++ by
+# fixtures/gen_descriptor_fixtures.py at build time (task p0-02): the tests walk the spec's own
+# cases instead of a transcription of them, and the image files beside it are read at run time
+# from TWINOAK_SPEC_FIXTURES. Regenerated whenever index.json or the generator changes.
+set(SPEC_FIXTURES ${REPO}/spec/fixtures/manifest)
+find_program(PYTHON3 NAMES python3 python REQUIRED)
+set(FIXTURE_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/descriptor_fixtures.h)
+add_custom_command(
+  OUTPUT ${FIXTURE_HEADER}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/generated
+  COMMAND ${PYTHON3} ${CMAKE_CURRENT_LIST_DIR}/fixtures/gen_descriptor_fixtures.py
+          ${SPEC_FIXTURES}/index.json ${FIXTURE_HEADER}
+  DEPENDS ${CMAKE_CURRENT_LIST_DIR}/fixtures/gen_descriptor_fixtures.py ${SPEC_FIXTURES}/index.json
+  COMMENT "the spec's descriptor fixtures -> descriptor_fixtures.h"
+  VERBATIM)
+
 # -- the tests ----------------------------------------------------------------------------------
 # doctest v2.5.3, vendored (third_party/doctest/README.md). -isystem: its warnings are its own.
 add_library(doctest INTERFACE)
 target_include_directories(doctest SYSTEM INTERFACE ${CMAKE_CURRENT_LIST_DIR}/third_party/doctest)
 
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp)
-add_executable(core_tests main.cpp ${TEST_SOURCES})
+add_executable(core_tests main.cpp ${TEST_SOURCES} ${FIXTURE_HEADER})
 target_link_libraries(core_tests PRIVATE core doctest)
+target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 twinoak_ours(core_tests)
-target_compile_definitions(core_tests PRIVATE TWINOAK_VERSION="${TWINOAK_VERSION}")
+target_compile_definitions(core_tests PRIVATE
+  TWINOAK_VERSION="${TWINOAK_VERSION}"
+  TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}")
 
 enable_testing()
 add_test(NAME core_tests COMMAND core_tests --no-intro)

@@ -10,16 +10,22 @@
   out/images/. Runs from Windows PowerShell 5.1, and from pwsh on Linux - CI runs exactly this.
 
   .\tools\verify.ps1                 everything
-  .\tools\verify.ps1 -Only build     one step: spec, spec-tools, host-tests, build, partitions
+  .\tools\verify.ps1 -Only build     one step: spec, spec-tools, host-tests, release-tests,
+                                     build, partitions, release
   .\tools\verify.ps1 -Clean          remove the build and cache volumes first (a cold run)
   .\tools\verify.ps1 -Shell          a bash in the same container, same mounts, for a look around
+  .\tools\verify.ps1 -Version 0.3.1+1a2b3c4
+                                     the version baked into the build and carried by the dry run's
+                                     manifest and by the descriptor inside the image; the default
+                                     is 0.0.0-dev. The release workflow passes the release's.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('', 'spec', 'spec-tools', 'host-tests', 'build', 'partitions')]
+    [ValidateSet('', 'spec', 'spec-tools', 'host-tests', 'release-tests', 'build', 'partitions', 'release')]
     [string]$Only = '',
     [switch]$Clean,
-    [switch]$Shell
+    [switch]$Shell,
+    [string]$Version = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +74,9 @@ $mounts = @(
     '-e', 'TWINOAK_BUILD_DIR=/build',
     '-e', 'TWINOAK_CACHE_DIR=/ccache'
 )
+# The version, only when one was asked for: verify.sh's default (0.0.0-dev) is then the one place
+# it is written down.
+if ($Version) { $mounts += @('-e', "TWINOAK_VERSION=$Version") }
 
 if ($Shell) {
     & docker run --rm -it @mounts $image bash
@@ -85,7 +94,7 @@ if ($Only) { $cmd += " $Only" }
 $code = $LASTEXITCODE
 $elapsed = [int]((Get-Date) - $started).TotalSeconds
 if ($code -eq 0) {
-    Write-Host "verify: green in $elapsed s (logs in out/verify/, images in out/images/)"
+    Write-Host "verify: green in $elapsed s (logs in out/verify/, images in out/images/, the dry run's release in out/release/)"
 } else {
     Write-Host "verify: FAILED (exit $code) after $elapsed s - see out/verify/*.log"
 }

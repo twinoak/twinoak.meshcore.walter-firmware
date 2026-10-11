@@ -8,6 +8,7 @@
 #include "esp_partition.h"
 #include "sdkconfig.h"
 
+#include "core/image/this_image.h"
 #include "core/version.h"
 
 // components/modem: the modem library is linked and called by nothing. See modem_anchor.cpp.
@@ -43,6 +44,17 @@ extern "C" void app_main() {
   } else if (running != nullptr) {
     std::printf("running from %s at 0x%06" PRIx32 "\n", running->label, running->address);
   }
+
+  // The descriptor this image carries (spec/FIRMWARE-MANIFEST.md §4, core/image/this_image.h),
+  // read out of the bytes themselves. Printing it is also what keeps it: core::image::kThisImage
+  // is referenced from here, so --gc-sections does not drop the object, and the release tooling
+  // finds exactly one of it in the file it publishes (tools/release/build_release.py).
+  const core::image::Fields self = core::image::this_image();
+  const char* role = core::image::role_name(self.role);
+  std::printf("image descriptor at %p: role %s, board %s, band %s, version %s, link %u.%u\n",
+              static_cast<const void*>(core::image::kThisImage.bytes), role != nullptr ? role : "?",
+              self.board, self.band, self.version, static_cast<unsigned>(self.link_major),
+              static_cast<unsigned>(self.link_minor));
 
   // S-6: an image confirms itself only after it has booted, spoken to the radio and reached the
   // server. None of that exists yet, so this image confirms nothing: flashed over USB its state is

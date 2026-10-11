@@ -1,7 +1,9 @@
 # Every pull request and every push to main, once per commit: `pwsh tools/verify.ps1`, which is
 # what a session ran before it pushed (S-10: local first; CI confirms). One job, nothing parallel
 # to it, in the image tools/idf-image.txt pins by digest - the same image, the same script, the
-# same mounts as on the bench machine. The images and the logs are kept 14 days.
+# same mounts as on the bench machine. The images, the logs and the dry run's release files -
+# version 0.0.0-dev, signed with the specification's public test key, published nowhere - are kept
+# 14 days. A release is a person pushing a tag (.github/workflows/release.yml, docs/release.md).
 #
 # One run per commit: a branch push and its pull request are two refs, so the concurrency group
 # alone cannot collapse them; the triggers below are the pull request and the push to main, and a
@@ -44,7 +46,9 @@ jobs:
             echo '```'
             cat out/verify/summary.txt 2>/dev/null || echo "no summary"
             echo
-            grep -E 'banner in image|application image is' out/verify/build.log out/verify/partitions.log 2>/dev/null || true
+            grep -E 'banner in image|descriptor in|application image is' out/verify/build.log out/verify/partitions.log 2>/dev/null || true
+            echo
+            cat out/release/SHA256SUMS 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -56,5 +60,6 @@ jobs:
           path: |
             out/images/
             out/verify/
+            out/release/
           if-no-files-found: error
           retention-days: 14

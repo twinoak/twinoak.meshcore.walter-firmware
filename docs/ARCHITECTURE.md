@@ -28,9 +28,11 @@ components/
   modem/                the Walter's LTE modem behind interfaces/' uplink
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   sim/                  the simulated SWD target (wire level and nRF52), the simulated flash, the scripted RAK
-tools/                  verify.ps1, release tooling, bench tools
+  fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
+tools/                  verify.ps1, release/ (the release tooling), bench tools
+keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02)
 spec/                   a copy of the system specification and its fixtures - never edited here
-docs/                   this file, bench.md, console.md, field.md
+docs/                   this file, bench.md, release.md, console.md, field.md
 tasks/                  the piles
 ```
 
@@ -167,7 +169,15 @@ loss leaves the previous valid record or none, never half of one.
 **What may enter the store**: only what passed all six checks of `spec/FIRMWARE-MANIFEST.md` §5 —
 the signature by a key compiled into this build, the manifest, the right image for this radio, the
 file's hash, the one descriptor inside it, and the region. The trusted keys are a small table
-(room for three); a build with none accepts nothing.
+(room for three) generated from `keys/release-keys.txt`; a build with none accepts nothing, which
+is the state today because the release key does not exist yet (`keys/README.md`).
+
+**The descriptor** (§4) exists from task p0-02: `components/core/image/descriptor.h` builds,
+parses and finds those 96 bytes, with no ESP-IDF include and no heap, tested against the spec's
+fixtures; `core/image/this_image.h` is this firmware's own, built at compile time and referenced
+by `main/` so the linker keeps it. The release tooling finds exactly one of it in each published
+file and holds it against the manifest entry (`docs/release.md`). Phase 2 reads a radio's images
+with the same parser and finder.
 
 ## 7. Updates
 

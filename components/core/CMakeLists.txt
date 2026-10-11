@@ -3,6 +3,7 @@
 # takes as an interface from interfaces/ (the architecture's hal/). The same sources are compiled on the host by host_test/.
 idf_component_register(
   SRCS "version/version.cpp"
+       "image/this_image.cpp"
   INCLUDE_DIRS "include")
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../tools/cmake/ours.cmake)
