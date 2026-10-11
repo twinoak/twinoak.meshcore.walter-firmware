@@ -159,6 +159,8 @@ void RadioPins::recordResetEnd() {
   retained_.store(interfaces::RetainedSlot::kResetRecord, &record, sizeof record);
 }
 
+void RadioPins::noteRadioReset() { recordResetEnd(); }
+
 Outcome RadioPins::resetPulse() {
   if (swd_held_) return Outcome::kSwdHeld;
   if (kill_driven_) return Outcome::kRailOff;

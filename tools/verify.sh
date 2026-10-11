@@ -88,7 +88,7 @@ check_pin_ownership() {
 step_host_tests() {
   local dir=$BUILD/host
   check_pin_ownership || return 1
-  cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
   cmake --build "$dir" &&
   ctest --test-dir "$dir" --output-on-failure --no-tests=error

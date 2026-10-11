@@ -94,6 +94,27 @@ class Nrf52Chip {
   std::uint32_t lose_power_at_op = 0;      // 1-based count of erases and word writes; 0 = never
   std::function<void()> on_power_loss;     // what the bench does when the power goes (silence the target)
   void onlyTouch(std::uint32_t begin, std::uint32_t end);  // any erase or write outside fails the test
+  void alsoTouch(std::uint32_t begin, std::uint32_t end);  // ... except inside this second range (the settings page, task p1-05)
+  // A word with bits that will not take a write (task p1-05): after any erase or write of it the
+  // bits of stuck_mask read 0. 0 = no such word.
+  std::uint32_t stuck_addr = 0;
+  std::uint32_t stuck_mask = 0;
+  // The power back after losePower(): the chip as a power-on reset leaves it, the flash as it was
+  // when the power went. The countdown starts over (lose_power_at_op is cleared).
+  void powerOn();
+  // The SoftDevice information structure a provisioned chip carries at MBR_SIZE + 0x2000 (the
+  // bootloader's nrf_sdm.h:99-138): the magic, the SoftDevice's size (where the application
+  // starts) and its firmware id - S140 6.1.1's 0x26000 and 0x00B6 by default (MeshCore's
+  // boards/rak4631.json:34-38).
+  void installSoftDevice(std::uint32_t size = 0x26000, std::uint16_t fwid = 0x00B6);
+
+  // The two bootloaders a RAK4630 may carry, each one's bootloader_app_is_valid() as read from its
+  // source (core/flasher/bootloader_settings.h cites the lines): accepts() says whether that
+  // bootloader would start what is in flash now. The application's start is what the SoftDevice
+  // information structure says, as the bootloader computes it (dfu_types.h:77).
+  enum class Bootloader : std::uint8_t { kStock, kOtafix };
+  bool bootloaderAccepts(Bootloader which) const;
+  std::uint32_t applicationStart() const;
 
   // The flash's contents, for a test to arrange and to check.
   std::uint32_t flashWord(std::uint32_t addr) const;
@@ -210,11 +231,16 @@ class Nrf52Chip {
   bool reset_sticky_ = false;
   std::uint32_t demcr_ = 0;
 
+  bool allowed(std::uint32_t addr, std::uint32_t bytes) const;
+
   bool powered_ = true;
   unsigned flash_ops_ = 0;
   bool only_touch_ = false;
   std::uint32_t only_begin_ = 0;
   std::uint32_t only_end_ = 0;
+  bool also_touch_ = false;
+  std::uint32_t also_begin_ = 0;
+  std::uint32_t also_end_ = 0;
 
   Counters counters_;
   std::vector<FlashEvent> log_;

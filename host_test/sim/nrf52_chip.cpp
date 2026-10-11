@@ -4,6 +4,7 @@
 
 #include <cstdio>
 
+#include "core/flasher/bootloader_settings.h"
 #include "core/nrf52/regs.h"
 #include "core/swd/mem_ap.h"
 
@@ -49,6 +50,106 @@ void Nrf52Chip::onlyTouch(std::uint32_t begin, std::uint32_t end) {
   only_touch_ = true;
   only_begin_ = begin;
   only_end_ = end;
+}
+
+void Nrf52Chip::alsoTouch(std::uint32_t begin, std::uint32_t end) {
+  also_touch_ = true;
+  also_begin_ = begin;
+  also_end_ = end;
+}
+
+bool Nrf52Chip::allowed(std::uint32_t addr, std::uint32_t bytes) const {
+  if (!only_touch_) return true;
+  if (addr >= only_begin_ && addr + bytes <= only_end_) return true;
+  return also_touch_ && addr >= also_begin_ && addr + bytes <= also_end_;
+}
+
+// A power-on reset (ARM B1.5.1: "resets the processor, System Control Space and debug logic";
+// PS "Reset behavior"): the core running, halting debug off, DEMCR clear, the NVMC read-only and
+// idle, the access port's registers at their reset values. The flash keeps what the lost power
+// left in it.
+void Nrf52Chip::powerOn() {
+  powered_ = true;
+  halted_ = false;
+  debug_en_ = false;
+  held_in_reset_ = false;
+  reset_sticky_ = true;
+  demcr_ = 0;
+  config_ = regs::nvmc::kConfigRen;
+  busy_until_us_ = 0;
+  busy_for_ever_ = false;
+  tar_ = 0;
+  csw_ = map::kCswMasterTypeDebug | map::kCswHprot1 | map::kCswBit24;
+  flash_ops_ = 0;
+  lose_power_at_op = 0;
+  counters_.resets++;
+}
+
+// nrf_sdm.h: the structure's size in its first byte (0x18 for S140 6.x), SD_MAGIC_NUMBER at
+// +0x04 (dfu_types.h:65), the size at +0x08, the FWID at +0x0C (16 bits), the SD id at +0x10
+// (0x90 is "S140") and the version at +0x14 (6.1.1 = 6001001, SD_VERSION's encoding).
+void Nrf52Chip::installSoftDevice(std::uint32_t size, std::uint16_t fwid) {
+  const std::uint32_t base = 0x1000 + 0x2000;
+  setFlashWord(base + 0x00, 0x00000018);
+  setFlashWord(base + 0x04, 0x51B1E5DB);
+  setFlashWord(base + 0x08, size);
+  setFlashWord(base + 0x0C, 0xFFFF0000u | fwid);
+  setFlashWord(base + 0x10, 0x00000090);
+  setFlashWord(base + 0x14, 6001001);
+  // And a SoftDevice that is not blank at its start, like a real one (the MBR's vector table).
+  setFlashWord(0x0000, 0x20000400);
+  setFlashWord(0x0004, 0x00000A81);
+}
+
+// dfu_types.h:77: CODE_REGION_1_START = is_sd_existed() ? SD_SIZE_GET(MBR_SIZE) : MBR_SIZE.
+std::uint32_t Nrf52Chip::applicationStart() const {
+  const std::uint32_t base = 0x1000 + 0x2000;
+  if (flashWord(base + 0x04) == 0x51B1E5DB) return flashWord(base + 0x08);
+  return 0x1000;
+}
+
+// bootloader_app_is_valid(), from the two sources named in core/flasher/bootloader_settings.h:
+// stock c67f0bc bootloader.c:175-224, OTAFIX 3a75482 bootloader.c:148-182.
+bool Nrf52Chip::bootloaderAccepts(Bootloader which) const {
+  namespace bs = core::flasher::bootloader_settings;
+  const std::uint32_t app_addr = applicationStart();
+  const std::uint32_t sp_addr = flashWord(app_addr);
+  const std::uint32_t reset_addr = flashWord(app_addr + 4);
+  // Both: "Application is invalid if first 2 words are all 0xFFFFFFF" (stock :183-186, OTAFIX :158-163).
+  if (sp_addr == 0xFFFFFFFFu && reset_addr == 0xFFFFFFFFu) return false;
+  std::uint32_t words[bs::kRecordWords];
+  for (std::size_t i = 0; i < bs::kRecordWords; ++i) words[i] = flashWord(0xFF000 + 4 * static_cast<std::uint32_t>(i));
+  const bs::Record s = bs::decode(words);
+  // Both: "The application in CODE region 1 is flagged as valid during update" (stock :192-204,
+  // OTAFIX :166-178), CRC-16 (crc16.c:46-60, CCITT-FALSE) over bank_0_size bytes unless the stored
+  // CRC is 0.
+  if (s.bank_0 == bs::kBankValidApp) {
+    std::uint16_t image_crc = 0;
+    if (s.bank_0_crc != 0) {
+      image_crc = 0xFFFF;
+      for (std::uint32_t i = 0; i < s.bank_0_size; ++i) {
+        const std::uint32_t a = app_addr + i;
+        const std::uint8_t byte = static_cast<std::uint8_t>(flashWord(a & ~3u) >> (8 * (a & 3u)));
+        image_crc = static_cast<std::uint16_t>(image_crc ^ (static_cast<std::uint16_t>(byte) << 8));
+        for (int bit = 0; bit < 8; ++bit) {
+          image_crc = (image_crc & 0x8000u) != 0 ? static_cast<std::uint16_t>((image_crc << 1) ^ 0x1021u)
+                                                 : static_cast<std::uint16_t>(image_crc << 1);
+        }
+      }
+    }
+    return image_crc == s.bank_0_crc;
+  }
+  // Stock only (commit 67105f8, :207-222): "Fallback for debugger-flashed apps: settings page is
+  // erased (bank_0 = 0xFFFF) ... Accept it if its Cortex-M vector table is plausible: initial SP
+  // within RAM, reset vector within app flash region with the Thumb bit set."
+  if (which == Bootloader::kStock && s.bank_0 == bs::kBankBlank) {
+    const std::uint32_t ram_start = 0x20000000u;
+    const std::uint32_t ram_end = ram_start + (info_ram << 10u);
+    const bool sp_valid = sp_addr >= ram_start && sp_addr <= ram_end && (sp_addr & 3u) == 0;
+    const bool reset_in_app = (reset_addr & 1u) != 0 && reset_addr >= app_addr && reset_addr < 0xF4000u;
+    return sp_valid && reset_in_app;
+  }
+  return false;  // stock :224 / OTAFIX :181
 }
 
 std::string Nrf52Chip::hex(std::uint32_t v) const {
@@ -465,7 +566,7 @@ void Nrf52Chip::writeFlash(std::uint32_t addr, std::uint32_t value) {
          ", not Wen (1): nothing written (PS NVMC \"Writing to flash\")");
     return;
   }
-  if (only_touch_ && (addr < only_begin_ || addr + 4 > only_end_)) {
+  if (!allowed(addr, 4)) {
     fail("a flash write at " + hex(addr) + " outside the region the test allowed [" + hex(only_begin_) + ", " +
          hex(only_end_) + ")");
   }
@@ -477,7 +578,8 @@ void Nrf52Chip::writeFlash(std::uint32_t addr, std::uint32_t value) {
     losePower(addr);
     return;
   }
-  const std::uint32_t result = old & value;
+  std::uint32_t result = old & value;
+  if (stuck_mask != 0 && addr == stuck_addr) result &= ~stuck_mask;
   flash_[addr / 4] = result;
   if (writes_since_erase_[addr / 4] < 255) writes_since_erase_[addr / 4]++;
   if (writes_since_erase_[addr / 4] > regs::nvmc::kWritesPerEraseMax) counters_.overwrites++;
@@ -488,7 +590,7 @@ void Nrf52Chip::writeFlash(std::uint32_t addr, std::uint32_t value) {
 
 // "After erasing a flash page, all bits in the page are set to 1."
 void Nrf52Chip::erasePage(std::uint32_t addr) {
-  if (only_touch_ && (addr < only_begin_ || addr + kPageBytes > only_end_)) {
+  if (!allowed(addr, kPageBytes)) {
     fail("a page erase at " + hex(addr) + " outside the region the test allowed [" + hex(only_begin_) + ", " +
          hex(only_end_) + ")");
   }
@@ -508,6 +610,8 @@ void Nrf52Chip::erasePage(std::uint32_t addr) {
     flash_[addr / 4 + i] = regs::flash::kErased;
     writes_since_erase_[addr / 4 + i] = 0;
   }
+  // A word with bits that will not take a write: they stay 0 after the erase too.
+  if (stuck_mask != 0 && stuck_addr >= addr && stuck_addr < addr + kPageBytes) flash_[stuck_addr / 4] &= ~stuck_mask;
   counters_.erases++;
   record(FlashEvent::Kind::kErasePage, addr, 0, 0, 0);
   startBusy(erase_time_us);

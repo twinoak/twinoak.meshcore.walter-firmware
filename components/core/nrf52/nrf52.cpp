@@ -333,6 +333,12 @@ Result Nrf52::checkRegion(const FlashRegion& region) {
   return Result{};
 }
 
+Result Nrf52::waitFlashReady(std::uint32_t timeout_ms) {
+  const Result g = gate();
+  if (!g.ok()) return g;
+  return waitReady(timeout_ms);
+}
+
 // PS "NVMC > READY": "Ready = 1 (NVMC is ready). Busy = 0 (NVMC is busy [on-going write or
 // erase])". One read a millisecond, bounded by the caller's timeout.
 Result Nrf52::waitReady(std::uint32_t timeout_ms) {

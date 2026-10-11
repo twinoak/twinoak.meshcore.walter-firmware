@@ -32,6 +32,11 @@
 //   rak swd id            connect, identify the nRF52840 (FICR), its protection, its core's state, release
 //   rak swd mem <addr> [words]
 //                         read 1 to 32 words at a word-aligned address (hex 0x... or decimal), read-only
+//
+// and the flasher (task p1-05):
+//
+//   rak flash-test        a two-page pattern at the top of the application region, only if those
+//                         pages are blank: written, verified, erased again; the radio restarted
 #pragma once
 
 #include <cstddef>
@@ -67,6 +72,8 @@ enum class Verb : std::uint8_t {
   kRakSwdConnect,
   kRakSwdId,
   kRakSwdMem,
+  // The flasher (task p1-05).
+  kRakFlashTest,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.

@@ -149,6 +149,12 @@ class RadioPins {
   bool lastResetKnown() const { return last_reset_known_; }
   std::uint64_t lastResetEndMs() const { return last_reset_end_ms_; }
 
+  // The radio was reset by other means than nRESET - the flasher's system reset through the
+  // debug port (task p1-05). Recorded like the end of a pulse, so that the next resetPulse()
+  // waits out the spacing (rule 2): the bootloader cannot tell our reset from a tap, and two
+  // inside half a second would put it into UF2 mode.
+  void noteRadioReset();
+
   static constexpr std::size_t kPinCount = kRadioPinCount;
   PinState state(std::size_t index);
 

@@ -125,6 +125,7 @@ constexpr Simple kSimple[] = {
     {"reset", Verb::kRakReset},   {"hello", Verb::kRakHello},  {"ping", Verb::kRakPing},
     {"status", Verb::kRakStatus}, {"id", Verb::kRakId},        {"power", Verb::kRakPower},
     {"env", Verb::kRakEnv},       {"events", Verb::kRakEvents}, {"text", Verb::kRakText},
+    {"flash-test", Verb::kRakFlashTest},
 };
 
 }  // namespace

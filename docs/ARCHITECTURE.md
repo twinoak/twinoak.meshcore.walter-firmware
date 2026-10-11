@@ -19,8 +19,10 @@ components/
     nrf52/              identification, access-port protection, the flash controller, core control,
                         the region guard; regs.h names every register, the forbidden ones included
                         (task p1-04)
-    flasher/            an image and a region in; erases, writes, verify out
-    image/              manifest, signature, descriptor, the image store's records
+    flasher/            an image and a region in; erases, writes, verify out: the board profiles,
+                        the bootloader's settings page, the flasher (task p1-05)
+    image/              manifest, signature, descriptor, the image store's records; crypto/ holds
+                        SHA-256 (task p1-05)
     update/             the radio's update and its journal; the Walter's own update policy
     supervisor/         the radio's heartbeat and the ladder of remedies
     power/              what the battery allows; the check-in interval
@@ -283,31 +285,64 @@ Everything in this section and the next is developed against it.
 
 ## 5. The flasher
 
-Input: an image (a raw binary and its load address) and the region it may occupy. The region is
-**this firmware's own table, per board** — for `rak4630-single`, from the end of the SoftDevice to
-the start of the file system — and the manifest's `app_region` must agree with it, not replace it.
+Input: an image (its bytes behind an `ImageSource`, its load address, its SHA-256) and the board
+profile. The region is **this firmware's own table, per board** (`core/flasher/board_profile.h`,
+task p1-05): for `rak4630-single`, `0x26000`–`0xED000` — from the end of the S140 6.1.1
+SoftDevice to the start of the file system, the `FLASH` line of the linker script MeshCore's
+RAK4631 build uses (`nrf52840_s140_v6.ld:8`) and the span the repeater firmware's release tooling
+records as `app_region`. The manifest's `app_region` must lie inside it (`BoardProfile::accepts`),
+never replace it. The settings page (`0xFF000`) and the bootloader (`0xF4000`) are in the profile
+too, from the bootloader's `dfu_types.h`. Built against the simulated chip, as below.
 
-1. Identify the chip; refuse anything but the expected part. Refuse a protected chip.
-2. Check the image lies inside the region. Refuse otherwise — before anything is erased.
-3. Halt the core.
-4. Erase the image's first page — the vector table — first, and write it last: the bootloader will
-   not start an application whose first word is blank, so an interrupted flash leaves the radio in
-   its bootloader, never in half an application.
-5. For each other page the image covers: skip it if it already holds the image's bytes (a resumed
-   or repeated flash converges quickly); otherwise erase it and write it. Read everything back and
-   compare.
-6. **The bootloader's settings.** The Adafruit bootloader records the size and CRC of the
-   application it last installed and refuses to start one that does not match — but treats an
-   erased settings page as "installed by a debugger" and checks the vector table instead. The
-   flasher leaves that page in a state the bootloader accepts. Which state, and the page's address,
-   are read from the bootloader's source at the version the modules ship with, by the task that
-   writes this step.
-7. Reset and release the pins to the safe state.
+1. Acquire the lines; connect; identify the chip — refuse anything but the profile's part and page
+   size; **refuse a protected chip**, saying so. Read the SoftDevice's own information structure
+   (`0x3000`: magic, size): the application must begin where the SoftDevice ends, or an image
+   linked for `0x26000` runs nowhere — refused before anything else.
+2. Check the image: not empty, page-aligned, wholly inside the region (padded with `0xFF` to a
+   word). Then **scan** every page it covers and classify it: equal, reachable by clearing bits,
+   or needing an erase. Nothing has been written; an image already on the chip ends with zero
+   erases and zero writes.
+3. **Halt the core — a running core, not reset-and-halt** (§4: on a build code Fxx module a reset
+   closes the access port until its firmware has run; MeshCore runs no nRF52 watchdog that a halted
+   core would trip), then wait for the flash controller to finish anything the application had in
+   flight. For an image that *is* the application (load address = the region's start): **write
+   the bootloader's settings page to "bank 0 holds nothing"** (`bank_0 = BANK_INVALID_APP`), the
+   record the bootloader's own DFU writes before it erases bank 0.
+4. Erase the image's first page — the vector table — before any other page changes, and write it
+   last.
+5. Every other page in order: skipped if equal; written without an erase when only blank words
+   differ; erased and written otherwise — only the words that are not `0xFFFFFFFF`, in runs. Each
+   page read back and compared; a mismatch retried once (erase, write, verify) and then a failure
+   naming the address. Then the first page the same way.
+6. The whole image read back in order, compared and hashed; the SHA-256 must be the one given.
+   Then **the settings page**: `bank_0 = BANK_VALID_APP, bank_0_crc = 0` ("CRC checking is not
+   used"), `bank_0_size` the image's — the record every UF2 and DFU install leaves, which both
+   bootloaders a RAK4630 may carry start (`core/flasher/bootloader_settings.h` cites the lines) — unless
+   a record they already accept for exactly this image is there. Word 0 of a record is written
+   after words 1–6, so a torn write reads as an erased page, never as a code with a torn body.
+7. A system reset through the debug port, the power-up withdrawn, the pins released to the safe
+   state, and `RadioPins` told the radio was reset so that the next pulse waits out the spacing.
 
-It **never** erases a page the image does not cover, never touches the file system (the node's
-identity and settings), the SoftDevice, the bootloader's code or UICR. A power loss at any point
-leaves a radio with a broken application and an intact bootloader and identity; running the same
-flash again finishes it.
+**Why the settings page is invalidated before step 4 and validated after step 6.** The stock
+bootloader since 0.11.0 starts an application with an *erased* settings page when its first two
+words look like a vector table; every bootloader starts one whose `bank_0` is valid with the CRC
+check off — the state every RAK in the field is in — as soon as its first two words are not both
+blank. Left in place, either record would accept the first page half-written. `BANK_INVALID_APP`
+is refused by every version whatever the bytes say, so from before the first erase until after the
+last verified write the radio has no startable application and sits in its bootloader; the final
+record is written only after the read-back. Erasing the page instead would have been wrong: OTAFIX
+and every stock release before 0.11.0 refuse an erased page for ever.
+
+It **never** erases a page the image does not cover — the region handed to the nRF52 layer is the
+image's own pages, and the settings page is reached only through one function whose region is that
+page alone — never touches the file system (the node's identity and settings), the SoftDevice, the
+bootloader's code, the MBR parameter page or UICR. A power loss at any flash operation leaves a
+radio with no startable application, an intact bootloader and identity, and a settings page that
+is blank, invalid or valid; running the same flash again finishes it with no more erases than the
+pages that still differ need. On a failure after the halt the flasher asks for a system reset on
+its way out, so the radio runs its bootloader rather than sitting halted. `verify()` reads back and
+compares, changing nothing; `flashTest()` is the bench's `rak flash-test` (`docs/console.md`). The
+simulated chip evaluates both bootloaders' `bootloader_app_is_valid()` after every interruption.
 
 ## 6. Images
 

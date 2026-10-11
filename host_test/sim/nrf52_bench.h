@@ -33,6 +33,12 @@ struct Nrf52Bench : SwdBench {
     nrf.close();
     release();
   }
+  // The power back after the chip lost it (task p1-05): the chip as a power-on reset leaves it,
+  // the target answering again. The Walter's side keeps nothing: the flasher opens a new session.
+  void powerCycle() {
+    chip.powerOn();
+    target.silent = false;
+  }
 };
 
 }  // namespace sim

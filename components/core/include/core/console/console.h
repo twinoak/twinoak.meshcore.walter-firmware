@@ -13,6 +13,7 @@
 
 #include "core/board/radio_pins.h"
 #include "core/console/parser.h"
+#include "core/flasher/flasher.h"
 #include "core/health/health.h"
 #include "core/link/client/client.h"
 #include "interfaces/clock.h"
@@ -73,12 +74,19 @@ class Console {
   void rakSwdId();
   void rakSwdMem(std::uint32_t address, std::uint32_t words);
 
+  // The flasher (task p1-05): the bench's proof of erase, write and verify on real silicon.
+  void rakFlashTest();
+  void printFlashResult(const char* what, const flasher::Result& r);
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
   interfaces::Clock& clock_;
   interfaces::Restart& restart_;
   link::client::Client& radio_;
+  // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
+  // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.
+  flasher::Flasher flasher_;
   char line_[kMaxLineLength + 8] = {};
   std::size_t length_ = 0;
   bool last_was_cr_ = false;

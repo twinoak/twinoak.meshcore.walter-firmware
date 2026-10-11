@@ -72,7 +72,9 @@ bool FakePins::refused(const Op& op) {
   return fail_when && fail_when(op);
 }
 
-void FakePins::record(const Op& op, bool changed) { log.push_back(Transition{clock_.now_ms, op, changed}); }
+void FakePins::record(const Op& op, bool changed) {
+  if (record_log) log.push_back(Transition{clock_.now_ms, op, changed});
+}
 
 void FakePins::violate(const char* rule, const std::string& detail) {
   violations.push_back(Violation{clock_.now_ms, rule, detail});
@@ -83,8 +85,14 @@ void FakePins::violate(const char* rule, const std::string& detail) {
   }
 }
 
+// A pin number past the end fails the test (a FAIL throws, as REQUIRE would). A plain comparison
+// rather than REQUIRE on these three: they run once per SWD clock edge, and a flash is millions
+// of edges - a doctest assertion each was most of the host suite's time (task p1-05).
+#define TWINOAK_GPIO_IN_RANGE(g) \
+  if ((g) >= kGpioCount) FAIL("fake pins: GPIO " << static_cast<unsigned>(g) << " is not a pin of the ESP32-S3")
+
 bool FakePins::setMode(std::uint8_t gpio, PinMode mode) {
-  REQUIRE(gpio < kGpioCount);
+  TWINOAK_GPIO_IN_RANGE(gpio);
   const Op op{OpKind::kMode, gpio, mode, false, false};
   if (refused(op)) return false;
   const bool was_reset = resetAsserted();
@@ -98,7 +106,7 @@ bool FakePins::setMode(std::uint8_t gpio, PinMode mode) {
 }
 
 bool FakePins::write(std::uint8_t gpio, bool high) {
-  REQUIRE(gpio < kGpioCount);
+  TWINOAK_GPIO_IN_RANGE(gpio);
   const Op op{OpKind::kLevel, gpio, PinMode::kInput, high, false};
   if (refused(op)) return false;
   const bool was_reset = resetAsserted();
@@ -116,7 +124,7 @@ bool FakePins::write(std::uint8_t gpio, bool high) {
 }
 
 bool FakePins::read(std::uint8_t gpio) {
-  REQUIRE(gpio < kGpioCount);
+  TWINOAK_GPIO_IN_RANGE(gpio);
   return wireLevel(gpio);
 }
 
