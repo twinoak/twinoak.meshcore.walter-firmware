@@ -5,6 +5,11 @@ idf_component_register(
   SRCS "version/version.cpp"
        "image/this_image.cpp"
        "board/radio_pins.cpp"
+       "board/slot.cpp"
+       # The dual adapter's selector (task p1-06): compiled here so that the build of the unit
+       # that will never use it still checks it, and linked out of the image because nothing
+       # constructs it (main/main.cpp builds a SingleTarget).
+       "board/dual_target.cpp"
        "health/health.cpp"
        "console/parser.cpp"
        "console/console.cpp"

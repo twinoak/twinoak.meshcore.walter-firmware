@@ -96,6 +96,10 @@ bool Client::hasCapability(std::uint32_t bits) const {
   return here().session.up && (here().session.caps & bits) == bits;
 }
 
+// The radio of the *current* slot (task p1-06): a reset pulse reaches the radio the wires are
+// steered to, and on a dual adapter nRESET is routed like the debug lines
+// (DUAL-RAK4630-FEASIBILITY.md §2.2), so one slot's reset is not the other's news. A kill is the
+// exception - it cuts the whole rail (§5) - and the caller tells each slot in turn.
 void Client::radioWasReset() {
   // §5.1: everything per-boot is gone. §9: a reset is also what ends a text session - the next
   // thing to try is HELLO, whatever the radio was running before.
