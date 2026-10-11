@@ -28,7 +28,10 @@ class FakeClock final : public interfaces::Clock {
     now_ms += ms;
   }
 
+  std::uint64_t delayed_us = 0;  // the sum of every delayUs(): the SWD tests' stopwatch
+
   void delayUs(std::uint32_t us) override {
+    delayed_us += us;
     us_ += us;
     while (us_ >= 1000) {
       us_ -= 1000;

@@ -146,6 +146,20 @@ TEST_CASE("rak time and rak time set <epoch>") {
   CHECK(errorOf("rak time get") == "rak time: unknown word (rak time, rak time set <epoch>): get");
 }
 
+TEST_CASE("rak swd connect parses, and rak swd with anything else is refused by name") {
+  CHECK(verbOf("rak swd connect") == Verb::kRakSwdConnect);
+  CHECK(verbOf("  rak   swd   connect  ") == Verb::kRakSwdConnect);
+  Parsed p = parseLine("rak swd");
+  CHECK(!p.ok);
+  CHECK(std::string(p.error) == "rak swd needs an operation: rak swd connect");
+  p = parseLine("rak swd disconnect");
+  CHECK(!p.ok);
+  CHECK(std::string(p.error) == "rak swd: unknown operation (rak swd connect): disconnect");
+  p = parseLine("rak swd connect now");
+  CHECK(!p.ok);
+  CHECK(std::string(p.error) == "rak swd takes one word: rak swd connect");
+}
+
 TEST_CASE("rak cli takes the rest of the line verbatim, up to §5.7's 160 bytes") {
   const Parsed one = parseLine("rak cli get radio");
   REQUIRE(one.ok);

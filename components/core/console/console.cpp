@@ -5,6 +5,8 @@
 #include <cstring>
 
 #include "core/link/client/words.h"
+#include "core/swd/dp.h"
+#include "core/swd/wire.h"
 #include "core/version.h"
 
 namespace core {
@@ -126,6 +128,7 @@ void Console::runLine(const char* line) {
     case Verb::kRakCli: rakCli(p.command.text, p.command.text_size); return;
     case Verb::kRakEvents: rakEvents(); return;
     case Verb::kRakText: rakText(); return;
+    case Verb::kRakSwdConnect: rakSwdConnect(); return;
   }
 }
 
@@ -145,6 +148,7 @@ void Console::help() {
   print("  rak cli <line>      run one line on the radio's own console\n");
   print("  rak events          the events the radio has sent\n");
   print("  rak text            the lines a scanner has sent instead of frames\n");
+  print("  rak swd connect     connect to the radio's debug port over SWD: DPIDR and the power-up\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -541,6 +545,58 @@ void Console::rakText() {
     printText(radio_.textLine(i));
   }
   radio_.clearText();
+}
+
+// ------------------------------------------------------------------------ the debug port (p1-03)
+//
+// Acquire the two lines, connect (line reset, the switch, line reset, DPIDR), ask for the debug
+// and system power-up and wait for the acknowledges, withdraw the request - on the nRF52840 that
+// is what ends debug interface mode (core/swd/dp.cpp, Dp::powerDown) - and release the lines.
+// Every exit path releases them: the wire and the port live on this stack frame and nothing
+// holds the pins after it returns.
+void Console::rakSwdConnect() {
+  const board::Outcome acquired = pins_.swdAcquire();
+  if (acquired != board::Outcome::kOk) {
+    printf("error: rak swd connect: %s\n", board::describe(acquired));
+    return;
+  }
+  swd::Wire wire(pins_.swd(), clock_);
+  swd::Dp dp(wire);
+  printf("swd: %lu kHz (half-period %lu us): line reset, switch, line reset, DPIDR\n",
+         static_cast<unsigned long>(wire.frequencyHz() / 1000),
+         static_cast<unsigned long>(wire.halfPeriodUs()));
+  const swd::Result connected = dp.connect();
+  if (!connected.ok()) {
+    printf("error: rak swd connect: %s\n", swd::describe(connected.status));
+    pins_.swdRelease();
+    print("  pins released\n");
+    return;
+  }
+  const swd::DpidrFields f = swd::decodeDpidr(connected.value);
+  printf("  DPIDR 0x%08lx: revision %u, part 0x%02x, DPv%u, designer 0x%03x%s%s\n",
+         static_cast<unsigned long>(connected.value), static_cast<unsigned>(f.revision),
+         static_cast<unsigned>(f.partno), static_cast<unsigned>(f.version),
+         static_cast<unsigned>(f.designer), f.designer == swd::kDesignerArm ? " (Arm)" : "",
+         connected.value == swd::kNrf52840Dpidr ? " - the nRF52840's" : " - not the nRF52840's 0x2ba01477");
+  const swd::Result up = dp.powerUp();
+  if (up.ok()) {
+    printf("  power-up: debug and system domains acknowledged (CTRL/STAT 0x%08lx)\n",
+           static_cast<unsigned long>(up.ctrl_stat));
+  } else {
+    printf("  power-up: %s (CTRL/STAT 0x%08lx)\n", swd::describe(up.status),
+           static_cast<unsigned long>(up.ctrl_stat));
+  }
+  const swd::Result down = dp.powerDown();
+  if (down.ok()) {
+    print("  power-up request withdrawn: the radio leaves debug interface mode\n");
+  } else {
+    printf("  power-up request withdrawn: %s\n", swd::describe(down.status));
+  }
+  pins_.swdRelease();
+  const swd::Dp::Counters& c = dp.counters();
+  printf("  pins released; %lu transfers, %lu WAIT retries, %lu faults, %lu parity errors\n",
+         static_cast<unsigned long>(c.transfers), static_cast<unsigned long>(c.wait_retries),
+         static_cast<unsigned long>(c.faults), static_cast<unsigned long>(c.parity_errors));
 }
 
 }  // namespace console

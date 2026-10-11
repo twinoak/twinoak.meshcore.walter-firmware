@@ -25,6 +25,10 @@
 //   rak cli <line>        CLI: one line run by the radio's own console interpreter
 //   rak events            the events the client has queued
 //   rak text              the lines a scanner has sent (§9)
+//
+// and the debug port (task p1-03):
+//
+//   rak swd connect       acquire the SWD lines, connect, print DPIDR and the power-up, release
 #pragma once
 
 #include <cstddef>
@@ -56,6 +60,8 @@ enum class Verb : std::uint8_t {
   kRakCli,
   kRakEvents,
   kRakText,
+  // The debug port (task p1-03).
+  kRakSwdConnect,
 };
 
 // §5.7: a CLI line is 1 to 160 bytes of UTF-8. The parser refuses a longer one here rather than
