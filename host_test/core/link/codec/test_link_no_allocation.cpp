@@ -148,9 +148,11 @@ TEST_CASE("nothing under components/core/link/codec/ allocates") {
           const bool after = at + length < code.size() && isWordByte(code[at + length]);
           // Part of a longer identifier - "kUnset" holds "set" - and not the word itself.
           const bool inside_a_word = before || after;
-          CHECK_MESSAGE(inside_a_word,
-                        file << ":" << number << " allocates, or looks as if it does: \"" << word
-                             << "\" in " << code);
+          // The word as a std::string: doctest prints a `const char*` variable as a pointer
+          // (`filldata<T*>` in doctest.h), and a message that cannot name the word is no use.
+          CHECK_MESSAGE(inside_a_word, file << ":" << number
+                                           << " allocates, or looks as if it does: \""
+                                           << std::string(word) << "\" in " << code);
         }
       }
 

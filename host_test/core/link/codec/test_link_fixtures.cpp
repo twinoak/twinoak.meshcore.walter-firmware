@@ -44,38 +44,43 @@ namespace {
 
 long long intOf(const Value& fields, const char* key) { return fields[key].integer(); }
 
+// A doctest message takes a std::string and not a `const char*`: doctest stringifies a pointer
+// variable as a pointer (`filldata<T*>` in doctest.h), so the name of the field would be printed
+// as an address. A string literal is a const char[N] and prints as its text.
+std::string named(const char* key) { return std::string(key); }
+
 std::uint8_t u8(const Value& fields, const char* key) {
   const long long value = intOf(fields, key);
-  REQUIRE_MESSAGE(value >= 0, key);
-  REQUIRE_MESSAGE(value <= 0xFF, key);
+  REQUIRE_MESSAGE(value >= 0, named(key));
+  REQUIRE_MESSAGE(value <= 0xFF, named(key));
   return static_cast<std::uint8_t>(value);
 }
 
 std::uint16_t u16(const Value& fields, const char* key) {
   const long long value = intOf(fields, key);
-  REQUIRE_MESSAGE(value >= 0, key);
-  REQUIRE_MESSAGE(value <= 0xFFFF, key);
+  REQUIRE_MESSAGE(value >= 0, named(key));
+  REQUIRE_MESSAGE(value <= 0xFFFF, named(key));
   return static_cast<std::uint16_t>(value);
 }
 
 std::uint32_t u32(const Value& fields, const char* key) {
   const long long value = intOf(fields, key);
-  REQUIRE_MESSAGE(value >= 0, key);
-  REQUIRE_MESSAGE(value <= 0xFFFFFFFFll, key);
+  REQUIRE_MESSAGE(value >= 0, named(key));
+  REQUIRE_MESSAGE(value <= 0xFFFFFFFFll, named(key));
   return static_cast<std::uint32_t>(value);
 }
 
 std::int8_t i8(const Value& fields, const char* key) {
   const long long value = intOf(fields, key);
-  REQUIRE_MESSAGE(value >= -128, key);
-  REQUIRE_MESSAGE(value <= 127, key);
+  REQUIRE_MESSAGE(value >= -128, named(key));
+  REQUIRE_MESSAGE(value <= 127, named(key));
   return static_cast<std::int8_t>(value);
 }
 
 std::int16_t i16(const Value& fields, const char* key) {
   const long long value = intOf(fields, key);
-  REQUIRE_MESSAGE(value >= -32768, key);
-  REQUIRE_MESSAGE(value <= 32767, key);
+  REQUIRE_MESSAGE(value >= -32768, named(key));
+  REQUIRE_MESSAGE(value <= 32767, named(key));
   return static_cast<std::int16_t>(value);
 }
 
@@ -91,11 +96,11 @@ link::Bytes viewOf(const std::vector<std::uint8_t>& bytes) {
 
 link::Text viewOf(const std::string& text) { return link::text(text.data(), text.size()); }
 
-void checkBytes(link::Bytes got, const std::vector<std::uint8_t>& want, const char* what) {
+void checkBytes(link::Bytes got, const std::vector<std::uint8_t>& want, const std::string& what) {
   CHECK_MESSAGE(fixtures::toHex(got.data, got.size) == fixtures::toHex(want), what);
 }
 
-void checkText(link::Text got, const std::string& want, const char* what) {
+void checkText(link::Text got, const std::string& want, const std::string& what) {
   const std::string seen = got.size == 0 ? std::string() : std::string(got.data, got.size);
   CHECK_MESSAGE(seen == want, what);
 }
