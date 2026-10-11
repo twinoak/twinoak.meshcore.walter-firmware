@@ -63,7 +63,9 @@ esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 1
 
 Then open the port (any baud; USB Serial/JTAG ignores it): the console prints
 `twinoak-walter 0.0.0-dev`, which slot it runs from, what the descriptor inside the image says it
-is, and idles.
+is, why it booted, and a `>` prompt — `help`, `status`, `pins`, `rak reset`, `rak kill <seconds>`,
+`reboots`, `reboot` ([`docs/console.md`](docs/console.md)). Before any of that, the seven pins it
+shares with the radio are in their safe state (`docs/ARCHITECTURE.md` §2).
 
 **Releasing it** is a person pushing a tag `vX.Y.Z`:
 [`docs/release.md`](docs/release.md). Nothing else releases anything — not a merge, not a green
@@ -79,6 +81,7 @@ start-up. `sdkconfig.defaults` carries a reason per line; `partitions.csv` is ch
 ways one can be wrong; `keys/` holds the public halves of the keys a release may be signed with.
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the map;
 [`docs/release.md`](docs/release.md) is how a tag becomes a release;
+[`docs/console.md`](docs/console.md) is the console;
 [`docs/bench.md`](docs/bench.md) is what only a Walter on a desk can confirm.
 
 The task piles that build the rest, one headless session per task:

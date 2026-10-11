@@ -1,6 +1,7 @@
-// app_main: the first thing the Walter says, and nothing else yet (task p0-01). Pins are task 03's,
-// the link, the radio and the modem later phases'. This file is platform code and may include
-// ESP-IDF; the logic it will one day hand things to is in components/core/.
+// app_main: construct the real things, hand them to the core, run (docs/ARCHITECTURE.md §1).
+// This file is platform code and may include ESP-IDF; the logic it hands things to is in
+// components/core/. Task p0-03: the pins go to the safe state before anything else, the boot's
+// reason is recorded, and the console runs on the module's USB.
 #include <cinttypes>
 #include <cstdio>
 
@@ -8,8 +9,16 @@
 #include "esp_partition.h"
 #include "sdkconfig.h"
 
+#include "core/board/radio_pins.h"
+#include "core/console/console.h"
+#include "core/health/health.h"
 #include "core/image/this_image.h"
 #include "core/version.h"
+#include "platform/boot.h"
+#include "platform/clock.h"
+#include "platform/pins.h"
+#include "platform/retained.h"
+#include "platform/usb_console.h"
 
 // components/modem: the modem library is linked and called by nothing. See modem_anchor.cpp.
 extern "C" const void* twinoak_modem_library_anchor();
@@ -30,9 +39,27 @@ const char* ota_state_name(esp_ota_img_states_t state) {
   return "?";
 }
 
+// The real things, with static storage: they live as long as the firmware runs, and nothing here
+// is allocated after start-up.
+platform::EspPins g_pins;
+platform::EspClock g_clock;
+platform::RtcRetained g_retained;
+platform::EspRestart g_restart;
+platform::UsbConsole g_usb;
+
 }  // namespace
 
 extern "C" void app_main() {
+  // First: the seven pins in the safe state (docs/ARCHITECTURE.md §2 rule 1). Constructing
+  // RadioPins is safe(); nothing runs before it, not even the banner.
+  static core::board::RadioPins radio_pins(g_pins, g_clock, g_retained);
+
+  // Why this boot happened, counted and remembered (core/health).
+  static core::health::Health health(g_retained, g_clock);
+  health.begin(platform::resetReason(), platform::wakeCause());
+
+  const bool console_up = g_usb.begin();
+
   // The banner: product and version, one line, first (host_test/core/test_version.cpp).
   std::printf("\n%s\n", core::banner());
 
@@ -64,7 +91,22 @@ extern "C" void app_main() {
   const void* volatile anchor = twinoak_modem_library_anchor();
   (void)anchor;
 
-  std::printf("console on USB; nothing to do yet - idling\n");
   std::fflush(stdout);
-  // Returning from app_main leaves FreeRTOS idling; the task watchdog watches the idle tasks.
+
+  // The console, on the USB port, in this task: one byte at a time, the uptime kept in retained
+  // storage about once a second. Returning is not an option here (the console is this task);
+  // the task watchdog watches the idle tasks, which run while this one waits for a byte.
+  static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart);
+  console.begin();
+  std::uint32_t last_tick_s = 0;
+  for (;;) {
+    const int c = console_up ? g_usb.readByte(100) : -1;
+    if (c >= 0) console.feed(static_cast<char>(c));
+    if (!console_up) g_clock.delayMs(100);
+    const std::uint32_t up = health.uptimeS();
+    if (up != last_tick_s) {
+      last_tick_s = up;
+      health.tick();
+    }
+  }
 }

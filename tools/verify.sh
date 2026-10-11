@@ -7,7 +7,9 @@
 #   spec          python spec/tools/specsync.py verify spec   - the copy is byte for byte the spec's
 #   spec-tools    linkref.py check, manifestref.py check      - the spec's own reference code agrees
 #                 with its fixtures (cryptography pinned in tools/requirements-verify.txt)
-#   host-tests    host_test/ under ASan+UBSan, ctest          - the logic
+#   host-tests    host_test/ under ASan+UBSan, ctest          - the logic; first a grep that no GPIO
+#                 call exists outside components/platform/ and that the seven radio pins are
+#                 named only in components/core/board/ (task p0-03)
 #   release-tests tools/release/test_release.py               - what the release tooling refuses
 #   build         idf.py build, merge-bin, size               - the firmware, images to out/images/
 #   partitions    tools/check_partitions.py --self-test, then against the build
@@ -64,8 +66,28 @@ step_spec_tools() {
   python spec/tools/manifestref.py check spec/fixtures/manifest
 }
 
+# Who may touch a pin (task p0-03, docs/ARCHITECTURE.md §2): the GPIO driver is called from
+# components/platform/ and nowhere else, and the seven radio-facing pins (core/board/pin_map.h)
+# are named by RadioPins and nowhere else in the firmware. A grep, not a promise.
+check_pin_ownership() {
+  local hits
+  hits=$(grep -rnE '\b(gpio_[a-z_]+\(|GPIO_NUM_[0-9]+|GPIO_MODE_)' components main \
+           --include='*.cpp' --include='*.h' --include='*.c' | grep -v '^components/platform/' || true)
+  if [ -n "$hits" ]; then
+    echo "a GPIO call outside components/platform/:"; echo "$hits"; return 1
+  fi
+  echo "no GPIO call outside components/platform/"
+  hits=$(grep -rnE '\bk(NReset|SwdClk|SwdIo|PwrKill|Spare|WalterTx|WalterRx|RadioPins)\b' components main \
+           --include='*.cpp' --include='*.h' | grep -v -E '^components/core/(board/|include/core/board/)' || true)
+  if [ -n "$hits" ]; then
+    echo "one of the seven radio pins named outside RadioPins (components/core/board/):"; echo "$hits"; return 1
+  fi
+  echo "the seven radio pins are named only in components/core/board/"
+}
+
 step_host_tests() {
   local dir=$BUILD/host
+  check_pin_ownership || return 1
   cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
   cmake --build "$dir" &&

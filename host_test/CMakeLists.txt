@@ -18,6 +18,7 @@ endif()
 
 set(REPO ${CMAKE_CURRENT_LIST_DIR}/..)
 set(CORE ${REPO}/components/core)
+set(INTERFACES ${REPO}/components/interfaces)
 include(${REPO}/tools/cmake/ours.cmake)
 
 # The sanitizers, for everything in this project: the tests exist to make things go wrong, and an
@@ -30,7 +31,7 @@ add_link_options(${SANITIZE})
 # -- core/, as the firmware compiles it --------------------------------------------------------
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS ${CORE}/*.cpp)
 add_library(core STATIC ${CORE_SOURCES})
-target_include_directories(core PUBLIC ${CORE}/include)
+target_include_directories(core PUBLIC ${CORE}/include ${INTERFACES}/include)
 twinoak_ours(core)
 # The version the firmware gets from PROJECT_VER; here from the cache so the test can pin it.
 set(TWINOAK_VERSION "0.0.0-dev" CACHE STRING "what core::version() returns in this build")
@@ -64,14 +65,18 @@ add_custom_command(
 add_library(doctest INTERFACE)
 target_include_directories(doctest SYSTEM INTERFACE ${CMAKE_CURRENT_LIST_DIR}/third_party/doctest)
 
+# The fakes (fakes/): what stands behind the interfaces on the host. The fake pins check the pin
+# rules themselves and fail the running test through doctest, so they are part of the test binary.
+file(GLOB_RECURSE FAKE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/fakes/*.cpp)
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp)
-add_executable(core_tests main.cpp ${TEST_SOURCES} ${FIXTURE_HEADER})
+add_executable(core_tests main.cpp ${FAKE_SOURCES} ${TEST_SOURCES} ${FIXTURE_HEADER})
 target_link_libraries(core_tests PRIVATE core doctest)
-target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated ${CMAKE_CURRENT_LIST_DIR})
 twinoak_ours(core_tests)
 target_compile_definitions(core_tests PRIVATE
   TWINOAK_VERSION="${TWINOAK_VERSION}"
-  TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}")
+  TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}"
+  TWINOAK_REPO_ROOT="${REPO}")
 
 enable_testing()
 add_test(NAME core_tests COMMAND core_tests --no-intro)

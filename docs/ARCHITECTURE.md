@@ -11,6 +11,8 @@ CMakeLists.txt, sdkconfig.defaults, partitions.csv, idf_component.yml + lock
 main/                   app_main: construct the real things, hand them to the core, run
 components/
   core/                 everything that is logic. No ESP-IDF include, no FreeRTOS, no heap after start-up.
+    board/              the pin map and RadioPins: the seven pins and their rules (§2) - task p0-03
+    health/             why the last boot happened: the reset reason, a boot counter, the last five - task p0-03
     link/               the box link: codec, client, events, telling a repeater from a scanner
     swd/                the debug port: wire protocol, DP, MEM-AP
     nrf52/              identification, access-port protection, the flash controller, core control
@@ -19,14 +21,17 @@ components/
     update/             the radio's update and its journal; the Walter's own update policy
     supervisor/         the radio's heartbeat and the ladder of remedies
     power/              what the battery allows; the check-in interval
-    console/            the line parser and the commands' text
+    console/            the line parser and the commands' text (from task p0-03: help, status, reboots, pins, rak reset, rak kill, reboot)
     cycle/              one wake, start to finish, against interfaces
-  interfaces/           the interfaces core/ needs: pins, a byte stream, a clock, flash regions,
-                        a key-value store, an uplink, a sleeper. ("hal/" when this file was
-                        written; ESP-IDF owns a component of that name - task p0-01)
-  platform/             ESP-IDF implementations of interfaces/ - thin
+  interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
+                        (task p0-03); a byte stream, flash regions, a key-value store, an uplink, a
+                        sleeper (later). ("hal/" when this file was written; ESP-IDF owns a
+                        component of that name - task p0-01)
+  platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
+                        RTC memory, the USB console, the reset reason (task p0-03)
   modem/                the Walter's LTE modem behind interfaces/' uplink
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
+  fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained storage as a map
   sim/                  the simulated SWD target (wire level and nRF52), the simulated flash, the scripted RAK
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
 tools/                  verify.ps1, release/ (the release tooling), bench tools
@@ -44,37 +49,64 @@ reading it is the test.
 
 From the hardware repository's `INTERCONNECT.md` (frozen) and `BENCH-BREADBOARD.md`:
 
-| Net | Walter GPIO | Direction | Rule |
-|---|---:|---|---|
-| `LORA_nRESET` | 1 | open-drain | **output-low to assert, input to release. Never output-high.** The nRF52 has its own pull-up |
-| `LORA_SWDCLK` | 2 | out | idle low; must not toggle while nRESET is held low (reserved for the dual adapter's selector) |
-| `LORA_SWDIO` | 4 | bidirectional | input unless a transfer is driving it |
-| `LORA_PWR_KILL` | 5 | out | **high = the LoRa 3.3 V rail is off.** Floating or low = on. Default at every boot and in sleep: not driving |
-| spare | 6 | — | input, unused |
-| `WALTER_TX` → radio RX | 7 | out | UART idle high while the radio is powered; input (not driving) when it is not |
-| `WALTER_RX` ← radio TX | 8 | in | an RTC-capable pin: a start bit can wake the Walter from deep sleep |
+| Net | D-sub | Walter GPIO | Direction | Rule |
+|---|---:|---:|---|---|
+| `LORA_nRESET` | 3 | 1 | open-drain | **output-low to assert, input to release. Never output-high.** The nRF52 has its own pull-up |
+| `LORA_SWDCLK` | 4 | 2 | out | idle low; must not toggle while nRESET is held low (reserved for the dual adapter's selector) |
+| `LORA_SWDIO` | 5 | 4 | bidirectional | input unless a transfer is driving it |
+| `LORA_PWR_KILL` | 6 | 5 | out | **high = the LoRa 3.3 V rail is off.** Floating or low = on. Default at every boot and in sleep: not driving |
+| `spare` | 7 | 6 | — | input, unused |
+| `WALTER_TX` → radio RX | 8 | 7 | out | UART idle high while the radio is powered (pulled up, not driven, when the UART is not in use); input (not driving, not pulling) when it is not |
+| `WALTER_RX` ← radio TX | 9 | 8 | in | an RTC-capable pin: a start bit can wake the Walter from deep sleep |
+
+The D-sub column is the LTE box's connector (`INTERCONNECT.md`, "D-sub pinouts"); pins 1 and 2 are
+ground and the raw battery. `core/board/pin_map.h` carries the same three columns and a host test
+reads this table and fails if they disagree (task p0-03).
 
 Each line has 470 Ω in series and about 2.2 nF to ground (two bulkhead filters): a time constant
 near 1 µs.
 
-**Rules, each enforced in one place (`core`'s board logic) and tested against fake pins:**
+**Rules, each enforced in one place (`core/board/radio_pins`, the only object that touches these
+pins) and tested against fake pins that check them on every transition:**
 
 1. **Safe state.** At boot, before anything else, and whenever this firmware has nothing to say to
-   the radio: nRESET input, SWDCLK and SWDIO inputs, KILL not driving, TX high if the radio is
-   believed powered and input if not.
-2. **Reset is a pulse of output-low** of 100 ms, then input. **Two resets are at least one second
-   apart** — two inside half a second put the Adafruit bootloader into UF2 mode, where it stays.
-   The spacing is enforced across deep sleep too (the time of the last reset is kept).
-3. **Before the kill line goes high, every other radio-facing pin is an input**, TX included. The
-   series resistors limit back-feed into a dead radio to a few milliamps; the firmware's job is to
-   make it zero. After the rail is back, wait for it to settle before driving anything.
+   the radio: nRESET input, SWDCLK and SWDIO inputs, KILL not driving, TX idle high if the radio
+   is believed powered — through the chip's weak pull-up, not driven, so that a radio that is
+   unexpectedly dead sees microamps, not milliamps — and a plain input if not. TX is driven only
+   between `uartEnable()` and `uartRelease()`.
+2. **Reset is a pulse of output-low** (open-drain) of 100 ms, then input. **Two resets are at
+   least one second apart**, measured from the end of one pulse to the start of the next — two
+   inside half a second put the Adafruit bootloader into UF2 mode, where it stays. A reset that
+   comes too soon *waits*; it is never refused and never shortened. The spacing is enforced across
+   deep sleep too: the time of the last reset is kept in retained storage, and when the clock
+   cannot be trusted against it (no record, a power cut, a clock that restarted) the worst is
+   assumed — a reset ended just now — which also covers the one the power-up glitch (rule 5)
+   gave the radio. There is no operation that drives nRESET high: the only handle on the pin can
+   assert low and release.
+3. **Before the kill line goes high, every other radio-facing pin is a plain input**, TX included
+   and its pull-up off. The series resistors limit back-feed into a dead radio to a few milliamps;
+   the firmware's job is to make it zero. Whoever held the UART or the SWD lines loses them (their
+   operations return false from then on). After the rail is back, wait for it to settle before
+   driving anything: the rail is *off* while the kill line is driven, *unknown* for the settle
+   time after it is released — and for the settle time after boot, because a Walter that reset in
+   the middle of a kill left it to float back on just before — and *on* after that.
 4. **A kill is bounded**: at least long enough for the rail to collapse, at most a configured
-   maximum; the firmware cannot leave the radio off by crashing — the line floats to *on* when the
-   Walter resets, by hardware.
+   maximum (`kKillTiming`: 1 s, 30 s, 200 ms to settle — placeholders until the bench measures the
+   rail, `docs/bench.md` §2); the kill line is driven high or not at all, never low; the firmware
+   cannot leave the radio off by crashing — the line floats to *on* when the Walter resets, by
+   hardware. Nothing acquires SWD while the rail is believed off, and the SWD clock cannot toggle
+   while nRESET is asserted (a reset is refused while SWD is held; the holder releases first).
 5. **Across deep sleep the pads are held** in the safe state, so that waking does not glitch the
-   reset line. (A *power-up* of the ESP32-S3 does glitch GPIO1–14 low for about 60 µs, and that
+   reset line: `safe()`, then the holds on; at wake the same state configured again, then the
+   holds off. (A *power-up* of the ESP32-S3 does glitch GPIO1–14 low for about 60 µs, and that
    reaches nRESET: a Walter power cycle reboots the radio. That is expected, documented in the
    hardware repository, and the supervisor does not mistake it for a fault.)
+
+The fake pins (`host_test/fakes/fake_pins`) know these rules by name — `reset-driven-high`,
+`reset-spacing`, `reset-pulse-length`, `swdclk-while-reset`, `driven-while-killed`,
+`kill-driven-low`, `kill-bounds` — and fail the running test at the transition that breaks one.
+`tools/verify.sh` greps that no GPIO call exists outside `components/platform/` and that the
+seven pins are named nowhere but `core/board/`.
 
 ## 3. The link, from this end
 

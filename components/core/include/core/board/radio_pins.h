@@ -1,0 +1,203 @@
+// RadioPins: the only object that touches the seven pins shared with the radio (task p0-03), and
+// the one place every rule of docs/ARCHITECTURE.md §2 is enforced:
+//
+//   1. the safe state - nRESET, SWDCLK, SWDIO and KILL not driving, TX pulled up (not driven) while
+//      the radio is believed powered and floating when it is not - at construction, whenever there
+//      is nothing to say, and after every operation that fails part-way;
+//   2. a reset is a pulse of output-low (open-drain) of 100 ms, then input; two are at least one
+//      second apart, waited for rather than violated, across a deep sleep too; and there is no
+//      way to drive the reset pin high - the only handle on it (ResetLine) has no such operation;
+//   3. before the kill line goes high every other pin is a plain input (no pull-up either), and
+//      after it is released the rail is given time to settle before anything drives again;
+//   4. a kill is bounded below and above, and the kill line is driven high or not at all - never
+//      low (it floats to "on" by hardware when the Walter resets);
+//   5. the pads can be held through deep sleep in the safe state (the holds; sleeping itself is
+//      phase 3's).
+//
+// And two rules of the task: nothing acquires SWD while the rail is believed off, and the SWD
+// clock cannot toggle while reset is asserted (that combination is the dual adapter's selector,
+// phase 1 task 06, which gets its own operation here when it comes).
+//
+// All of it is logic: no ESP-IDF include, no heap, and every pin operation goes through
+// interfaces::Pins so that host_test/ runs it against fake pins that record every transition and
+// check these rules themselves (host_test/fakes/fake_pins.h).
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+#include "core/board/pin_map.h"
+#include "interfaces/clock.h"
+#include "interfaces/pins.h"
+#include "interfaces/retained.h"
+
+namespace core {
+namespace board {
+
+// What this firmware believes about the LoRa 3.3 V rail. kOff while it is driving the kill line;
+// kUnknown for the settle time after the kill line was last released - and for the settle time
+// after boot, because a Walter that reset in the middle of a kill left the line to float back on
+// just before (ARCHITECTURE §2 rule 4); kOn after that. Read by the supervisor (phase 2).
+enum class RadioPower : std::uint8_t { kUnknown, kOn, kOff };
+
+enum class Outcome : std::uint8_t {
+  kOk,
+  kKillTooShort,    // below KillTiming::min_ms: the rail would not have collapsed; nothing done
+  kKillTooLong,     // above KillTiming::max_ms; nothing done
+  kSwdHeld,         // a reset while SWD is acquired: the holder releases it first
+  kSwdAlreadyHeld,  // swdAcquire() twice
+  kResetAsserted,   // SWD cannot be acquired, nor its clock toggled, while nRESET is low
+  kRailOff,         // nothing is enabled or acquired while the kill line is driven
+  kPinRefused,      // the pin driver refused an operation; everything is back in the safe state
+};
+
+const char* describe(Outcome outcome);
+const char* describe(RadioPower power);
+
+// The reset pulse and spacing (ARCHITECTURE §2 rule 2; BENCH-BREADBOARD.md §6 caveat 4: two resets
+// under about half a second apart put the Adafruit bootloader into UF2 mode, so the spacing is a
+// second, from the end of one pulse to the start of the next).
+constexpr std::uint32_t kResetPulseMs = 100;
+constexpr std::uint32_t kResetSpacingMs = 1000;
+
+// The kill's bounds and the settle time after it (ARCHITECTURE §2 rules 3 and 4). PLACEHOLDERS
+// for the bench: no hardware document gives the rail's fall or settle time (the TPS63001's output
+// capacitance and the RAK's two 100 µF on the rail discharge through whatever the radio draws, so
+// the fall is load-dependent). One second is long enough for the rail to collapse at any plausible
+// draw and short enough to be a console argument; thirty seconds bounds how long a bug can keep
+// the radio off per call; 200 ms is generous for a buck-boost soft-start. docs/bench.md §2 asks for
+// the measured numbers; replace them here and nowhere else.
+struct KillTiming {
+  std::uint32_t min_ms;
+  std::uint32_t max_ms;
+  std::uint32_t settle_ms;
+};
+constexpr KillTiming kKillTiming{1000, 30000, 200};
+
+// What `pins` and `status` print: one line per pin.
+struct PinState {
+  const char* net;
+  std::uint8_t dsub;
+  std::uint8_t gpio;
+  interfaces::PinMode mode;  // as this firmware last configured it
+  bool level;                // read from the pad now
+  const char* use;           // "released", "uart", "swd", "reset", "kill"
+};
+
+class RadioPins;
+
+// The SWD clock and data lines, handed out by RadioPins::swdAcquire() and dead after
+// swdRelease() or a kill: every call returns false and touches nothing unless the lines are held
+// and nRESET is released. Phase 1's wire protocol is written against this.
+class SwdLines {
+ public:
+  bool clock(bool high);    // SWDCLK; idle is low
+  bool driveIo(bool high);  // SWDIO as output at this level
+  bool releaseIo();         // SWDIO as input: the target's turn to drive
+  bool readIo();            // SWDIO's level (false when not held)
+
+ private:
+  friend class RadioPins;
+  explicit SwdLines(RadioPins& owner) : owner_(owner) {}
+  RadioPins& owner_;
+};
+
+class RadioPins {
+ public:
+  // Puts the pins in the safe state before returning: constructing this object is the first thing
+  // app_main does. The retained record (when the last reset pulse ended) is read here.
+  RadioPins(interfaces::Pins& pins, interfaces::Clock& clock, interfaces::Retained& retained,
+            const KillTiming& timing = kKillTiming);
+
+  // Rule 1. Releases the UART and SWD too; what remains driven is nothing (TX is pulled up, not
+  // driven, while the radio is believed powered).
+  void safe();
+
+  // Rule 2. Waits out the spacing, then output-low (open-drain) for kResetPulseMs, then input.
+  Outcome resetPulse();
+
+  // Rules 3 and 4. Releases everything, drives KILL high for off_ms, stops driving it, waits for
+  // the rail to settle, and returns to the safe state - after which the UART may be enabled
+  // again. The caller is blocked for off_ms plus the settle time.
+  Outcome killCycle(std::uint32_t off_ms);
+
+  // TX driven (idle high) and RX an input, for the link client (phase 1). Waits for the rail if it
+  // is still settling. Refused while the kill line is driven.
+  Outcome uartEnable();
+  void uartRelease();
+
+  // SWDCLK driven low and SWDIO an input, for the wire protocol (phase 1). Waits for the rail if
+  // it is still settling. Refused while the kill line is driven, while nRESET is asserted, and
+  // when already held.
+  Outcome swdAcquire();
+  void swdRelease();
+  SwdLines& swd() { return swd_; }
+
+  // Rule 5. safe(), then the seven pads held as they are, for the sleeper (phase 3); and the
+  // reverse at wake: the pads configured to the same state first, then the holds released.
+  bool holdForSleep();
+  bool releaseHolds();
+
+  RadioPower power();
+  bool uartEnabled() const { return uart_enabled_; }
+  bool swdHeld() const { return swd_held_; }
+  bool resetAsserted() const { return reset_asserted_; }
+  bool killDriven() const { return kill_driven_; }
+  // How long resetPulse() would wait before pulsing, now. 0: at once.
+  std::uint32_t msUntilResetAllowed();
+  // Whether a reset pulse is on record (this boot or an earlier one), and when it ended.
+  bool lastResetKnown() const { return last_reset_known_; }
+  std::uint64_t lastResetEndMs() const { return last_reset_end_ms_; }
+
+  static constexpr std::size_t kPinCount = kRadioPinCount;
+  PinState state(std::size_t index);
+
+  const KillTiming& timing() const { return timing_; }
+
+ private:
+  friend class SwdLines;
+
+  // The one handle on nRESET. It can assert (open-drain low) and release (input) and nothing
+  // else: there is no member that drives the pin high, and nothing else in RadioPins holds the
+  // reset pin's number (ARCHITECTURE §2 rule 2: "never output-high").
+  class ResetLine {
+   public:
+    ResetLine(interfaces::Pins& pins, std::uint8_t gpio) : pins_(pins), gpio_(gpio) {}
+    bool assertLow();
+    bool release();
+    std::uint8_t gpio() const { return gpio_; }
+
+   private:
+    interfaces::Pins& pins_;
+    const std::uint8_t gpio_;
+  };
+
+  struct Record {  // retained across resets and deep sleep: interfaces::RetainedSlot::kResetRecord
+    std::uint64_t last_reset_end_ms;
+  };
+
+  bool input(std::uint8_t gpio);
+  bool applyTx();
+  Outcome failed();
+  void waitForRail();
+  void recordResetEnd();
+
+  interfaces::Pins& pins_;
+  interfaces::Clock& clock_;
+  interfaces::Retained& retained_;
+  const KillTiming timing_;
+  ResetLine reset_;
+  SwdLines swd_;
+
+  bool uart_enabled_ = false;
+  bool swd_held_ = false;
+  bool swdio_driven_ = false;
+  bool reset_asserted_ = false;
+  bool kill_driven_ = false;
+  bool last_reset_known_ = false;
+  std::uint64_t last_reset_end_ms_ = 0;
+  std::uint64_t rail_on_at_ms_ = 0;  // the rail is believed on from this time
+};
+
+}  // namespace board
+}  // namespace core

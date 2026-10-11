@@ -1,0 +1,214 @@
+#include "fakes/fake_pins.h"
+
+#include <doctest.h>
+
+#include <string>
+
+namespace fakes {
+
+using core::board::kNReset;
+using core::board::kPwrKill;
+using core::board::kRadioPins;
+using core::board::kResetPulseMs;
+using core::board::kResetSpacingMs;
+using core::board::kSwdClk;
+using interfaces::PinMode;
+
+namespace {
+
+const char* modeName(PinMode mode) {
+  switch (mode) {
+    case PinMode::kInput: return "input";
+    case PinMode::kInputPullUp: return "input-pull-up";
+    case PinMode::kOutput: return "output";
+    case PinMode::kOpenDrain: return "open-drain";
+  }
+  return "?";
+}
+
+const char* netOf(std::uint8_t gpio) {
+  for (const core::board::PinDef& p : kRadioPins) {
+    if (p.gpio == gpio) return p.net;
+  }
+  return "gpio";
+}
+
+}  // namespace
+
+FakePins::FakePins(FakeClock& clock, const core::board::KillTiming& timing)
+    : clock_(clock), timing_(timing) {
+  pins_[kNReset.gpio].external = true;  // the nRF52's own pull-up
+}
+
+bool FakePins::isRadioPin(std::uint8_t gpio) const {
+  for (const core::board::PinDef& p : kRadioPins) {
+    if (p.gpio == gpio) return true;
+  }
+  return false;
+}
+
+bool FakePins::driving(std::uint8_t gpio) const {
+  const Pin& p = pins_[gpio];
+  if (p.mode == PinMode::kOutput) return true;
+  if (p.mode == PinMode::kOpenDrain) return !p.level;
+  return false;
+}
+
+bool FakePins::pulling(std::uint8_t gpio) const { return pins_[gpio].mode == PinMode::kInputPullUp; }
+
+bool FakePins::wireLevel(std::uint8_t gpio) const {
+  const Pin& p = pins_[gpio];
+  if (driving(gpio)) return p.level;
+  if (p.mode == PinMode::kInputPullUp) return true;
+  return p.external;
+}
+
+bool FakePins::killDriven() const {
+  return pins_[kPwrKill.gpio].mode == PinMode::kOutput && pins_[kPwrKill.gpio].level;
+}
+
+bool FakePins::refused(const Op& op) {
+  operations++;
+  return fail_when && fail_when(op);
+}
+
+void FakePins::record(const Op& op, bool changed) { log.push_back(Transition{clock_.now_ms, op, changed}); }
+
+void FakePins::violate(const char* rule, const std::string& detail) {
+  violations.push_back(Violation{clock_.now_ms, rule, detail});
+  if (strict) {
+    FAIL_CHECK("pin rule broken: " << rule << " - " << detail << " at " << clock_.now_ms << " ms");
+  }
+}
+
+bool FakePins::setMode(std::uint8_t gpio, PinMode mode) {
+  REQUIRE(gpio < kGpioCount);
+  const Op op{OpKind::kMode, gpio, mode, false, false};
+  if (refused(op)) return false;
+  const bool was_reset = resetAsserted();
+  const bool was_kill = killDriven();
+  const bool clk_wire = wireLevel(kSwdClk.gpio);
+  const bool changed = pins_[gpio].mode != mode;
+  pins_[gpio].mode = mode;
+  record(op, changed);
+  if (changed) afterChange(gpio, was_reset, was_kill, clk_wire);
+  return true;
+}
+
+bool FakePins::write(std::uint8_t gpio, bool high) {
+  REQUIRE(gpio < kGpioCount);
+  const Op op{OpKind::kLevel, gpio, PinMode::kInput, high, false};
+  if (refused(op)) return false;
+  const bool was_reset = resetAsserted();
+  const bool was_kill = killDriven();
+  const bool clk_wire = wireLevel(kSwdClk.gpio);
+  const bool changed = pins_[gpio].level != high;
+  pins_[gpio].level = high;
+  record(op, changed);
+  // Rule 2, the strict reading: the reset pin is never even asked to go high.
+  if (gpio == kNReset.gpio && high) {
+    violate("reset-driven-high", "nRESET written high (" + std::string(modeName(pins_[gpio].mode)) + ")");
+  }
+  if (changed) afterChange(gpio, was_reset, was_kill, clk_wire);
+  return true;
+}
+
+bool FakePins::read(std::uint8_t gpio) {
+  REQUIRE(gpio < kGpioCount);
+  return wireLevel(gpio);
+}
+
+bool FakePins::holdThroughSleep(const std::uint8_t* gpios, std::size_t count, bool on) {
+  for (std::size_t i = 0; i < count; ++i) {
+    REQUIRE(gpios[i] < kGpioCount);
+    const Op op{OpKind::kHold, gpios[i], PinMode::kInput, false, on};
+    const bool changed = pins_[gpios[i]].held != on;
+    pins_[gpios[i]].held = on;
+    record(op, changed);
+  }
+  return true;
+}
+
+// The rules, checked after a pin's state changed.
+void FakePins::afterChange(std::uint8_t gpio, bool was_reset_asserted, bool was_kill_driven,
+                           bool clk_wire_was) {
+  const Pin& p = pins_[gpio];
+  const std::uint64_t now = clock_.now_ms;
+
+  if (gpio == kNReset.gpio) {
+    if (p.mode == PinMode::kOutput) violate("reset-driven-high", "nRESET configured push-pull");
+    const bool asserted = resetAsserted();
+    if (asserted && !was_reset_asserted) {
+      if (have_last_reset_end_ && now - last_reset_end_ms_ < kResetSpacingMs) {
+        violate("reset-spacing", "nRESET asserted " + std::to_string(now - last_reset_end_ms_) +
+                                     " ms after the previous pulse ended");
+      }
+      reset_start_ms_ = now;
+    } else if (!asserted && was_reset_asserted) {
+      const std::uint64_t held = now - reset_start_ms_;
+      if (held < kResetPulseMs || held > kResetPulseMs + 50) {
+        violate("reset-pulse-length", "nRESET held low for " + std::to_string(held) + " ms");
+      }
+      have_last_reset_end_ = true;
+      last_reset_end_ms_ = now;
+    }
+  }
+
+  if (gpio == kSwdClk.gpio && resetAsserted() && was_reset_asserted &&
+      wireLevel(kSwdClk.gpio) != clk_wire_was) {
+    violate("swdclk-while-reset", "SWDCLK changed level while nRESET is asserted");
+  }
+
+  if (gpio == kPwrKill.gpio) {
+    if (p.mode == PinMode::kOutput && !p.level) violate("kill-driven-low", "KILL driven low");
+    if (p.mode == PinMode::kOpenDrain) violate("kill-driven-low", "KILL configured open-drain");
+    const bool driven = killDriven();
+    if (driven && !was_kill_driven) {
+      kill_start_ms_ = now;
+      for (const core::board::PinDef& other : kRadioPins) {
+        if (other.gpio == kPwrKill.gpio) continue;
+        if (driving(other.gpio) || pulling(other.gpio)) {
+          violate("driven-while-killed", std::string(other.net) + " is " + modeName(pins_[other.gpio].mode) +
+                                             " as KILL goes high");
+        }
+      }
+    } else if (!driven && was_kill_driven) {
+      const std::uint64_t off = now - kill_start_ms_;
+      if (off < timing_.min_ms || off > timing_.max_ms) {
+        violate("kill-bounds", "KILL driven high for " + std::to_string(off) + " ms");
+      }
+    }
+  } else if (isRadioPin(gpio) && killDriven() && (driving(gpio) || pulling(gpio))) {
+    violate("driven-while-killed", std::string(netOf(gpio)) + " became " + modeName(p.mode) +
+                                       " while KILL is high");
+  }
+}
+
+std::vector<Transition> FakePins::transitionsOf(std::uint8_t gpio) const {
+  std::vector<Transition> out;
+  for (const Transition& t : log) {
+    if (t.op.gpio == gpio && t.changed) out.push_back(t);
+  }
+  return out;
+}
+
+int FakePins::indexOf(std::uint8_t gpio, OpKind kind, PinMode mode, bool level, std::size_t from) const {
+  for (std::size_t i = from; i < log.size(); ++i) {
+    const Transition& t = log[i];
+    if (!t.changed || t.op.gpio != gpio || t.op.kind != kind) continue;
+    if (kind == OpKind::kMode && t.op.mode != mode) continue;
+    if (kind == OpKind::kLevel && t.op.level != level) continue;
+    return static_cast<int>(i);
+  }
+  return -1;
+}
+
+int FakePins::countViolations(const char* rule) const {
+  int n = 0;
+  for (const Violation& v : violations) {
+    if (v.rule == rule) n++;
+  }
+  return n;
+}
+
+}  // namespace fakes
