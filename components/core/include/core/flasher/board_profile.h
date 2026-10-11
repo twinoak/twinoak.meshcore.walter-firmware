@@ -23,8 +23,10 @@
 //             identity and settings begins.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
+#include "core/board/slot.h"
 #include "core/nrf52/nrf52.h"
 #include "core/nrf52/regs.h"
 
@@ -96,8 +98,20 @@ inline constexpr BoardProfile kRak4630Single = {
     0x000FF000,
 };
 
-// The profiles this build knows, by the manifest's board name; nullptr for a board it does not.
-const BoardProfile* findProfile(const char* board_name);
+// How many radios this build's adapter has, and what is in each position (task p1-06; S-11:
+// "The Walter addresses radios by *slot*; there is one slot today"). The dual adapter's second
+// position has no profile here on purpose: what a dual position's manifest `board` is called is
+// not decided anywhere, and inventing a name would put it in the firmware before the hardware.
+// A unit with two radios is a board, a profile and a release channel, and it will bring them.
+constexpr std::size_t kSlotsPresent = 1;
+
+// The board in that slot, or nullptr when this adapter has no such position.
+const BoardProfile* profileForSlot(board::Slot slot);
+
+// The profile for a slot *and* a manifest's board name: nullptr when the slot is not there, or
+// when the board in it is not the one the manifest was built for (spec/FIRMWARE-MANIFEST.md §5
+// item 2). The slot comes first because it decides whether there is anything to look up.
+const BoardProfile* findProfile(board::Slot slot, const char* board_name);
 
 }  // namespace flasher
 }  // namespace core

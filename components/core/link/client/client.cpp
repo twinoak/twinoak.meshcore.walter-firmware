@@ -55,6 +55,7 @@ const char* describe(Fault fault) {
     case Fault::kLinkDown: return "no answer to three attempts: the link is down";
     case Fault::kRefused: return "refused";
     case Fault::kMalformed: return "the answer did not decode";
+    case Fault::kSlotBusy: return "refused: that slot is not there, or another slot is in the middle of something";
   }
   return "?";
 }
@@ -68,21 +69,43 @@ const char* describe(Mode mode) {
   return "?";
 }
 
-Client::Client(LinkPort& port, interfaces::Clock& clock, interfaces::WallClock& wall)
-    : port_(port), clock_(clock), wall_(wall), writer_(clock), fw_version_(text(core::version())) {}
+Client::Client(LinkPort& port, interfaces::Clock& clock, interfaces::WallClock& wall,
+               board::SlotLock& slots)
+    : port_(port),
+      clock_(clock),
+      wall_(wall),
+      writer_(clock),
+      slots_lock_(slots),
+      fw_version_(text(core::version())) {}
+
+// ---------------------------------------------------------------------------- the slot (p1-06)
+
+// Refused rather than queued: a slot that is not there is a caller's mistake, and switching while
+// an exchange holds the selection would steer the UART away from a frame that is on the wire.
+bool Client::useSlot(board::Slot slot) {
+  if (!slots_lock_.exists(slot)) return false;
+  if (slot == slot_) return true;
+  if (slots_lock_.held()) return false;
+  slot_ = slot;
+  return true;
+}
 
 // ---------------------------------------------------------------------------- the state
 
 bool Client::hasCapability(std::uint32_t bits) const {
-  return session_.up && (session_.caps & bits) == bits;
+  return here().session.up && (here().session.caps & bits) == bits;
 }
 
+// The radio of the *current* slot (task p1-06): a reset pulse reaches the radio the wires are
+// steered to, and on a dual adapter nRESET is routed like the debug lines
+// (DUAL-RAK4630-FEASIBILITY.md §2.2), so one slot's reset is not the other's news. A kill is the
+// exception - it cuts the whole rail (§5) - and the caller tells each slot in turn.
 void Client::radioWasReset() {
   // §5.1: everything per-boot is gone. §9: a reset is also what ends a text session - the next
   // thing to try is HELLO, whatever the radio was running before.
-  session_ = Session{};
-  mode_ = Mode::kUnknown;
-  boot_id_known_ = false;
+  here().session = Session{};
+  here().mode = Mode::kUnknown;
+  here().boot_id_known = false;
   event_seq_known_ = false;
   receiver_.discardPartial();
   writer_.forgetIdle();
@@ -94,12 +117,12 @@ void Client::radioWasReset() {
   // too rather than keeping a peripheral on a pad it no longer owns.
   (void)port_.isOpen();
   // The queued events and the scanner lines are history and stay readable; they are what the
-  // console shows after a reset. time_pending_ is not set here: §5.4 hangs the clock on an
+  // console shows after a reset. here().time_pending is not set here: §5.4 hangs the clock on an
   // EV_BOOT or a HELLO with an unseen boot_id, and the next HELLO brings one.
 }
 
 Fault Client::serviceTime() {
-  if (!time_pending_ || in_time_) {
+  if (!here().time_pending || in_time_) {
     return Fault::kNoSession;
   }
   interfaces::WallTime when;
@@ -110,18 +133,26 @@ Fault Client::serviceTime() {
   const Answer<TimeSetResponse> answer = timeSet(when.epoch, when.source);
   in_time_ = false;
   if (answer.ok()) {
-    time_pending_ = false;
+    here().time_pending = false;
     counters_.time_sets = saturate(counters_.time_sets);
   } else if (answer.fault == Fault::kRefused) {
     // §5.4: the radio refuses an epoch earlier than its own clock without *force*. It said so;
     // asking again with the same time would get the same answer.
-    time_pending_ = false;
+    here().time_pending = false;
     counters_.time_sets = saturate(counters_.time_sets);
   }
   return answer.fault;
 }
 
-void Client::poll() { pump(false, 0, 0); }
+// Listening is radio-facing too: on a dual adapter the bytes that arrive are the selected
+// radio's, so poll() takes the slot before it reads - and does nothing at all when another slot's
+// operation holds it, because then the UART is not this slot's to listen to. It never *opens* the
+// port (task p1-02's decision) and it never waits.
+void Client::poll() {
+  const board::SlotHold hold(slots_lock_, slot_);
+  if (!hold.ok()) return;
+  pump(false, 0, 0);
+}
 
 // ---------------------------------------------------------------------------- §3, the exchange
 
@@ -141,7 +172,15 @@ void Client::wipeBuffers() {
 
 Client::Exchange Client::exchange(std::uint8_t type, Bytes payload, bool sensitive) {
   Exchange out;
-  if (mode_ == Mode::kText) {
+  // The slot first, for the whole exchange: the wires are steered to this radio before a frame
+  // leaves, and cannot be steered elsewhere until the response (or the third timeout) has come.
+  // Nested inside hello()'s hold when that is the caller (task p1-06).
+  const board::SlotHold hold(slots_lock_, slot_);
+  if (!hold.ok()) {
+    out.fault = Fault::kSlotBusy;
+    return out;
+  }
+  if (here().mode == Mode::kText) {
     out.fault = Fault::kTextMode;
     return out;
   }
@@ -210,17 +249,17 @@ Client::Exchange Client::exchange(std::uint8_t type, Bytes payload, bool sensiti
 }
 
 Fault Client::gate(std::uint8_t type) const {
-  if (mode_ == Mode::kText) {
+  if (here().mode == Mode::kText) {
     return Fault::kTextMode;  // §9: frames and text are never mixed in one session
   }
   const std::uint32_t needed = capabilityOf(type);
   if (needed == 0) {
     return Fault::kNone;  // §4: always
   }
-  if (!session_.up) {
+  if (!here().session.up) {
     return Fault::kNoSession;  // the capabilities are what HELLO brings
   }
-  return (session_.caps & needed) == needed ? Fault::kNone : Fault::kUnsupported;
+  return (here().session.caps & needed) == needed ? Fault::kNone : Fault::kUnsupported;
 }
 
 template <typename Request, typename Response>
@@ -275,10 +314,10 @@ bool Client::pump(bool expecting, std::uint8_t wire_type, std::uint8_t seq) {
       // §9: in a text session nothing is fed to the frame receiver, and in a frame session nothing
       // is read as text. Until a HELLO or a line has decided which it is, both are watched - that
       // is the only moment the two can be in the same buffer.
-      if (mode_ != Mode::kFrames) {
+      if (here().mode != Mode::kFrames) {
         onTextByte(byte);
       }
-      if (mode_ != Mode::kText && receiver_.push(byte) == FrameReceiver::Fed::kPacket) {
+      if (here().mode != Mode::kText && receiver_.push(byte) == FrameReceiver::Fed::kPacket) {
         onPacket(receiver_.packet(), expecting, wire_type, seq, &found);
       }
     }
@@ -292,7 +331,7 @@ bool Client::pump(bool expecting, std::uint8_t wire_type, std::uint8_t seq) {
 void Client::onPacket(const Packet& packet, bool expecting, std::uint8_t wire_type,
                       std::uint8_t seq, bool* found) {
   // A frame whose CRC passed is proof enough of what the radio is running (§9).
-  mode_ = Mode::kFrames;
+  here().mode = Mode::kFrames;
 
   if (isEvent(packet.type)) {
     queueEvent(packet);
@@ -402,10 +441,10 @@ bool Client::lastEventSeq(std::uint8_t* out) const {
 }
 
 void Client::noticeRestart(std::uint32_t boot_id, std::uint8_t reset_reason, bool announced) {
-  const bool first = !boot_id_known_;
-  const bool changed = !first && boot_id != session_.boot_id;
-  session_.boot_id = boot_id;
-  boot_id_known_ = true;
+  const bool first = !here().boot_id_known;
+  const bool changed = !first && boot_id != here().session.boot_id;
+  here().session.boot_id = boot_id;
+  here().boot_id_known = true;
   if (!first && !changed) {
     // The boot_id this end already has: the same boot. A second EV_BOOT of it - §8 repeats one
     // for a Walter that may have been asleep - is the same news, and news once is enough.
@@ -413,7 +452,7 @@ void Client::noticeRestart(std::uint32_t boot_id, std::uint8_t reset_reason, boo
   }
   // §5.4: the clock is set after every EV_BOOT and every HELLO whose boot_id this end has not
   // seen - the first one included, because a radio this Walter has not spoken to has no clock.
-  time_pending_ = true;
+  here().time_pending = true;
   if (!changed && !announced) {
     return;  // the first HELLO of a session is not news of a restart
   }
@@ -425,16 +464,16 @@ void Client::noticeRestart(std::uint32_t boot_id, std::uint8_t reset_reason, boo
 }
 
 void Client::sessionFromBody(const HelloBody& body) {
-  session_.up = true;
-  session_.proto_major = body.proto_major;
-  session_.proto_minor = body.proto_minor;
-  session_.role = body.role;
-  session_.slot = body.slot;
-  session_.max_payload = body.max_payload;
-  session_.caps = body.caps;
-  bool whole = copyText(body.fw_version, session_.fw_version, sizeof session_.fw_version);
-  whole = copyText(body.board, session_.board, sizeof session_.board) && whole;
-  whole = copyText(body.upstream, session_.upstream, sizeof session_.upstream) && whole;
+  here().session.up = true;
+  here().session.proto_major = body.proto_major;
+  here().session.proto_minor = body.proto_minor;
+  here().session.role = body.role;
+  here().session.slot = body.slot;
+  here().session.max_payload = body.max_payload;
+  here().session.caps = body.caps;
+  bool whole = copyText(body.fw_version, here().session.fw_version, sizeof here().session.fw_version);
+  whole = copyText(body.board, here().session.board, sizeof here().session.board) && whole;
+  whole = copyText(body.upstream, here().session.upstream, sizeof here().session.upstream) && whole;
   if (!whole) {
     counters_.long_versions = saturate(counters_.long_versions);
   }
@@ -540,6 +579,16 @@ void Client::subscribeText(TextWatcher* watcher) {
 // ---------------------------------------------------------------------------- §5.1, HELLO
 
 Answer<HelloResponse> Client::hello() {
+  // The whole of HELLO is one operation on one radio: the three attempts and, after them, §9's
+  // text-mode probe, which puts bytes on the same UART. One hold around all of it (task p1-06),
+  // nested inside by the exchange - so the selection cannot change between the frames and the
+  // probe that decides what is answering them.
+  const board::SlotHold hold(slots_lock_, slot_);
+  if (!hold.ok()) {
+    Answer<HelloResponse> busy;
+    busy.fault = Fault::kSlotBusy;
+    return busy;
+  }
   HelloRequest request;
   request.fw_version = fw_version_;
   Answer<HelloResponse> answer = call<HelloRequest, HelloResponse>(request);
@@ -548,16 +597,16 @@ Answer<HelloResponse> Client::hello() {
     noticeRestart(answer.message.body.boot_id, reset_reason::kUnknown, false);
     return answer;
   }
-  session_.up = false;
+  here().session.up = false;
   if (answer.fault != Fault::kLinkDown) {
     return answer;  // refused, malformed, no port: the radio is there and speaks frames
   }
   // §9. Three HELLOs unanswered. Lines beginning with `{` already seen, or one in answer to the
   // probe, mean the radio is running NoiseScope: say so, stop sending frames, pass the lines on.
   if (counters_.text_lines > text_mark_ || probeForScanner()) {
-    mode_ = Mode::kText;
-    session_ = Session{};
-    session_.role = role::kScanner;  // §5.1's own number for it, learned without a HELLO
+    here().mode = Mode::kText;
+    here().session = Session{};
+    here().session.role = role::kScanner;  // §5.1's own number for it, learned without a HELLO
     receiver_.discardPartial();
   }
   return answer;

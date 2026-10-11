@@ -154,19 +154,41 @@ void FakePins::afterChange(std::uint8_t gpio, bool was_reset_asserted, bool was_
                                      " ms after the previous pulse ended");
       }
       reset_start_ms_ = now;
+      reset_start_us_ = clock_.nowUs();
+      clk_moved_in_reset_ = false;
     } else if (!asserted && was_reset_asserted) {
-      const std::uint64_t held = now - reset_start_ms_;
-      if (held < kResetPulseMs || held > kResetPulseMs + 50) {
-        violate("reset-pulse-length", "nRESET held low for " + std::to_string(held) + " ms");
+      if (clk_moved_in_reset_) {
+        // The dual adapter's selector being programmed, not a reset: SWDCLK moved inside the
+        // window, which is what the adapter's gate turns into a shift clock
+        // (DUAL-RAK4630-FEASIBILITY.md section 3). Its length is a microsecond figure, and the
+        // radios never see it, so it does not start the reset spacing.
+        const std::uint64_t held_us = clock_.nowUs() - reset_start_us_;
+        selector_windows++;
+        last_selector_window_us = held_us;
+        if (held_us < core::board::kSelectorWindowMinUs || held_us > core::board::kSelectorWindowMaxUs) {
+          violate("selector-window", "the selector's programming window lasted " +
+                                         std::to_string(held_us) + " us, outside 100-500 us");
+        }
+      } else {
+        const std::uint64_t held = now - reset_start_ms_;
+        if (held < kResetPulseMs || held > kResetPulseMs + 50) {
+          violate("reset-pulse-length", "nRESET held low for " + std::to_string(held) + " ms");
+        }
+        have_last_reset_end_ = true;
+        last_reset_end_ms_ = now;
       }
-      have_last_reset_end_ = true;
-      last_reset_end_ms_ = now;
+      clk_moved_in_reset_ = false;
     }
   }
 
   if (gpio == kSwdClk.gpio && resetAsserted() && was_reset_asserted &&
       wireLevel(kSwdClk.gpio) != clk_wire_was) {
-    violate("swdclk-while-reset", "SWDCLK changed level while nRESET is asserted");
+    // Either the one sanctioned use of it - the selector - or the rule it would otherwise break.
+    clk_moved_in_reset_ = true;
+    selector_clocks++;
+    if (!selector_allowed) {
+      violate("swdclk-while-reset", "SWDCLK changed level while nRESET is asserted");
+    }
   }
 
   if (gpio == kPwrKill.gpio) {

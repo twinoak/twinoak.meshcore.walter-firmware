@@ -7,7 +7,9 @@
 //
 // A session:
 //
-//   open()        connect to the debug port and power it up; read the control access port's IDR
+//   open(slot)    the slot first (task p1-06: the debug lines are steered to that radio and held
+//                 until close(), when a SlotLock was given), then connect to the debug port and
+//                 power it up; read the control access port's IDR
 //                 and APPROTECTSTATUS -> protection(); if open, open the memory access port and
 //                 identify() the chip from FICR. Nothing is halted, nothing is written to the chip.
 //   identify()    part, variant (as text), page size, pages, flash size, device id. Anything but
@@ -37,6 +39,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/board/slot.h"
 #include "core/nrf52/regs.h"
 #include "core/swd/dp.h"
 #include "core/swd/mem_ap.h"
@@ -75,6 +78,7 @@ enum class Status : std::uint8_t {
   kBadArgument,    // no data, or zero words
   kNvmcTimeout,    // READY did not come within the bound; CONFIG was returned to read-only
   kCoreTimeout,    // the core did not halt, or did not report the reset, within the bound
+  kSlotBusy,       // open(): no such slot, or another slot's operation holds the selection (p1-06)
 };
 const char* describe(Status status);
 
@@ -114,12 +118,19 @@ struct FlashRegion {
 
 class Nrf52 {
  public:
-  Nrf52(swd::Dp& dp, interfaces::Clock& clock);
+  // `slots` is the slot seam (task p1-06): when one is given, open() takes a hold on the slot it
+  // is asked for and keeps it until close(), so the debug lines cannot be steered to the other
+  // radio in the middle of a session. nullptr for a caller that holds the slot itself - the
+  // flasher does, around everything it then asks of this object.
+  Nrf52(swd::Dp& dp, interfaces::Clock& clock, board::SlotLock* slots = nullptr);
 
-  Result open();
+  // kSlotBusy when the slot is not there, or when another slot's operation holds the selection;
+  // nothing reached the wire. Slot 0 by default: the only radio of a unit today (S-11).
+  Result open(board::Slot slot = {});
   Result close();
   Result identify();
 
+  board::Slot slot() const { return slot_; }
   bool isOpen() const { return open_; }
   Protection protection() const { return protection_; }
   bool identified() const { return identity_.is_nrf52840; }
@@ -168,7 +179,10 @@ class Nrf52 {
 
   swd::Dp& dp_;
   interfaces::Clock& clock_;
+  board::SlotLock* slots_;
   swd::MemAp mem_ap_;
+  board::Slot slot_{};
+  bool slot_held_ = false;
   bool open_ = false;
   Protection protection_ = Protection::kUnknown;
   std::uint32_t ctrl_ap_idr_ = 0;

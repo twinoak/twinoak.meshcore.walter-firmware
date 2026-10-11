@@ -44,6 +44,26 @@ A refusal is one line starting with `error:` and names what was wrong: an unknow
 subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
 characters, a control character.
 
+### Which radio: `rak @<slot> …`
+
+Every `rak …` command takes an optional slot, written directly after the word `rak`:
+
+```
+> rak @1 hello
+error: slot 1: this adapter has 1 radio, so slot 0 is the only one
+```
+
+Without one it is `@0`, and on a unit as built that is the only radio there is
+(`spec/SYSTEM.md` S-11: "The Walter addresses radios by *slot*; there is one slot today"), so every
+line in this document behaves exactly as it reads. The slot goes in *front* of the subcommand
+rather than at the end of the line because `rak cli <line>` takes the rest of the line verbatim —
+`rak cli get radio @1` sends `get radio @1` to slot 0's radio, which is what it looks like.
+
+`@2` and anything that is not `@0` or `@1` is refused by the parser (*not a slot (@0 or @1)*); `@1`
+parses and is then refused by the console, which is the one that knows how many radios the adapter
+has. A dual adapter — designed and not built (`docs/ARCHITECTURE.md` §2 rule 6) — would answer
+both; nothing on this unit's wires changes either way.
+
 ## The radio, over the box link
 
 From task p1-02. Each of these is one request of
@@ -122,7 +142,7 @@ flash operation — is in `tasks/phase-1/reports/05.md`.
 
 | Command | What it does |
 |---|---|
-| `rak flash-test` | the session of `rak swd id` (connect, the control port's protection, FICR), then the SoftDevice's own information structure checked against the board profile (it must end at `0x26000`, where the application begins); then the **last two pages of the application region** (`0xEB000`–`0xED000`) read: **they must be blank**, or the command refuses and touches nothing. Then the core is halted, a two-page pattern written and verified page by page, the whole of it read back and its SHA-256 checked, the two pages erased again and read back blank, the radio reset through the debug port, the pins released. One line per page per pass, then a summary with the counts and the time; `rak reset` afterwards waits out the spacing, because the radio was just reset. The bootloader's settings page is **not** touched: the pattern is not the application, and the firmware that was running starts again after the reset |
+| `rak flash-test` | *(`rak @0 flash-test`; the board profile comes from the slot)* the session of `rak swd id` (connect, the control port's protection, FICR), then the SoftDevice's own information structure checked against the board profile (it must end at `0x26000`, where the application begins); then the **last two pages of the application region** (`0xEB000`–`0xED000`) read: **they must be blank**, or the command refuses and touches nothing. Then the core is halted, a two-page pattern written and verified page by page, the whole of it read back and its SHA-256 checked, the two pages erased again and read back blank, the radio reset through the debug port, the pins released. One line per page per pass, then a summary with the counts and the time; `rak reset` afterwards waits out the spacing, because the radio was just reset. The bootloader's settings page is **not** touched: the pattern is not the application, and the firmware that was running starts again after the reset |
 
 Its refusals, each one `error:` line naming the step and the pins released: the debug port's and
 the chip's (above); *the SoftDevice does not end where the profile's application region begins*

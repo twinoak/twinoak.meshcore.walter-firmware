@@ -10,6 +10,7 @@
 #include "sdkconfig.h"
 
 #include "core/board/radio_pins.h"
+#include "core/board/slot.h"
 #include "core/console/console.h"
 #include "core/health/health.h"
 #include "core/image/this_image.h"
@@ -69,6 +70,15 @@ extern "C" void app_main() {
   // RadioPins is safe(); nothing runs before it, not even the banner.
   static core::board::RadioPins radio_pins(g_pins, g_clock, g_retained);
 
+  // Which radio the seven wires reach (task p1-06; spec/SYSTEM.md S-11). **This is the only
+  // place a TargetSelect is constructed, and it is a SingleTarget**: a unit has one radio, slot
+  // 0, and selecting it moves no pin at all - so this firmware cannot put the dual adapter's
+  // selector sequence on the wires. `core::board::DualTarget` is compiled into this build (it is
+  // a file of core/) and tested against a simulated selector on the host, and it is constructed
+  // nowhere; host_test/core/board/test_slot_single.cpp fails if that changes by accident.
+  static core::board::SingleTarget target;
+  static core::board::SlotLock slots(target);
+
   // Why this boot happened, counted and remembered (core/health).
   static core::health::Health health(g_retained, g_clock);
   health.begin(platform::resetReason(), platform::wakeCause());
@@ -114,7 +124,7 @@ extern "C" void app_main() {
   // that an EV_BOOT or an EV_ATTENTION from the radio is heard, and a `rak kill` takes it away and
   // the next call takes it back.
   static core::link::client::LinkPort link_port(radio_pins, g_uart);
-  static core::link::client::Client radio(link_port, g_clock, g_wall);
+  static core::link::client::Client radio(link_port, g_clock, g_wall, slots);
   if (!g_uart.begin()) {
     std::printf("the radio's UART would not start: no link in this boot\n");
   } else {
@@ -128,7 +138,8 @@ extern "C" void app_main() {
   // time round, the uptime kept in retained storage about once a second. Returning is not an
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
-  static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio);
+  static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
+                                        slots);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {

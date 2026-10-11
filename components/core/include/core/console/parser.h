@@ -12,6 +12,12 @@
 //   rak kill <seconds>    the LoRa rail off for that long, then back
 //   reboot                restart the Walter
 //
+// Every `rak` command takes an optional slot - `rak @1 hello` - directly after the word `rak`
+// (task p1-06; spec/SYSTEM.md S-11: "The Walter addresses radios by *slot*; there is one slot
+// today"). Without one it is `@0`, and on a unit as built that is the only radio there is, so
+// every line below behaves exactly as it did. `@1` parses and is then refused by the console,
+// which is the one that knows how many radios the adapter has.
+//
 // and the link to the radio (task p1-02, spec/LINK-PROTOCOL.md):
 //
 //   rak hello             HELLO: the version, role, slot and capabilities the radio answers with
@@ -42,6 +48,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/board/slot.h"
 #include "core/link/codec/wire.h"
 
 namespace core {
@@ -85,6 +92,7 @@ constexpr std::size_t kMaxCliLine = link::kMaxCliLine;
 
 struct Command {
   Verb verb = Verb::kEmpty;
+  std::uint8_t slot = 0;                  // every `rak ...`: the optional `@N`, default 0
   std::uint32_t seconds = 0;              // kRakKill
   std::uint32_t epoch = 0;                // kRakTimeSet
   char text[kMaxCliLine + 1] = {};        // kRakCli: the rest of the line, verbatim

@@ -6,6 +6,7 @@
 #include <string>
 
 #include "core/board/radio_pins.h"
+#include "core/board/slot.h"
 #include "core/console/console.h"
 #include "core/health/health.h"
 #include "core/link/client/client.h"
@@ -42,9 +43,12 @@ struct Rig {
   Health health{retained, clock};
   sim::ScriptedRadio rak{clock};
   fakes::FakeWallClock wall;
+  // The slot seam (task p1-06): a single-radio unit, as the firmware builds it.
+  core::board::SingleTarget single;
+  core::board::SlotLock slots{single};
   core::link::client::LinkPort port{radio, rak};
-  core::link::client::Client link{port, clock, wall};
-  Console console{out, radio, health, clock, restart, link};
+  core::link::client::Client link{port, clock, wall, slots};
+  Console console{out, radio, health, clock, restart, link, slots};
 
   Rig() {
     health.begin(ResetReason::kPowerOn, WakeCause::kNotFromSleep);

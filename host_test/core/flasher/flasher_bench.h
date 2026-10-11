@@ -47,7 +47,7 @@ inline std::vector<std::uint8_t> makeImage(std::uint32_t pages, bool dense, std:
 
 struct FlasherBench : Nrf52Bench {
   const fl::BoardProfile& profile = fl::kRak4630Single;
-  fl::Flasher flasher{board, clock};
+  fl::Flasher flasher{board, clock, slots};
   std::uint32_t allowed_begin = 0;
   std::uint32_t allowed_end = 0;
 

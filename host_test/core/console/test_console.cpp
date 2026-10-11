@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/board/radio_pins.h"
+#include "core/board/slot.h"
 #include "core/console/console.h"
 #include "core/health/health.h"
 #include "core/link/client/client.h"
@@ -44,9 +45,12 @@ struct Rig {
   // console's `rak hello` and the rest go through these.
   sim::ScriptedRadio rak{clock};
   fakes::FakeWallClock wall;
+  // The slot seam (task p1-06): a single-radio unit, as the firmware builds it.
+  core::board::SingleTarget single;
+  core::board::SlotLock slots{single};
   core::link::client::LinkPort port{radio, rak};
-  core::link::client::Client link{port, clock, wall};
-  Console console{out, radio, health, clock, restart, link};
+  core::link::client::Client link{port, clock, wall, slots};
+  Console console{out, radio, health, clock, restart, link, slots};
 
   Rig() {
     health.begin(ResetReason::kPowerOn, WakeCause::kNotFromSleep);
@@ -175,7 +179,7 @@ TEST_CASE("reboots: this boot and the ones before") {
   CHECK(rig.restart.asked == 1);
   Health next(rig.retained, rig.clock);
   next.begin(ResetReason::kSoftware, WakeCause::kNotFromSleep);
-  Console console(rig.out, rig.radio, next, rig.clock, rig.restart, rig.link);
+  Console console(rig.out, rig.radio, next, rig.clock, rig.restart, rig.link, rig.slots);
   rig.out.clear();
   console.runLine("reboots");
   CHECK(contains(rig.out.text, "boots since the record began: 2\n"));
@@ -445,4 +449,33 @@ TEST_CASE("rak reset and rak kill tell the client the radio is starting over") {
   CHECK_FALSE(rig.link.port().isOpen());
   CHECK(rig.link.port().lost() == 1);
   CHECK(rig.pins.violations.empty());
+}
+
+// ------------------------------------------------------------------ the slot (task p1-06)
+
+TEST_CASE("every rak command takes @0 without saying so, and @1 is refused on this unit") {
+  Rig rig;
+  // @0 is what a line without a slot means: the same output, to the byte.
+  const std::string plain = rig.run("rak hello");
+  const std::string at_zero = rig.run("rak @0 hello");
+  CHECK(plain == at_zero);
+
+  const std::string refused = rig.run("rak @1 hello");
+  CHECK(refused == "error: slot 1: this adapter has 1 radio, so slot 0 is the only one\n");
+  // Every one of them, and nothing reached a pin or the radio.
+  rig.rak.writes.clear();
+  for (const char* line : {"rak @1 reset", "rak @1 kill 2", "rak @1 ping", "rak @1 status",
+                           "rak @1 id", "rak @1 time", "rak @1 power", "rak @1 env",
+                           "rak @1 cli get radio", "rak @1 events", "rak @1 text",
+                           "rak @1 swd connect", "rak @1 swd id", "rak @1 swd mem 0x10000100",
+                           "rak @1 flash-test"}) {
+    CHECK(rig.run(line) == "error: slot 1: this adapter has 1 radio, so slot 0 is the only one\n");
+  }
+  CHECK(rig.rak.writes.empty());
+  CHECK(rig.pins.selector_clocks == 0);
+  CHECK(rig.pins.violations.empty());
+  // A number that is not a position of any adapter is the parser's refusal, not the console's.
+  CHECK(rig.run("rak @2 hello") == "error: rak: not a slot (@0 or @1): @2\n");
+  // And help says where the slot goes.
+  CHECK(rig.run("help").find("rak @1 hello") != std::string::npos);
 }

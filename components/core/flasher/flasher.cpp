@@ -11,6 +11,7 @@ namespace settings = bootloader_settings;
 const char* describe(Step step) {
   switch (step) {
     case Step::kNone: return "nothing";
+    case Step::kSelect: return "selecting the radio's slot";
     case Step::kPins: return "acquiring the SWD lines";
     case Step::kConnect: return "connecting to the debug port";
     case Step::kProtected: return "the chip is protected";
@@ -73,8 +74,15 @@ class PatternImage final : public ImageSource {
 
 }  // namespace
 
-Flasher::Flasher(board::RadioPins& pins, interfaces::Clock& clock)
-    : pins_(pins), clock_(clock), wire_(pins.swd(), clock), dp_(wire_), nrf_(dp_, clock) {}
+Flasher::Flasher(board::RadioPins& pins, interfaces::Clock& clock, board::SlotLock& slots)
+    : pins_(pins),
+      clock_(clock),
+      slots_(slots),
+      wire_(pins.swd(), clock),
+      dp_(wire_),
+      // No lock of its own: this object takes the slot in begin() and holds it to the end of the
+      // call, and everything it asks of the chip happens inside that hold (task p1-06).
+      nrf_(dp_, clock) {}
 
 Result Flasher::refused(Step step, const char* why, std::uint32_t address) {
   Result r;
@@ -121,10 +129,21 @@ Result Flasher::readPage(std::uint32_t page_addr) {
 
 // ---------------------------------------------------------------------------- steps 1 and 2
 
-Result Flasher::begin(const Image& image, const BoardProfile& profile, Plan* plan) {
+Result Flasher::begin(const Image& image, const BoardProfile& profile, board::Slot slot,
+                      Plan* plan) {
+  plan->slot = slot;
   plan->profile = &profile;
   plan->image = &image;
   counters_ = Counters{};
+
+  // 0. The slot (task p1-06): the wires are steered to that radio and held for the whole call,
+  // before a pin moves - a flash must not have the debug lines taken from under it, and on a
+  // single-radio unit a slot other than 0 is refused here, with nothing done.
+  const board::SelectResult selected = slots_.take(slot);
+  if (selected != board::SelectResult::kOk) {
+    return refused(Step::kSelect, board::describe(selected));
+  }
+  plan->slot_held = true;
 
   // 1. The lines, the port, the chip.
   const board::Outcome acquired = pins_.swdAcquire();
@@ -485,11 +504,17 @@ Result Flasher::finish(Plan* plan, Result r, bool reset) {
       r.reset_issued = true;
     }
   }
-  if (r.step != Step::kPins) nrf_.close();
+  if (r.step != Step::kPins && r.step != Step::kSelect) nrf_.close();
   pins_.swdRelease();
   // Noted after the lines are released, so that the spacing runs from the moment the radio is
   // on its own again.
   if (r.reset_issued) pins_.noteRadioReset();
+  // The slot last of all: nothing of this call faces the radio any more, so another slot may be
+  // selected now (task p1-06).
+  if (plan->slot_held) {
+    slots_.release();
+    plan->slot_held = false;
+  }
   counters_.elapsed_ms = static_cast<std::uint32_t>(clock_.nowMs() - start_ms_);
   r.counters = counters_;
   return r;
@@ -497,10 +522,11 @@ Result Flasher::finish(Plan* plan, Result r, bool reset) {
 
 // ----------------------------------------------------------------------------- the three
 
-Result Flasher::flash(const Image& image, const BoardProfile& profile, ProgressSink* progress) {
+Result Flasher::flash(const Image& image, const BoardProfile& profile, ProgressSink* progress,
+                      board::Slot slot) {
   start_ms_ = clock_.nowMs();
   Plan plan;
-  Result r = begin(image, profile, &plan);
+  Result r = begin(image, profile, slot, &plan);
   if (!r.ok()) return finish(&plan, r, false);
   r = scan(&plan, progress);
   if (!r.ok()) return finish(&plan, r, false);
@@ -539,10 +565,10 @@ Result Flasher::flash(const Image& image, const BoardProfile& profile, ProgressS
 
 // Read-only: the pages compared with the source, the digest checked, the settings record read.
 // Nothing is halted, nothing is written: the log of the simulated chip is empty after it.
-Result Flasher::verify(const Image& image, const BoardProfile& profile) {
+Result Flasher::verify(const Image& image, const BoardProfile& profile, board::Slot slot) {
   start_ms_ = clock_.nowMs();
   Plan plan;
-  Result r = begin(image, profile, &plan);
+  Result r = begin(image, profile, slot, &plan);
   if (!r.ok()) return finish(&plan, r, false);
   r = readBack(&plan, nullptr, true);
   if (!r.ok()) return finish(&plan, r, false);
@@ -561,7 +587,7 @@ Result Flasher::verify(const Image& image, const BoardProfile& profile) {
 // running firmware: a two-page pattern at the top of the application region, only if those pages
 // are blank; written, verified, read back and hashed, erased again, and the radio reset. The
 // settings page is not touched: the pattern is not the application.
-Result Flasher::flashTest(const BoardProfile& profile, ProgressSink* progress) {
+Result Flasher::flashTest(const BoardProfile& profile, ProgressSink* progress, board::Slot slot) {
   start_ms_ = clock_.nowMs();
   const std::uint32_t size = kTestPages * kPage;
   const PatternImage pattern(size);
@@ -580,7 +606,7 @@ Result Flasher::flashTest(const BoardProfile& profile, ProgressSink* progress) {
   image.sha256 = digest;
 
   Plan plan;
-  Result r = begin(image, profile, &plan);
+  Result r = begin(image, profile, slot, &plan);
   if (!r.ok()) return finish(&plan, r, false);
   // Only blank pages: anything else may be the application's tail.
   for (std::uint32_t p = 0; p < plan.pages; ++p) {
