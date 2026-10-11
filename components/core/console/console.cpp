@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/image/trust.h"
 #include "core/link/client/words.h"
 #include "core/nrf52/nrf52.h"
 #include "core/swd/dp.h"
@@ -37,6 +38,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kReboots:
     case Verb::kPins:
     case Verb::kReboot:
+    case Verb::kTrust:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -188,6 +190,7 @@ void Console::runLine(const char* line) {
     case Verb::kRakSwdId: rakSwdId(); return;
     case Verb::kRakSwdMem: rakSwdMem(p.command.address, p.command.words); return;
     case Verb::kRakFlashTest: rakFlashTest(); return;
+    case Verb::kTrust: trust(); return;
   }
 }
 
@@ -213,6 +216,7 @@ void Console::help() {
   print("                      read 1 to 32 words of the chip's memory (read-only; hex 0x... or decimal)\n");
   print("  rak flash-test      write, verify and erase a 2-page pattern at the top of the application\n");
   print("                      region, only if those pages are blank; the radio restarts\n");
+  print("  trust               the release keys this build accepts an update signed with\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -905,6 +909,33 @@ void Console::rakFlashTest() {
   // The flasher takes the slot and holds it for the whole call.
   const flasher::Result r = flasher_.flashTest(profile, &progress, slot_);
   printFlashResult("rak flash-test", r);
+}
+
+// ----------------------------------------------------------------------- the trust table (p2-01)
+//
+// trust: the key ids this build accepts a release manifest signed with (spec/FIRMWARE-MANIFEST.md
+// §3), from the table generated out of keys/release-keys.txt - or that there are none, which is
+// the state until the release key exists and means no update is accepted (§5 check 1 fails for
+// every manifest). A build that trusts the specification's public test key says so loudly.
+void Console::trust() {
+  const image::TrustTable& table = image::buildTrust();
+  if (table.empty()) {
+    print("trust: none: no update will be accepted (keys/release-keys.txt names no key;\n"
+          "  the release key is made once, by a person: spec/SYSTEM.md section 10 item 1)\n");
+    return;
+  }
+  printf("trust: %u key%s this build accepts a release signed with:", static_cast<unsigned>(table.count()),
+         table.count() == 1 ? "" : "s");
+  for (std::size_t i = 0; i < table.count(); ++i) {
+    char id[image::kKeyIdHexSize + 1];
+    image::keyIdHex(table.at(i).id, id);
+    printf(" %s", id);
+  }
+  print("\n");
+  if (image::trustsTestKey()) {
+    print("  WARNING: this build trusts the specification's public TEST KEY: it is a test build\n"
+          "  (version +TESTKEY) and accepts anybody's firmware; it must never be released\n");
+  }
 }
 
 }  // namespace console

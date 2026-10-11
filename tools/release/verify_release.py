@@ -73,8 +73,12 @@ def test_public_key():
 
 def load_keys(path):
     """The trust table: one key a line, `ed25519 <key id> <public hex>`, # to end of line a comment.
-    Room for three (section 3), so that a key can be replaced by shipping a build that trusts both."""
+    Room for three (section 3), so that a key can be replaced by shipping a build that trusts both.
+    Never the specification's test key: a build that trusted it would accept anybody's firmware
+    (section 3), so a table naming it is refused here - for the release gate and for the
+    firmware's own table, which tools/gen_trust_table.py reads through this function."""
     keys = []
+    test_key = test_public_key()
     if os.path.isfile(path):
         with open(path, encoding="utf-8") as fh:
             for lineno, raw in enumerate(fh, 1):
@@ -96,6 +100,12 @@ def load_keys(path):
                     raise Refused("%s line %d: the key id is %s, not %s (section 3: the first eight "
                                   "bytes of SHA-256 over the public key)"
                                   % (path, lineno, manifestref.key_id(public), parts[1]))
+                if public == test_key:
+                    raise Refused("%s line %d names the specification's public test key (%s). It is "
+                                  "never in the trust table: a build that trusted it would accept "
+                                  "anybody's firmware (section 3). A test build is made with "
+                                  "-DTWINOAK_TRUST_TEST_KEY=1, not by editing this file."
+                                  % (path, lineno, parts[1]))
                 keys.append(public)
     if len(keys) > 3:
         raise Refused("%s names %d keys; a build has room for three (section 3)" % (path, len(keys)))

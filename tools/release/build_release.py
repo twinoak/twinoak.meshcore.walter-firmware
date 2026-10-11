@@ -29,7 +29,10 @@ tools/release/test_release.py:
     and the stored radio images of a unit it is flashed onto);
   * a file holds no descriptor (§4: the image does not say what it is), or more than one;
   * a descriptor disagrees with the manifest entry it is published under;
-  * the manifest does not validate (§2).
+  * the manifest does not validate (§2);
+  * the build is a test-key build (task p2-01): its version says +TESTKEY, or the bytes of the
+    specification's public test key are in an image. Such a build trusts a key everybody has,
+    and is never released (spec/FIRMWARE-MANIFEST.md §3).
 """
 
 import argparse
@@ -69,6 +72,41 @@ RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+\+[0-9a-f]{7,40}$")
 
 class Refused(Exception):
     """Something the release may not contain. The message is for a person reading a workflow log."""
+
+
+# A test-key build (task p2-01): CMakeLists.txt stamps PROJECT_VER with this when
+# TWINOAK_TRUST_TEST_KEY is on, and components/core/image/trust.cpp then trusts the
+# specification's public test key.
+TEST_KEY_STAMP = "+TESTKEY"
+
+
+def test_public_key():
+    """The specification's public test key, from the fixture index it publishes it in."""
+    path = os.path.join(REPO, "spec", "fixtures", "manifest", "index.json")
+    with open(path, encoding="utf-8") as fh:
+        index = json.load(fh)
+    public = bytes.fromhex(index["test_public_key"])
+    if manifestref.key_id(public) != index["test_key_id"]:
+        raise Refused("%s: test_public_key and test_key_id do not agree" % path)
+    return public
+
+
+def refuse_test_key_build(version, images):
+    """A build that trusts the test key accepts anybody's firmware: never released, whatever
+    version it claims. Two witnesses: the +TESTKEY stamp in the version, and the key's 32 bytes
+    in the image (a normal build has neither - tools/verify.sh holds that on every build)."""
+    if TEST_KEY_STAMP in version:
+        raise Refused("the version %r is a test-key build's (%s): it trusts the specification's "
+                      "public test key and is never released (spec/FIRMWARE-MANIFEST.md section 3). "
+                      "Build without -DTWINOAK_TRUST_TEST_KEY=1." % (version, TEST_KEY_STAMP))
+    key = test_public_key()
+    for label, blob in images:
+        at = blob.find(key)
+        if at >= 0:
+            raise Refused("%s carries the specification's public test key at 0x%X: a test-key "
+                          "build, which trusts a key everybody has and is never released "
+                          "(spec/FIRMWARE-MANIFEST.md section 3). Build without "
+                          "-DTWINOAK_TRUST_TEST_KEY=1." % (label, at))
 
 
 # ------------------------------------------------------------------ the pieces of the build
@@ -274,6 +312,9 @@ def build(version, commit, tag, app_path, factory_path, out_dir, table_path, bui
     load_address, by_name = app_slot_offset(table_path)
     app = read(app_path)
     factory = read(factory_path)
+
+    # A test-key build is refused before anything else is believed about it (task p2-01).
+    refuse_test_key_build(version, [("the application image", app), ("the factory image", factory)])
 
     # ESP-IDF's own word on the application, before anything else is believed about it.
     desc = esp_app_desc(app, "the application image")

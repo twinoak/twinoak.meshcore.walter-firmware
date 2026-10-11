@@ -301,6 +301,10 @@ Parsed parseLine(const char* line) {
     if (hasRest) return refuse("reboot takes no argument");
     return accept(Verb::kReboot);
   }
+  if (std::strcmp(verb, "trust") == 0) {
+    if (hasRest) return refuse("trust takes no argument");
+    return accept(Verb::kTrust);
+  }
   if (std::strcmp(verb, "rak") == 0) {
     if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
     // The slot (task p1-06): `rak @1 hello`. Optional, and the first word after `rak` rather

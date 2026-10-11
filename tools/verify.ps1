@@ -18,6 +18,11 @@
                                      the version baked into the build and carried by the dry run's
                                      manifest and by the descriptor inside the image; the default
                                      is 0.0.0-dev. The release workflow passes the release's.
+  .\tools\verify.ps1 -TestKey        the test-key build (task p2-01): the specification's public
+                                     test key in the trust table, the version stamped +TESTKEY, a
+                                     warning at every boot; the release step expects the tooling
+                                     to refuse it. Never flash this to a unit in service, and run
+                                     the script once more without it afterwards.
 #>
 [CmdletBinding()]
 param(
@@ -25,7 +30,8 @@ param(
     [string]$Only = '',
     [switch]$Clean,
     [switch]$Shell,
-    [string]$Version = ''
+    [string]$Version = '',
+    [switch]$TestKey
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +83,8 @@ $mounts = @(
 # The version, only when one was asked for: verify.sh's default (0.0.0-dev) is then the one place
 # it is written down.
 if ($Version) { $mounts += @('-e', "TWINOAK_VERSION=$Version") }
+# The test-key build, only when asked for; verify.sh passes 0 or 1 to cmake every time.
+if ($TestKey) { $mounts += @('-e', 'TWINOAK_TRUST_TEST_KEY=1') }
 
 if ($Shell) {
     & docker run --rm -it @mounts $image bash
@@ -85,6 +93,7 @@ if ($Shell) {
 
 $started = Get-Date
 Write-Host "verify: $image"
+if ($TestKey) { Write-Host "        A TEST-KEY BUILD (+TESTKEY): trusts the specification's public test key; never released" }
 Write-Host "        repo $root"
 Write-Host "        volumes $buildVolume (build), $cacheVolume (caches)"
 # The image's entrypoint sources ESP-IDF's export.sh, then runs the command. No TTY: CI has none.

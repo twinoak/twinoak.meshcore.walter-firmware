@@ -14,6 +14,7 @@
 #include "core/console/console.h"
 #include "core/health/health.h"
 #include "core/image/this_image.h"
+#include "core/image/trust.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
 #include "core/version.h"
@@ -107,6 +108,15 @@ extern "C" void app_main() {
               static_cast<const void*>(core::image::kThisImage.bytes), role != nullptr ? role : "?",
               self.board, self.band, self.version, static_cast<unsigned>(self.link_major),
               static_cast<unsigned>(self.link_minor));
+
+  // A build made with -DTWINOAK_TRUST_TEST_KEY=1 trusts the specification's public test key
+  // (task p2-01, spec/FIRMWARE-MANIFEST.md §3): it accepts anybody's firmware, its version says
+  // +TESTKEY, the release tooling refuses it, and it says so at every boot. A normal build has
+  // neither the key nor this line's condition true.
+  if (core::image::trustsTestKey()) {
+    std::printf("WARNING: this build trusts the specification's public TEST KEY: it is a test build "
+                "(+TESTKEY) and accepts anybody's firmware; it must never be released\n");
+  }
 
   // S-6: an image confirms itself only after it has booted, spoken to the radio and reached the
   // server. None of that exists yet, so this image confirms nothing: flashed over USB its state is

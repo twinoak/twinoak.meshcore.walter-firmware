@@ -28,6 +28,18 @@ idf_component_register(
        "flasher/board_profile.cpp"
        "flasher/bootloader_settings.cpp"
        "flasher/flasher.cpp"
+       # Manifests and signatures (task p2-01): the vendored TweetNaCl verification extract (C),
+       # SHA-512 and Ed25519 over it, the trust table, the signature line, the manifest, the
+       # choice of image, the file's checks and the verdict.
+       "third_party/tweetnacl/tweetnacl_verify.c"
+       "image/crypto/sha512.cpp"
+       "image/crypto/ed25519.cpp"
+       "image/trust.cpp"
+       "image/signature.cpp"
+       "image/manifest.cpp"
+       "image/choose.cpp"
+       "image/file_check.cpp"
+       "image/verdict.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 
@@ -37,6 +49,40 @@ twinoak_ours(${COMPONENT_LIB})
 # The product version reaches core/ as a string literal (include/core/version.h).
 idf_build_get_property(_ver PROJECT_VER)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE TWINOAK_VERSION="${_ver}")
+
+# The vendored third-party code (third_party/*/README.md: origin, version, licence, hash). A
+# system include path, so that a header's warnings are its own, as doctest's are in host_test/;
+# the one .c file is held to our flags except -Wno-sign-compare, which its loops need
+# (third_party/tweetnacl/README.md).
+target_include_directories(${COMPONENT_LIB} SYSTEM PRIVATE ${CMAKE_CURRENT_LIST_DIR}/third_party)
+set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/third_party/tweetnacl/tweetnacl_verify.c
+  PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare")
+
+# The trust table (task p2-01): keys/release-keys.txt -> trust_keys.h, generated into the build
+# directory by tools/gen_trust_table.py and included by image/trust.cpp alone. With
+# -DTWINOAK_TRUST_TEST_KEY=1 the specification's public test key is appended, read from the
+# fixture index and never written down a second time, and core/ is told so.
+idf_build_get_property(_python PYTHON)
+set(_repo ${CMAKE_CURRENT_LIST_DIR}/../..)
+set(_generated ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(_trust_header ${_generated}/trust_keys.h)
+set(_trust_command ${_python} ${_repo}/tools/gen_trust_table.py ${_repo}/keys/release-keys.txt ${_trust_header})
+set(_trust_depends ${_repo}/tools/gen_trust_table.py ${_repo}/keys/release-keys.txt
+                   ${_repo}/tools/release/verify_release.py ${_repo}/spec/tools/manifestref.py)
+if(TWINOAK_TRUST_TEST_KEY)
+  list(APPEND _trust_command --test-key ${_repo}/spec/fixtures/manifest/index.json)
+  list(APPEND _trust_depends ${_repo}/spec/fixtures/manifest/index.json)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE TWINOAK_TRUST_TEST_KEY=1)
+endif()
+add_custom_command(
+  OUTPUT ${_trust_header}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${_generated}
+  COMMAND ${_trust_command}
+  DEPENDS ${_trust_depends}
+  COMMENT "the trust table: keys/release-keys.txt -> trust_keys.h"
+  VERBATIM)
+target_sources(${COMPONENT_LIB} PRIVATE ${_trust_header})
+target_include_directories(${COMPONENT_LIB} PRIVATE ${_generated})
 
 # Before core/ compiles, every one of its files is read for an ESP-IDF include
 # (tools/cmake/no_idf_include.cmake); one is a failed build with a sentence.

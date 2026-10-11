@@ -96,10 +96,22 @@ TEST_CASE("help lists every command") {
   const std::string text = rig.run("help");
   for (const char* cmd : {"help", "status", "reboots", "pins", "rak reset", "rak kill <seconds>",
                           "reboot", "rak hello", "rak ping", "rak status", "rak id", "rak time",
-                          "rak power", "rak env", "rak cli <line>", "rak events", "rak text"}) {
+                          "rak power", "rak env", "rak cli <line>", "rak events", "rak text",
+                          "trust"}) {
     CHECK_MESSAGE(contains(text, cmd), cmd);
   }
   CHECK(contains(text, "(1..30)"));
+}
+
+TEST_CASE("trust says this build accepts no update, because keys/release-keys.txt names no key (task p2-01)") {
+  Rig rig;
+  const std::string text = rig.run("trust");
+  CHECK(contains(text, "trust: none: no update will be accepted (keys/release-keys.txt names no key;\n"));
+  CHECK(contains(text, "spec/SYSTEM.md section 10 item 1"));
+  CHECK_FALSE(contains(text, "TEST KEY"));
+  CHECK(rig.run("trust me") == "error: trust takes no argument\n");
+  // Not a radio verb: no slot, no hold, nothing on the pins.
+  CHECK(rig.run("rak trust") == "error: unknown rak subcommand (try 'help'): trust\n");
 }
 
 TEST_CASE("status: version, uptime, why it booted, the pins and the radio's power") {
@@ -250,7 +262,9 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           "mem", "rak swd id", "rak swd mem", "rak swd mem 0x10000100 2",
                           "rak swd mem 0x1 2", "rak swd mem 0x20000000 32", "0x10000100",
                           // the flasher (task p1-05): nothing answers, the lines are released
-                          "flash-test", "rak flash-test", "rak flash-test now"};
+                          "flash-test", "rak flash-test", "rak flash-test now",
+                          // the trust table (task p2-01): no pin, no slot
+                          "trust", "trust me", "rak trust"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);
