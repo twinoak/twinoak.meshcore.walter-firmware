@@ -21,10 +21,11 @@ components/
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text
     cycle/              one wake, start to finish, against interfaces
-  hal/                  the interfaces core/ needs: pins, a byte stream, a clock, flash regions,
-                        a key-value store, an uplink, a sleeper
-  platform/             ESP-IDF implementations of hal/ - thin
-  modem/                the Walter's LTE modem behind hal/'s uplink
+  interfaces/           the interfaces core/ needs: pins, a byte stream, a clock, flash regions,
+                        a key-value store, an uplink, a sleeper. ("hal/" when this file was
+                        written; ESP-IDF owns a component of that name - task p0-01)
+  platform/             ESP-IDF implementations of interfaces/ - thin
+  modem/                the Walter's LTE modem behind interfaces/' uplink
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   sim/                  the simulated SWD target (wire level and nRF52), the simulated flash, the scripted RAK
 tools/                  verify.ps1, release tooling, bench tools
@@ -234,17 +235,38 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 
 ## 11. Flash layout
 
-16 MB. The table is phase 0's to write; its constraints:
+16 MB. The constraints the table was written to, and (task p0-01) the table itself, held to them by
+`tools/check_partitions.py` on every build:
 
 - two application slots with room to grow (3 MB each);
 - **settings (NVS) and the image store above the application slots**, so that a factory image,
   which ends where the application ends, cannot reach them — the agent firmware learned this the
   expensive way;
 - the image store sized for two radios (golden + candidate + scanner each, a radio image being at
-  most the size of its application region);
+  most the size of its application region — bounded here by the nRF52840's whole flash, 1 MB);
 - a journal that is not the settings store (its own wear, its own failure modes);
-- whatever the modem library needs for a modem-firmware update;
-- a core-dump partition.
+- a core-dump partition;
+- ~~whatever the modem library needs for a modem-firmware update~~ — read in task p0-01: the
+  library's own update path (MOTA, driven by BlueCherry) wants a FAT partition named `ffat` large
+  enough for the modem image, 9 MB for `LR8.2.1.0`, which does not fit beside the rest in 16 MB.
+  MOTA is off and nothing is allocated for it; a modem firmware update is a bench procedure
+  (QuickSpot's `modem_firmware_flash` example flashed for the occasion, or the module's `UART1`
+  per the datasheet). The 3.75 MB above `rakfw` is left unallocated.
+
+`partitions.csv`:
+
+| Name | Type | Offset | Size | |
+|---|---|---:|---:|---|
+| (bootloader) | | `0x000000` | | |
+| (table) | | `0x008000` | 4 KB | `0x9000`–`0xDFFF` empty on purpose: a factory image fills it with `0xFF` |
+| `otadata` | data/ota | `0x00E000` | 8 KB | |
+| `ota_0` | app/ota_0 | `0x010000` | 3 MB | |
+| `ota_1` | app/ota_1 | `0x310000` | 3 MB | |
+| `nvs` | data/nvs | `0x610000` | 64 KB | above the slots |
+| `journal` | data/`0x41` | `0x620000` | 64 KB | ours |
+| `rakfw` | data/`0x40` | `0x630000` | 6 MB | ours: 2 radios × 3 images × 1 MB |
+| — | | `0xC30000` | 3.75 MB | unallocated |
+| `coredump` | data/coredump | `0xFF0000` | 64 KB | |
 
 ## 12. What is tested where
 

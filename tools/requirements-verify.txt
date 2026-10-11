@@ -1,0 +1,5 @@
+# What tools/verify.sh installs inside the image before the spec self-checks, pinned exactly.
+# cryptography: spec/tools/manifestref.py's Ed25519 (RFC 8032). 44.0.3 is the version already in
+# the image's Python environment (esptool depends on it), so this line is a check that it is there
+# and costs no network; a different pin would fight esptool's constraint.
+cryptography==44.0.3

@@ -1,0 +1,11 @@
+# A table tools/check_partitions.py must refuse (its self-test): the second slot is smaller than
+# the first - an image that fits one slot would not fit the other, and S-6's A/B is broken - and
+# rakfw starts inside ota_1. Two refusals, naming ota_1 and rakfw.
+# Name,     Type, SubType,  Offset,    Size,      Flags
+otadata,    data, ota,      0xE000,    0x2000,
+ota_0,      app,  ota_0,    0x10000,   0x300000,
+ota_1,      app,  ota_1,    0x310000,  0x200000,
+nvs,        data, nvs,      0x610000,  0x10000,
+journal,    data, 0x41,     0x620000,  0x10000,
+rakfw,      data, 0x40,     0x500000,  0x600000,
+coredump,   data, coredump, 0xFF0000,  0x10000,
