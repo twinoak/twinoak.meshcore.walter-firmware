@@ -21,8 +21,10 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   Open the port at any baud (USB Serial/JTAG ignores it). After a reset the console prints
   `twinoak-walter 0.0.0-dev` on its own line, then `running from ota_0 at 0x010000 (3072 KB), ota
   state undefined (...)`, then `image descriptor at <address>: role manager, board walter, band
-  lte-m, version 0.0.0-dev, link 1.0` (task p0-02), then `console on USB; nothing to do yet -
-  idling`. `--flash-mode dio` is esptool's way in; the image's header says QIO and the bootloader
+  lte-m, version 0.0.0-dev, link 1.0` (task p0-02), then `boot 1: power-on reset`, `the boot
+  record starts here (a power cut, or the first boot)`, `type 'help' for the commands` and a `> `
+  prompt (task p0-03; until it, the last line was `console on USB; nothing to do yet - idling`).
+  `--flash-mode dio` is esptool's way in; the image's header says QIO and the bootloader
   switches to it (`sdkconfig.defaults`).
 
 - [ ] **A reset runs the same image** (task p0-01; S-6). Press reset, or unplug and replug, three
