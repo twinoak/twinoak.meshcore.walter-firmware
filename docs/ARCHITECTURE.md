@@ -15,7 +15,7 @@ components/
     health/             why the last boot happened: the reset reason, a boot counter, the last five - task p0-03
     link/               the box link: codec, client (the UART, retries, events, the session,
                         telling a repeater from a scanner), the protocol's numbers in words
-    swd/                the debug port: wire protocol, DP, MEM-AP
+    swd/                the debug port: wire protocol and DP (task p1-03), MEM-AP (task p1-04)
     nrf52/              identification, access-port protection, the flash controller, core control
     flasher/            an image and a region in; erases, writes, verify out
     image/              manifest, signature, descriptor, the image store's records
@@ -24,7 +24,7 @@ components/
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text (task p0-03: help, status, reboots,
                         pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
-                        time, power, env, cli, events, text)
+                        time, power, env, cli, events, text; task p1-03: rak swd connect)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); flash regions,
@@ -36,8 +36,9 @@ components/
   modem/                the Walter's LTE modem behind interfaces/' uplink
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained storage as a map
-  sim/                  the scripted RAK on a fake UART (task p1-02); the simulated SWD target
-                        (wire level and nRF52) and the simulated flash (later)
+  sim/                  the scripted RAK on a fake UART (task p1-02); the simulated SWD target at
+                        the wire level (task p1-03), the nRF52 behind it and the simulated flash
+                        (later)
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
 tools/                  verify.ps1, release/ (the release tooling), bench tools
 keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02)
@@ -167,18 +168,35 @@ frames, and offers the lines to whoever subscribed until the radio is reset. It 
 
 Three layers, each tested against the layer below it in simulation:
 
-**The wire** *(verify against Arm's ADIv5 specification)*. Bit-banged, clocked entirely by us, so
-only the minimum half-period matters, not jitter. **Start at 100 kHz; the filtered lines are
-predicted to carry about 300 kHz and no more**; the speed is a setting. Line reset (at least 50
-clocks with SWDIO high), the JTAG-to-SWD sequence `0xE79E`, another line reset, idle cycles. A
-transfer: eight request bits (start, APnDP, RnW, two address bits, parity, stop, park), a
-turnaround, three ACK bits (OK, WAIT, FAULT), then 32 data bits and a parity bit in the direction
-of the transfer, with turnarounds where the bus changes hands. SWDIO's turnaround is the tight
-spot through the filters: sample late.
+**The wire** (task p1-03, `core/swd/wire`; Arm's ADIv5.0 to ADIv5.2, IHI 0031G, chapters B4
+and B5, cited line by line). Bit-banged, clocked entirely by us, so only the minimum half-period
+matters, not jitter. **125 kHz to start** — a half-period of 4 µs, the slowest clock the nRF52840
+Product Specification allows (*Debug and trace > Electrical specification*, f_SWDCLK 0.125 to
+8 MHz) and four time constants of the filtered lines, which are **predicted to carry about
+300 kHz and no more**; the half-period is a parameter, bounded below at 1 µs. Line reset (at least
+50 clocks with SWDIO high, then at least two idle cycles low, B4.3.3), the JTAG-to-SWD sequence
+`0xE79E` LSB first between two of them (B5.2.2), then a read of `DPIDR`, the only transaction the
+reset state accepts. A transfer: eight request bits (start, APnDP, RnW, two address bits, even
+parity, stop, park), a turnaround, three ACK bits (OK `001`, WAIT `010`, FAULT `100`, LSB first),
+then 32 data bits and a parity bit in the direction of the transfer, with turnarounds where the
+bus changes hands; eight idle cycles after every transfer so that the clock may stop (B4.1.1).
+The target samples and changes SWDIO on SWCLK's rising edge (B4.3.1); we change it right after the
+falling edge and **read the target's bit at the end of the low half, just before the next rising
+edge** — SWDIO's turnaround is the tight spot through the filters, and that point gives the
+target's driver a whole period less the clock's own delay (about 7 µs at 125 kHz, 2.6 time
+constants at the predicted ceiling) instead of half of it. An acknowledge of all ones is *no
+target*; any other value that is none of the three is a protocol error, after which the host backs
+off for the length of a data phase before anything else (B4.2.5).
 
-**The debug port and the memory access port.** `DPIDR` (the nRF52840's reads `0x2BA01477`),
-power-up through `CTRL/STAT`, `SELECT`, `RDBUFF`; WAIT retried a bounded number of times; a FAULT
-cleared through `ABORT` and reported; a parity error treated as a failed transfer. Memory access
+**The debug port and the memory access port.** `DPIDR` (the nRF52840's reads `0x2BA01477`: Arm's
+DPv1 SW-DP, part `0xBA`, revision 2 — the Product Specification only says "a standard Arm
+CoreSight SW-DP", so the bench confirms the number), power-up through `CTRL/STAT` with a bounded
+wait for both acknowledges and a `powerDown()` that withdraws the request (on the nRF52840 that is
+what ends debug interface mode), `SELECT` rewritten only when the port or the bank changes, an AP
+read's posted value collected through `RDBUFF` so a caller sees the register it asked for; WAIT
+retried ten times with idle cycles between; a FAULT reported with `CTRL/STAT`'s sticky flags and
+cleared through `ABORT`; a parity error a failed transfer, never a value (task p1-03,
+`core/swd/dp`). Memory access
 through AP 0: `CSW` for 32-bit accesses with auto-increment, `TAR`, `DRW`; reads are posted, so the
 value comes one transfer later; the address auto-increment wraps inside a 1 KB block, so `TAR` is
 rewritten at every boundary.
@@ -197,11 +215,21 @@ rewritten at every boundary.
   named constants that nothing calls.
 
 **The simulator** (`host_test/sim/`) is the other half of this section: a wire-level SWD target
-that decodes our bit stream — so a wrong parity bit or a missing turnaround fails a test — with a
-debug port, two access ports and behind them a memory map: flash that needs an erase before a
-write and can only clear bits, an `NVMC` with its ready flag and enable states, `FICR`, `UICR`, the
-debug registers. It can be told to answer WAIT, to FAULT, to lose power at the Nth write, to be
-protected. Everything in this section and the next is developed against it.
+(`swd_target`, task p1-03) that stands between `RadioPins` and the fake pins as a `Pins` of its
+own, sees every rising edge of SWCLK, samples and drives SWDIO on it as a target does, and decodes
+our bit stream — so a wrong parity bit, a stop or park bit wrong, a line reset one clock short, a
+missing turnaround, SWDIO driven while the target drives it, a request before any line reset or
+one other than `DPIDR` in the reset state, or the clock stopped under eight idle cycles after a
+transfer, fails the test with a sentence naming the section. Its debug port has `DPIDR`, `ABORT`,
+`CTRL/STAT` with the power-up handshake and the sticky flags, `SELECT`, `RESEND`, `RDBUFF` and the
+posted AP read; access ports plug in behind a register-level interface (one stub that stores what
+is written, until task 04 brings the two real ones and behind them a memory map: flash that needs
+an erase before a write and can only clear bits, an `NVMC` with its ready flag and enable states,
+`FICR`, `UICR`, the debug registers). It can be told to answer WAIT N times, to carry a sticky
+error, to return a bad parity once, to go silent, to not be there (no pull-up: the line keeps what
+was last driven), to acknowledge a power-up late or never, to start in JTAG so that only the
+switch sequence reaches it, and (later) to lose power at the Nth write and to be protected.
+Everything in this section and the next is developed against it.
 
 ## 5. The flasher
 

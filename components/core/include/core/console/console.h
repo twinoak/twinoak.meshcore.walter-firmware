@@ -65,6 +65,9 @@ class Console {
   void printBytes(const char* label, link::Bytes bytes);
   void printText(link::Text text);
 
+  // The debug port (task p1-03).
+  void rakSwdConnect();
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;

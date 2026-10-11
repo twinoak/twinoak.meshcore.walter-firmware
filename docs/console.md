@@ -73,6 +73,25 @@ the `boot_id` and — §9 — whatever firmware it was running are forgotten, an
 finds out again. `status` has a line about the link: what the client believes it is talking to,
 whether a session is up, and the retries, timeouts, dropped frames and events since boot.
 
+## The radio's debug port, over SWD
+
+From task p1-03. The two SWD lines (GPIO2 SWDCLK, GPIO4 SWDIO) are acquired for the length of
+the command and released on every exit path; the clock is 125 kHz (a half-period of 4 µs, the
+slowest the nRF52840 is specified for, and four time constants of the filtered lines). What the
+host tests proved is in `tasks/phase-1/reports/03.md`; the protocol is Arm's ADIv5, cited in
+`components/core/swd/`.
+
+| Command | What it does |
+|---|---|
+| `rak swd connect` | line reset, the JTAG-to-SWD switch, line reset, two idle clocks, a read of `DPIDR` — printed with its fields decoded (revision, part, DP version, designer) and whether it is the nRF52840's `0x2ba01477`; then the debug and system power-up requested through `CTRL/STAT` and the acknowledges waited for (100 ms at most); then the request withdrawn, which is what takes the radio out of debug interface mode; then the pins released, with a line of counters. Nothing else is touched: no memory, no flash |
+
+Its refusals, each one `error:` line and the pins released: *refused: the radio's rail is off*
+(inside a `rak kill`), *refused: nRESET is asserted*, *the pin driver refused*, *no target:
+nothing answered on the line* (the radio unpowered or absent — the acknowledge read all ones),
+*protocol error: an acknowledge that is none of OK, WAIT or FAULT* (the line is confused: a short,
+a wrong pin), *parity error on the data read*, *the target kept answering WAIT*. A power-up that
+is not acknowledged in time is printed and does not stop the command.
+
 ## The radio's power, as `status` says it
 
 | | Means |

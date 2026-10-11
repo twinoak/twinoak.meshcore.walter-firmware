@@ -209,6 +209,15 @@ Parsed parseLine(const char* line) {
       p.command.text_size = n;
       return p;
     }
+    // rak swd connect (task p1-03): the one word after swd is the operation; nothing else yet.
+    if (std::strcmp(sub, "swd") == 0) {
+      if (!hasArg) return refuse("rak swd needs an operation: rak swd connect");
+      for (const char* p = arg; *p != 0; ++p) {
+        if (isSpace(*p)) return refuse("rak swd takes one word: rak swd connect");
+      }
+      if (std::strcmp(arg, "connect") == 0) return accept(Verb::kRakSwdConnect);
+      return refuse2("rak swd: unknown operation (rak swd connect): ", arg);
+    }
     if (std::strcmp(sub, "kill") == 0) {
       if (!hasArg) return refuse("rak kill needs a duration: rak kill <seconds>");
       for (const char* p = arg; *p != 0; ++p) {

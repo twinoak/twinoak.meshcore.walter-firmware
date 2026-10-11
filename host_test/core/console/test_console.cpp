@@ -237,7 +237,10 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           "hello", "ping", "id", "time", "set", "power", "env", "cli", "events",
                           "text", "rak hello", "rak ping", "rak status", "rak id", "rak time",
                           "rak time set 1791719000", "rak time set x", "rak power", "rak env",
-                          "rak cli get radio", "rak cli", "rak events", "rak text"};
+                          "rak cli get radio", "rak cli", "rak events", "rak text",
+                          // the debug port (task p1-03): no target behind these fake pins, so
+                          // every connect fails and must still release the lines
+                          "swd", "connect", "rak swd", "rak swd connect", "rak swd connect now"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);

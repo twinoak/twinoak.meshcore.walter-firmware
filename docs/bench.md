@@ -173,3 +173,53 @@ the same fixtures.
   `repeat` counting up if the Walter was not listening at once. Deep sleep is phase 3's, so what
   this shows now is only that the event arrives and the two zero bytes before it are not mistaken
   for a frame.
+
+## 4. SWD
+
+Needs: the Walter on USB with §2 walked, the RAK4631 on the RAK19001 powered, SWDCLK and SWDIO
+wired — D-sub 4 and 5, Walter GPIO2 and GPIO4 — first with short wires, then through 470 Ω and
+2.2 nF on each line (`BENCH-BREADBOARD.md` §4), then through the real bulkheads; a scope with two
+channels. The firmware's side is `components/core/swd/` (the wire and the debug port), the
+simulator every line of it was written against is `host_test/sim/swd_target.cpp`, and what the
+host tests proved is in `tasks/phase-1/reports/03.md`. Arm's ADIv5 (IHI 0031G) is cited beside
+every number; the nRF52840 Product Specification ("Debug and trace") gives the clock its range,
+0.125 to 8 MHz, which is why the default is 125 kHz and not the 100 kHz the plan said.
+
+- [ ] **`rak swd connect` prints `DPIDR 0x2ba01477`** (task p1-03): `revision 2, part 0xba, DPv1,
+  designer 0x23b (Arm) - the nRF52840's`, then `power-up: debug and system domains acknowledged
+  (CTRL/STAT 0xf0000000)` (the four top bits: both requests and both acknowledges; `READOK` may
+  add `0x40`), then `power-up request withdrawn: the radio leaves debug interface mode`, then
+  `pins released` with the counters: expect `4 transfers` or so and `0 WAIT retries, 0 faults, 0
+  parity errors`. First with short wires, then through 470 Ω and 2.2 nF on each line, then through
+  the real bulkheads: the same lines every time. The RAK's repeater firmware keeps running
+  throughout (its console still answers): nothing here halts the core. **Why this matters:** the
+  host tests show the protocol is right bit for bit against a simulator written from the
+  document; only a chip shows the document was read correctly.
+
+- [ ] **The sample point and the ceiling** (task p1-03). Scope on SWDIO and SWCLK during `rak swd
+  connect` at the default speed. In the acknowledge phase (right after the request's park bit)
+  the RAK's edges on SWDIO should follow SWCLK's rising edges by under 2 µs through the filters,
+  and be settled well before the *next* rising edge — that is where this firmware reads them (the
+  end of the low half). Then raise the speed until `connect` fails and record the ceiling: the
+  half-period is `kDefaultHalfPeriodUs` in `components/core/include/core/swd/wire.h` (no console
+  setting yet — phase 3's settings task adds one); 3 µs is 167 kHz, 2 µs is 250 kHz, 1.5 µs is
+  333 kHz, and the lower bound of 1 µs is 500 kHz. Predicted: near 300 kHz through the filters,
+  the turnaround into the acknowledge failing first. Note the ceiling and the first symptom
+  (`no target`, `protocol error` or `parity error`) here.
+
+- [ ] **With the RAK unpowered: "no target", and nothing is back-fed** (task p1-03). Kill the
+  rail with the emulator or pull the RAK's power, wait for `status` to say `radio power: on`
+  (the firmware believes the rail is on when the kill line is not driven; here it is wrong, which
+  is the point), and `rak swd connect`: `error: rak swd connect: no target: nothing answered on
+  the line` within a few milliseconds, `pins released`, and the RAK's 3.3 V rail stays at 0 V
+  throughout (the SWD lines are driven for 226 clocks per attempt, two attempts: about 3.6 ms of
+  current through 470 Ω into a dead chip's clamps, which is what the series resistor is for).
+  Then with the RAK powered but its SWD lines disconnected: the same `no target` (the Walter's
+  input floats at the park bit's level; if it reads `protocol error` instead, that is a floating
+  input reading low and is also acceptable — the report says why both are refusals).
+
+- [ ] **The radio's current after `rak swd connect`** (task p1-03). The nRF52840 is in debug
+  interface mode while a debugger holds `CDBGPWRUPREQ`; the command withdraws it before releasing
+  the pins. With a meter on the RAK's supply: the current after the command is back to what it
+  was before it. If it is not, note it here: phase 2's flasher ends with a reset pulse anyway, but
+  the supervisor's `rak id` (task 04) must not leave the radio drawing more.

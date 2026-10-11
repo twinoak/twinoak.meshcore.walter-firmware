@@ -15,6 +15,8 @@ idf_component_register(
        "link/client/port.cpp"
        "link/client/client.cpp"
        "link/client/words.cpp"
+       "swd/wire.cpp"
+       "swd/dp.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 
