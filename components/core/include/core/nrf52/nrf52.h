@@ -142,6 +142,9 @@ class Nrf52 {
   // Any address the access port can reach, read-only; refused like the rest when the chip is
   // protected or not an nRF52840.
   Result read(std::uint32_t addr, std::uint32_t* out, std::size_t words);
+  // READY awaited, bounded: for a caller that has just halted a core whose own firmware may have
+  // an erase or a write in flight (the flasher, task p1-05). Writes nothing.
+  Result waitFlashReady(std::uint32_t timeout_ms);
 
   struct Counters {
     std::uint32_t erases = 0;

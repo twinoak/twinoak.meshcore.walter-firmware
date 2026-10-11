@@ -19,6 +19,10 @@ idf_component_register(
        "swd/dp.cpp"
        "swd/mem_ap.cpp"
        "nrf52/nrf52.cpp"
+       "image/crypto/sha256.cpp"
+       "flasher/board_profile.cpp"
+       "flasher/bootloader_settings.cpp"
+       "flasher/flasher.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

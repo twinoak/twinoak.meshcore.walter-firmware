@@ -57,6 +57,7 @@ class FakePins final : public interfaces::Pins {
   explicit FakePins(FakeClock& clock, const core::board::KillTiming& timing = core::board::kKillTiming);
 
   bool strict = true;
+  bool record_log = true;  // false: the rules are still checked, the transitions not kept (a flash is millions)
   std::vector<Transition> log;
   std::vector<Violation> violations;
   std::function<bool(const Op&)> fail_when;

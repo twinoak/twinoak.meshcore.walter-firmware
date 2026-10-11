@@ -267,3 +267,87 @@ every number; the nRF52840 Product Specification ("Debug and trace") gives the c
   bit 24 (`S_RETIRE_ST`) set on a running core: `0x0100000x`. **`rak swd mem 0x50000000`** says
   `FAULT ... at 0x50000000`: nothing lives there, and the access port's error response is read
   and cleared, after which the next command works.
+
+## 5. Flashing
+
+Needs: §4 walked (`rak swd id` answers through the filters), the RAK's own USB console on the
+laptop, a repeater image for the RAK (phase 2's `rak flash`, or a UF2 to load over USB), and
+time: a full flash at 125 kHz is minutes (`tasks/phase-1/reports/05.md` gives the budget). The
+firmware's side is `components/core/flasher/`; the simulator it was proved against is
+`host_test/sim/nrf52_chip.cpp`, down to the two bootloaders' `bootloader_app_is_valid()`. **This
+is the most important bench session of the project**: the unit exists so that this never bricks a
+radio, and the simulator can only show the documents were followed, not that the chip agrees.
+
+- [ ] **`rak swd id` first; note the variant; stop if *protected*** (task p1-05; §4's items). The
+  flasher refuses a protected chip before touching anything, but the point of this line is the
+  person, not the firmware: a protected module is a bench procedure (`BENCH-BREADBOARD.md` caveat
+  6), not a flashing session.
+
+- [ ] **Note the RAK's identity and one setting from its USB console** (task p1-05): `get
+  public.key` and `get name`. These live in the file system at `0xED000`, above the application
+  region's end; after everything below they must be what they were.
+
+- [ ] **`rak swd mem 0x00003004 3` prints `51b1e5db 00026000 ....00b6`** (task p1-05): the
+  SoftDevice's information structure — the magic, S140's size `0x26000` (where the application
+  begins and the profile says it does), the firmware id `0x00B6` of S140 6.1.1. A size other than
+  `0x26000` means the module carries another SoftDevice and the flasher refuses it (`the SoftDevice
+  does not end where the profile's application region begins`); note the numbers here either way.
+  Also `rak swd mem 0x000ff000 3`: the bootloader's settings record as the RAK arrived — expect
+  `00000001 ffff00ff 00000000` (bank 0 valid, CRC check off, size 0: a UF2 install) or `00000001
+  ffff00ff <size>`; `ffffffff ...` means the page is erased and `000000ff` that an earlier flash was
+  interrupted. Write it down.
+
+- [ ] **`rak flash-test`: passes; the RAK still boots what it had** (task p1-05). Expected: the
+  `swd:` session lines, then one line per page for the scan (`reading the pages the image covers:
+  page 1/2`, `2/2`), the write (`erasing, writing and verifying the pages: page 1/2`, `writing
+  and verifying the first page: page 2/2`), the read-back, then `rak flash-test: done in <ms> ms: 2
+  pages (0 skipped, 2 written in place, 0 erased, 0 retries), 2 erases, 2048 words written, <n>
+  read`, `the radio was reset through the debug port; the next reset pulse waits out the spacing`,
+  `pins released`. **Write the time down** — it is the first measurement of a page write and an
+  erase through the real wire. The RAK restarts (its USB console shows a boot) into the firmware it
+  had; `rak hello` answers with the same version; `get name` is unchanged. If the command says
+  `the last two pages of the application region are not blank`, the RAK's application reaches
+  `0xEB000` — note the address it prints and do not force it; the region table is right, the image
+  is just large. A `retries 1` or a failure `a page did not verify` names a page that would not
+  take a write: note the address.
+
+- [ ] **Flash a repeater image; the RAK restarts into it, not into its UF2 bootloader** (task
+  p1-05; phase 2's `rak flash`, or until then a UF2 over USB plus `rak swd mem 0x000ff000 3` to
+  see what the bootloader recorded). After the flash: `rak hello` shows the version flashed; the
+  RAK's USB console answers `get public.key` and `get name` with what they were in the second item;
+  `rak swd mem 0x000ff000 3` shows `00000001 ffff00ff <size of the image>`. Had the radio come up
+  as a UF2 drive instead, the settings page is what to look at first: the flasher's record is the
+  one the bootloader's own UF2 path writes, and a bootloader that refuses it is not one of the two
+  read for this task (`core/flasher/bootloader_settings.h` names them) — note its version (the
+  RAK's bootloader prints it on its USB drive's `INFO_UF2.TXT`).
+
+- [ ] **Pull the Walter's power half-way through a flash; the RAK stays in its bootloader; flash
+  again: it completes and boots** (task p1-05). With the stock bootloader the RAK shows a UF2
+  drive on its USB (no valid application, no timeout); with OTAFIX it advertises BLE DFU instead
+  and shows no drive (its README: no valid application defaults to OTA). Either way `rak hello`
+  gets no answer and `rak swd mem 0x000ff000 1` reads `000000ff`: bank 0 invalid, which is the
+  state the flasher put it in before the first erase. Then `rak flash` again: the scan finds the
+  pages already written, writes the rest, and the counts show fewer erases than the first time.
+  The RAK boots the image; identity and name unchanged. Do it twice: once with the power pulled
+  during the pages, once in the last seconds (during the read-back or the settings write).
+
+- [ ] **Double-tap the RAK's reset afterwards: the UF2 bootloader still works, and a UF2 of the
+  stock firmware still installs** (task p1-05). The flasher never wrote the bootloader's pages,
+  the MBR parameter page or UICR; this shows it. Then flash the repeater image back with `rak
+  flash` and check `rak hello` once more.
+
+- [ ] **Time a full flash; find the fastest SWD speed that still verifies** (task p1-05). The
+  report predicts the budget at 125 kHz from the simulated clock (so many transfers a word, three
+  reads of every page, 85 ms an erase); write the measured time here beside the image's size.
+  Then raise the clock (`kDefaultHalfPeriodUs`, as in §4's ceiling item) and repeat until the
+  read-back or a page's verify fails, and note the fastest setting at which the whole flash still
+  verifies — which may be lower than §4's ceiling for `connect`, because a flash is a million
+  transfers and the rarest bit error counts.
+
+- [ ] **A build code Fxx module after an interrupted flash** (task p1-05; §4's protected item).
+  Only if the variant is `AAF0` or later: with the application gone (the previous item's half-way
+  state), does `rak swd id` still say `protection: open`? The flasher halts a running core instead
+  of resetting it because a reset may close the port on such a module until *some* firmware has
+  written `APPROTECT.DISABLE`; whether the bootloader alone does that is what this shows. If it
+  says *protected*, the module cannot be re-flashed by the Walter after an interruption without a
+  power cycle and a bootloader that opens the port — note it, loudly.

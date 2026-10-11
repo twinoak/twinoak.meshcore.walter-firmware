@@ -244,7 +244,9 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           // the nRF52 (task p1-04): the same, nothing answers, every session
                           // must still release the lines
                           "mem", "rak swd id", "rak swd mem", "rak swd mem 0x10000100 2",
-                          "rak swd mem 0x1 2", "rak swd mem 0x20000000 32", "0x10000100"};
+                          "rak swd mem 0x1 2", "rak swd mem 0x20000000 32", "0x10000100",
+                          // the flasher (task p1-05): nothing answers, the lines are released
+                          "flash-test", "rak flash-test", "rak flash-test now"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);

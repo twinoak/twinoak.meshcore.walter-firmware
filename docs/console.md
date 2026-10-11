@@ -112,6 +112,26 @@ at AP 1*; *no memory access port at AP 0*; and for `mem`, a `FAULT ... at 0x...`
 is nothing (the access port's error response, read and cleared), *the address must be word-aligned*,
 *words is 1 to 32*.
 
+## The flasher
+
+From task p1-05. The flasher itself (`components/core/flasher/`, `docs/ARCHITECTURE.md` §5) is
+what phase 2's `rak flash <slot>` and the radio's update will drive; today the console has one
+command that exercises its erase, write, verify and reset on real silicon without putting the
+firmware the radio runs at risk. What the host tests proved — above all the power cut at every
+flash operation — is in `tasks/phase-1/reports/05.md`.
+
+| Command | What it does |
+|---|---|
+| `rak flash-test` | the session of `rak swd id` (connect, the control port's protection, FICR), then the SoftDevice's own information structure checked against the board profile (it must end at `0x26000`, where the application begins); then the **last two pages of the application region** (`0xEB000`–`0xED000`) read: **they must be blank**, or the command refuses and touches nothing. Then the core is halted, a two-page pattern written and verified page by page, the whole of it read back and its SHA-256 checked, the two pages erased again and read back blank, the radio reset through the debug port, the pins released. One line per page per pass, then a summary with the counts and the time; `rak reset` afterwards waits out the spacing, because the radio was just reset. The bootloader's settings page is **not** touched: the pattern is not the application, and the firmware that was running starts again after the reset |
+
+Its refusals, each one `error:` line naming the step and the pins released: the debug port's and
+the chip's (above); *the SoftDevice does not end where the profile's application region begins*
+(a chip with another SoftDevice, or none — the profile is wrong for it); *the last two pages of the
+application region are not blank: refused* with the address of the first word that is not. A
+failure after the halt — a page that will not verify after a retry, a target that stops answering —
+is reported with its step and address; where the debug port still answers, the radio is reset on
+the way out so that it runs its bootloader rather than sitting halted.
+
 ## The radio's power, as `status` says it
 
 | | Means |

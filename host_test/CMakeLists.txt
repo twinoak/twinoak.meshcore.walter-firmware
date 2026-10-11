@@ -12,8 +12,11 @@ project(twinoak_walter_host_test CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Optimised, with debug information (task p1-05): the flasher's power-loss loop drives a bit-level
+# simulation of the SWD wire through hundreds of flashes, and at -O0 that is ten times slower
+# than at -O2 for no gain in what the tests prove. The sanitizers below are as thorough either way.
 if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Debug)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
 set(REPO ${CMAKE_CURRENT_LIST_DIR}/..)

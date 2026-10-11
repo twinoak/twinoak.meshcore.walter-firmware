@@ -31,7 +31,8 @@ const char* modeName(interfaces::PinMode mode) {
 Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
                  interfaces::Clock& clock, interfaces::Restart& restart,
                  link::client::Client& radio)
-    : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio) {}
+    : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
+      flasher_(pins, clock) {}
 
 void Console::print(const char* text) { out_.write(text, std::strlen(text)); }
 
@@ -133,6 +134,7 @@ void Console::runLine(const char* line) {
     case Verb::kRakSwdConnect: rakSwdConnect(); return;
     case Verb::kRakSwdId: rakSwdId(); return;
     case Verb::kRakSwdMem: rakSwdMem(p.command.address, p.command.words); return;
+    case Verb::kRakFlashTest: rakFlashTest(); return;
   }
 }
 
@@ -156,6 +158,8 @@ void Console::help() {
   print("  rak swd id          identify the radio's chip over SWD: part, variant, flash, protection, core\n");
   print("  rak swd mem <addr> [words]\n");
   print("                      read 1 to 32 words of the chip's memory (read-only; hex 0x... or decimal)\n");
+  print("  rak flash-test      write, verify and erase a 2-page pattern at the top of the application\n");
+  print("                      region, only if those pages are blank; the radio restarts\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -740,6 +744,72 @@ void Console::rakSwdMem(std::uint32_t address, std::uint32_t words) {
   }
   nrf.close();
   pins_.swdRelease();
+}
+
+// -------------------------------------------------------------------------- the flasher (p1-05)
+//
+// rak flash-test: the flasher's erase, write, verify and reset exercised on real silicon at the
+// top of the application region, on two pages that must be blank, so that the firmware running
+// on the radio is not at risk - it is restarted, not changed. The settings page is not touched.
+// `rak flash <slot>` is phase 2's, when there is an image store to flash from.
+
+namespace {
+
+class PrintProgress final : public core::flasher::ProgressSink {
+ public:
+  explicit PrintProgress(interfaces::TextOut& out) : out_(out) {}
+  void onProgress(const core::flasher::Progress& p) override {
+    char buf[96];
+    const int n = std::snprintf(buf, sizeof buf, "  %s: page %lu/%lu (0x%08lx)\n", core::flasher::describe(p.step),
+                                static_cast<unsigned long>(p.pages_done), static_cast<unsigned long>(p.pages_total),
+                                static_cast<unsigned long>(p.address));
+    if (n > 0) out_.write(buf, static_cast<std::size_t>(n) < sizeof buf ? static_cast<std::size_t>(n) : sizeof buf - 1);
+  }
+
+ private:
+  interfaces::TextOut& out_;
+};
+
+}  // namespace
+
+void Console::printFlashResult(const char* what, const flasher::Result& r) {
+  const flasher::Counters& c = r.counters;
+  if (r.ok()) {
+    printf("  %s: done in %lu ms: %lu pages (%lu skipped, %lu written in place, %lu erased, %lu retries), %lu erases, %lu words written, %lu read\n",
+           what, static_cast<unsigned long>(c.elapsed_ms), static_cast<unsigned long>(c.pages_total),
+           static_cast<unsigned long>(c.pages_skipped), static_cast<unsigned long>(c.pages_written_in_place),
+           static_cast<unsigned long>(c.pages_erased), static_cast<unsigned long>(c.retries),
+           static_cast<unsigned long>(c.erases), static_cast<unsigned long>(c.words_written),
+           static_cast<unsigned long>(c.words_read));
+  } else if (r.outcome == flasher::Outcome::kRefused) {
+    if (r.address != 0) {
+      printf("error: %s: refused while %s: %s (0x%08lx)\n", what, flasher::describe(r.step), r.why,
+             static_cast<unsigned long>(r.address));
+    } else {
+      printf("error: %s: refused while %s: %s\n", what, flasher::describe(r.step), r.why);
+    }
+  } else {
+    char line[160];
+    describeFailure(line, sizeof line, what, r.nrf);
+    printf("%s - failed while %s%s%s\n", line, flasher::describe(r.step), r.why[0] != 0 ? ": " : "",
+           r.why[0] != 0 ? r.why : "");
+  }
+  if (r.reset_issued) {
+    print(r.port_closed_after_reset
+              ? "  the radio was reset; its access port closed afterwards (a build code Fxx module); the next reset pulse waits out the spacing\n"
+              : "  the radio was reset through the debug port; the next reset pulse waits out the spacing\n");
+  }
+  print("  pins released\n");
+}
+
+void Console::rakFlashTest() {
+  const flasher::BoardProfile& profile = flasher::kRak4630Single;
+  printf("flash-test: %s, two pages at 0x%08lx..0x%08lx (the top of the application region), only if blank\n",
+         profile.name, static_cast<unsigned long>(profile.app.end - flasher::Flasher::kTestPages * nrf52::flash::kPageSize),
+         static_cast<unsigned long>(profile.app.end));
+  PrintProgress progress(out_);
+  const flasher::Result r = flasher_.flashTest(profile, &progress);
+  printFlashResult("rak flash-test", r);
 }
 
 }  // namespace console
