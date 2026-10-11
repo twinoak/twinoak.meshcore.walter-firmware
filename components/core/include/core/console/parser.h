@@ -43,6 +43,10 @@
 //
 //   rak flash-test        a two-page pattern at the top of the application region, only if those
 //                         pages are blank: written, verified, erased again; the radio restarted
+//
+// and the trust table (task p2-01):
+//
+//   trust                 the key ids this build accepts a release signed with, or none
 #pragma once
 
 #include <cstddef>
@@ -81,6 +85,8 @@ enum class Verb : std::uint8_t {
   kRakSwdMem,
   // The flasher (task p1-05).
   kRakFlashTest,
+  // The trust table (task p2-01).
+  kTrust,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.

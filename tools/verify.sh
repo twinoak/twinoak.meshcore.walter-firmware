@@ -23,6 +23,13 @@
 # build and carried by the dry run's manifest and by the descriptor inside the image. Without it,
 # "0.0.0-dev" - one string for all three, so that they cannot disagree.
 #
+# TWINOAK_TRUST_TEST_KEY=1 (verify.ps1 -TestKey; task p2-01) builds the test-key variant: the
+# specification's public test key in the trust table, the version stamped +TESTKEY, a warning at
+# every boot. The build step then expects the opposite of what it expects of a normal build (the
+# key's bytes present, +TESTKEY in the banner) and the release step expects build_release.py to
+# refuse it. A normal build is held to: no test key bytes in the image, no +TESTKEY, and no
+# signing code in the link.
+#
 # The build directory is /build/fw, in the volume and never on the bind-mounted tree: a build over
 # a Windows bind mount is several times slower. ccache lives in /ccache so the second run is quick.
 set -u
@@ -42,6 +49,9 @@ ONLY=${1:-}
 # files - the part of the version before the "+", as vX.Y.Z.
 VERSION=${TWINOAK_VERSION:-0.0.0-dev}
 RELEASE_TAG=v${VERSION%%+*}
+# 0 or 1, always passed to idf.py explicitly: a cmake cache variable sticks between runs.
+TESTKEY=${TWINOAK_TRUST_TEST_KEY:-0}
+case $TESTKEY in 0|1) ;; *) echo "TWINOAK_TRUST_TEST_KEY must be 0 or 1"; exit 2 ;; esac
 
 mkdir -p "$LOGS" "$IMAGES" "$BUILD" "$CACHE"
 export CCACHE_DIR=$CACHE/ccache
@@ -116,6 +126,45 @@ step_host_tests() {
   ctest --test-dir "$dir" --output-on-failure --no-tests=error
 }
 
+# What a build trusts (task p2-01, spec/FIRMWARE-MANIFEST.md §3 and §5). A normal build carries
+# the keys of keys/release-keys.txt and nothing else: the specification's public test key is not
+# among its bytes, its version is not stamped +TESTKEY, and the linker map has none of the
+# signing symbols a full TweetNaCl would have (components/core/third_party/tweetnacl/README.md:
+# the extract keeps TweetNaCl's names, so the signer would be crypto_sign_ed25519_tweet). A
+# test-key build (TWINOAK_TRUST_TEST_KEY=1) must carry the key and the stamp, and still no signing
+# code. The key is read from the fixture index, never written down here.
+check_trust_in_image() {
+  local dir=$1
+  local map=$dir/$PROJECT_NAME.map
+  local hits
+  hits=$(grep -nE '\b(crypto_sign_ed25519_tweet|crypto_sign_ed25519_tweet_keypair|randombytes|crypto_sign_keypair)\b' "$map" || true)
+  if [ -n "$hits" ]; then
+    echo "signing code is linked into the image:"; echo "$hits"; return 1
+  fi
+  echo "no Ed25519 signing symbol in the linker map (crypto_sign_ed25519_tweet, _keypair, randombytes)"
+  # The stamp is looked for in the banner ("twinoak-walter <version>+TESTKEY"), not as the bare
+  # word: the console's and main's warning texts name +TESTKEY in every build.
+  python - "$dir/$PROJECT_NAME.bin" "$dir/$PROJECT_NAME-factory.bin" "$TESTKEY" "$VERSION" <<'EOF' || return 1
+import json, sys
+key = bytes.fromhex(json.load(open("spec/fixtures/manifest/index.json"))["test_public_key"])
+want = sys.argv[3] == "1"
+stamped = ("twinoak-walter %s+TESTKEY" % sys.argv[4]).encode("ascii")
+bad = 0
+for path in sys.argv[1:3]:
+    data = open(path, "rb").read()
+    has_key = key in data
+    has_stamp = stamped in data
+    print("%s: test key bytes %s, banner stamped +TESTKEY %s" % (path.rsplit("/", 1)[-1],
+          "PRESENT" if has_key else "absent", "PRESENT" if has_stamp else "absent"))
+    if has_key != want or has_stamp != want:
+        bad += 1
+if bad:
+    print("a %s build must %s the test key and the +TESTKEY stamp" % (
+        "test-key" if want else "normal", "carry" if want else "not carry"))
+    sys.exit(1)
+EOF
+}
+
 step_build() {
   local dir=$BUILD/fw
   # sdkconfig.defaults is the configuration: when it changes, the generated sdkconfig is dropped so
@@ -130,13 +179,15 @@ step_build() {
   local t0; t0=$(date +%s)
   # -DPROJECT_VER is always given, even when it is the default: it is a cmake cache variable, and a
   # build that inherited one from an earlier run would say a version nobody asked for.
-  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" build || return 1
+  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
+         -DTWINOAK_TRUST_TEST_KEY="$TESTKEY" build || return 1
   echo "idf.py build: $(( $(date +%s) - t0 )) s"
   # The factory image: bootloader, table, otadata and application as one file from 0x0 (what a
   # board out of the box is flashed with; the release publishes it as -factory.bin).
   idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
-         merge-bin -o "$PROJECT_NAME-factory.bin" || return 1
-  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" size || return 1
+         -DTWINOAK_TRUST_TEST_KEY="$TESTKEY" merge-bin -o "$PROJECT_NAME-factory.bin" || return 1
+  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
+         -DTWINOAK_TRUST_TEST_KEY="$TESTKEY" size || return 1
   # Evidence to out/images/: what a bench flashes, and what task 02 releases.
   cp "$dir/$PROJECT_NAME.bin" "$dir/$PROJECT_NAME.elf" "$dir/$PROJECT_NAME.map" \
      "$dir/$PROJECT_NAME-factory.bin" "$dir/bootloader/bootloader.bin" \
@@ -148,11 +199,16 @@ step_build() {
   # the artifact this step produced, and the build directory itself is a docker volume.
   ls -la "$IMAGES"
   # The banner is in the image once: the version string the console prints (core/version.cpp).
+  # A test-key build's banner says +TESTKEY (CMakeLists.txt).
   local banner="twinoak-walter $VERSION"
+  if [ "$TESTKEY" = 1 ]; then banner="$banner+TESTKEY"; fi
   if ! grep -a -q "$banner" "$dir/$PROJECT_NAME.bin"; then
     echo "the application image does not contain the banner '$banner'"; return 1
   fi
-  echo "banner in image: $(strings -n 8 "$dir/$PROJECT_NAME.bin" | grep -m1 '^twinoak-walter ')"
+  # (-o: the banner's own bytes, wherever .rodata put them - after task p2-01 the literal before
+  # it is not always terminated the way `strings` would start a new line.)
+  echo "banner in image: $(grep -a -o -m1 'twinoak-walter [0-9A-Za-z.+-]*' "$dir/$PROJECT_NAME.bin" | head -1)"
+  check_trust_in_image "$dir" || return 1
   # And the 96 bytes with which the image says what it is (spec/FIRMWARE-MANIFEST.md §4, task
   # p0-02): exactly one in each file, which is what manifestref.py descriptor insists on. The
   # release step then holds it against the manifest entry; this is the build's own check that the
@@ -183,8 +239,11 @@ step_partitions() {
 step_release_tests() {
   # The release tooling's own tests: what it refuses, and why (tools/release/test_release.py).
   # They need no firmware - a stand-in image with a descriptor in it is enough - so they run
-  # before the build, where a mistake in them is cheapest to find.
-  python tools/release/test_release.py
+  # before the build, where a mistake in them is cheapest to find. Then the trust table
+  # generator's (task p2-01), and the check that the vendored TweetNaCl extract is what it says.
+  python tools/release/test_release.py &&
+  python tools/test_gen_trust_table.py &&
+  python tools/vendor_tweetnacl_verify.py selfcheck components/core/third_party/tweetnacl/tweetnacl_verify.c
 }
 
 step_release() {
@@ -202,6 +261,20 @@ step_release() {
     *[!0-9a-f]* | "") commit=0000000000000000000000000000000000000000 ;;
   esac
   rm -rf "$RELEASE"
+  if [ "$TESTKEY" = 1 ]; then
+    # A test-key build is never released: the tooling must refuse it, by the +TESTKEY in its
+    # version and by the key's bytes in the image, and that refusal is this step's whole result.
+    if python tools/release/build_release.py --version "$VERSION+TESTKEY" --commit "$commit" \
+         --tag "$RELEASE_TAG" --build-dir "$dir" --out "$RELEASE" --require-descriptor; then
+      echo "build_release.py accepted a test-key build"; return 1
+    fi
+    if python tools/release/build_release.py --version "$VERSION" --commit "$commit" \
+         --tag "$RELEASE_TAG" --build-dir "$dir" --out "$RELEASE" --require-descriptor; then
+      echo "build_release.py accepted a test-key build under a plain version"; return 1
+    fi
+    echo "build_release.py refused the test-key build twice, as it must; nothing released"
+    return 0
+  fi
   python tools/release/build_release.py --version "$VERSION" --commit "$commit" \
          --tag "$RELEASE_TAG" --build-dir "$dir" --out "$RELEASE" --require-descriptor || return 1
   # The signature. --test-key takes the key pair the specification publishes, so a rehearsal has
@@ -252,7 +325,7 @@ if [ -n "$ONLY" ]; then
 fi
 
 echo "verify: ESP-IDF $(cd "$IDF_PATH" && git describe --tags 2>/dev/null || cat version.txt) in $(grep PRETTY_NAME /etc/os-release | cut -d= -f2), build dir $BUILD, cache $CACHE"
-echo "        version $VERSION, release files named $RELEASE_TAG"
+echo "        version $VERSION, release files named $RELEASE_TAG$([ "$TESTKEY" = 1 ] && echo '; A TEST-KEY BUILD (+TESTKEY), never released')"
 T0=$(date +%s)
 for s in $STEPS; do
   case $s in

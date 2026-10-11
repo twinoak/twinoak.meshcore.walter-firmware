@@ -22,8 +22,13 @@ components/
                         (task p1-04)
     flasher/            an image and a region in; erases, writes, verify out: the board profiles,
                         the bootloader's settings page, the flasher (task p1-05)
-    image/              manifest, signature, descriptor, the image store's records; crypto/ holds
-                        SHA-256 (task p1-05)
+    image/              the descriptor (task p0-02); the manifest, the signature line, the trust
+                        table, the choice of image, the file's streaming checks and the verdict
+                        with its token (task p2-01); the image store's records (task p2-02).
+                        crypto/ holds SHA-256 (task p1-05), SHA-512 and Ed25519 verification
+                        over the vendored TweetNaCl extract (task p2-01)
+    third_party/        vendored, verbatim, each with origin, version, licence and hash in its
+                        README.md: the TweetNaCl verification-only extract, jsmn (task p2-01)
     update/             the radio's update and its journal; the Walter's own update policy
     supervisor/         the radio's heartbeat and the ladder of remedies
     power/              what the battery allows; the check-in interval
@@ -383,6 +388,32 @@ the signature by a key compiled into this build, the manifest, the right image f
 file's hash, the one descriptor inside it, and the region. The trusted keys are a small table
 (room for three) generated from `keys/release-keys.txt`; a build with none accepts nothing, which
 is the state today because the release key does not exist yet (`keys/README.md`).
+
+**The verdict** (task p2-01, `core/image/verdict.h`): `ImageVerdict::judge()` runs the six
+checks in §5's order over a manifest's bytes exactly as delivered, its signature line and one
+file behind an `ImageSource`, and answers either with the number of the check that failed and a
+sentence, or with an `AcceptedImage` — the token the store demands before it stores anything,
+and a type nothing but a verdict can construct. Underneath, in `core/image/`: the signature
+line parsed strictly (`ed25519 <16 hex> <base64 of 64 bytes>`, one line, anything else is "no
+signature"; the key chosen by id, an unknown id refused without trying the others); Ed25519 as
+RFC 8032 over a streamed SHA-512, with `S < L` checked before the arithmetic (TweetNaCl does not);
+the manifest parsed by a vendored no-heap tokenizer (jsmn) into fixed-size structures with named
+bounds — eight images, six files an image, 1024 tokens, the descriptor's string sizes — and
+validated rule for rule as `manifestref.validate` does; the image chosen by the slot's role,
+board and band and the unit's version and link majors (S-7: a list); the file's size, SHA-256
+and the one descriptor in it checked in one pass over the bytes as they come; and for an `swd`
+file, the manifest's `app_region` held inside the flasher's board profile and the file inside
+both. The whole of it is logic with no allocation, held to RFC 8032's vectors, the spec's
+fixtures and manifests signed by the spec's own reference code in `host_test/core/image/`.
+
+**The trust table** is `trust_keys.h`, generated at build time by `tools/gen_trust_table.py`
+from `keys/release-keys.txt` through the release gate's own loader, so the firmware and the
+release tooling cannot disagree about which keys exist; `trust` on the console prints the ids. A
+build made with `-DTWINOAK_TRUST_TEST_KEY=1` (`tools/verify.ps1 -TestKey`) also trusts the
+specification's public test key: its version is stamped `+TESTKEY`, it warns at every boot,
+`build_release.py` refuses to release it by the stamp and by the key's bytes in the image, and a
+normal build is held on every verified commit to carry neither — nor any signing code
+(`tools/verify.sh`, the linker map).
 
 **The descriptor** (§4) exists from task p0-02: `components/core/image/descriptor.h` builds,
 parses and finds those 96 bytes, with no ESP-IDF include and no heap, tested against the spec's

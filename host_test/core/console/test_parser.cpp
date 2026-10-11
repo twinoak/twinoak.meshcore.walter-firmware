@@ -34,6 +34,9 @@ TEST_CASE("every command parses, with and without a line ending, with surroundin
   CHECK(verbOf("reboots") == Verb::kReboots);
   CHECK(verbOf("pins") == Verb::kPins);
   CHECK(verbOf("reboot") == Verb::kReboot);
+  CHECK(verbOf("trust") == Verb::kTrust);
+  CHECK(verbOf("  trust \n") == Verb::kTrust);
+  CHECK_FALSE(core::console::parseLine("trust all").ok);
   CHECK(verbOf("rak reset") == Verb::kRakReset);
   CHECK(verbOf("rak kill 5") == Verb::kRakKill);
   CHECK(verbOf("  status  \r\n") == Verb::kStatus);

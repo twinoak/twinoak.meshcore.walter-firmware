@@ -14,6 +14,8 @@
 #include "core/console/console.h"
 #include "core/health/health.h"
 #include "core/image/this_image.h"
+#include "core/image/trust.h"
+#include "core/image/verdict.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
 #include "core/version.h"
@@ -108,6 +110,15 @@ extern "C" void app_main() {
               self.board, self.band, self.version, static_cast<unsigned>(self.link_major),
               static_cast<unsigned>(self.link_minor));
 
+  // A build made with -DTWINOAK_TRUST_TEST_KEY=1 trusts the specification's public test key
+  // (task p2-01, spec/FIRMWARE-MANIFEST.md §3): it accepts anybody's firmware, its version says
+  // +TESTKEY, the release tooling refuses it, and it says so at every boot. A normal build has
+  // neither the key nor this line's condition true.
+  if (core::image::trustsTestKey()) {
+    std::printf("WARNING: this build trusts the specification's public TEST KEY: it is a test build "
+                "(+TESTKEY) and accepts anybody's firmware; it must never be released\n");
+  }
+
   // S-6: an image confirms itself only after it has booted, spoken to the radio and reached the
   // server. None of that exists yet, so this image confirms nothing: flashed over USB its state is
   // undefined and it keeps booting; arriving by an update it would be rolled back, which is right.
@@ -115,6 +126,14 @@ extern "C" void app_main() {
   // Linked, not called (components/modem/modem_anchor.cpp). The volatile keeps the reference.
   const void* volatile anchor = twinoak_modem_library_anchor();
   (void)anchor;
+  // The verdict (task p2-01, core/image/verdict.h), the same way: nothing calls it until the
+  // image store (task p2-02) has something to judge, and a function nothing references is
+  // dropped by --gc-sections. Keeping its anchor keeps the six checks - the manifest parser,
+  // the signature, Ed25519 over the vendored TweetNaCl extract - in the image, so that the
+  // build proves they compile and link for the board and tools/verify.sh's reading of the
+  // linker map (no signing symbol) is about an image that holds the verifier.
+  const void* volatile verdict_anchor = core::image::verdictAnchor();
+  (void)verdict_anchor;
 
   std::fflush(stdout);
 

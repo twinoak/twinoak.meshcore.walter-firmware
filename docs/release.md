@@ -95,7 +95,12 @@ once, would cost a unit on a mast:
   writes that structure and our build writes the descriptor; both come from `PROJECT_VER`.
 - **a manifest that does not validate**, or is not in the canonical form §2 describes.
 - **signing a release version with the specification's test key**, and signing with no key in the
-  environment — and verifying a release with a trust table that names no key.
+  environment — and verifying a release with a trust table that names no key, or one that names
+  the test key.
+- **a test-key build** (task p2-01): a build made with `-DTWINOAK_TRUST_TEST_KEY=1` trusts the
+  specification's public test key, so it would accept anybody's firmware. `build_release.py`
+  refuses it twice over — by the `+TESTKEY` its version carries, and by the key's own 32 bytes
+  found in either image — and `tools/verify.ps1 -TestKey` ends by showing that refusal.
 
 ## The files in this repository
 
@@ -108,9 +113,16 @@ once, would cost a unit on a mast:
 | `keys/` | the public halves, and why the table is empty today |
 | `components/core/image/` | the descriptor: the builder that puts it in this image, and the parser and finder phase 2 reads a radio's images with. Host tests against the spec's fixtures |
 
+## The same six checks inside the firmware
+
+From phase 2, task 01, the Walter makes the checks of `spec/FIRMWARE-MANIFEST.md` §5 itself
+(`components/core/image/`, `docs/ARCHITECTURE.md` §6): the signature against the trust table
+compiled in from `keys/release-keys.txt` — empty today, so every manifest is refused at check 1
+and `trust` on the console says so — then the manifest, the image for the slot, the file's hash,
+the descriptor inside it, and the region. `tools/release/verify_release.py` remains the gate on
+the release side; the two are written from the same section and tested against the same
+fixtures.
+
 ## Not in here yet
 
-- **Checking a signature inside the firmware** — phase 2, task 01. The trust table compiled into a
-  build is generated from `keys/release-keys.txt`; today it would be empty, and a Walter with no
-  key accepts no update.
 - **The Walter updating itself** with the `ota` image — phase 2, task 04, and the bench.

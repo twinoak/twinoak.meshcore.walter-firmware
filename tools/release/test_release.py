@@ -333,6 +333,44 @@ class TheRefusals(ReleaseCase):
             build_release.build(DRYRUN, COMMIT, "v0.0.0-dryrun", app, fac, self.out, table, BUILT_AT)
         self.assertIn("ota_0", str(caught.exception))
 
+    def test_a_test_key_build_is_refused_by_its_version(self):
+        """Task p2-01: -DTWINOAK_TRUST_TEST_KEY=1 stamps the version +TESTKEY. Whatever else the
+        build looks like, it is never released, and the message says how to build without it."""
+        version = RELEASE + build_release.TEST_KEY_STAMP
+        with self.assertRaises(Refused) as caught:
+            self.build(version=version, tag="v0.3.1", app=app_image(version=version))
+        message = str(caught.exception)
+        self.assertIn("test-key build", message)
+        self.assertIn("TWINOAK_TRUST_TEST_KEY", message)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "manifest.json")))
+
+    def test_an_image_carrying_the_test_keys_bytes_is_refused(self):
+        """And by the key's own 32 bytes in the image - the other witness, which a version
+        string cannot lie about. The key is read from the fixture index, as the tooling reads it."""
+        key = build_release.test_public_key()
+        self.assertEqual(len(key), 32)
+        for which in ("app", "factory"):
+            with self.subTest(which):
+                app = app_image()
+                if which == "app":
+                    app = bytearray(app)
+                    app[0x800:0x800 + 32] = key
+                    app = bytes(app)
+                    factory = factory_image(app=app)
+                else:
+                    factory = bytearray(factory_image(app=app))
+                    # Past the application's copy, so that the two files still carry the same app.
+                    at = partitions()["ota_0"].offset + len(app) + 0x100
+                    factory[at:at + 32] = key
+                    factory = bytes(factory)
+                with self.assertRaises(Refused) as caught:
+                    self.build(app=app, factory=factory)
+                message = str(caught.exception)
+                self.assertIn("test key", message)
+                self.assertIn("never released", message)
+        # The same images without the key are a release.
+        self.build()
+
     def test_a_build_made_with_another_version_is_refused(self):
         """ESP-IDF's project_description.json records the PROJECT_VER the build was given. A
         release under a different string would publish an image whose descriptor says the other
@@ -477,10 +515,11 @@ class Verifying(ReleaseCase):
         self.assertEqual(verify_release.load_keys(verify_release.KEYS_FILE), [])
 
     def test_a_trust_table_line_is_held_to_its_key_id(self):
-        public = verify_release.test_public_key()
+        # Not the test key: the loader refuses that one by name (task p2-01, the test below).
+        public = hashlib.sha256(b"a public key for this test only").digest()
         good = os.path.join(self.dir, "good.txt")
         with open(good, "w", encoding="ascii") as fh:
-            fh.write("# a comment\ned25519 %s %s  # the test key, for this test only\n"
+            fh.write("# a comment\ned25519 %s %s  # a key made for this test\n"
                      % (manifestref.key_id(public), public.hex()))
         self.assertEqual(verify_release.load_keys(good), [public])
         for line, expect in (
@@ -495,6 +534,19 @@ class Verifying(ReleaseCase):
             with self.assertRaises(Refused) as caught:
                 verify_release.load_keys(bad)
             self.assertIn(expect, str(caught.exception))
+
+    def test_the_test_key_in_the_trust_table_is_refused(self):
+        """Section 3: the test key is never in the table. The firmware's table is generated through
+        this loader (tools/gen_trust_table.py), so this holds for the unit as well as the gate."""
+        public = verify_release.test_public_key()
+        path = os.path.join(self.dir, "with-test-key.txt")
+        with open(path, "w", encoding="ascii") as fh:
+            fh.write("ed25519 %s %s\n" % (manifestref.key_id(public), public.hex()))
+        with self.assertRaises(Refused) as caught:
+            verify_release.load_keys(path)
+        message = str(caught.exception)
+        self.assertIn("test key", message)
+        self.assertIn("TWINOAK_TRUST_TEST_KEY", message)
 
     def test_more_than_three_keys_is_refused(self):
         path = os.path.join(self.dir, "four.txt")

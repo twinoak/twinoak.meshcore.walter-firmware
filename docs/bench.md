@@ -68,6 +68,19 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   the console`. Unplug and replug: `boot 1` again and `the boot record starts here` — RTC memory
   does not survive a power cut.
 
+- [ ] **`trust` says no update will be accepted** (task p2-01). On a normal build the console
+  prints `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` — **write
+  `<n>` down**: it is the first measurement of TweetNaCl's Ed25519 on the ESP32-S3, and a
+  `FAILED` here means the vendored arithmetic is wrong on the board's compiler — then `trust:
+  none: no update will be accepted (keys/release-keys.txt names no key; ...)`, and the boot
+  lines carry no `WARNING`. That is the unit's state until Thomas makes the release key
+  (`spec/SYSTEM.md` §10 item 1, `keys/README.md`); after the key is in `keys/release-keys.txt`
+  and a build is flashed, `trust` prints `1 key this build accepts a release signed with:
+  <key id>` — the id `manifestref.py keygen` printed. If a board on the bench is ever flashed
+  with a test-key build (`tools/verify.ps1 -TestKey`), its banner says `+TESTKEY`, the fourth
+  boot line is a `WARNING` and `trust` lists `c17969deb0026955`: never leave such a build on a
+  unit that goes out.
+
 ## 2. The pins
 
 Needs: the Walter on USB, a meter, then a scope, then the RAK4631 on the RAK19001 with the UART,

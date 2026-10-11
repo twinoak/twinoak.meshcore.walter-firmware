@@ -87,6 +87,9 @@ class Console {
   void rakFlashTest();
   void printFlashResult(const char* what, const flasher::Result& r);
 
+  // The trust table (task p2-01): which release keys this build accepts, or that it accepts none.
+  void trust();
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;

@@ -9,5 +9,15 @@ if(NOT DEFINED PROJECT_VER)
   set(PROJECT_VER "0.0.0-dev")
 endif()
 
+# A test build (task p2-01): -DTWINOAK_TRUST_TEST_KEY=1 puts the specification's public test key
+# into the trust table (components/core/CMakeLists.txt) and stamps the version with +TESTKEY, so
+# that the console, the descriptor and esp_app_desc_t all say what the build is;
+# tools/release/build_release.py refuses to release it. Off, and the key absent, by default -
+# tools/verify.sh always passes the option explicitly, because a cache variable sticks.
+option(TWINOAK_TRUST_TEST_KEY "trust the specification's public test key (a test build, never released)" OFF)
+if(TWINOAK_TRUST_TEST_KEY)
+  set(PROJECT_VER "${PROJECT_VER}+TESTKEY")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(twinoak-walter)
