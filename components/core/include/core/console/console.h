@@ -16,6 +16,8 @@
 #include "core/console/parser.h"
 #include "core/flasher/flasher.h"
 #include "core/health/health.h"
+#include "core/image/receive.h"
+#include "core/image/store.h"
 #include "core/link/client/client.h"
 #include "interfaces/clock.h"
 #include "interfaces/restart.h"
@@ -26,15 +28,25 @@ namespace console {
 
 class Console {
  public:
+  // The image store and the USB transfer (task p2-02) are pointers and not references because a
+  // build can be without them: platform::FlashPartition::begin() fails when the partition table
+  // has no `rakfw`, and main/ then hands over nothing rather than a store over a region that is
+  // not there. The `image ...` commands say so in one line instead of pretending.
   Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
           interfaces::Clock& clock, interfaces::Restart& restart, link::client::Client& radio,
-          board::SlotLock& slots);
+          board::SlotLock& slots, image::Store* images = nullptr,
+          image::Receiver* receiver = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   void begin();
 
-  // One byte from the port.
+  // One byte from the port. While a transfer is running (`image receive`) the bytes go to it
+  // and not to the line editor: there is no echo and no prompt until it is over.
   void feed(char c);
+
+  // Called when no byte arrived: a transfer whose other end has gone away is ended here, so that
+  // a Walter whose cable was pulled mid-transfer does not sit mute for ever.
+  void tick();
 
   // One whole line, as if typed and ended. What feed() calls; tests call it directly.
   void runLine(const char* line);
@@ -90,6 +102,16 @@ class Console {
   // The trust table (task p2-01): which release keys this build accepts, or that it accepts none.
   void trust();
 
+  // The image store (task p2-02).
+  bool imagesOk();  // false, with one error line, when this build has no store
+  void imageList();
+  void imageOneLine(const image::Record& record);
+  void imageVerify(image::Which which);
+  void imageErase(image::Which which);
+  void imageBad();
+  void imageReceive(image::Which which);
+  void transferEnded();
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
@@ -97,6 +119,8 @@ class Console {
   interfaces::Restart& restart_;
   link::client::Client& radio_;
   board::SlotLock& slots_;
+  image::Store* images_ = nullptr;
+  image::Receiver* receiver_ = nullptr;
   board::Slot slot_{};  // the slot the line being run is about
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.

@@ -13,8 +13,13 @@
 #   nvs      the settings (64 KB: ESP-IDF needs 3 pages of 4 KB; the rest is wear room)
 #   journal  the update journal - its own partition, not a namespace in nvs: its own wear, its own
 #            failure modes (ARCHITECTURE §11). Subtype 0x41, ours.
-#   rakfw    the image store (ARCHITECTURE §6): two radio slots x (golden + candidate + scanner),
-#            each record at most 1 MB - the whole flash of an nRF52840 - so 6 MB. Subtype 0x40.
+#   rakfw    the image store (ARCHITECTURE §6): two radio slots x (golden + candidate + scanner).
+#            Sized for a radio image of at most 1 MB - the whole flash of an nRF52840 - so 6 MB.
+#            Task p2-02 laid it out: an area is the largest application region a board profile
+#            knows (815104 B for a RAK4630) rounded up to a sector plus a header sector = 200
+#            sectors, six of those and two index sectors = 4923392 B, and 1368064 B are left for
+#            a board whose region is larger. core/image/store.h has the arithmetic and a
+#            static_assert against this partition's size. Subtype 0x40.
 #   coredump the core dump the panic handler writes (CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH).
 #
 # The modem library's own firmware update (MOTA) wants a FAT partition named `ffat` large enough

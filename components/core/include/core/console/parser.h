@@ -47,6 +47,20 @@
 // and the trust table (task p2-01):
 //
 //   trust                 the key ids this build accepts a release signed with, or none
+//
+// and the image store (task p2-02; docs/ARCHITECTURE.md §6). Here the slot comes *after* the
+// image's role, because that is the shape the task gives the commands and because `image list`
+// is about every slot there is:
+//
+//   image list            every slot's three images: role, board, version, size, hash, when
+//   image verify <which> [@slot]
+//                         read the image back out of flash and hold it to the hash in its record
+//   image erase <candidate|scanner> [@slot]
+//                         forget one; never the golden image
+//   image bad             the hashes of candidates that failed a health check
+//   image receive <which> [@slot]
+//                         take manifest.json, its .sig and the image over a framed binary
+//                         transfer on this port (tools/walterctl.py; core/image/receive.h)
 #pragma once
 
 #include <cstddef>
@@ -87,6 +101,12 @@ enum class Verb : std::uint8_t {
   kRakFlashTest,
   // The trust table (task p2-01).
   kTrust,
+  // The image store (task p2-02).
+  kImageList,
+  kImageVerify,
+  kImageErase,
+  kImageBad,
+  kImageReceive,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.
@@ -105,6 +125,10 @@ struct Command {
   std::size_t text_size = 0;
   std::uint32_t address = 0;              // kRakSwdMem: word-aligned
   std::uint32_t words = 1;                // kRakSwdMem: 1..kMaxMemWords
+  // kImageVerify, kImageErase, kImageReceive: core::image::Which as a number (0 golden,
+  // 1 candidate, 2 scanner). A number and not the type so that this header stays the small thing
+  // it is; parser.cpp holds it to core/image/store.h's own names.
+  std::uint8_t which = 0;
 };
 
 // The longest line the console accepts, without its line ending (the agent firmware's figure).

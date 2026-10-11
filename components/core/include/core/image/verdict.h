@@ -16,6 +16,13 @@
 // that passes all six yields an AcceptedImage - the only way to make one - which the image store
 // (task p2-02) demands before it stores anything: a type, not a convention.
 //
+// The six run in two phases, because the store needs the first three before the file exists
+// anywhere (task p2-02): judgeManifest() is checks 1, 2, 3 and the half of 6 that needs no file,
+// and answers with an **ExpectedFile** - what an accepted manifest promises about the one file
+// wanted, which is what the store demands before it will erase a sector; judgeFile() is checks 4,
+// 5 and the other half of 6 over the bytes, and answers with the AcceptedImage. judge() is the
+// two in order and is what a caller that has the whole file already uses.
+//
 // One ImageVerdict is ~30 KB (the parser's tokens and the parsed manifest) and belongs in static
 // storage, never on a task's stack.
 #pragma once
@@ -55,6 +62,35 @@ struct Outcome {
   bool ok() const { return failed == Check::kNone; }
 };
 
+// What an accepted manifest promises about the one file wanted: which slot and use it is for,
+// how large it is, the SHA-256 it must have, and where it loads. Constructed by ImageVerdict and
+// by nothing else, like AcceptedImage below - so that nothing can ask the image store to erase a
+// sector without a manifest signed by a key this build trusts, naming this file for this slot
+// (checks 1, 2, 3 and the manifest's half of 6). It is a promise and not a verdict: the bytes it
+// describes have not been seen. Copyable, so that the store may keep one.
+class ExpectedFile {
+ public:
+  board::Slot slot() const { return slot_; }
+  Use use() const { return use_; }
+  std::uint32_t size() const { return size_; }
+  const std::uint8_t* sha256() const { return sha256_; }
+  std::uint32_t loadAddress() const { return load_address_; }
+  const char* name() const { return name_; }        // the file's name in the release
+  const char* version() const { return version_; }  // the manifest's version
+
+ private:
+  friend class ImageVerdict;
+  ExpectedFile() = default;
+
+  board::Slot slot_;
+  Use use_ = Use::kUnknown;
+  std::uint32_t size_ = 0;
+  std::uint8_t sha256_[kSha256Size] = {};
+  std::uint32_t load_address_ = 0;
+  char name_[kMaxFileName] = {};
+  char version_[kVersionSize] = {};
+};
+
 // What passed: this file, for this slot, with this hash and descriptor. Constructed by
 // ImageVerdict and by nothing else - there is no public constructor, so the only one in
 // existence is the verdict's own, handed out as a pointer after an accepting judge(); copyable,
@@ -70,6 +106,9 @@ class AcceptedImage {
   std::size_t descriptorOffset() const { return descriptor_offset_; }
   // The manifest's version and link, which the descriptor was held against.
   const char* version() const { return version_; }
+  // The manifest's `commit` (§2: 40 hex characters), so that the store's record can say which
+  // source the image was built from.
+  const char* commit() const { return commit_; }
   std::uint32_t linkMajor() const { return link_major_; }
   std::uint32_t linkMinor() const { return link_minor_; }
   // Which key signed the manifest it came from.
@@ -86,6 +125,7 @@ class AcceptedImage {
   Fields descriptor_;
   std::size_t descriptor_offset_ = 0;
   char version_[kVersionSize] = {};
+  char commit_[kCommitSize + 1] = {};
   std::uint32_t link_major_ = 0;
   std::uint32_t link_minor_ = 0;
   std::uint8_t key_id_[kKeyIdSize] = {};
@@ -103,7 +143,24 @@ class ImageVerdict {
                 std::size_t signature_size, const SlotNeeds& needs, Use use,
                 const flasher::BoardProfile* profile, const flasher::ImageSource& file);
 
-  // The token of the last judge(), or nullptr. Valid until the next judge(); copy it to keep it.
+  // The first phase: checks 1, 2, 3 and the half of 6 that needs no file. On success expected()
+  // is the promise about the file, and judgeFile() may be called with the bytes when they are
+  // somewhere readable. The manifest's bytes need not stay around afterwards.
+  Outcome judgeManifest(const std::uint8_t* manifest, std::size_t manifest_size,
+                        const char* signature_line, std::size_t signature_size,
+                        const SlotNeeds& needs, Use use, const flasher::BoardProfile* profile);
+
+  // What the last accepting judgeManifest() promises about the file, or nullptr. Valid until the
+  // next judgeManifest() or judge(); copy it to keep it.
+  const ExpectedFile* expected() const { return has_expected_ ? &expected_ : nullptr; }
+
+  // The second phase: checks 4, 5 and the half of 6 that needs the file, over the bytes of the
+  // file the last judgeManifest() chose. Refused with kFile and "no manifest has been judged"
+  // when there was no accepting judgeManifest().
+  Outcome judgeFile(const flasher::ImageSource& file);
+
+  // The token of the last judge() or judgeFile(), or nullptr. Valid until the next judge(); copy
+  // it to keep it.
   const AcceptedImage* accepted() const { return has_accepted_ ? &accepted_ : nullptr; }
 
   // The manifest as last parsed (whatever the outcome), for a console line.
@@ -119,6 +176,14 @@ class ImageVerdict {
   std::uint8_t piece_[256];
   AcceptedImage accepted_;
   bool has_accepted_ = false;
+  // What the manifest phase left for the file phase: the promise, which image and file of the
+  // manifest were chosen, and the three things the file's checks still need.
+  ExpectedFile expected_;
+  bool has_expected_ = false;
+  std::uint8_t chosen_image_ = 0;
+  std::uint8_t chosen_file_ = 0;
+  const flasher::BoardProfile* chosen_profile_ = nullptr;
+  std::uint8_t chosen_key_id_[kKeyIdSize] = {};
 };
 
 // Linked, not called, until the image store (task p2-02) has something to judge: main/main.cpp

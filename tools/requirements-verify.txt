@@ -3,3 +3,8 @@
 # the image's Python environment (esptool depends on it), so this line is a check that it is there
 # and costs no network; a different pin would fight esptool's constraint.
 cryptography==44.0.3
+# pyserial: tools/walterctl.py's serial port, for `walterctl.py push --port COM7` on the bench
+# (task p2-02). 3.5 is the current release and the one esptool itself depends on, so this line
+# costs no network either. Nothing in CI opens a port - the tool is tested through a pipe against
+# host_test/console_host/ - but the version a bench installs belongs in one place.
+pyserial==3.5

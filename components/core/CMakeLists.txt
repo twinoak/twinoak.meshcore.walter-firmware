@@ -40,6 +40,10 @@ idf_component_register(
        "image/choose.cpp"
        "image/file_check.cpp"
        "image/verdict.cpp"
+       # The image store (task p2-02): the records in the rakfw partition, and the framed
+       # transfer that loads one over USB.
+       "image/store.cpp"
+       "image/receive.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

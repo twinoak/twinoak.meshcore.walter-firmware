@@ -8,7 +8,8 @@ host_test/CMakeLists.txt runs this at build time. Two things come out:
 
   * <out.h>: index.json's test key, its RFC 8032 vector, its `signatures` and `files` tables as
     C++ (so the tests walk the spec's own cases and a case added there becomes a case here), and
-    a table of the variants below;
+    a table of the variants below, and a table of the images the image store's tests (task p2-02)
+    are written against;
   * <out dir>/*.json, *.json.sig, *.bin: the variants - the spec's repeater manifest with its keys
     reordered and other whitespace, one with an unknown product, one with schema 2, one whose
     app_region lies outside the board profile, one requiring a link major this build does not
@@ -17,6 +18,11 @@ host_test/CMakeLists.txt runs this at build time. Two things come out:
     images, one with more images than the parser holds - each signed with the specification's
     test key by spec/tools/manifestref.py, the reference, so that a verdict test can show a
     refusal at each of the six checks after the signature has passed.
+
+The store's images (kStoreImages) are the same thing for task p2-02: a repeater image of a
+chosen size with its own descriptor and a manifest of its own, signed with the test key - so
+that a store test goes through the whole of the verdict and holds a real AcceptedImage, which is
+the only way to reach the store's write door.
 
 Needs `cryptography` for manifestref.sign (the image has it: tools/requirements-verify.txt).
 Deterministic: the same inputs give the same files.
@@ -99,6 +105,25 @@ inline constexpr Variant kVariants[] = {
 inline constexpr std::size_t kVariantCount = %(variant_count)d;
 
 inline constexpr std::size_t kManyImages = %(many_images)d;
+
+// The images the image store's tests use (task p2-02), in kGeneratedDir: an swd image of a
+// chosen size, its own manifest and the manifest's signature by the test key. `size` is the
+// file's length and `role`, `version` and `band` are what its descriptor and its manifest say.
+struct StoreImage {
+  const char* name;
+  const char* manifest;
+  const char* sig;
+  const char* file;
+  std::size_t size;
+  const char* role;
+  const char* version;
+  const char* band;
+  const char* about;
+};
+inline constexpr StoreImage kStoreImages[] = {
+%(store_images)s
+};
+inline constexpr std::size_t kStoreImageCount = %(store_image_count)d;
 
 }  // namespace fixtures
 """
@@ -266,6 +291,49 @@ def main(argv):
     variants.append(signed("repeater-many-images", manifestref.canonical(m),
                            "%d images, more than the parser holds: check 2" % MANY_IMAGES))
 
+    # ---- the image store's images (task p2-02) -------------------------------------------------
+    # A repeater (or scanner) image of a chosen size, with a descriptor that agrees with a
+    # manifest of its own: the store's tests need images of several sizes - one inside a sector,
+    # one of a few whole sectors, one that crosses two of the store's resume points - and every
+    # one of them has to pass all six checks, because an AcceptedImage is the only key to the
+    # store's door.
+    store_images = []
+
+    def store_image(name, size, about, role="repeater", version=None, band="868", seed=1):
+        version = version or ("0.3.0+" + name.replace("-", "")[:7])
+        desc = manifestref.make_descriptor(role, version, "rak4630-single", band, 1, 0)
+        # The descriptor sits on a 4-byte boundary, past the vector table a real image starts
+        # with; 0x400 is where the spec's own fixture images carry theirs.
+        blob = manifestref.fake_image(desc, size, 0x400 if size > 0x400 + 96 else 0, seed)
+        m = json.loads(json.dumps(repeater))
+        m["version"] = version
+        m["tag"] = "v" + version.split("+")[0]
+        img = m["images"][0]
+        img["role"] = role
+        img["band"] = band
+        img["id"] = "%s.rak4630-single.%s" % (role, band)
+        for f in img["files"]:
+            f["name"] = "twinoak-%s-rak4630-single-%s-%s.%s" % (role, band, name, f["format"])
+            if f["use"] == "swd":
+                f["size"] = len(blob)
+                f["sha256"] = hashlib.sha256(blob).hexdigest()
+        manifestref.validate(m)
+        write(name + ".bin", blob)
+        signed(name, manifestref.canonical(m), about, name + ".bin", False)
+        store_images.append((name, name + ".json", name + ".json.sig", name + ".bin", len(blob),
+                             role, version, band, about))
+
+    store_image("store-a", 5 * 4096, "five whole sectors: the store's everyday image", seed=11)
+    store_image("store-b", 5 * 4096, "the same size, other bytes: a second image over the first",
+                version="0.3.1+bbbbbbb", seed=22)
+    store_image("store-part", 1000, "under one sector: the tail of a write is a partial sector",
+                seed=33)
+    store_image("store-exact", 2 * 4096, "exactly two sectors: no tail at all", seed=44)
+    store_image("store-resume", 150000,
+                "150 000 bytes: two of the store's 64 KB resume points fall inside it", seed=55)
+    store_image("store-scanner", 2 * 4096, "a scanner image, for the scanner slot", role="scanner",
+                version="0.3.0+scanner", seed=66)
+
     rfc = index["rfc8032_test_1"]
     text = HEADER % {
         "test_public_key": c_string(index["test_public_key"]),
@@ -287,6 +355,12 @@ def main(argv):
                               for v in variants),
         "variant_count": len(variants),
         "many_images": MANY_IMAGES,
+        "store_images": "\n".join(
+            "    {%s, %s, %s, %s, %d, %s, %s, %s, %s}," % (
+                c_string(v[0]), c_string(v[1]), c_string(v[2]), c_string(v[3]), v[4],
+                c_string(v[5]), c_string(v[6]), c_string(v[7]), c_string(v[8]))
+            for v in store_images),
+        "store_image_count": len(store_images),
     }
     with open(out_h, "w", encoding="ascii", newline="\n") as fh:
         fh.write(text)

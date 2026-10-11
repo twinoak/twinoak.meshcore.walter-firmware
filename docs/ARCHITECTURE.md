@@ -24,7 +24,8 @@ components/
                         the bootloader's settings page, the flasher (task p1-05)
     image/              the descriptor (task p0-02); the manifest, the signature line, the trust
                         table, the choice of image, the file's streaming checks and the verdict
-                        with its token (task p2-01); the image store's records (task p2-02).
+                        with its token (task p2-01); the store's records, its index and the framed
+                        transfer that loads an image over USB (task p2-02).
                         crypto/ holds SHA-256 (task p1-05), SHA-512 and Ed25519 verification
                         over the vendored TweetNaCl extract (task p2-01)
     third_party/        vendored, verbatim, each with origin, version, licence and hash in its
@@ -38,20 +39,26 @@ components/
                         p1-04: rak swd id, rak swd mem)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
-                        (task p0-03); a byte stream and the time of day (task p1-02); flash regions,
-                        a key-value store, an uplink, a sleeper (later). ("hal/" when this file was
-                        written; ESP-IDF owns a component of that name - task p0-01)
+                        (task p0-03); a byte stream and the time of day (task p1-02); a flash
+                        region (task p2-02); a key-value store, an uplink, a sleeper (later).
+                        ("hal/" when this file was written; ESP-IDF owns a component of that
+                        name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
-                        UART (task p1-02)
+                        UART (task p1-02), the `rakfw` partition behind a flash region (task p2-02)
   modem/                the Walter's LTE modem behind interfaces/' uplink
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained storage as a map
+  console_host/         the console on stdin and stdout over a simulated flash, so that
+                        tools/walterctl.py is tested before a board exists (task p2-02)
   sim/                  the scripted RAK on a fake UART (task p1-02); the simulated SWD target at
                         the wire level (task p1-03); the simulated nRF52840 behind it - its two
-                        access ports, its flash, FICR, UICR, NVMC and core (task p1-04)
+                        access ports, its flash, FICR, UICR, NVMC and core (task p1-04); a flash
+                        region that only clears bits and can lose power at any operation
+                        (task p2-02)
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
-tools/                  verify.ps1, release/ (the release tooling), bench tools
+tools/                  verify.ps1, release/ (the release tooling), walterctl.py (the laptop's end
+                        of `image receive`), bench tools
 keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02)
 spec/                   a copy of the system specification and its fixtures - never edited here
 docs/                   this file, bench.md, release.md, console.md, field.md
@@ -377,11 +384,47 @@ simulated chip evaluates both bootloaders' `bootloader_app_is_valid()` after eve
 
 ## 6. Images
 
-**The store**: a data partition holding, per radio slot, a **golden** image (the last one that
-passed its health check), a **candidate** (verified, not yet proven) and one **scanner** image.
-Each is a header — what it is, its size and SHA-256, a copy of its descriptor, its state — and the
-bytes. A record becomes valid by a final small write after everything else is in place, so a power
-loss leaves the previous valid record or none, never half of one.
+**The store** (task p2-02, `core/image/store.h`): the `rakfw` partition of §11, holding per radio
+slot a **golden** image (the last one that passed its health check), a **candidate** (verified, not
+yet proven) and one **scanner** image. Each is a header — what it is, its size and SHA-256, a copy
+of its descriptor, where it came from — and the bytes. A record becomes valid by a final small
+write after everything else is in place, so a power loss leaves the previous valid record or none,
+never half of one.
+
+```
+rakfw (0x630000, 6 MB), sectors of 4 KB
+  sector 0, 1     the index, two copies: which physical area each of the three roles is, the bad
+                  list, a sequence number; the newer valid copy wins
+  six areas       slot 0's three and slot 1's three, 200 sectors each
+    + 0           the header sector: the record (512 B) and a transfer's progress records (64 B)
+    + 4 KB        the image's bytes, 199 sectors - 815 104 B, the largest application region of
+                  any board profile this build knows, rounded up to a sector
+  4 923 392 B of 6 291 456 used; 1 368 064 left for a board whose region is larger
+```
+
+Laid out for **two** radio slots from the start (§2 rule 6, task p1-06), so a dual unit needs no
+new partition table. The arithmetic is a `static_assert` against the partition's size and a host
+test that reads the `rakfw` line of `partitions.csv`.
+
+- **A record is made valid by one small write** — its magic word, after the bytes have been read
+  back out of flash and hashed — and **invalidated by one small write** before anything of the
+  area is overwritten. On NOR flash a write only clears bits, so zeros over the magic destroy it
+  with no erase; a torn magic is not the magic either way. `store.h` has the table of what a power
+  loss on each side of each write leaves, and the host tests run a store and a promotion once per
+  flash operation with the power cut at that one.
+- **A promotion moves a pointer, not megabytes**: the index's role-to-area map is rewritten (two
+  copies, sequence numbers, the newer valid one wins) and the area that held the old golden image
+  becomes the candidate area, its record destroyed afterwards. Seven flash operations, whatever the
+  image's size, and **there is never a moment with no golden image once there has been one**.
+- **A write resumes.** A progress record goes down every 64 KB, so a transfer an interruption cut
+  short continues from the last of them rather than starting over; a resume whose hash is another
+  file's starts at zero.
+- **The bad list**: up to eight hashes of candidates that failed a health check (task p2-03), in
+  the index record; an image on it is refused at the door, before a sector is erased.
+- **Wear**: every store erases the sectors its image covers and the area's header sector, once
+  each; a promotion alternates the two areas a candidate and a golden image take turns in, so each
+  sees half. A thousand images of 20 KB cost 500 erases per sector (measured), which at a NOR
+  flash's 100 000 cycles is 200 000 updates — weekly, four thousand years.
 
 **What may enter the store**: only what passed all six checks of `spec/FIRMWARE-MANIFEST.md` §5 —
 the signature by a key compiled into this build, the manifest, the right image for this radio, the
@@ -389,11 +432,20 @@ file's hash, the one descriptor inside it, and the region. The trusted keys are 
 (room for three) generated from `keys/release-keys.txt`; a build with none accepts nothing, which
 is the state today because the release key does not exist yet (`keys/README.md`).
 
-**The verdict** (task p2-01, `core/image/verdict.h`): `ImageVerdict::judge()` runs the six
-checks in §5's order over a manifest's bytes exactly as delivered, its signature line and one
-file behind an `ImageSource`, and answers either with the number of the check that failed and a
-sentence, or with an `AcceptedImage` — the token the store demands before it stores anything,
-and a type nothing but a verdict can construct. Underneath, in `core/image/`: the signature
+**The verdict** (task p2-01, `core/image/verdict.h`): `ImageVerdict` runs the six checks in §5's
+order over a manifest's bytes exactly as delivered, its signature line and one file behind an
+`ImageSource`, and answers either with the number of the check that failed and a sentence, or with
+an `AcceptedImage`. It runs in two phases, because the store needs the first of them before the
+file is anywhere: `judgeManifest()` is checks 1, 2, 3 and the half of 6 that needs no file, and
+yields an **`ExpectedFile`** — what an accepted manifest promises about the one file wanted;
+`judgeFile()` is checks 4, 5 and the rest of 6 over the bytes, and yields the **`AcceptedImage`**.
+Neither type has a public constructor, and they are the *only* arguments the store's two write
+doors take: `beginWrite(which, slot, ExpectedFile)` and `commit(AcceptedImage)`. So nothing can
+make the store erase a sector without a signed manifest naming that file for that slot, and bytes
+in an area are not an image until the six checks have passed **over the bytes as they lie in the
+Walter's own flash** — which is what is read back and judged, never what a sender said it sent.
+
+Underneath, in `core/image/`: the signature
 line parsed strictly (`ed25519 <16 hex> <base64 of 64 bytes>`, one line, anything else is "no
 signature"; the key chosen by id, an unknown id refused without trying the others); Ed25519 as
 RFC 8032 over a streamed SHA-512, with `S < L` checked before the arithmetic (TweetNaCl does not);
@@ -406,21 +458,40 @@ file, the manifest's `app_region` held inside the flasher's board profile and th
 both. The whole of it is logic with no allocation, held to RFC 8032's vectors, the spec's
 fixtures and manifests signed by the spec's own reference code in `host_test/core/image/`.
 
+**Loading one over USB** (task p2-02, `core/image/receive.h`), until phase 3 gives the Walter an
+uplink: `image receive <golden|candidate|scanner> [@slot]` hands the console's port to a framed
+binary transfer and takes three files — `manifest.json`, then its `.sig`, then the image. The
+framing is **the box link's own** (`spec/LINK-PROTOCOL.md` §2: COBS, CRC-16, a type, a sequence
+number, one `0x00` ending a frame) with this transfer's own six type numbers and §3's convention
+that a response is the request with bit 7 set; no new framing code exists. A chunk that arrives
+twice is acknowledged again and written once, one out of order is answered with the number wanted,
+one that is lost is the sender's to repeat, and a transfer whose other end goes quiet for 20
+seconds ends by itself. **The laptop is not trusted**: it delivers bytes, the six checks run here.
+`tools/walterctl.py push --port COM7 --as candidate <release-dir>` is the other end, and it is
+tested through a pipe against the console itself (`host_test/console_host/`) so that it works
+before a board exists.
+
+**The console**: `image list` (per slot: role, board, version, size, hash, where it came from,
+which area), `image verify <which>` (read it back out of flash and hold it to its record's hash),
+`image erase <candidate|scanner>` (never golden), `image bad`, `image receive <which>`.
+`docs/console.md` has them.
+
 **The trust table** is `trust_keys.h`, generated at build time by `tools/gen_trust_table.py`
 from `keys/release-keys.txt` through the release gate's own loader, so the firmware and the
 release tooling cannot disagree about which keys exist; `trust` on the console prints the ids. A
 build made with `-DTWINOAK_TRUST_TEST_KEY=1` (`tools/verify.ps1 -TestKey`) also trusts the
 specification's public test key: its version is stamped `+TESTKEY`, it warns at every boot,
 `build_release.py` refuses to release it by the stamp and by the key's bytes in the image, and a
-normal build is held on every verified commit to carry neither — nor any signing code
+normal build is held on every verified commit to carry neither - nor any signing code
 (`tools/verify.sh`, the linker map).
 
 **The descriptor** (§4) exists from task p0-02: `components/core/image/descriptor.h` builds,
 parses and finds those 96 bytes, with no ESP-IDF include and no heap, tested against the spec's
 fixtures; `core/image/this_image.h` is this firmware's own, built at compile time and referenced
 by `main/` so the linker keeps it. The release tooling finds exactly one of it in each published
-file and holds it against the manifest entry (`docs/release.md`). Phase 2 reads a radio's images
-with the same parser and finder.
+file and holds it against the manifest entry (`docs/release.md`). The store keeps a copy of a
+stored image's 96 bytes in its record, read back with the same parser, so that `image list` and
+the update's health check (task p2-03) say what the image itself says.
 
 ## 7. Updates
 
@@ -496,7 +567,8 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
   which ends where the application ends, cannot reach them — the agent firmware learned this the
   expensive way;
 - the image store sized for two radios (golden + candidate + scanner each, a radio image being at
-  most the size of its application region — bounded here by the nRF52840's whole flash, 1 MB);
+  most the size of its application region — bounded here by the nRF52840's whole flash, 1 MB).
+  Task p2-02's layout uses 4 923 392 of the 6 MB (§6) and leaves 1 368 064 bytes;
 - a journal that is not the settings store (its own wear, its own failure modes);
 - a core-dump partition;
 - ~~whatever the modem library needs for a modem-firmware update~~ — read in task p0-01: the
@@ -517,7 +589,7 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | `ota_1` | app/ota_1 | `0x310000` | 3 MB | |
 | `nvs` | data/nvs | `0x610000` | 64 KB | above the slots |
 | `journal` | data/`0x41` | `0x620000` | 64 KB | ours |
-| `rakfw` | data/`0x40` | `0x630000` | 6 MB | ours: 2 radios × 3 images × 1 MB |
+| `rakfw` | data/`0x40` | `0x630000` | 6 MB | ours: 2 radios × 3 images; the store uses 4.7 MB of it (§6) |
 | — | | `0xC30000` | 3.75 MB | unallocated |
 | `coredump` | data/coredump | `0xFF0000` | 64 KB | |
 

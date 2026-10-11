@@ -18,6 +18,7 @@ makes it whole.
 twinoak-walter 0.0.0-dev
 running from ota_0 at 0x010000 (3072 KB), ota state undefined (flashed over USB, not by an update; rollback does not apply)
 image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.0
+image store: rakfw at 0x630000 (6144 KB), 4923392 bytes laid out for 2 radio slots x 3 images; 'image list' says what is in it
 link: UART1 115200 8N1 on the radio's two pins, open
 boot 1: power-on reset
 the boot record starts here (a power cut, or the first boot)
@@ -40,6 +41,11 @@ constructing `RadioPins` is the first thing `app_main` does.
 | `rak kill <seconds>` | the LoRa 3.3 V rail off for that long: every other radio-facing pin released first (the UART and SWD taken back from whoever held them), the kill line driven high, held, released (never driven low), then the settle time, then the safe state. Whole seconds, 1 to 30 — the bounds are placeholders until the bench measures the rail (`bench.md` §2). The console is busy for the duration |
 | `reboot` | restart the Walter; the pins go to the safe state first and `reboots` after it says *asked for on the console* |
 | `trust` | (task p2-01) first a self-test of the signature arithmetic on this board — `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` (TweetNaCl on the ESP32-S3: expect some hundreds of milliseconds; **write the number down**) — then the key ids this build accepts a release manifest signed with: the trust table generated from `keys/release-keys.txt` (`spec/FIRMWARE-MANIFEST.md` §3, room for three). Today it prints `trust: none: no update will be accepted (keys/release-keys.txt names no key; the release key is made once, by a person: spec/SYSTEM.md section 10 item 1)`, which is the safe state until the key exists. A build made with `-DTWINOAK_TRUST_TEST_KEY=1` (`tools/verify.ps1 -TestKey`) lists the specification's public test key `c17969deb0026955` and adds a `WARNING` that it is a test build (`+TESTKEY` in its version) that must never be released; the same warning is printed at every boot, after the descriptor line |
+| `image list` | (task p2-02) what the image store holds, per radio slot: the layout's arithmetic on the first two lines, then each slot's **golden**, **candidate** and **scanner** image — role, board, band, version, size, load address, the first eight bytes of its SHA-256 and which physical area it is in, then when it was stored, the commit it was built from and the key that signed its manifest — or `empty`, or `empty; a transfer of sha256 … stopped at N of M bytes (it can be resumed)`. Slot 1's areas are listed too, with a line saying this adapter has no radio there |
+| `image verify <which>` | read that image back out of flash, hash it as it comes, and hold it to the SHA-256 in its record. `<which>` is `golden`, `candidate` or `scanner`, with an optional `@slot` after it. This is the command that finds flash rot before an update does |
+| `image erase <candidate\|scanner>` | invalidate that slot's record and clear its header sector, so the slot reads empty and a half-finished transfer is not resumed into the next image. **Never the golden image** (S-5: a known-good image is always on hand), and the refusal says so |
+| `image bad` | the hashes of candidates that failed their health check (task p2-03), up to eight; an image on this list is refused before a sector is erased |
+| `image receive <which>` | hand this port over to a framed binary transfer and take `manifest.json`, then its `.sig`, then the image — see below |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command or
 subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
@@ -93,6 +99,56 @@ are sent* (§9), or *the UART is not ours* (the rail is off, or a `rak kill` too
 the `boot_id` and — §9 — whatever firmware it was running are forgotten, and the next `rak hello`
 finds out again. `status` has a line about the link: what the client believes it is talking to,
 whether a session is up, and the retries, timeouts, dropped frames and events since boot.
+
+## Loading a radio image over USB
+
+From task p2-02 (`docs/ARCHITECTURE.md` §6). Until phase 3 gives the Walter an uplink, a laptop is
+how an image gets into the store, and `tools/walterctl.py` is the laptop's end:
+
+```
+python tools/walterctl.py push --port COM7 --as candidate <release-dir>
+```
+
+A `<release-dir>` is what `tools/release/build_release.py` writes and a GitHub Release carries:
+`manifest.json`, `manifest.json.sig` and the files the manifest names. `--as` is `golden`,
+`candidate` or `scanner`; `--image <id>` picks one of several images in a manifest; `--slot N`
+names the radio (0 today). It needs `pyserial` (`pip install pyserial==3.5`).
+
+What happens on the Walter, in this order:
+
+1. `image receive candidate` prints what the transfer will accept — **role, board and band**, so
+   that a mistake is visible before any bytes move — and then **the port is no longer a console**:
+   the bytes are frames, nothing is echoed and there is no prompt.
+2. The framing is the box link's own (`spec/LINK-PROTOCOL.md` §2: COBS, CRC-16, a type, a sequence
+   number, one `0x00` ending a frame). One chunk, one acknowledgement. A chunk that arrives twice is
+   acknowledged again and written once; one out of order is answered with the number wanted; a frame
+   whose checksum fails is dropped, counted, and not answered at all — the sender's timeout is the
+   recovery.
+3. `manifest.json` and its `.sig` arrive first, and the moment the image's own header frame comes,
+   **checks 1, 2, 3 and the manifest's half of 6** run (`spec/FIRMWARE-MANIFEST.md` §5). A refusal
+   here costs nothing: not one sector has been erased.
+4. Then the image's bytes go straight into the store's area for that slot, a sector at a time, with
+   a progress record every 64 KB. **Nothing is an image yet**: there is no record, so `image list`
+   says the slot is empty.
+5. The final frame asks the Walter to commit, and **checks 4, 5 and the rest of 6** run over the
+   bytes *as they now lie in the Walter's flash* — not over what the laptop said it sent. Only then
+   is the record written, by one small final write.
+6. The console comes back with one line saying what happened — `image receive: stored`, or the
+   number of the check that refused it and why — the chunk counters, and a prompt.
+
+A transfer whose other end goes away ends by itself after 20 seconds of silence, so a Walter whose
+cable was pulled mid-push is a console again rather than mute. A push that was cut short is
+**resumed**: ask again, and the Walter answers with how many bytes it already has (its last
+progress record) and takes the rest.
+
+The refusals, each one line on the console and in `walterctl`'s output: the verdict's own words
+(*check 1, the signature: the key id names no key this build trusts* …); *the golden image is
+already there: it is replaced by a promotion, not by a load* (a golden image is loaded directly
+only on a unit's first provisioning); *this image failed a health check once and is never tried
+again*; *the manifest is larger than this firmware reads* (8 KB); *more of the manifest than was
+announced*; *that file does not come next*. `walterctl` adds its own, before anything is sent: a
+file whose size or SHA-256 is not the manifest's, a manifest with no `swd` file, a directory that
+is not a release.
 
 ## The radio's debug port, over SWD
 

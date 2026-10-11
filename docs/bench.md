@@ -384,3 +384,73 @@ When a dual adapter is built, this is where its bring-up goes: the selector prog
 scope on SWDCLK and nRESET (a window of 100–500 µs, two edges, and *no* reset at either module's
 pin), the power-on default read back as module A, and `rak @1 hello` answering from the second
 radio. None of it is verifiable today.
+
+## 7. Images
+
+From task p2-02 (`docs/ARCHITECTURE.md` §6, `docs/console.md` *Loading a radio image over USB*).
+Needs: a Walter on USB, `pip install pyserial==3.5` on the laptop, and a **test-key build** of this
+firmware (`tools/verify.ps1 -TestKey`, flashed as §1's first item) together with a repeater release
+signed with the specification's public test key — the dry run `tools/verify.ps1` leaves in
+`out/release/` is one, for the *Walter's* own image; a repeater release has to come from the
+repeater repository's own dry run, or be made by hand with
+`python spec/tools/manifestref.py` over a repeater image. Until the release key exists
+(`spec/SYSTEM.md` §10 item 1) a normal build accepts nothing, which is the point of the second
+item below.
+
+- [ ] **The store says what it is, on a board.** `image list` on a fresh unit prints the layout —
+  `2 slots x 3 images of 815104 bytes (199 sectors)`, `4923392 bytes of a 6291456-byte partition,
+  1368064 left` — then `slot 0, rak4630-single` with three `empty` lines, then `slot 1: no radio in
+  this adapter`. The boot lines have gained `image store: rakfw at 0x630000 (6144 KB), …`. If
+  either says something else, the partition table and the firmware disagree and nothing below is
+  worth doing.
+
+- [ ] **`walterctl.py push --as golden` on a test-key build, and `image list` shows it.** With the
+  release directory on the laptop:
+
+  ```
+  python tools/walterctl.py push --port COM7 --as golden <release-dir>
+  ```
+
+  It prints the file it is sending, then `stored as the golden image`. Then on the console:
+  `image list` shows `golden  repeater rak4630-single 868 <version>, <n> bytes at 0x00026000,
+  sha256 …`, the commit it was built from and the key id `c17969deb0026955`; and `image verify
+  golden` answers *the SHA-256 is the one in its record* — **write down how many milliseconds it
+  took**, because that is the first measurement of reading 250-odd KB back out of the Walter's
+  flash and hashing it on the ESP32-S3, and the radio's update (task p2-03) pays it before every
+  flash.
+
+- [ ] **A second push is refused, and a candidate is not.** `--as golden` again answers *the golden
+  image is already there: it is replaced by a promotion, not by a load* (S-5), and `image verify
+  golden` still passes — the refusal touched nothing. `--as candidate` with the same release
+  succeeds, and `image list` then shows the same image twice in different areas.
+
+- [ ] **A normal build refuses the same push at check 1, and `trust` says why.** Flash a build made
+  without `-DTWINOAK_TRUST_TEST_KEY=1`; `trust` prints `trust: none: no update will be accepted
+  (keys/release-keys.txt names no key; …)`, and the push ends with *check 1, the signature: the key
+  id names no key this build trusts* — with nothing stored and no sector erased. This is the state
+  every unit is in until the release key exists, and it is the right one.
+
+- [ ] **Pull the Walter's power during a push.** Mid-transfer (a release of a few hundred KB gives
+  a comfortable window), unplug the USB. Afterwards: the console comes up, and `image list` shows
+  the slot either **empty**, or **empty with a half-finished transfer** (`a transfer of sha256 …
+  stopped at N of M bytes (it can be resumed)`), or — if the slot had an image before — **nothing
+  in between**: never a record over bytes that are not its own. Then run the same `walterctl.py
+  push` again: it says `the Walter already has N of M bytes; sending the rest` and finishes, and
+  `image verify` passes. Try it two or three times at different points.
+
+- [ ] **The console comes back by itself.** Start a push and kill `walterctl` (Ctrl-C) in the
+  middle. The port is silent for twenty seconds — that is the transfer waiting — and then prints
+  `image receive: the other end went quiet: nothing stored` and a prompt. Typing `image list`
+  works again.
+
+- [ ] **`image erase`, and what it will not erase.** `image erase candidate` answers *candidate:
+  forgotten in slot 0* and `image list` shows it empty; `image erase golden` is refused by the
+  parser (*the golden image is not erased*). `image bad` says *no image has failed a health check
+  on this unit* — task p2-03's update is what puts a hash there.
+
+- [ ] **A push to `@1`.** `image receive candidate @1` answers *error: slot 1: this adapter has 1
+  radio, so slot 0 is the only one*, and nothing on the port changes. The areas for slot 1 are in
+  the partition all the same, which is what `image list`'s last lines say.
+
+Nothing here flashes a radio: putting a stored image on the RAK is task p2-03's, and its bench
+lines come with it.

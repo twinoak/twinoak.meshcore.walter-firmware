@@ -146,7 +146,25 @@ target_compile_definitions(core_tests PRIVATE
   TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}"
   TWINOAK_REPO_ROOT="${REPO}")
 
+# -- the console behind a pipe (task p2-02) -----------------------------------------------------
+# The firmware's own console and image store, over a simulated flash, on stdin and stdout, so that
+# tools/walterctl.py - the laptop's end of `image receive` - is tested before a board exists. It is
+# not a fake of the firmware: it is core/'s console with sim/sim_flash.h under it and the
+# specification's public test key in its trust table (host_test/console_host/main.cpp).
+add_executable(walter_console console_host/main.cpp ${MANIFEST_FIXTURE_HEADER})
+target_link_libraries(walter_console PRIVATE core)
+target_include_directories(walter_console PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated
+                           ${CMAKE_CURRENT_LIST_DIR})
+twinoak_ours(walter_console)
+
 enable_testing()
 add_test(NAME core_tests COMMAND core_tests --no-intro)
 set_tests_properties(core_tests PROPERTIES
+  ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")
+
+# walterctl pushing the specification's fixture release into that console, and the refusals it and
+# the Walter answer with (tools/test_walterctl.py).
+add_test(NAME walterctl COMMAND ${PYTHON3} ${REPO}/tools/test_walterctl.py
+         --console $<TARGET_FILE:walter_console>)
+set_tests_properties(walterctl PROPERTIES
   ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")

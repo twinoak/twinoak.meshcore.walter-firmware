@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "core/image/store.h"
+
 namespace core {
 namespace console {
 
@@ -241,6 +243,82 @@ Parsed parseRak(char* rest) {
   return refuse2("unknown rak subcommand (try 'help'): ", sub);
 }
 
+// `image <subcommand> ...` (task p2-02). The optional slot comes after the image's role -
+// `image verify golden @1` - which is the shape the task gives the commands; `image list` and
+// `image bad` are about the whole store and take nothing.
+Parsed parseImage(char* rest, std::uint8_t* slot) {
+  if (*rest == 0) {
+    return refuse("image needs a subcommand: image list | verify <which> | erase <which> | bad | receive <which>");
+  }
+  char* sub = rest;
+  char* arg = sub;
+  while (*arg != 0 && !isSpace(*arg)) ++arg;
+  if (*arg != 0) {
+    *arg++ = 0;
+    while (*arg != 0 && isSpace(*arg)) ++arg;
+  }
+  const bool hasArg = *arg != 0;
+
+  if (std::strcmp(sub, "list") == 0) {
+    if (hasArg) return refuse("image list takes no argument");
+    return accept(Verb::kImageList);
+  }
+  if (std::strcmp(sub, "bad") == 0) {
+    if (hasArg) return refuse("image bad takes no argument");
+    return accept(Verb::kImageBad);
+  }
+
+  Verb verb = Verb::kImageVerify;
+  if (std::strcmp(sub, "verify") == 0) {
+    verb = Verb::kImageVerify;
+  } else if (std::strcmp(sub, "erase") == 0) {
+    verb = Verb::kImageErase;
+  } else if (std::strcmp(sub, "receive") == 0) {
+    verb = Verb::kImageReceive;
+  } else {
+    return refuse2("unknown image subcommand (list, verify, erase, bad, receive): ", sub);
+  }
+
+  if (!hasArg) {
+    return refuse3("image ", sub, " needs an image: golden, candidate or scanner");
+  }
+  // The role, then an optional @slot and nothing else.
+  char* word = arg;
+  char* after = word;
+  while (*after != 0 && !isSpace(*after)) ++after;
+  if (*after != 0) {
+    *after++ = 0;
+    while (*after != 0 && isSpace(*after)) ++after;
+  }
+  core::image::Which which = core::image::Which::kGolden;
+  if (!core::image::whichFromName(word, &which)) {
+    return refuse2("image: not one of golden, candidate or scanner: ", word);
+  }
+  // The golden image is never erased by a command (S-5: a known-good image is always on hand);
+  // said here so that the refusal names the command and not the store.
+  if (verb == Verb::kImageErase && which == core::image::Which::kGolden) {
+    return refuse("image erase: the golden image is not erased (image erase candidate | scanner)");
+  }
+  if (*after != 0) {
+    char* slot_word = after;
+    char* tail = slot_word;
+    while (*tail != 0 && !isSpace(*tail)) ++tail;
+    if (*tail != 0) {
+      *tail++ = 0;
+      while (*tail != 0 && isSpace(*tail)) ++tail;
+    }
+    if (*tail != 0) return refuse3("image ", sub, " takes an image and an optional @slot");
+    std::uint32_t number = 0;
+    if (slot_word[0] != '@' || !parseSeconds(slot_word + 1, number) || !board::isSlot(number)) {
+      return refuse2("image: not a slot (@0 or @1): ", slot_word);
+    }
+    *slot = static_cast<std::uint8_t>(number);
+  }
+  Parsed p = accept(verb);
+  p.command.which = static_cast<std::uint8_t>(which);
+  return p;
+}
+
 }  // namespace
 
 Parsed parseLine(const char* line) {
@@ -304,6 +382,12 @@ Parsed parseLine(const char* line) {
   if (std::strcmp(verb, "trust") == 0) {
     if (hasRest) return refuse("trust takes no argument");
     return accept(Verb::kTrust);
+  }
+  if (std::strcmp(verb, "image") == 0) {
+    std::uint8_t slot = 0;
+    Parsed p = parseImage(rest, &slot);
+    if (p.ok) p.command.slot = slot;
+    return p;
   }
   if (std::strcmp(verb, "rak") == 0) {
     if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
