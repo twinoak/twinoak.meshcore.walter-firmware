@@ -1,10 +1,15 @@
 # core/ - everything that is logic. No ESP-IDF include, no FreeRTOS, no heap after start-up
-# (docs/ARCHITECTURE.md §1). It depends on no other component; what it needs of the world it
-# takes as an interface from interfaces/ (the architecture's hal/). The same sources are compiled on the host by host_test/.
+# (docs/ARCHITECTURE.md §1). What it needs of the world it takes as an interface from interfaces/
+# (the architecture's hal/). The same sources are compiled on the host by host_test/.
 idf_component_register(
   SRCS "version/version.cpp"
        "image/this_image.cpp"
-  INCLUDE_DIRS "include")
+       "board/radio_pins.cpp"
+       "health/health.cpp"
+       "console/parser.cpp"
+       "console/console.cpp"
+  INCLUDE_DIRS "include"
+  REQUIRES interfaces)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../tools/cmake/ours.cmake)
 twinoak_ours(${COMPONENT_LIB})
