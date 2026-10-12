@@ -23,7 +23,9 @@ const char* const kImageDirectories[] = {
 
 // What core/image/ may include: the freestanding headers, <cstring> (memcpy, strcmp, strchr -
 // no allocation in any of them), its own headers, the board profile and the image source of the
-// flasher, the slot, the version and the link major, and the two vendored files.
+// flasher, the slot, the version and the link major, the interfaces the store needs of the world
+// (a flash region, a clock, the time of day, bytes out - all of them pure virtual), the link's
+// framing, which the USB transfer reuses rather than inventing one, and the two vendored files.
 const char* const kImageIncludes[] = {
     "cstddef",
     "cstdint",
@@ -40,10 +42,18 @@ const char* const kImageIncludes[] = {
     "core/image/file_check.h",
     "core/image/manifest.h",
     "core/image/signature.h",
+    "core/image/receive.h",
+    "core/image/store.h",
     "core/image/this_image.h",
     "core/image/trust.h",
     "core/image/verdict.h",
+    "core/link/codec/frame.h",
+    "core/link/codec/packet.h",
     "core/version.h",
+    "interfaces/clock.h",
+    "interfaces/flash_region.h",
+    "interfaces/text_out.h",
+    "interfaces/wall_clock.h",
     "jsmn/jsmn.h",
     "tweetnacl/tweetnacl_verify.h",
     "trust_keys.h",  // generated from keys/release-keys.txt (tools/gen_trust_table.py)
@@ -52,10 +62,10 @@ const char* const kImageIncludes[] = {
 }  // namespace
 
 TEST_CASE("nothing under components/core/image/ or the vendored crypto and tokenizer allocates") {
-  // Twenty-odd files: the descriptor and SHA-256 of earlier tasks, this task's nine, the two
-  // vendored ones.
+  // Twenty-odd files: the descriptor and SHA-256 of earlier tasks, task p2-01's nine, the
+  // store's and the transfer's four, the two vendored ones.
   checks::checkNoAllocation("the image checks",
                             checks::filesUnder(kImageDirectories,
                                                sizeof kImageDirectories / sizeof kImageDirectories[0]),
-                            kImageIncludes, sizeof kImageIncludes / sizeof kImageIncludes[0], 20, 2000);
+                            kImageIncludes, sizeof kImageIncludes / sizeof kImageIncludes[0], 24, 3000);
 }

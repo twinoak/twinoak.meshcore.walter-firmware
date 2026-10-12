@@ -13,6 +13,9 @@
 #include "core/board/slot.h"
 #include "core/console/console.h"
 #include "core/health/health.h"
+#include "core/image/choose.h"
+#include "core/image/receive.h"
+#include "core/image/store.h"
 #include "core/image/this_image.h"
 #include "core/image/trust.h"
 #include "core/image/verdict.h"
@@ -21,6 +24,7 @@
 #include "core/version.h"
 #include "platform/boot.h"
 #include "platform/clock.h"
+#include "platform/flash_partition.h"
 #include "platform/pins.h"
 #include "platform/retained.h"
 #include "platform/uart.h"
@@ -53,6 +57,14 @@ platform::RtcRetained g_retained;
 platform::EspRestart g_restart;
 platform::UsbConsole g_usb;
 platform::RadioUart g_uart;
+platform::FlashPartition g_rakfw;
+
+// The image store and the USB transfer (task p2-02), when the partition is there: the objects
+// themselves are function statics in app_main (the verdict alone is ~30 KB of parser tokens and
+// parsed manifest, the store has a sector buffer, and neither belongs on the main task's
+// 3584-byte stack), and these are what the console is given.
+core::image::Store* g_store = nullptr;
+core::image::Receiver* g_receiver = nullptr;
 
 // The time of day, which this firmware does not know yet: phase 3's modem reads it from the
 // cellular network and fills this in (interfaces/wall_clock.h). Until then the link client has no
@@ -126,12 +138,35 @@ extern "C" void app_main() {
   // Linked, not called (components/modem/modem_anchor.cpp). The volatile keeps the reference.
   const void* volatile anchor = twinoak_modem_library_anchor();
   (void)anchor;
-  // The verdict (task p2-01, core/image/verdict.h), the same way: nothing calls it until the
-  // image store (task p2-02) has something to judge, and a function nothing references is
-  // dropped by --gc-sections. Keeping its anchor keeps the six checks - the manifest parser,
-  // the signature, Ed25519 over the vendored TweetNaCl extract - in the image, so that the
-  // build proves they compile and link for the board and tools/verify.sh's reading of the
-  // linker map (no signing symbol) is about an image that holds the verifier.
+
+  // The image store (task p2-02, docs/ARCHITECTURE.md §6): the `rakfw` partition behind
+  // interfaces::FlashRegion, the records in it, and `image receive` on this port. A build whose
+  // partition table has no such partition says so and runs without a store - the console's
+  // `image ...` commands then answer in one line, which is better than a store over flash that
+  // is not there.
+  if (g_rakfw.begin()) {
+    static core::image::Store store(g_rakfw, g_wall);
+    static core::image::ImageVerdict verdict(core::image::buildTrust(), core::image::thisUnit());
+    static core::image::Receiver receiver(store, verdict, g_usb, g_clock);
+    const core::image::StoreError opened = store.begin();
+    if (opened == core::image::StoreError::kNone) {
+      g_store = &store;
+      g_receiver = &receiver;
+      std::printf("image store: rakfw at 0x%06" PRIx32 " (%" PRIu32 " KB), %u bytes laid out for "
+                  "%u radio slots x 3 images; 'image list' says what is in it\n",
+                  g_rakfw.address(), g_rakfw.size() / 1024,
+                  static_cast<unsigned>(core::image::kStoreBytes),
+                  static_cast<unsigned>(core::image::kRadioSlots));
+    } else {
+      std::printf("image store: unusable: %s\n", core::image::describe(opened));
+    }
+  }
+
+  // The verdict's anchor (task p2-01, core/image/verdict.h). `image receive` now calls
+  // judgeManifest() and judgeFile(), so the six checks have a caller at last and --gc-sections
+  // would keep them anyway; the anchor stays because it costs one volatile read and because
+  // tools/verify.sh's reading of the linker map - no signing symbol, the verifier present - was
+  // written against it.
   const void* volatile verdict_anchor = core::image::verdictAnchor();
   (void)verdict_anchor;
 
@@ -158,12 +193,15 @@ extern "C" void app_main() {
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
-                                        slots);
+                                        slots, g_store, g_receiver);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {
     const int c = console_up ? g_usb.readByte(100) : -1;
     if (c >= 0) console.feed(static_cast<char>(c));
+    // A transfer whose other end went away is ended here (core/image/receive.h's idle timeout):
+    // the read above returns after 100 ms whether a byte came or not.
+    console.tick();
     if (!console_up) g_clock.delayMs(100);
     // Whatever the radio sent while nobody was asking: events queued, scanner lines kept. It
     // reads what is there and returns - nothing here blocks on the radio.

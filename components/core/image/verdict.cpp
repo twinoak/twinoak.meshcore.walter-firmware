@@ -33,8 +33,19 @@ Outcome ImageVerdict::judge(const std::uint8_t* manifest, std::size_t manifest_s
                             const char* signature_line, std::size_t signature_size,
                             const SlotNeeds& needs, Use use, const flasher::BoardProfile* profile,
                             const flasher::ImageSource& file) {
+  const Outcome first =
+      judgeManifest(manifest, manifest_size, signature_line, signature_size, needs, use, profile);
+  if (!first.ok()) return first;
+  return judgeFile(file);
+}
+
+Outcome ImageVerdict::judgeManifest(const std::uint8_t* manifest, std::size_t manifest_size,
+                                    const char* signature_line, std::size_t signature_size,
+                                    const SlotNeeds& needs, Use use,
+                                    const flasher::BoardProfile* profile) {
   manifest_ = Manifest{};
   has_accepted_ = false;
+  has_expected_ = false;
 
   // 1. The signature. Everything else waits for it: a manifest nobody we trust signed is not
   //    read at all (§1: the server is not trusted with more than delivering bytes).
@@ -69,6 +80,33 @@ Outcome ImageVerdict::judge(const std::uint8_t* manifest, std::size_t manifest_s
     }
   }
 
+  // The promise: what the file must be, for whoever has to make room for it before it arrives
+  // (the image store, task p2-02). Nothing of the bytes has been seen yet.
+  ExpectedFile& e = expected_;
+  e = ExpectedFile{};
+  e.slot_ = needs.slot;
+  e.use_ = use;
+  e.size_ = entry.size;
+  std::memcpy(e.sha256_, entry.sha256, kSha256Size);
+  e.load_address_ = entry.load_address;
+  std::memcpy(e.name_, entry.name, kMaxFileName);
+  std::memcpy(e.version_, manifest_.version, kVersionSize);
+  chosen_image_ = choice.image_index;
+  chosen_file_ = choice.file_index;
+  chosen_profile_ = profile;
+  std::memcpy(chosen_key_id_, key->id, kKeyIdSize);
+  has_expected_ = true;
+  return Outcome{};
+}
+
+Outcome ImageVerdict::judgeFile(const flasher::ImageSource& file) {
+  has_accepted_ = false;
+  if (!has_expected_) return refused(Check::kFile, "no manifest has been judged");
+  const ImageEntry& image = manifest_.images[chosen_image_];
+  const FileEntry& entry = image.files[chosen_file_];
+  const Use use = expected_.use_;
+  const flasher::BoardProfile* profile = chosen_profile_;
+
   // 4 and 5, in one pass over the file: the size is known before a byte is read.
   if (file.size() != entry.size) return refused(Check::kFile, describe(FileHasher::Result::kSizeMismatch));
   hasher_.begin(entry.size, entry.sha256);
@@ -87,7 +125,8 @@ Outcome ImageVerdict::judge(const std::uint8_t* manifest, std::size_t manifest_s
   const Found found = scanner_.result();
   if (found.count == 0) return refused(Check::kDescriptor, "the file holds no valid descriptor");
   if (found.count > 1) return refused(Check::kDescriptor, "the file holds more than one valid descriptor");
-  const DescriptorMismatch agrees = descriptorAgrees(found.fields, manifest_, image, needs.slot);
+  const DescriptorMismatch agrees =
+      descriptorAgrees(found.fields, manifest_, image, expected_.slot_);
   if (agrees != DescriptorMismatch::kNone) return refused(Check::kDescriptor, describe(agrees));
 
   // 6, the half that needs the file's entry: the file inside the manifest's region, and inside
@@ -103,16 +142,19 @@ Outcome ImageVerdict::judge(const std::uint8_t* manifest, std::size_t manifest_s
   }
 
   AcceptedImage& a = accepted_;
-  a.slot_ = needs.slot;
+  a = AcceptedImage{};
+  a.slot_ = expected_.slot_;
   a.use_ = use;
   a.image_ = image;
   a.file_ = entry;
   a.descriptor_ = found.fields;
   a.descriptor_offset_ = found.offset;
   std::memcpy(a.version_, manifest_.version, kVersionSize);
+  std::memcpy(a.commit_, manifest_.commit, kCommitSize);
+  a.commit_[kCommitSize] = 0;
   a.link_major_ = manifest_.link_major;
   a.link_minor_ = manifest_.link_minor;
-  std::memcpy(a.key_id_, key->id, kKeyIdSize);
+  std::memcpy(a.key_id_, chosen_key_id_, kKeyIdSize);
   has_accepted_ = true;
   return Outcome{};
 }

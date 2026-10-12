@@ -40,6 +40,11 @@ bool isRadioVerb(Verb verb) {
     case Verb::kPins:
     case Verb::kReboot:
     case Verb::kTrust:
+    case Verb::kImageList:
+    case Verb::kImageVerify:
+    case Verb::kImageErase:
+    case Verb::kImageBad:
+    case Verb::kImageReceive:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -67,9 +72,10 @@ bool isRadioVerb(Verb verb) {
 
 Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
                  interfaces::Clock& clock, interfaces::Restart& restart,
-                 link::client::Client& radio, board::SlotLock& slots)
+                 link::client::Client& radio, board::SlotLock& slots, image::Store* images,
+                 image::Receiver* receiver)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
-      slots_(slots), flasher_(pins, clock, slots) {}
+      slots_(slots), images_(images), receiver_(receiver), flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -114,6 +120,14 @@ void Console::begin() {
 }
 
 void Console::feed(char c) {
+  // `image receive` (task p2-02) hands the port to the transfer: the bytes are frames and not a
+  // typed line, so there is no echo, no backspace and no prompt until it is over.
+  if (receiver_ != nullptr && receiver_->active()) {
+    const std::uint8_t byte = static_cast<std::uint8_t>(c);
+    receiver_->feed(&byte, 1);
+    if (!receiver_->active()) transferEnded();
+    return;
+  }
   if (c == '\n' && last_was_cr_) {  // the LF of a CR LF
     last_was_cr_ = false;
     return;
@@ -143,6 +157,12 @@ void Console::feed(char c) {
   }
   line_[length_++] = c;
   out_.write(&c, 1);
+}
+
+void Console::tick() {
+  if (receiver_ == nullptr || !receiver_->active()) return;
+  receiver_->tick();
+  if (!receiver_->active()) transferEnded();
 }
 
 void Console::runLine(const char* line) {
@@ -192,6 +212,11 @@ void Console::runLine(const char* line) {
     case Verb::kRakSwdMem: rakSwdMem(p.command.address, p.command.words); return;
     case Verb::kRakFlashTest: rakFlashTest(); return;
     case Verb::kTrust: trust(); return;
+    case Verb::kImageList: imageList(); return;
+    case Verb::kImageVerify: imageVerify(static_cast<image::Which>(p.command.which)); return;
+    case Verb::kImageErase: imageErase(static_cast<image::Which>(p.command.which)); return;
+    case Verb::kImageBad: imageBad(); return;
+    case Verb::kImageReceive: imageReceive(static_cast<image::Which>(p.command.which)); return;
   }
 }
 
@@ -218,6 +243,15 @@ void Console::help() {
   print("  rak flash-test      write, verify and erase a 2-page pattern at the top of the application\n");
   print("                      region, only if those pages are blank; the radio restarts\n");
   print("  trust               the release keys this build accepts an update signed with\n");
+  print("  image list          the radio images this Walter holds, per slot\n");
+  print("  image verify <which>\n");
+  print("                      read one back out of flash and hold it to the hash in its record\n");
+  print("  image erase <candidate|scanner>\n");
+  print("                      forget one; the golden image is never erased\n");
+  print("  image bad           the hashes of candidates that failed a health check\n");
+  print("  image receive <which>\n");
+  print("                      take manifest.json, its .sig and the image over this port\n");
+  print("                      (tools/walterctl.py push); the six checks run here\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -945,5 +979,181 @@ void Console::trust() {
   }
 }
 
+// --------------------------------------------------------------------- the image store (p2-02)
+//
+// docs/ARCHITECTURE.md section 6: per radio slot a golden image, a candidate and a scanner image,
+// each whole or absent. These five commands are the whole of what a person at the port can do to
+// it: look, re-hash, forget one that is not golden, see the bad list, and load one over USB.
+
+namespace {
+
+// A hash as hexadecimal, `bytes` of it, into a buffer of at least 2 * bytes + 1. The console has
+// no printf of a byte array and core/ has no heap.
+void hashHex(const std::uint8_t* hash, std::size_t bytes, char* out) {
+  static const char* digits = "0123456789abcdef";
+  for (std::size_t i = 0; i < bytes; ++i) {
+    out[i * 2] = digits[hash[i] >> 4];
+    out[i * 2 + 1] = digits[hash[i] & 0x0F];
+  }
+  out[bytes * 2] = 0;
+}
+
+}  // namespace
+
+bool Console::imagesOk() {
+  if (images_ != nullptr && receiver_ != nullptr) return true;
+  print("error: there is no image store in this build (the rakfw partition of partitions.csv was\n"
+        "  not found at boot; nothing can be stored or read)\n");
+  return false;
+}
+
+void Console::imageOneLine(const image::Record& record) {
+  printf("  %-9s  ", image::name(record.which));
+  if (!record.present) {
+    if (record.transfer) {
+      char hash[9];
+      hashHex(record.transfer_sha256, 4, hash);
+      printf("empty; a transfer of sha256 %s stopped at %lu of %lu bytes (it can be resumed)\n",
+             hash, static_cast<unsigned long>(record.transferred),
+             static_cast<unsigned long>(record.transfer_size));
+      return;
+    }
+    print("empty\n");
+    return;
+  }
+  const char* role = image::role_name(record.descriptor.role);
+  char hash[17];
+  hashHex(record.sha256, 8, hash);
+  printf("%s %s %s %s, %lu bytes at 0x%08lx, sha256 %s..., area %u\n",
+         role != nullptr ? role : "?", record.descriptor.board, record.descriptor.band,
+         record.descriptor.version, static_cast<unsigned long>(record.size),
+         static_cast<unsigned long>(record.load_address), hash,
+         static_cast<unsigned>(images_->areaOf(record.which, record.slot)));
+  char key[image::kKeyIdHexSize + 1];
+  image::keyIdHex(record.key_id, key);
+  if (record.stored_at != 0) {
+    printf("             stored at %lu (unix), from commit %s, signed by %s\n",
+           static_cast<unsigned long>(record.stored_at), record.commit, key);
+  } else {
+    printf("             stored when the Walter had no clock, from commit %s, signed by %s\n",
+           record.commit, key);
+  }
+}
+
+void Console::imageList() {
+  if (!imagesOk()) return;
+  printf("image store: %u slots x %u images of %lu bytes (%lu sectors) and a header sector each,\n"
+         "  and %lu index sectors: %lu bytes of a %lu-byte partition, %lu left; index sequence %lu\n",
+         static_cast<unsigned>(image::kRadioSlots), static_cast<unsigned>(image::kWhichCount),
+         static_cast<unsigned long>(image::kImageBytesMax),
+         static_cast<unsigned long>(image::kDataSectors),
+         static_cast<unsigned long>(image::kIndexCopies),
+         static_cast<unsigned long>(image::kStoreBytes),
+         static_cast<unsigned long>(image::kPartitionBytes),
+         static_cast<unsigned long>(image::kPartitionBytes - image::kStoreBytes),
+         static_cast<unsigned long>(images_->indexSequence()));
+  for (std::uint8_t s = 0; s < image::kRadioSlots; ++s) {
+    const board::Slot slot{s};
+    const flasher::BoardProfile* profile = flasher::profileForSlot(slot);
+    if (profile != nullptr) {
+      printf("slot %u, %s\n", static_cast<unsigned>(s), profile->name);
+    } else {
+      printf("slot %u: no radio in this adapter (its areas are laid out all the same, so a dual\n"
+             "  unit needs no new partition table)\n", static_cast<unsigned>(s));
+    }
+    for (std::uint8_t w = 0; w < image::kWhichCount; ++w) {
+      image::Record record;
+      const image::StoreError e = images_->read(static_cast<image::Which>(w), slot, &record);
+      if (e != image::StoreError::kNone) {
+        printf("  %-9s  error: %s\n", image::name(static_cast<image::Which>(w)),
+               image::describe(e));
+        continue;
+      }
+      imageOneLine(record);
+    }
+  }
+}
+
+void Console::imageVerify(image::Which which) {
+  if (!imagesOk() || !slotOk(slot_)) return;
+  image::Record record;
+  const image::StoreError read = images_->read(which, slot_, &record);
+  if (read != image::StoreError::kNone) {
+    printf("error: %s\n", image::describe(read));
+    return;
+  }
+  if (!record.present) {
+    printf("error: slot %u's %s image: %s\n", static_cast<unsigned>(slot_.index),
+           image::name(which), image::describe(image::StoreError::kEmpty));
+    return;
+  }
+  const std::uint64_t t0 = clock_.nowMs();
+  const image::StoreError e = images_->verify(which, slot_);
+  const unsigned long ms = static_cast<unsigned long>(clock_.nowMs() - t0);
+  if (e != image::StoreError::kNone) {
+    printf("error: %s %s: %s\n", image::name(which), record.descriptor.version,
+           image::describe(e));
+    return;
+  }
+  printf("%s: %lu bytes read back and hashed in %lu ms: the SHA-256 is the one in its record\n",
+         image::name(which), static_cast<unsigned long>(record.size), ms);
+}
+
+void Console::imageErase(image::Which which) {
+  if (!imagesOk() || !slotOk(slot_)) return;
+  const image::StoreError e = images_->erase(which, slot_);
+  if (e != image::StoreError::kNone) {
+    printf("error: %s\n", image::describe(e));
+    return;
+  }
+  printf("%s: forgotten in slot %u (the bytes above the header are left; the next image erases\n"
+         "  the sectors it needs)\n", image::name(which), static_cast<unsigned>(slot_.index));
+}
+
+void Console::imageBad() {
+  if (!imagesOk()) return;
+  if (images_->badCount() == 0) {
+    print("image bad: no image has failed a health check on this unit\n");
+    return;
+  }
+  printf("image bad: %u of at most %u hashes, refused at the door for ever:\n",
+         static_cast<unsigned>(images_->badCount()), static_cast<unsigned>(image::kBadListMax));
+  for (std::size_t i = 0; i < images_->badCount(); ++i) {
+    char text[image::kSha256Size * 2 + 1];
+    hashHex(images_->badAt(i), image::kSha256Size, text);
+    printf("  %s\n", text);
+  }
+}
+
+void Console::imageReceive(image::Which which) {
+  if (!imagesOk() || !slotOk(slot_)) return;
+  if (!receiver_->begin(which, slot_)) {
+    printf("error: image receive: %s\n", receiver_->reason());
+    return;
+  }
+  const image::SlotNeeds& needs = receiver_->needs();
+  // One printf a line: Console::printf writes into a 200-byte buffer and cuts what does not fit.
+  printf("image receive: slot %u's %s image; this port is now a framed binary transfer\n",
+         static_cast<unsigned>(slot_.index), image::name(which));
+  print("  (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,\n");
+  printf("  then the file: tools/walterctl.py push --as %s\n", image::name(which));
+  printf("  what will be accepted: role %s, board %s, band %s, and all six checks of\n",
+         needs.role, needs.board, needs.band);
+  print("  FIRMWARE-MANIFEST section 5 run here - the laptop is not trusted\n");
+}
+
+void Console::transferEnded() {
+  printf("image receive: %s%s%s\n", receiver_->reason(),
+         receiver_->reasonMore()[0] != 0 ? ": " : "", receiver_->reasonMore());
+  printf("  %lu chunks, %lu sent twice, %lu out of order, %lu frames dropped\n",
+         static_cast<unsigned long>(receiver_->chunks()),
+         static_cast<unsigned long>(receiver_->duplicates()),
+         static_cast<unsigned long>(receiver_->outOfOrder()),
+         static_cast<unsigned long>(receiver_->droppedFrames()));
+  if (receiver_->stored()) print("  'image list' shows it; 'image verify' reads it back\n");
+  prompt();
+}
+
 }  // namespace console
 }  // namespace core
+
