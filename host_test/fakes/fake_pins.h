@@ -76,6 +76,15 @@ class FakePins final : public interfaces::Pins {
   std::vector<Violation> violations;
   std::function<bool(const Op&)> fail_when;
   int operations = 0;
+  // What the radio actually got, counted whether or not the log is kept (task p2-05's property
+  // test runs a simulated month with record_log off and still has to count what was done to the
+  // radio). A pulse and a cycle are counted when they *end*, which is when their rule is checked.
+  int reset_pulses = 0;
+  int kill_cycles = 0;
+  // Called as each of those ends: how a bench makes the world react to what the Walter did -
+  // a radio that comes back after a reset, or after the rail has been and gone.
+  std::function<void()> on_reset_pulse;
+  std::function<void()> on_kill_cycle;
   int selector_windows = 0;  // assertions of nRESET during which SWDCLK moved
   int selector_clocks = 0;   // SWDCLK level changes inside them
   std::uint64_t last_selector_window_us = 0;  // how long the last one lasted

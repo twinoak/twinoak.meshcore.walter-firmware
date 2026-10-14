@@ -35,6 +35,7 @@ const char* const kUpdateIncludes[] = {
     "core/link/codec/wire.h",
     "core/update/battery.h",
     "core/update/journal.h",
+    "core/update/last_good_battery.h",
     "core/update/link_battery.h",
     "core/update/radio_update.h",
     "core/update/self_update.h",
@@ -56,10 +57,11 @@ const char* const kUpdateIncludes[] = {
 }  // namespace
 
 TEST_CASE("nothing under components/core/update/ allocates") {
-  // Ten files: the journal, the radio's machine, the battery and the Walter's own update, each a
-  // header and a source, and the battery and uplink interfaces.
+  // Twelve files: the journal, the radio's machine, the battery over the link, its last good
+  // reading (task p2-05) and the Walter's own update, each a header and a source, and the
+  // battery and uplink interfaces.
   checks::checkNoAllocation("the updates",
                             checks::filesUnder(kUpdateDirectories,
                                                sizeof kUpdateDirectories / sizeof kUpdateDirectories[0]),
-                            kUpdateIncludes, sizeof kUpdateIncludes / sizeof kUpdateIncludes[0], 10, 1800);
+                            kUpdateIncludes, sizeof kUpdateIncludes / sizeof kUpdateIncludes[0], 12, 1900);
 }

@@ -55,6 +55,9 @@ the journal's - and the boot's `software reset` line names a self-update's resta
 | `self switch [radio-down]` | make the received image the next to boot: the preconditions, the journal's *switching* entry, the boot pointer, `SLEEP_NOTICE` to the radio, restart. Does not come back. `radio-down` says the radio is known to be down, so the trial's second condition does not apply |
 | `self confirm` | end the running image's trial early: valid (the bench) |
 | `self reject` | end it early: rejected, on the bad list, restart into the previous image (the bench) |
+| `rak watch` | (task p2-05) the supervisor's view: whether the radio is healthy, when it was last so, today's counts against the daily caps, the last good battery reading, the radio's restarts, a stop in force, and the last three incidents with every rung they tried. It only reads. See *The supervisor* |
+| `rak watch reset-caps` | the day's counts to zero and a stop lifted, journalled (the bench) |
+| `rak ladder` | climb the supervisor's ladder now - ask, reset, power-cycle, look at the chip, stop - each rung printed as it is tried. Minutes: the waits are the real ones |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command or
 subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
@@ -258,6 +261,27 @@ confirmed` or `self-update: on trial -> rolled back: <reason>`. The old image, b
 that a reset cut short, says `self-update: rolled back: <reason>` and that the image is on the bad
 list. `reboots` names both restarts: *the Walter's own update, switching to the other slot* and
 *the Walter's own update, the trial image rejected itself*.
+
+## The supervisor
+
+From task p2-05 (`docs/supervisor.md` has the whole of it: the ladder, the four kinds of silence,
+the waits and the caps as a table, and what a person should do when it has stopped). All three take
+the slot in front (`rak @0 watch`).
+
+| Command | What it does |
+|---|---|
+| `rak watch` | the supervisor's view and nothing else: whether the radio is healthy, silent or running the scanner; healthy since when, when it last answered, how many pings, its uptime and `boot_id`, its last reset reason and whether its clock was set; **today's counts against the caps** and when the day began; the last good battery reading with the thresholds a power cycle and a flash need; how many times the radio has restarted and what a boot loop is; a stop in force with the rungs that were tried and how long is left of the quiet period; any attention it is keeping (§8); and the last three incidents, newest first, each with every rung it tried and what came of it. **It reads and nothing more** - looking at the supervisor can never reset a radio |
+| `rak watch reset-caps` | the day's counts to zero and a stop lifted, journalled. For the bench: `rak watch reset-caps: the day's counts are empty again and the stop is lifted; journalled` |
+| `rak ladder` | climb now. It asks the radio; if it answers, `rak ladder: the radio is healthy: nothing to climb` and nothing is done. If it is silent, what the silence means is worked out and the ladder climbed, one line per rung as it is tried - `supervisor: rung 2, a reset pulse: done; the radio did not come back - nRESET pulsed; waiting for it to boot` - with the flasher's progress lines inside rung 4. It takes **minutes**: the waits are the real ones. It ends `rak ladder: the radio is back after rung 3, a power cycle`, or `rak ladder: STOPPED: <reason>` with the rungs that were tried, or - for a scanner - *not a fault, left alone*. A stop in force is lifted first: a person is the other way out of rung 5 |
+
+At boot the supervisor says what it has been doing only when there is something to say:
+`supervisor: STOPPED: <reason>; 258788 s of the quiet period left ('rak watch')`, or
+`supervisor: today already: 2 resets, 1 power cycles, 0 flashes ('rak watch')` - and, after a power
+cut, `, read back from the journal`, because RTC memory went with the power and flash did not.
+
+**Nothing drives the supervisor from the main loop.** When it runs is the wake cycle's business
+(phase 3); in this build `rak ladder` is the only thing that climbs, and `begin()` at every boot is
+what reads the record.
 
 ## The radio's power, as `status` says it
 

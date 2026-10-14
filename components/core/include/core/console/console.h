@@ -19,6 +19,7 @@
 #include "core/image/receive.h"
 #include "core/image/store.h"
 #include "core/link/client/client.h"
+#include "core/supervisor/supervisor.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
 #include "core/update/self_update.h"
@@ -41,13 +42,16 @@ class Console {
           interfaces::Clock& clock, interfaces::Restart& restart, link::client::Client& radio,
           board::SlotLock& slots, image::Store* images = nullptr,
           image::Receiver* receiver = nullptr, update::RadioUpdate* update = nullptr,
-          update::Journal* journal = nullptr, update::SelfUpdate* self = nullptr);
+          update::Journal* journal = nullptr, update::SelfUpdate* self = nullptr,
+          supervisor::Supervisor* supervisor = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
   // resume() here, and tick() then drives it a step at a time, printing each transition. And
   // where the Walter's own update learns what this boot is (task p2-04): a trial, which tick()
-  // then runs, or a rollback to record.
+  // then runs, or a rollback to record. And where the supervisor reads its retained record and
+  // the journal (task p2-05), saying so when a stop is in force or the day's counts are not
+  // empty - a unit found quiet should say what it has been doing before anybody asks.
   void begin();
 
   // One byte from the port. While a transfer is running (`image receive`) the bytes go to it
@@ -144,6 +148,16 @@ class Console {
   void printSelfEntry(std::size_t number, const update::Entry& entry, const update::SelfPayload& p);
   void printSlot(const char* label, const interfaces::OwnSlot& slot);
 
+  // The supervisor (task p2-05).
+  bool watchOk();  // false, with one error line, when this build has no supervisor
+  void rakWatch();
+  void rakWatchResetCaps();
+  void rakLadder();
+  void driveLadder();  // step() until the climb is over, printing each rung
+  void printLadderStep(const supervisor::Step& s);
+  void printIncident(std::size_t number, const supervisor::Incident& incident);
+  void printRungsTried(std::uint8_t rungs);
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
@@ -156,6 +170,7 @@ class Console {
   update::RadioUpdate* update_ = nullptr;
   update::Journal* journal_ = nullptr;
   update::SelfUpdate* self_ = nullptr;
+  supervisor::Supervisor* supervisor_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about

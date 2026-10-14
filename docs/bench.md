@@ -585,3 +585,74 @@ bootloader's rules; only a board shows that ESP-IDF's otadata and `esp_ota_*` be
   switch` to the new image's first `HELLO` - the radio must not have given the Walter up for dead
   meanwhile (`STATUS` flag bit 2 after the restart). Each is a constant in
   `core/update/self_update.h` with a sentence; change the number and the sentence together.
+
+## 10. The supervisor
+
+From task p2-05 (`docs/supervisor.md`: the ladder, the four kinds of silence, the waits and the
+caps as a table, and what to do when it has stopped; `docs/console.md`, *The supervisor*). Needs:
+§3 walked (a radio answering `HELLO`), §5 walked (a real flash through the wire), §7 walked (a
+golden image in the store), and **a jumper or a flying lead** to hold the RAK's nRESET to ground,
+which is how a radio is made to go quiet on a desk. The host tests prove the ladder against a radio
+that misbehaves on cue; only a RAK shows how long a real one takes to come back after each rung,
+and that the rail actually collapses and returns.
+
+`rak ladder` is minutes long by design - the waits are the real ones (30, 30, 60 and 120 seconds,
+plus the update machine's three-minute proving period at rung 4). Have the console open and let it
+run.
+
+- [ ] **Hold nRESET to ground and climb.** With the golden image running and `rak watch` saying
+  *healthy*, put the jumper from the RAK's RESET pin to ground and run `rak ladder`. Watch the
+  lines: `rung 1, ask again later` after a pause, `rung 2, a reset pulse`, `rung 3, a power cycle`
+  (the rail audibly or measurably off for five seconds - put a meter on the 3.3 V rail if one is
+  handy), `rung 4, what is on the chip`. With the chip still holding the golden image, rung 4
+  should end *the chip holds the golden image: nothing to flash* and the climb should stop:
+  `rak ladder: STOPPED: the chip holds the golden image: this is not a firmware fault`. Then
+  `rak watch`: the incident, with `rungs tried: 1, 2, 3, 4, 5`, every rung's outcome, the battery
+  reading and `today: resets 1/6, power cycles 1/3, golden-image flashes 0/1`. **Write down how
+  long the whole climb took** and how long the RAK took to answer after the reset and after the
+  power cycle: those are `kAfterResetMs` and `kAfterPowerCycleMs`'s bench numbers.
+- [ ] **Remove the jumper during the climb.** Run `rak ladder` again (`rak watch reset-caps` first
+  if the counts are spent) and pull the jumper while it waits after rung 2. It should notice at the
+  next question and stop climbing: `rak ladder: the radio is back after rung 2, a reset pulse`, with
+  no power cycle in the lines and `power cycles 0/3` in `rak watch`. Pull it during rung 1's pause
+  instead and it should be cured at rung 1, with **no pin having moved at all**.
+- [ ] **Flash the RAK over USB with something else** (stock MeshCore, or NoiseScope's own release
+  through the RAK's UF2 bootloader) and then `rak ladder`. Rung 4 should find that the chip differs,
+  flash the golden image back through the update machine (its transitions and the flasher's
+  progress lines appear inside the rung), prove it, and end *the radio is back after rung 4*.
+  `rak hello` then shows the golden image's version, `image list` is unchanged - golden is still
+  golden, nothing was promoted, `image bad` is empty - and `rak id` shows **the same public key and
+  name as before**, because the file system above the application region was never touched. Then
+  `rak watch`: `golden-image flashes 1/1`, and a second such incident the same day should be
+  refused at rung 4 with *today's cap is reached*.
+- [ ] **Power-cycle the Walter itself and watch it not call that an incident.** Pull the Walter's
+  USB (or its battery lead) and plug it back in. The RAK restarts - the ESP32-S3's power-up glitches
+  GPIO1-14 low for about 60 µs and that reaches nRESET (`docs/ARCHITECTURE.md` §2 rule 5) - and
+  `rak ladder` run immediately afterwards must say *this Walter has just powered up: the radio is
+  still booting* and do **nothing**. `rak watch` must show no new incident. Twenty seconds later
+  (`kWalterPowerUpGraceMs`) the same command asks properly again. **Write down how long the RAK
+  actually takes to answer after the Walter's power-up**: that is this constant's bench number.
+- [ ] **A radio running the scanner is left alone.** `rak role scanner` (§8's fourth item), then
+  `rak ladder`: it must say *the radio is running the scanner (NoiseScope): not a fault, left
+  alone*, move no pin, and record no incident. `rak role repeater` puts it back.
+- [ ] **The caps, and that they survive.** With the jumper in, climb until the day's resets are
+  spent (`rak watch` counts them); the next climb's rung 2 must be refused - *today's cap is
+  reached* - and the climb go straight to rung 3. Then: **press the module's reset** and check
+  `rak watch` still shows the same counts (RTC memory); **pull the power** and check the boot line
+  says `supervisor: today already: … read back from the journal` and the counts are still there
+  (the journal, in flash). `rak watch reset-caps` empties them.
+- [ ] **A stop stays stopped.** After a climb that ended *STOPPED*, `rak ladder` is the way past it
+  (it lifts the stop first and says so in the journal); without it, the boot lines announce
+  `supervisor: STOPPED: <reason>; N s of the quiet period left` at every restart until three days
+  have passed. Check the boot line, and check `rak watch`'s *nothing more for N s*.
+- [ ] **A boot loop.** Hard to arrange honestly - it wants a repeater build that restarts itself.
+  If one exists (a watchdog bite every minute, or a `rak cli` command that reboots on a timer),
+  three restarts inside ten minutes must make `rak watch` say *this is a boot loop* and the next
+  climb start at rung 3, with rungs 1 and 2 recorded as *skipped*. Otherwise: note it as not walked,
+  and watch for `EV_BOOT`s in `rak events` as the nearest thing.
+- [ ] **The numbers.** Against the lines above, `docs/supervisor.md`'s table: the three waits
+  against how long a real RAK takes to come back; `kKillOffMs` against the rail's measured fall and
+  rise (§2's numbers); `kWalterPowerUpGraceMs` against the glitch's real effect; the caps against
+  what a mast can afford of its battery in a day; the battery thresholds against the real pack's
+  curve under two MCUs awake. Each is a constant in `core/supervisor/supervisor.h` with a sentence;
+  change the number and the sentence together.

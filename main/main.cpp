@@ -21,7 +21,9 @@
 #include "core/image/verdict.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
+#include "core/supervisor/supervisor.h"
 #include "core/update/journal.h"
+#include "core/update/last_good_battery.h"
 #include "core/update/link_battery.h"
 #include "core/update/radio_update.h"
 #include "core/update/self_update.h"
@@ -225,7 +227,12 @@ extern "C" void app_main() {
   // its own flasher (12 KB of page buffers, static like the console's), the link client, the
   // journal and the battery as the radio reports it. Without a store or a journal there is no
   // update, and the console says so.
-  static core::update::LinkBattery battery(radio);
+  static core::update::LinkBattery link_battery(radio);
+  // The last good reading, kept (task p2-05, core/update/last_good_battery.h): the one moment a
+  // reading is most needed is the one moment it cannot be taken - the radio has gone quiet - so
+  // the supervisor's rung 4 and the update machine both read through this rather than straight
+  // off the link.
+  static core::update::LastGoodBattery battery(link_battery, g_clock);
   static core::flasher::Flasher update_flasher(radio_pins, g_clock, slots);
   core::update::SelfUpdate* self_update_ptr = nullptr;
   if (g_store != nullptr && g_journal != nullptr) {
@@ -240,12 +247,25 @@ extern "C" void app_main() {
     self_update_ptr = &self_update;
   }
 
+  // The supervisor (task p2-05, core/supervisor/supervisor.h; docs/supervisor.md): the radio's
+  // heartbeat and the ladder, over the link client, the pins, the flasher's read-only verify, the
+  // update machine's rollback path, the journal, the battery's last good reading, retained
+  // storage for the day's counts and health for "did this Walter just power up". **Nothing drives
+  // it from the loop below**: when the supervisor runs is the wake cycle's business (phase 3), and
+  // until then it is `rak ladder` on the console that climbs and `rak watch` that reads. It is
+  // constructed all the same, so that its retained record and the journal are read at every boot
+  // and a stop in force is announced.
+  static core::supervisor::Supervisor supervisor(radio, radio_pins, slots, health, battery, g_clock,
+                                                 g_wall, g_retained, g_store, &update_flasher,
+                                                 g_update, g_journal);
+
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
   // time round, the uptime kept in retained storage about once a second. Returning is not an
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
-                                        slots, g_store, g_receiver, g_update, g_journal, self_update_ptr);
+                                        slots, g_store, g_receiver, g_update, g_journal,
+                                        self_update_ptr, &supervisor);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {

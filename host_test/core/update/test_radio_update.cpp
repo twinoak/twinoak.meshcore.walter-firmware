@@ -357,10 +357,26 @@ TEST_CASE("each precondition refused, with the flash log empty") {
     unit.world.radio.deaf = true;
     upd::Request r = unit.request();
     r.link_known_down = true;
-    // The battery is read over the link too, and the fake says it is known: so this one gets
-    // past the link and would flash. Stop it at the battery instead, to show the link let it by.
+    // The reading is known and too low: so this one got past the link check and was stopped by
+    // the next one, which is what shows the link let it by. (A reading that cannot be had at all
+    // is *not* a refusal here - the gauge is on the radio's I2C, so a classified-down link has
+    // no gauge, and task p2-05's supervisor must still be able to put the golden image back.)
+    unit.walter->battery.millivolts = upd::kBatteryMinMv - 1;
+    refusedWithNothingTouched(unit, r, Reason::kBatteryLow);
+  }
+  SUBCASE("the link down and classified, with no reading to be had: let through") {
+    // The INA3221 is behind the radio (spec/SYSTEM.md §5.8): a dead radio is a dead gauge, and
+    // refusing the unbricking flash for want of it would make the unit brickable after all.
+    ReadyUnit unit;
+    unit.world.radio.deaf = true;
     unit.walter->battery.known = false;
-    refusedWithNothingTouched(unit, r, Reason::kBatteryUnknown);
+    upd::Request r = unit.request();
+    r.kind = Kind::kRoleRepeater;  // what the supervisor asks for at its fourth rung
+    r.link_known_down = true;
+    REQUIRE(unit.walter->update.start(r));
+    const upd::StepResult s = unit.walter->update.step();
+    CHECK(s.after == State::kRollingBack);  // a switch back flashes the golden image
+    CHECK(unit.walter->update.reason() != Reason::kBatteryUnknown);
   }
   SUBCASE("the Walter's own update unconfirmed (S-7)") {
     ReadyUnit unit;

@@ -73,6 +73,9 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakUpdateStatus:
     case Verb::kRakRoleScanner:
     case Verb::kRakRoleRepeater:
+    case Verb::kRakWatch:
+    case Verb::kRakWatchResetCaps:
+    case Verb::kRakLadder:
       return true;
   }
   return false;
@@ -84,10 +87,10 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  interfaces::Clock& clock, interfaces::Restart& restart,
                  link::client::Client& radio, board::SlotLock& slots, image::Store* images,
                  image::Receiver* receiver, update::RadioUpdate* update, update::Journal* journal,
-                 update::SelfUpdate* self)
+                 update::SelfUpdate* self, supervisor::Supervisor* supervisor)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
-      self_(self), flasher_(pins, clock, slots) {}
+      self_(self), supervisor_(supervisor), flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -137,6 +140,23 @@ void Console::begin() {
   // The Walter's own update (task p2-04): is this boot a trial of a new image, or the old image
   // back after one? tick() runs a trial from here, a step per turn of the main loop.
   if (self_ != nullptr) printSelfBoot(self_->begin());
+  // The supervisor (task p2-05): its retained record, or the journal when a power cut cleared it.
+  // Said out loud only when there is something to say - a unit found quiet should announce a stop
+  // and a day that has already spent some of its caps, and keep silent otherwise.
+  if (supervisor_ != nullptr) {
+    supervisor_->begin();
+    const supervisor::Status& w = supervisor_->status();
+    if (w.stopped) {
+      printf("supervisor: STOPPED: %s; %lu s of the quiet period left ('rak watch')\n",
+             supervisor::describe(w.stop_reason), static_cast<unsigned long>(w.quiet_left_ms / 1000));
+    } else if (w.counts.resets != 0 || w.counts.power_cycles != 0 || w.counts.flashes != 0) {
+      printf("supervisor: today already: %lu resets, %lu power cycles, %lu flashes%s ('rak watch')\n",
+             static_cast<unsigned long>(w.counts.resets),
+             static_cast<unsigned long>(w.counts.power_cycles),
+             static_cast<unsigned long>(w.counts.flashes),
+             w.counts_from_journal ? ", read back from the journal" : "");
+    }
+  }
   print("type 'help' for the commands\n");
   prompt();
 }
@@ -266,6 +286,9 @@ void Console::runLine(const char* line) {
     case Verb::kRakUpdateStatus: rakUpdateStatus(); return;
     case Verb::kRakRoleScanner: rakUpdate(update::Kind::kRoleScanner); return;
     case Verb::kRakRoleRepeater: rakUpdate(update::Kind::kRoleRepeater); return;
+    case Verb::kRakWatch: rakWatch(); return;
+    case Verb::kRakWatchResetCaps: rakWatchResetCaps(); return;
+    case Verb::kRakLadder: rakLadder(); return;
     case Verb::kSelfStatus: selfStatus(); return;
     case Verb::kSelfReceive: selfReceive(); return;
     case Verb::kSelfSwitch: selfSwitch(p.command.radio_down); return;
@@ -323,6 +346,12 @@ void Console::help() {
   print("                      it then has one boot to prove itself (docs/update.md)\n");
   print("  self confirm        end the running image's trial early: valid (the bench)\n");
   print("  self reject         end it early: rejected, restart into the old image (the bench)\n");
+  print("  rak watch           the supervisor's view: healthy since when, the last incidents,\n");
+  print("                      today's counts against the daily caps (docs/supervisor.md)\n");
+  print("  rak watch reset-caps\n");
+  print("                      empty the day's counts and lift a stop (the bench)\n");
+  print("  rak ladder          climb the supervisor's ladder now - ask, reset, power-cycle, look at\n");
+  print("                      the chip, stop - each rung printed as it is tried (minutes)\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -1618,6 +1647,213 @@ void Console::selfReject() {
   print("self reject: the running image is rejected; restarting into the previous image\n");
 }
 
+// ------------------------------------------------------------------ the supervisor (p2-05)
+//
+// docs/supervisor.md. `rak watch` only reads - it never steps the machine, so looking at the
+// supervisor can never cause a reset - and `rak ladder` is the one command that climbs, printing
+// each rung as it is tried. When the supervisor runs by itself is phase 3's (the wake cycle);
+// nothing here drives it from the main loop.
+
+bool Console::watchOk() {
+  if (supervisor_ != nullptr) return true;
+  print("error: there is no supervisor in this build (main/ constructs one on a board; a console\n"
+        "  built without one - the host's walter_console - answers in one line instead)\n");
+  return false;
+}
+
+void Console::printRungsTried(std::uint8_t rungs) {
+  if (rungs == 0) {
+    print("none");
+    return;
+  }
+  bool first = true;
+  for (std::size_t i = 1; i <= supervisor::kRungCount; ++i) {
+    const std::uint8_t bit = static_cast<std::uint8_t>(1u << (i - 1));
+    if ((rungs & bit) == 0) continue;
+    printf("%s%lu", first ? "" : ", ", static_cast<unsigned long>(i));
+    first = false;
+  }
+}
+
+void Console::printIncident(std::size_t number, const supervisor::Incident& in) {
+  const std::uint64_t now = clock_.nowMs();
+  const unsigned long ago_s =
+      now >= in.began_ms ? static_cast<unsigned long>((now - in.began_ms) / 1000u) : 0;
+  printf("  %lu. %lu s ago", static_cast<unsigned long>(number), ago_s);
+  if (in.began_epoch != 0) printf(" (epoch %lu)", static_cast<unsigned long>(in.began_epoch));
+  printf(": %s; %s", supervisor::describe(in.cause), supervisor::describe(in.outcome));
+  if (in.outcome == supervisor::Outcome::kCured && in.cured_at != supervisor::Rung::kNone) {
+    printf(" by %s", supervisor::describe(in.cured_at));
+  }
+  if (in.stop != supervisor::StopReason::kNone) printf(": %s", supervisor::describe(in.stop));
+  print("\n");
+  printf("     lasted %lu s; rungs tried: ", static_cast<unsigned long>(in.lasted_ms / 1000u));
+  printRungsTried(in.rungs_tried);
+  printf("; battery %lu mV; the radio's last reset reason %u (%s)\n",
+         static_cast<unsigned long>(in.battery_mv), static_cast<unsigned>(in.reset_reason),
+         lc::resetReasonName(in.reset_reason));
+  if (in.restarts != 0 || in.cause == supervisor::Cause::kBootLoop) {
+    printf("     %u restarts of the radio, its last uptime %lu s\n",
+           static_cast<unsigned>(in.restarts), static_cast<unsigned long>(in.last_uptime_s));
+  }
+  for (std::size_t i = 0; i < supervisor::kRungCount; ++i) {
+    const supervisor::RungOutcome o = in.rung[i];
+    if (o == supervisor::RungOutcome::kNotTried) continue;
+    printf("     %s: %s\n", supervisor::describe(static_cast<supervisor::Rung>(i + 1)),
+           supervisor::describe(o));
+  }
+}
+
+void Console::rakWatch() {
+  if (!watchOk()) return;
+  const supervisor::Status& w = supervisor_->status();
+  const std::uint64_t now = clock_.nowMs();
+  printf("rak watch: slot %u: the radio is %s; the supervisor is %s\n",
+         static_cast<unsigned>(slot_.index), supervisor::describe(w.health),
+         supervisor::describe(w.state));
+  if (w.ever_answered) {
+    printf("  healthy since %lu s ago; last answer %lu s ago; %lu pings; its uptime %lu s; boot_id 0x%08lx\n",
+           static_cast<unsigned long>(now >= w.healthy_since_ms ? (now - w.healthy_since_ms) / 1000u : 0),
+           static_cast<unsigned long>(now >= w.last_answer_ms ? (now - w.last_answer_ms) / 1000u : 0),
+           static_cast<unsigned long>(w.pings), static_cast<unsigned long>(w.uptime_s),
+           static_cast<unsigned long>(w.boot_id));
+    printf("  its last reset reason %u (%s); the clock %s\n", static_cast<unsigned>(w.reset_reason),
+           lc::resetReasonName(w.reset_reason),
+           w.time_set ? "was set"
+           : w.time_skipped ? "could not be set: this Walter has no time to give yet"
+                            : "has not been set since the last restart");
+  } else {
+    print("  the radio has not answered this supervisor yet ('rak ladder' asks now)\n");
+  }
+  printf("today: resets %lu/%lu, power cycles %lu/%lu, golden-image flashes %lu/%lu\n",
+         static_cast<unsigned long>(w.counts.resets), static_cast<unsigned long>(w.caps.resets),
+         static_cast<unsigned long>(w.counts.power_cycles),
+         static_cast<unsigned long>(w.caps.power_cycles),
+         static_cast<unsigned long>(w.counts.flashes), static_cast<unsigned long>(w.caps.flashes));
+  if (w.counts.resets != 0 || w.counts.power_cycles != 0 || w.counts.flashes != 0) {
+    printf("  the day began %lu s ago of %lu%s%s\n",
+           static_cast<unsigned long>(now >= w.window_began_ms ? (now - w.window_began_ms) / 1000u : 0),
+           static_cast<unsigned long>(supervisor::kCapWindowS),
+           w.window_began_epoch != 0 ? " (dated: a whole day can be shown to have passed)"
+                                     : " (no time of day: the monotonic clock is all there is)",
+           w.window_reanchored ? "; re-anchored after a restart, the counts kept" : "");
+  }
+  if (w.counts_from_journal) {
+    print("  the counts were read back from the journal: a power cut cleared the retained record\n");
+  }
+  if (w.battery_known) {
+    printf("battery: %lu mV, read %lu s ago (a power cycle needs %lu mV, a flash %lu mV)\n",
+           static_cast<unsigned long>(w.battery_mv),
+           static_cast<unsigned long>(w.battery_age_ms / 1000u),
+           static_cast<unsigned long>(supervisor::kPowerCycleMinMv),
+           static_cast<unsigned long>(supervisor::kFlashMinMv));
+  } else {
+    print("battery: never read (POWER_GET has not answered)\n");
+  }
+  printf("the radio restarted %lu times in the last %lu s (%lu in all); a boot loop is %lu of them\n",
+         static_cast<unsigned long>(w.restarts),
+         static_cast<unsigned long>(supervisor::kBootLoopWindowMs / 1000u),
+         static_cast<unsigned long>(w.restarts_total),
+         static_cast<unsigned long>(supervisor::kBootLoopBoots));
+  if (w.boot_loop) {
+    printf("  this is a boot loop: the ladder would start at %s\n",
+           supervisor::describe(supervisor::Rung::kPowerCycle));
+  }
+  if (w.stopped) {
+    printf("STOPPED: %s\n", supervisor::describe(w.stop_reason));
+    print("  rungs tried: ");
+    printRungsTried(w.stopped_after);
+    printf("; nothing more for %lu s, or until 'rak watch reset-caps', 'rak ladder' or the server\n",
+           static_cast<unsigned long>(w.quiet_left_ms / 1000u));
+  }
+  if (w.attentions != 0) {
+    printf("attention from the radio: %lu kept\n", static_cast<unsigned long>(w.attentions));
+    for (std::size_t i = 0; i < supervisor_->attentionCount(); ++i) {
+      const supervisor::Attention& a = supervisor_->attentionAt(i);
+      printf("  %u (%s), detail %u, repeat %u, %lu s ago%s\n", static_cast<unsigned>(a.reason),
+             lc::attentionName(a.reason), static_cast<unsigned>(a.detail),
+             static_cast<unsigned>(a.repeat),
+             static_cast<unsigned long>(now >= a.at_ms ? (now - a.at_ms) / 1000u : 0),
+             a.acknowledged ? ", acknowledged by a request of ours" : "");
+    }
+  }
+  if (supervisor_->incidentCount() == 0) {
+    print("no incident has been recorded on this unit\n");
+    return;
+  }
+  printf("the last %lu incidents, newest first:\n",
+         static_cast<unsigned long>(supervisor_->incidentCount()));
+  for (std::size_t i = 0; i < supervisor_->incidentCount(); ++i) {
+    printIncident(i + 1, supervisor_->incidentAt(i));
+  }
+}
+
+void Console::rakWatchResetCaps() {
+  if (!watchOk()) return;
+  const bool was_stopped = supervisor_->status().stopped;
+  supervisor_->resetCaps();
+  printf("rak watch reset-caps: the day's counts are empty again%s; journalled\n",
+         was_stopped ? " and the stop is lifted" : "");
+}
+
+void Console::printLadderStep(const supervisor::Step& s) {
+  if (s.rung != supervisor::Rung::kNone && s.rung_outcome != supervisor::RungOutcome::kNotTried) {
+    printf("supervisor: %s: %s%s%s\n", supervisor::describe(s.rung),
+           supervisor::describe(s.rung_outcome), s.note[0] != 0 ? " - " : "", s.note);
+    return;
+  }
+  if (s.changed) {
+    printf("supervisor: %s -> %s%s%s\n", supervisor::describe(s.before),
+           supervisor::describe(s.after), s.note[0] != 0 ? ": " : "", s.note);
+  }
+}
+
+void Console::driveLadder() {
+  for (;;) {
+    const supervisor::Step s = supervisor_->step();
+    printLadderStep(s);
+    if (!supervisor_->climbing()) break;
+    if (s.waited) clock_.delayMs(supervisor::kStepIdleMs);
+  }
+}
+
+void Console::rakLadder() {
+  if (!watchOk()) return;
+  if (!supervisor_->runLadder()) {
+    printf("error: rak ladder: the supervisor is already busy (%s)\n",
+           supervisor::describe(supervisor_->state()));
+    return;
+  }
+  printf("rak ladder: slot %u: asking the radio, then climbing if it is silent; each rung is\n"
+         "  printed as it is tried (this takes minutes: the waits are %lu, %lu and %lu s)\n",
+         static_cast<unsigned>(slot_.index),
+         static_cast<unsigned long>(supervisor::kAskAgainPauseMs / 1000u),
+         static_cast<unsigned long>(supervisor::kAfterResetMs / 1000u),
+         static_cast<unsigned long>(supervisor::kAfterPowerCycleMs / 1000u));
+  PrintProgress progress(out_);
+  if (update_ != nullptr) update_->setProgress(&progress);
+  driveLadder();
+  if (update_ != nullptr) update_->setProgress(nullptr);
+  const supervisor::Status& w = supervisor_->status();
+  if (w.stopped) {
+    printf("rak ladder: STOPPED: %s\n", supervisor::describe(w.stop_reason));
+    print("  rungs tried: ");
+    printRungsTried(w.stopped_after);
+    print("; 'rak watch' has the incident\n");
+    return;
+  }
+  if (w.health == supervisor::Health::kScanner) {
+    print("rak ladder: the radio is running the scanner (NoiseScope): not a fault, left alone ('rak text')\n");
+    return;
+  }
+  if (supervisor_->incidentCount() != 0 &&
+      supervisor_->incidentAt(0).outcome == supervisor::Outcome::kCured) {
+    printf("rak ladder: the radio is back after %s ('rak watch' has the incident)\n",
+           supervisor::describe(supervisor_->incidentAt(0).cured_at));
+    return;
+  }
+  printf("rak ladder: the radio is %s: nothing to climb\n", supervisor::describe(w.health));
+}
+
 }  // namespace console
 }  // namespace core
-

@@ -50,6 +50,10 @@ idf_component_register(
        "update/radio_update.cpp"
        # The Walter's own update (task p2-04): the other slot as a transfer target, the trial.
        "update/self_update.cpp"
+       # The supervisor (task p2-05): the radio's heartbeat and the ladder, and the battery's
+       # last good reading that a rung reached over a dead link still has.
+       "update/last_good_battery.cpp"
+       "supervisor/supervisor.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

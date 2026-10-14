@@ -88,6 +88,11 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // fixture's: a radio whose bit 4 ("the radio initialised") never comes.
   bool override_status_flags = false;
   std::uint16_t status_flags = 0;
+  // The uptime PING and STATUS report (§5.2, §5.3), when a test wants other than the fixture's
+  // hour: a radio that never gets past a couple of minutes is restarting itself, which is the
+  // second way the supervisor sees a boot loop (task p2-05).
+  bool override_uptime = false;
+  std::uint32_t uptime_s = 0;
 
   // ---------------------------------------------------------------- what it does
   // A new boot_id, the event counter back to 0, nothing remembered - and an EV_BOOT on the wire
@@ -111,6 +116,11 @@ class ScriptedRadio final : public interfaces::ByteStream {
 
   // Raw bytes on the wire, after a delay: an attention's leading zeros, noise, half a frame.
   void sendBytes(const std::vector<std::uint8_t>& bytes, std::uint32_t after_ms = 0);
+
+  // Nothing of what this radio was going to say is said: a module whose firmware was replaced
+  // has no EV_BOOT of the old one's still in flight. What a bench needs when it turns a repeater
+  // into a scanner without a flash (task p2-05).
+  void forgetPending();
 
   // ---------------------------------------------------------------- what it saw
   struct Seen {
