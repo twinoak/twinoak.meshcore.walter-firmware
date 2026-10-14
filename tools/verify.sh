@@ -244,12 +244,14 @@ step_build() {
   local lib=$dir/esp-idf/dptechnics__walter-modem/libdptechnics__walter-modem.a
   if [ ! -f "$lib" ]; then echo "walter-modem was not built: $lib missing"; return 1; fi
   echo "walter-modem: $(ar t "$lib" | tr '\n' ' ')"
-  grep -q "walter_uplink.cpp.obj" "$dir/$PROJECT_NAME.map" || {
+  # The map names an object by its archive and its base name - `libcore.a(policy.cpp.obj)` - and
+  # not by the path it was compiled from, so these are the two archives' names for them.
+  grep -q "libmodem.a(walter_uplink.cpp.obj" "$dir/$PROJECT_NAME.map" || {
     echo "components/modem's uplink is not in the link (walter_uplink.cpp.obj not in the map)"
     return 1
   }
-  grep -q "uplink/policy.cpp.obj" "$dir/$PROJECT_NAME.map" || {
-    echo "core/uplink's policy is not in the link (uplink/policy.cpp.obj not in the map)"
+  grep -q "libcore.a(policy.cpp.obj" "$dir/$PROJECT_NAME.map" || {
+    echo "core/uplink's policy is not in the link (policy.cpp.obj not in the map)"
     return 1
   }
   echo "walter-modem is in the link ($(grep -c 'dptechnics__walter-modem' "$dir/$PROJECT_NAME.map") references in the map), called from components/modem/walter_uplink.cpp"

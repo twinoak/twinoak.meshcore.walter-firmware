@@ -126,6 +126,10 @@ class WalterUplink final : public interfaces::Uplink {
   bool started_ = false;
   interfaces::OpState op_ = interfaces::OpState::kOff;
   bool data_ = false;
+  // The RAT this object set, if it set one: the library's `getRAT` answers from a cache that its
+  // own `setRAT` does not update (walter_uplink.cpp, rat()).
+  bool rat_set_ = false;
+  interfaces::Rat rat_ = interfaces::Rat::kUnknown;
 };
 
 }  // namespace modem

@@ -219,7 +219,18 @@ interfaces::SimUnlock WalterUplink::unlockSim(const char* pin, std::uint64_t dea
 }
 
 bool WalterUplink::rat(std::uint64_t deadline_ms, interfaces::Rat* out) {
-  if (!before(deadline_ms) || out == nullptr) return false;
+  if (out == nullptr) return false;
+  // What *we* set, if we set one, before what the library remembers. `getRAT` answers from its
+  // own cached `_ratType` whenever that is known, and `setRAT` does not update it
+  // (WalterModem.cpp:4583 and :4596; `_ratType` is written only where `+SQNMODEACTIVE: n` is
+  // parsed, :2431). Without this, a modem found on NB-IoT would be set to LTE-M and then still
+  // *read* as NB-IoT for the rest of the boot - so every bring-up of that boot would set the RAT
+  // again and spend the modem reset a RAT change needs. Reported in tasks/phase-3/reports/01.md.
+  if (rat_set_) {
+    *out = rat_;
+    return true;
+  }
+  if (!before(deadline_ms)) return false;
   WalterModemRsp rsp = {};
   if (!WalterModem::getRAT(&rsp)) return false;
   if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_RAT) return false;
@@ -231,7 +242,10 @@ bool WalterUplink::setRat(interfaces::Rat rat, std::uint64_t deadline_ms) {
   if (!before(deadline_ms)) return false;
   WalterModemRAT wanted = WALTER_MODEM_RAT_LTEM;
   if (!toRat(rat, &wanted)) return false;
-  return WalterModem::setRAT(wanted);
+  if (!WalterModem::setRAT(wanted)) return false;
+  rat_ = rat;
+  rat_set_ = true;
+  return true;
 }
 
 bool WalterUplink::opState(interfaces::OpState state, std::uint64_t deadline_ms) {
