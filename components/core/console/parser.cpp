@@ -229,6 +229,26 @@ Parsed parseRak(char* rest) {
     }
     return refuse2("rak swd: unknown operation (connect, id, mem): ", op);
   }
+  // rak update [--first-install | status] (task p2-03).
+  if (std::strcmp(sub, "update") == 0) {
+    if (!hasArg) return accept(Verb::kRakUpdate);
+    for (const char* p = arg; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("rak update takes one word: rak update [--first-install | status]");
+    }
+    if (std::strcmp(arg, "--first-install") == 0) return accept(Verb::kRakUpdateFirstInstall);
+    if (std::strcmp(arg, "status") == 0) return accept(Verb::kRakUpdateStatus);
+    return refuse2("rak update: unknown word (rak update, rak update --first-install, rak update status): ", arg);
+  }
+  // rak role scanner | repeater (task p2-03).
+  if (std::strcmp(sub, "role") == 0) {
+    if (!hasArg) return refuse("rak role needs a role: rak role scanner | repeater");
+    for (const char* p = arg; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("rak role takes one word: rak role scanner | repeater");
+    }
+    if (std::strcmp(arg, "scanner") == 0) return accept(Verb::kRakRoleScanner);
+    if (std::strcmp(arg, "repeater") == 0) return accept(Verb::kRakRoleRepeater);
+    return refuse2("rak role: not one of scanner, repeater: ", arg);
+  }
   if (std::strcmp(sub, "kill") == 0) {
     if (!hasArg) return refuse("rak kill needs a duration: rak kill <seconds>");
     for (const char* p = arg; *p != 0; ++p) {

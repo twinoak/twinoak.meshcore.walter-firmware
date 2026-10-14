@@ -265,7 +265,12 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           // the flasher (task p1-05): nothing answers, the lines are released
                           "flash-test", "rak flash-test", "rak flash-test now",
                           // the trust table (task p2-01): no pin, no slot
-                          "trust", "trust me", "rak trust"};
+                          "trust", "trust me", "rak trust",
+                          // the radio's update (task p2-03): this rig has no update machine, so
+                          // every one is refused in one line and touches nothing
+                          "update", "role", "scanner", "repeater", "--first-install",
+                          "rak update", "rak update status", "rak update --first-install",
+                          "rak role scanner", "rak role repeater"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);
@@ -319,11 +324,11 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   CHECK(sequences == 3000);
   CHECK(lines > 3000);
   // Fewer of each than task p0-03's version of this test saw: the bag of tokens grew by the
-  // link's twenty-odd (task p1-02) and the SWD commands' dozen (tasks p1-03, p1-04), so a given
-  // line is less often one of these two. The run is seeded, and at this seed it is 36 resets and
-  // over a hundred kills in some 10 000 lines.
-  CHECK(resets > 30);
-  CHECK(kills > 100);
+  // link's twenty-odd (task p1-02), the SWD commands' dozen (tasks p1-03, p1-04) and the update's
+  // ten (task p2-03), so a given line is less often one of these two. The run is seeded, and at
+  // this seed it is 30 resets and 98 kills in some 10 000 lines.
+  CHECK(resets > 25);
+  CHECK(kills > 90);
   MESSAGE(sequences << " sequences, " << lines << " lines, " << resets << " resets, " << kills
                     << " kills, " << rig.restart.asked << " reboots, no rule broken");
 }

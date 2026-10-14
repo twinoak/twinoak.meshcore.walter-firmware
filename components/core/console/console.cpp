@@ -63,6 +63,11 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakSwdId:
     case Verb::kRakSwdMem:
     case Verb::kRakFlashTest:
+    case Verb::kRakUpdate:
+    case Verb::kRakUpdateFirstInstall:
+    case Verb::kRakUpdateStatus:
+    case Verb::kRakRoleScanner:
+    case Verb::kRakRoleRepeater:
       return true;
   }
   return false;
@@ -73,9 +78,10 @@ bool isRadioVerb(Verb verb) {
 Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
                  interfaces::Clock& clock, interfaces::Restart& restart,
                  link::client::Client& radio, board::SlotLock& slots, image::Store* images,
-                 image::Receiver* receiver)
+                 image::Receiver* receiver, update::RadioUpdate* update, update::Journal* journal)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
-      slots_(slots), images_(images), receiver_(receiver), flasher_(pins, clock, slots) {}
+      slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
+      flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -115,6 +121,13 @@ void Console::begin() {
            health::name(boot.reason));
   }
   if (!health_.recordSurvived()) print("the boot record starts here (a power cut, or the first boot)\n");
+  // An update the journal says was in progress is taken up where it was (spec/SYSTEM.md §6:
+  // "a Walter that resets in the middle resumes or rolls back; it never guesses"). tick()
+  // drives it from here, one step per turn of the main loop, printing each transition.
+  if (update_ != nullptr && update_->resume()) {
+    printf("update: the journal says a run was in progress (%s); resuming at %s\n",
+           update::describe(update_->request().kind), update::describe(update_->state()));
+  }
   print("type 'help' for the commands\n");
   prompt();
 }
@@ -160,6 +173,15 @@ void Console::feed(char c) {
 }
 
 void Console::tick() {
+  // A resumed update, one step a turn (a `rak update` runs its own loop and is not here).
+  if (update_ != nullptr && update_->active() && !driving_update_) {
+    const update::StepResult s = update_->step();
+    printUpdateStep(s);
+    if (!update_->active()) {
+      printUpdateOutcome();
+      prompt();
+    }
+  }
   if (receiver_ == nullptr || !receiver_->active()) return;
   receiver_->tick();
   if (!receiver_->active()) transferEnded();
@@ -217,6 +239,11 @@ void Console::runLine(const char* line) {
     case Verb::kImageErase: imageErase(static_cast<image::Which>(p.command.which)); return;
     case Verb::kImageBad: imageBad(); return;
     case Verb::kImageReceive: imageReceive(static_cast<image::Which>(p.command.which)); return;
+    case Verb::kRakUpdate: rakUpdate(update::Kind::kUpdate); return;
+    case Verb::kRakUpdateFirstInstall: rakUpdate(update::Kind::kFirstInstall); return;
+    case Verb::kRakUpdateStatus: rakUpdateStatus(); return;
+    case Verb::kRakRoleScanner: rakUpdate(update::Kind::kRoleScanner); return;
+    case Verb::kRakRoleRepeater: rakUpdate(update::Kind::kRoleRepeater); return;
   }
 }
 
@@ -252,6 +279,14 @@ void Console::help() {
   print("  image receive <which>\n");
   print("                      take manifest.json, its .sig and the image over this port\n");
   print("                      (tools/walterctl.py push); the six checks run here\n");
+  print("  rak update          flash the candidate, prove it, make it golden - or roll back to the\n");
+  print("                      golden image and never try that candidate again (minutes; docs/update.md)\n");
+  print("  rak update --first-install\n");
+  print("                      the same with no golden image to return to (a person's command)\n");
+  print("  rak update status   the journal's story of the last update\n");
+  print("  rak role scanner|repeater\n");
+  print("                      flash the stored scanner image and prove a scanner is there; or\n");
+  print("                      the golden image back, proved as an update would be\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -1152,6 +1187,178 @@ void Console::transferEnded() {
          static_cast<unsigned long>(receiver_->droppedFrames()));
   if (receiver_->stored()) print("  'image list' shows it; 'image verify' reads it back\n");
   prompt();
+}
+
+// ------------------------------------------------------------------- the radio's update (p2-03)
+//
+// docs/update.md. `rak update` runs the machine (core/update/radio_update.h) to its end inside
+// the command, printing each transition as the journal receives it: a flash is minutes and the
+// proving period is minutes more, and the console is busy for all of it - which is what a person
+// at the bench wants to watch. A resumed update (begin()) is driven by tick() instead.
+
+bool Console::updateOk() {
+  if (update_ != nullptr && journal_ != nullptr) return true;
+  print("error: there is no update machine in this build (the journal or the rakfw partition of\n"
+        "  partitions.csv was not found at boot)\n");
+  return false;
+}
+
+void Console::printUpdateStep(const update::StepResult& s) {
+  if (s.changed) {
+    printf("update: %s -> %s%s%s\n", update::describe(s.before), update::describe(s.after),
+           s.note[0] != 0 ? ": " : "", s.note);
+    return;
+  }
+  if (s.reason == update::Reason::kJournal) {
+    printf("update: stopped in %s: %s\n", update::describe(s.before), s.note);
+  }
+}
+
+void Console::printUpdateOutcome() {
+  const update::Status& st = update_->status();
+  char hash[17];
+  hashHex(st.sha256, 8, hash);
+  switch (st.state) {
+    case update::State::kDone:
+      if (st.kind == update::Kind::kRoleScanner) {
+        printf("rak role scanner: done: a scanner is running; golden and candidate untouched ('rak text')\n");
+      } else if (st.kind == update::Kind::kRoleRepeater) {
+        printf("rak role repeater: done: the golden image %s is back and proved\n", st.version);
+      } else {
+        printf("rak update: done: %s (sha256 %s...) is the golden image; 'image list' shows it, 'rak hello' its version\n",
+               st.version, hash);
+      }
+      break;
+    case update::State::kRestored:
+      // Two printf calls: the two lines together are longer than printf's 200-byte buffer.
+      printf("rak update: restored: the candidate failed its health check (%s%s%s) and is on the bad list;\n",
+             update::describe(st.fail_reason), st.fail_step != update::ProveStep::kNone ? " at " : "",
+             st.fail_step != update::ProveStep::kNone ? update::describe(st.fail_step) : "");
+      printf("  the golden image %s is back and proved\n", st.version);
+      break;
+    case update::State::kStuck:
+      printf("rak update: STUCK: %s - the radio has no proved application; a person's business now\n",
+             update::describe(st.reason));
+      break;
+    case update::State::kRefused:
+      printf("error: rak update: refused at check: %s (nothing was touched)\n", update::describe(st.reason));
+      break;
+    default:
+      printf("rak update: %s\n", update::describe(st.state));
+      break;
+  }
+  if (st.time_skipped) {
+    print("  (the clock check was skipped: this Walter has no time to give until phase 3's modem)\n");
+  }
+}
+
+void Console::driveUpdate() {
+  driving_update_ = true;
+  for (;;) {
+    const update::StepResult s = update_->step();
+    printUpdateStep(s);
+    if (!update_->active()) break;
+    if (!s.changed && s.reason == update::Reason::kJournal) break;  // it cannot go on, and said so
+    if (s.waited) clock_.delayMs(update::kStepIdleMs);
+  }
+  driving_update_ = false;
+  printUpdateOutcome();
+}
+
+void Console::rakUpdate(update::Kind kind) {
+  if (!updateOk()) return;
+  if (update_->active()) {
+    printf("error: rak update: an update is already running (%s); 'rak update status' says where\n",
+           update::describe(update_->state()));
+    return;
+  }
+  update::Request request;
+  request.kind = kind;
+  request.slot = slot_;
+  if (!update_->start(request)) {
+    printf("error: rak update: %s\n", update::describe(update_->reason()));
+    if (update_->reason() == update::Reason::kRadioUpdateInProgress) {
+      print("  it is resumed at the next boot (or now: 'reboot'), never started over\n");
+    }
+    return;
+  }
+  printf("%s: slot %u; every transition is printed as the journal takes it (this takes minutes:\n"
+         "  the flash, then a %lu s proving period)\n",
+         kind == update::Kind::kRoleScanner ? "rak role scanner"
+         : kind == update::Kind::kRoleRepeater ? "rak role repeater" : "rak update",
+         static_cast<unsigned>(slot_.index), static_cast<unsigned long>(update::kProvingPeriodMs / 1000));
+  PrintProgress progress(out_);
+  update_->setProgress(&progress);
+  driveUpdate();
+  update_->setProgress(nullptr);
+}
+
+void Console::printUpdateEntry(std::size_t number, const update::Entry& entry, const update::Payload& p) {
+  char hash[17];
+  hashHex(p.sha256, 8, hash);
+  printf("  %2lu. seq %lu: %s%s", static_cast<unsigned long>(number), static_cast<unsigned long>(entry.seq),
+         update::describe(p.state), (p.flags & update::kFlagResumed) != 0 ? " (resumed after a restart)" : "");
+  if (p.state == update::State::kCheck) {
+    printf(" - %s, slot %u, image sha256 %s...", update::describe(p.kind), static_cast<unsigned>(p.slot), hash);
+  }
+  if (p.reason != update::Reason::kNone) printf(": %s", update::describe(p.reason));
+  if (p.step != update::ProveStep::kNone && p.step != update::ProveStep::kPassed) {
+    printf(" (at: %s)", update::describe(p.step));
+  }
+  if (p.step == update::ProveStep::kPassed && p.detail != 0) {
+    printf(" (the health check passed; %lu ms of proving)", static_cast<unsigned long>(p.detail));
+  }
+  print("\n");
+}
+
+void Console::rakUpdateStatus() {
+  if (!updateOk()) return;
+  // The story: the entries of the last run, from its check to its last, oldest first. The
+  // journal walks backwards, so they are gathered into a small array and printed in reverse;
+  // a run is bounded (update::kEntriesPerRunMax), so the array is too.
+  // Static, not on the stack: the main task's stack is 3584 bytes and sixteen entries are
+  // 1.6 KB. One console, one story at a time.
+  constexpr std::size_t kStoryMax = 16;
+  static update::Entry entries[kStoryMax];
+  static update::Payload payloads[kStoryMax];
+  std::size_t count = 0;
+  update::Cursor cursor;
+  update::Entry e;
+  bool more = journal_->first(&cursor, &e);
+  while (more && count < kStoryMax) {
+    update::Payload p;
+    if (update::decode(e, &p)) {
+      entries[count] = e;
+      payloads[count] = p;
+      ++count;
+      if (p.state == update::State::kCheck && (p.flags & update::kFlagResumed) == 0) break;  // the run's start
+    }
+    more = journal_->previous(&cursor, &e);
+  }
+  printf("journal: %lu entries in %lu sectors, next seq %lu, head sector %lu slot %lu\n",
+         static_cast<unsigned long>(journal_->validEntries()), static_cast<unsigned long>(journal_->sectors()),
+         static_cast<unsigned long>(journal_->nextSeq()), static_cast<unsigned long>(journal_->headSector()),
+         static_cast<unsigned long>(journal_->headSlot()));
+  if (count == 0) {
+    print("rak update status: no update has been journalled on this unit\n");
+    return;
+  }
+  printf("the last update's story (%lu entries, newest seq %lu):\n", static_cast<unsigned long>(count),
+         static_cast<unsigned long>(entries[0].seq));
+  for (std::size_t i = count; i > 0; --i) printUpdateEntry(count - i + 1, entries[i - 1], payloads[i - 1]);
+  const update::Payload& last = payloads[0];
+  if (update_->active()) {
+    const update::Status& st = update_->status();
+    printf("now: %s%s, %s; %lu pings, %lu ms of proving; %lu entries this run\n", update::describe(st.state),
+           st.resumed ? " (resumed)" : "", update::describe(st.step), static_cast<unsigned long>(st.pings),
+           static_cast<unsigned long>(st.prove_elapsed_ms), static_cast<unsigned long>(st.entries));
+  } else if (update::isTerminal(last.state)) {
+    printf("the last update ended: %s%s%s\n", update::describe(last.state),
+           last.reason != update::Reason::kNone ? ": " : "", update::describe(last.reason));
+  } else {
+    printf("the last update did not end: the journal says %s; it is resumed at the next boot\n",
+           update::describe(last.state));
+  }
 }
 
 }  // namespace console

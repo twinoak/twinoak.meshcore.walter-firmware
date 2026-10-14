@@ -30,13 +30,19 @@ components/
                         over the vendored TweetNaCl extract (task p2-01)
     third_party/        vendored, verbatim, each with origin, version, licence and hash in its
                         README.md: the TweetNaCl verification-only extract, jsmn (task p2-01)
-    update/             the radio's update and its journal; the Walter's own update policy
+    update/             the journal (a fixed-size, append-only ring in its own partition), the
+                        radio's update as a state machine with its health check and rollback, the
+                        battery as the radio reports it (task p2-03); the Walter's own update
+                        policy (task p2-04)
     supervisor/         the radio's heartbeat and the ladder of remedies
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text (task p0-03: help, status, reboots,
                         pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
                         time, power, env, cli, events, text; task p1-03: rak swd connect; task
-                        p1-04: rak swd id, rak swd mem)
+                        p1-04: rak swd id, rak swd mem; task p1-05: rak flash-test; task p2-01:
+                        trust; task p2-02: image list, verify, erase, bad, receive; task p2-03:
+                        rak update, rak update --first-install, rak update status, rak role
+                        scanner|repeater)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
@@ -55,7 +61,11 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         the wire level (task p1-03); the simulated nRF52840 behind it - its two
                         access ports, its flash, FICR, UICR, NVMC and core (task p1-04); a flash
                         region that only clears bits and can lose power at any operation
-                        (task p2-02)
+                        (task p2-02). host_test/core/update/update_bench.h joins them into one
+                        world - the store's and the journal's flash, the chip, a radio that boots
+                        whatever the chip holds - that outlives a Walter built over it, so a
+                        reset in the middle of an update is a destroyed and rebuilt Walter
+                        (task p2-03)
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
 tools/                  verify.ps1, release/ (the release tooling), walterctl.py (the laptop's end
                         of `image receive`), bench tools
@@ -495,13 +505,33 @@ the update's health check (task p2-03) say what the image itself says.
 
 ## 7. Updates
 
-**The radio's** (`spec/SYSTEM.md` §6): preconditions (battery, link, clock, nothing else in
-progress) → flash the candidate → reset → health check (`HELLO` within a window; version, role and
-board as the descriptor said; the link steady for a while; the clock set; the radio initialised)
-→ the candidate becomes golden — or the golden image is flashed back and the candidate's hash is
-remembered as bad and never tried again. **The journal is written before each step**, so a Walter
-that resets mid-update knows where it was: it resumes a flash, repeats a health check, or rolls
-back. It never assumes.
+**The radio's** (`spec/SYSTEM.md` §6; task p2-03, `core/update/radio_update.h`, `docs/update.md`):
+a state machine over the store, the flasher, the link client, the journal, a clock and the battery,
+driven one `step()` at a time so that phase 3's wake cycle can run it in slices. *check* - the
+preconditions, each a named refusal (a candidate that verifies and is not on the bad list, for this
+slot's role, board and band; a golden image to return to, unless a person said *first install*;
+the link up or classified down; the battery above `kBatteryMinMv` and not falling; no other run
+journalled as unfinished and the Walter's own update not on trial, S-7) → *flashing-candidate*
+(the flasher) → *booting* (`EV_BOOT` or `HELLO` inside `kBootWindowMs`) → *proving*, the health
+check held against the descriptor the store kept of the image flashed: `HELLO`'s version, role,
+board and link major; `TIME_SET` taken (or, with no time to give yet, `TIME_GET` answering and the
+step said to be skipped); `STATUS`'s *radio initialised*; a `PING` every few seconds through
+`kProvingPeriodMs` with the `boot_id` unchanged; `POWER_GET` where the role has it → *committing*
+(the store's promotion) → *done*. Any failure: the candidate's hash on the store's bad list
+**first**, then the golden image flashed back, booted and proved by the same check → *restored*;
+if it does not come back either, *stuck*, and nothing is retried. A switch to the scanner image and
+back (`rak role`) is the same machine with another source, a smaller proof and no promotion.
+
+**The journal** (`core/update/journal.h`): the `journal` partition of §11 as a ring of 64-byte
+entries - a sequence number, an owner, 48 bytes of payload, a CRC-32, and a magic word **written
+last as its own write**, so a torn entry never validates and the one before it governs. Every
+state is journalled before its action starts; `resume()` at boot reads the newest entry and takes
+the run up there: mid-flash the flash again (the flasher's scan makes that cheap), booting or
+proving **the proof over from the start**, committing the promotion (or the evidence that it
+happened), rolling back the rollback. It never assumes. The same ring takes the Walter's own
+update's entries (task p2-04) and the supervisor's (task p2-05) under their own kinds; a run's first
+entry is protected from the wrap. Tested with the Walter reset after every entry of the good path
+and of a rollback, and with the power cut during every write of every entry.
 
 **Its own**: ESP-IDF's two application slots with rollback. A new image is marked valid only after
 it has booted, exchanged `HELLO` with the radio, and reached the server within a window; otherwise

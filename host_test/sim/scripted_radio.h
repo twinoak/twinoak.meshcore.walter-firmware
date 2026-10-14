@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,11 @@ class ScriptedRadio final : public interfaces::ByteStream {
   bool idleFor(std::uint32_t ms) override;
 
   // ---------------------------------------------------------------- the knobs
+  // Called at the top of every read() and write() the Walter makes, before the bytes move: a
+  // bench that owns the passage of time (task p2-03's update bench) brings the radio up to date
+  // with the clock here - a reset the flasher issued has taken effect, a boot that was due has
+  // happened - so that the Walter never hears a firmware the chip no longer holds answer it.
+  std::function<void()> on_access;
   int silence = 0;                    // ignore this many more requests, whole
   bool deaf = false;                  // ignore every request (a radio whose firmware is gone)
   std::uint32_t answer_delay_ms = 0;  // how long after a request its answer appears
@@ -72,6 +78,16 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // The event seq the next event carries (§3: the radio counts from 0 and wraps). Public so that a
   // test can skip one and make a gap.
   std::uint8_t event_seq = 0;
+
+  // Phase 2's health check (task p2-03) wants a radio that misbehaves at one request type and
+  // answers every other: the next `times` requests of `type` are refused with `status`, or
+  // ignored whole (silence, as a firmware whose telemetry hangs). 0 times = off.
+  void refuseType(std::uint8_t type, std::uint8_t status, int times = 1);
+  void ignoreType(std::uint8_t type, int times = 1);
+  // STATUS's `flags` (§5.3) as this radio reports them, when a test wants other than the
+  // fixture's: a radio whose bit 4 ("the radio initialised") never comes.
+  bool override_status_flags = false;
+  std::uint16_t status_flags = 0;
 
   // ---------------------------------------------------------------- what it does
   // A new boot_id, the event counter back to 0, nothing remembered - and an EV_BOOT on the wire
@@ -152,6 +168,11 @@ class ScriptedRadio final : public interfaces::ByteStream {
   std::string answer_case_;
   bool refuse_ = false;
   std::uint8_t refuse_status_ = 0;
+  std::uint8_t refuse_type_ = 0;
+  std::uint8_t refuse_type_status_ = 0;
+  int refuse_type_times_ = 0;
+  std::uint8_t ignore_type_ = 0;
+  int ignore_type_times_ = 0;
 };
 
 }  // namespace sim

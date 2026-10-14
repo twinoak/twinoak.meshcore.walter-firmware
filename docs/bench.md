@@ -452,5 +452,61 @@ item below.
   radio, so slot 0 is the only one*, and nothing on the port changes. The areas for slot 1 are in
   the partition all the same, which is what `image list`'s last lines say.
 
-Nothing here flashes a radio: putting a stored image on the RAK is task p2-03's, and its bench
-lines come with it.
+Nothing here flashes a radio: putting a stored image on the RAK is §8's.
+
+## 8. Updating the radio
+
+From task p2-03 (`docs/update.md`, `docs/console.md` *The radio's update*). Needs: §5 walked (a
+real flash through the wire, the bootloader starting what was flashed), §7 walked (a repeater
+release in the store), the RAK's own USB console on the laptop, and **two repeater releases
+signed with the key this build trusts** - a good one and, for the second item, one that is valid
+and signed but **broken on purpose**: a build whose link never comes up (the repeater repository
+can make one by leaving the link task out, or by a `fw_version` in the descriptor that is not the
+one the firmware reports). On a test-key build both are signed with the specification's test key.
+With task p1-05's flashing session this is the one that matters most: the host tests prove the
+procedure against a simulated radio that misbehaves on cue; only a RAK can show that a real
+repeater boots inside the window, takes the clock, and stays up for the period.
+
+- [ ] **The good path, watched.** With the golden image from §7 running on the RAK and a newer
+  release pushed `--as candidate`: `rak update`. Watch the lines: `check -> flashing-candidate`,
+  the flasher's pages, `-> booting: flashed; the radio was reset`, `-> proving: the radio
+  answered` (within seconds of the reset: **write down how long**, that is `kBootWindowMs`'s
+  bench number), then nothing for the proving period (three minutes today: `rak ping`'s cadence
+  is inside it), `-> committing: the health check passed`, `-> done`. Afterwards `image list`
+  shows the new version **golden** and the candidate slot empty, `rak hello` its version, `image
+  bad` empty, and the RAK's own console `get name` / `get public.key` what they were in §5.
+- [ ] **A broken candidate rolls back, and is never tried again.** Push the broken release `--as
+  candidate`; `rak update`. It fails proving - `booting -> rolling-back: no HELLO inside the boot
+  window` for a build whose link never comes up, or `proving -> rolling-back: HELLO's version is
+  not the flashed image's` - and then `rolling-back -> rolling-back (booting the golden image)`,
+  `-> rolling-back (proving the golden image)`, `-> restored`, and the last line names the reason
+  and the step. `rak hello` shows the old version, `image list` the old golden image still golden
+  and the broken one still the candidate, `image bad` lists its hash. **`rak update` again is
+  refused at check**: *this image failed a health check once and is never tried again*, with
+  nothing on the SWD lines. `rak update status` tells the whole story with the entries numbered.
+- [ ] **Pull the Walter's power three times.** During the flash (the pages are going by), during
+  proving (the quiet minutes), and during the rollback's flash of the golden image (use the broken
+  candidate again after `image erase candidate` and a fresh push, since the bad list refuses it).
+  Each time, after power returns, the boot lines include `update: the journal says a run was in
+  progress (update); resuming at <state>`, the run goes on from the main loop printing its
+  transitions, and ends *done* or *restored* as it would have without the cut; `rak update status`
+  shows the resumed entry *(resumed after a restart)*. During proving, the whole period is run
+  again - it is not credited with the minutes before the cut. A RAK cut mid-flash sits in its
+  bootloader until the resumed flash finishes (§5's item 6), which is right.
+- [ ] **A role switch and back keeps the identity.** `image receive scanner` with a NoiseScope
+  release, then `rak role scanner`: `-> done: a scanner is running`, `rak hello` says *the radio is
+  running the scanner*, `rak text` shows its `info` line. Then `rak role repeater`: the golden image
+  flashed back through the rolling-back states, `-> done: the golden image <version> is back and
+  proved`, and `rak id` shows **the same public key and name as before** - the file system above
+  the application region was never touched. `image list`: golden and candidate as they were,
+  `image bad` empty.
+- [ ] **`rak update --first-install` on a module whose application was wiped** (after §5's item 6,
+  or `rak flash-test`'s region). `rak update` is refused (*there is no golden image to return
+  to*); with `--first-install` the candidate is flashed, proved and becomes golden. Do not try the
+  broken candidate this way unless you mean to see *stuck: no image to return to*.
+- [ ] **The numbers.** Against the lines above, `docs/update.md`'s table: the boot window (how long
+  a real repeater takes from reset to `HELLO`; the window must be comfortably more), the proving
+  period (long enough to catch a build that restarts itself after its first advert; short enough
+  that a wake cycle can afford it), the battery threshold against the real pack's curve. Each is a
+  constant in `core/update/radio_update.h` with a sentence; change the number and the sentence
+  together.

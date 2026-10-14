@@ -17,13 +17,18 @@ namespace platform {
 // the table says and what find() looks for.
 constexpr const char* kImagePartitionName = "rakfw";
 constexpr esp_partition_subtype_t kImagePartitionSubtype = static_cast<esp_partition_subtype_t>(0x40);
+// And `journal, data, 0x41, 0x620000, 0x10000`: the update journal (core/update/journal.h, task
+// p2-03) - its own partition, not a namespace in nvs (docs/ARCHITECTURE.md §11).
+constexpr const char* kJournalPartitionName = "journal";
+constexpr esp_partition_subtype_t kJournalPartitionSubtype = static_cast<esp_partition_subtype_t>(0x41);
 
 class FlashPartition final : public interfaces::FlashRegion {
  public:
-  // Finds the partition. False when the table has no such partition, which is a build whose
-  // partitions.csv and firmware disagree - said once, at boot, and the store then refuses
-  // everything.
-  bool begin(const char* name = kImagePartitionName);
+  // Finds the partition by name and subtype. False when the table has no such partition, which
+  // is a build whose partitions.csv and firmware disagree - said once, at boot, and whatever
+  // lives in it then refuses everything.
+  bool begin(const char* name = kImagePartitionName,
+             esp_partition_subtype_t subtype = kImagePartitionSubtype);
 
   std::uint32_t size() const override { return partition_ != nullptr ? partition_->size : 0; }
   std::uint32_t sectorSize() const override { return kSectorSize; }

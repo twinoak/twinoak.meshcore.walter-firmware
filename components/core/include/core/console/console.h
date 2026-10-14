@@ -19,6 +19,8 @@
 #include "core/image/receive.h"
 #include "core/image/store.h"
 #include "core/link/client/client.h"
+#include "core/update/journal.h"
+#include "core/update/radio_update.h"
 #include "interfaces/clock.h"
 #include "interfaces/restart.h"
 #include "interfaces/text_out.h"
@@ -31,13 +33,17 @@ class Console {
   // The image store and the USB transfer (task p2-02) are pointers and not references because a
   // build can be without them: platform::FlashPartition::begin() fails when the partition table
   // has no `rakfw`, and main/ then hands over nothing rather than a store over a region that is
-  // not there. The `image ...` commands say so in one line instead of pretending.
+  // not there. The `image ...` commands say so in one line instead of pretending. The radio's
+  // update and its journal (task p2-03) are the same: no `journal` partition, no update.
   Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
           interfaces::Clock& clock, interfaces::Restart& restart, link::client::Client& radio,
           board::SlotLock& slots, image::Store* images = nullptr,
-          image::Receiver* receiver = nullptr);
+          image::Receiver* receiver = nullptr, update::RadioUpdate* update = nullptr,
+          update::Journal* journal = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
+  // Also where an update the journal says was in progress is taken up again (task p2-03):
+  // resume() here, and tick() then drives it a step at a time, printing each transition.
   void begin();
 
   // One byte from the port. While a transfer is running (`image receive`) the bytes go to it
@@ -112,6 +118,15 @@ class Console {
   void imageReceive(image::Which which);
   void transferEnded();
 
+  // The radio's update (task p2-03).
+  bool updateOk();  // false, with one error line, when this build has no update machine
+  void rakUpdate(update::Kind kind);
+  void rakUpdateStatus();
+  void driveUpdate();  // step() until terminal, printing each transition
+  void printUpdateStep(const update::StepResult& s);
+  void printUpdateOutcome();
+  void printUpdateEntry(std::size_t number, const update::Entry& entry, const update::Payload& p);
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
@@ -121,6 +136,9 @@ class Console {
   board::SlotLock& slots_;
   image::Store* images_ = nullptr;
   image::Receiver* receiver_ = nullptr;
+  update::RadioUpdate* update_ = nullptr;
+  update::Journal* journal_ = nullptr;
+  bool driving_update_ = false;  // `rak update` is running the machine to its end
   board::Slot slot_{};  // the slot the line being run is about
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.

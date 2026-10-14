@@ -21,6 +21,9 @@
 #include "core/image/verdict.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
+#include "core/update/journal.h"
+#include "core/update/link_battery.h"
+#include "core/update/radio_update.h"
 #include "core/version.h"
 #include "platform/boot.h"
 #include "platform/clock.h"
@@ -58,13 +61,17 @@ platform::EspRestart g_restart;
 platform::UsbConsole g_usb;
 platform::RadioUart g_uart;
 platform::FlashPartition g_rakfw;
+platform::FlashPartition g_journal_partition;
 
 // The image store and the USB transfer (task p2-02), when the partition is there: the objects
 // themselves are function statics in app_main (the verdict alone is ~30 KB of parser tokens and
 // parsed manifest, the store has a sector buffer, and neither belongs on the main task's
-// 3584-byte stack), and these are what the console is given.
+// 3584-byte stack), and these are what the console is given. The update journal and the radio's
+// update machine (task p2-03) the same way, when the `journal` partition is there too.
 core::image::Store* g_store = nullptr;
 core::image::Receiver* g_receiver = nullptr;
+core::update::Journal* g_journal = nullptr;
+core::update::RadioUpdate* g_update = nullptr;
 
 // The time of day, which this firmware does not know yet: phase 3's modem reads it from the
 // cellular network and fills this in (interfaces/wall_clock.h). Until then the link client has no
@@ -162,6 +169,22 @@ extern "C" void app_main() {
     }
   }
 
+  // The update journal (task p2-03, core/update/journal.h): the `journal` partition, read once
+  // at boot. What it says was in progress is resumed by the console's begin() below.
+  if (g_journal_partition.begin(platform::kJournalPartitionName, platform::kJournalPartitionSubtype)) {
+    static core::update::Journal journal(g_journal_partition);
+    const core::update::JournalError opened = journal.begin();
+    if (opened == core::update::JournalError::kNone) {
+      g_journal = &journal;
+      std::printf("journal: at 0x%06" PRIx32 " (%" PRIu32 " KB), %" PRIu32 " entries, next seq %" PRIu32
+                  "; 'rak update status' tells the story\n",
+                  g_journal_partition.address(), g_journal_partition.size() / 1024,
+                  journal.validEntries(), journal.nextSeq());
+    } else {
+      std::printf("journal: unusable: %s\n", core::update::describe(opened));
+    }
+  }
+
   // The verdict's anchor (task p2-01, core/image/verdict.h). `image receive` now calls
   // judgeManifest() and judgeFile(), so the six checks have a caller at last and --gc-sections
   // would keep them anyway; the anchor stays because it costs one volatile read and because
@@ -188,12 +211,23 @@ extern "C" void app_main() {
                                                     : core::board::describe(opened));
   }
 
+  // The radio's update (task p2-03, core/update/radio_update.h; docs/update.md): over the store,
+  // its own flasher (12 KB of page buffers, static like the console's), the link client, the
+  // journal and the battery as the radio reports it. Without a store or a journal there is no
+  // update, and the console says so.
+  static core::update::LinkBattery battery(radio);
+  static core::flasher::Flasher update_flasher(radio_pins, g_clock, slots);
+  if (g_store != nullptr && g_journal != nullptr) {
+    static core::update::RadioUpdate update(*g_store, update_flasher, radio, *g_journal, g_clock, battery);
+    g_update = &update;
+  }
+
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
   // time round, the uptime kept in retained storage about once a second. Returning is not an
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
-                                        slots, g_store, g_receiver);
+                                        slots, g_store, g_receiver, g_update, g_journal);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {
