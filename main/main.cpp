@@ -21,7 +21,13 @@
 #include "core/image/verdict.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
+#include "core/net/client.h"
+#include "core/net/download.h"
+#include "core/net/http_over_tls.h"
+#include "core/net/trust.h"
 #include "core/supervisor/supervisor.h"
+#include "core/update/fetch.h"
+#include "core/update/tls_check.h"
 #include "core/update/journal.h"
 #include "core/update/last_good_battery.h"
 #include "core/update/link_battery.h"
@@ -30,6 +36,7 @@
 #include "core/update/uplink_check.h"
 #include "core/uplink/policy.h"
 #include "core/version.h"
+#include "modem/walter_tls.h"
 #include "modem/walter_uplink.h"
 #include "platform/boot.h"
 #include "platform/clock.h"
@@ -66,11 +73,11 @@ platform::UsbConsole g_usb;
 platform::RadioUart g_uart;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
-// The two application slots and ESP-IDF's rollback (task p2-04), and the trial's uplink
-// condition: no server is configured until phase 3, so the condition does not apply
+// The two application slots and ESP-IDF's rollback (task p2-04). The trial's uplink condition
+// is a TLS handshake with the configured server (task p3-02, core/update/tls_check.h); until task
+// p3-03 gives the unit a server, the host is empty and the condition does not apply
 // (core/update/uplink_check.h says why that is the rule and not a gap).
 platform::EspOwnUpdate g_own;
-core::update::UnconfiguredUplink g_uplink;
 
 // The image store and the USB transfer (task p2-02), when the partition is there: the objects
 // themselves are function statics in app_main (the verdict alone is ~30 KB of parser tokens and
@@ -81,6 +88,7 @@ core::image::Store* g_store = nullptr;
 core::image::Receiver* g_receiver = nullptr;
 core::update::Journal* g_journal = nullptr;
 core::update::RadioUpdate* g_update = nullptr;
+core::update::Fetch* g_fetch = nullptr;
 
 // The time of day, which this firmware does not know yet: phase 3's modem reads it from the
 // cellular network and fills this in (interfaces/wall_clock.h). Until then the link client has no
@@ -176,6 +184,29 @@ extern "C" void app_main() {
     }
   }
 
+  // The HTTPS client (task p3-02, docs/ARCHITECTURE.md §9): the modem's TLS over one of its
+  // sockets (components/modem/walter_tls.cpp) behind interfaces::TlsSocket; the roots of
+  // keys/tls/ and the loader that writes them into the modem's certificate slots once
+  // (core/net/trust.h); HTTP/1.1 over the socket (core/net/http_over_tls.h); the client with the
+  // rules (core/net/client.h); the download in ranges (core/net/download.h). The one call that
+  // configures a TLS profile is WalterTlsStore::configureProfile, and it validates the chain and
+  // the host name every time. Nothing here touches the modem: the roots are written at the first
+  // request of a boot whose record says they differ, and `trust tls` says what the record says.
+  static modem::WalterTlsStore tls_store(modem_driver, g_clock);
+  static modem::WalterTlsSocket tls_socket(modem_driver, g_clock);
+  static core::net::TrustLoader trust(tls_store, g_retained, g_clock);
+  trust.begin();
+  static core::net::HttpOverTls https(tls_socket, &trust, g_clock);
+  static core::net::Client http_client(https, g_clock);
+  static core::net::Download download(http_client, g_clock);
+  // The trial's third condition over the real uplink (S-6): a TLS handshake with the configured
+  // server; no server is configured until task p3-03, so it answers "not configured".
+  static core::update::TlsHandshakeCheck g_uplink(tls_socket, &trust, g_clock);
+  std::printf("https: %lu TLS roots (keys/tls), %s; 'trust tls', 'http get <url>', 'fetch <base-url>'\n",
+              static_cast<unsigned long>(core::net::tlsRootCount()),
+              trust.recordLost() ? "the modem's slots have no record and are written at the first request"
+                                 : "the modem's slots are recorded as written");
+
   // The image store (task p2-02, docs/ARCHITECTURE.md §6): the `rakfw` partition behind
   // interfaces::FlashRegion, the records in it, and `image receive` on this port. A build whose
   // partition table has no such partition says so and runs without a store - the console's
@@ -189,6 +220,10 @@ extern "C" void app_main() {
     if (opened == core::image::StoreError::kNone) {
       g_store = &store;
       g_receiver = &receiver;
+      // The fetch of a release into this store (task p3-02): over the client, the download and
+      // the same verdict the USB transfer uses. The console's `fetch` and, later, the wake cycle.
+      static core::update::Fetch fetch(http_client, download, store, verdict, g_clock, &g_usb);
+      g_fetch = &fetch;
       std::printf("image store: rakfw at 0x%06" PRIx32 " (%" PRIu32 " KB), %u bytes laid out for "
                   "%u radio slots x 3 images; 'image list' says what is in it\n",
                   g_rakfw.address(), g_rakfw.size() / 1024,
@@ -283,7 +318,8 @@ extern "C" void app_main() {
   // while this one waits for a byte.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
-                                        self_update_ptr, &supervisor, &uplink);
+                                        self_update_ptr, &supervisor, &uplink, &http_client,
+                                        g_fetch, &trust);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {

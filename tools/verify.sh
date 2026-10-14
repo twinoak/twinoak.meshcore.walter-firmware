@@ -9,7 +9,9 @@
 #                 with its fixtures (cryptography pinned in tools/requirements-verify.txt)
 #   host-tests    host_test/ under ASan+UBSan, ctest          - the logic; first a grep that no GPIO
 #                 call exists outside components/platform/ and that the seven radio pins are
-#                 named only in components/core/board/ (task p0-03)
+#                 named only in components/core/board/ (task p0-03), that core/ names no modem
+#                 symbol (task p3-01), and that TLS is verified: no validation level but the
+#                 full one is named, in one file, and no http:// literal (task p3-02)
 #   release-tests tools/release/test_release.py               - what the release tooling refuses
 #   build         idf.py build, merge-bin, size               - the firmware, images to out/images/
 #   partitions    tools/check_partitions.py --self-test, then against the build
@@ -134,11 +136,51 @@ check_core_has_no_modem() {
   echo "components/core/ names no WalterModem symbol (and no ESP-IDF include: the cmake check)"
 }
 
+# Trust on the wire (task p3-02, spec/SYSTEM.md S-12): the modem library's TLS validation levels
+# other than "the chain and the host name" are named nowhere in this firmware, the one that is
+# appears only in components/modem/walter_tls.cpp, tlsConfigProfile is called from exactly one
+# code line, and no `http://` literal is in the firmware's code. Comment lines are dropped, so a
+# sentence may name them. host_test/core/net/test_trust_rail.cpp is the same three checks as a
+# test that names file and line; this is the second lock on the same door. A grep, not a promise.
+check_tls_rail() {
+  local hits
+  hits=$(grep -rnE 'WALTER_MODEM_TLS_VALIDATION_' components main \
+           --include='*.cpp' --include='*.h' --include='*.c' \
+           | grep -vE ':[[:space:]]*(//|\*|/\*)' \
+           | grep -vE 'WALTER_MODEM_TLS_VALIDATION_URL_AND_CA' || true)
+  if [ -n "$hits" ]; then
+    echo "a TLS validation level other than URL_AND_CA (the chain and the host name) is named:"; echo "$hits"; return 1
+  fi
+  hits=$(grep -rnE 'WALTER_MODEM_TLS_VALIDATION_URL_AND_CA' components main \
+           --include='*.cpp' --include='*.h' --include='*.c' \
+           | grep -vE ':[[:space:]]*(//|\*|/\*)' \
+           | grep -v '^components/modem/walter_tls.cpp:' || true)
+  if [ -n "$hits" ]; then
+    echo "the TLS validation level is named outside components/modem/walter_tls.cpp:"; echo "$hits"; return 1
+  fi
+  local calls
+  calls=$(grep -rnE 'tlsConfigProfile' components main \
+            --include='*.cpp' --include='*.h' --include='*.c' \
+            | grep -vE ':[[:space:]]*(//|\*|/\*)' | grep -c . || true)
+  if [ "$calls" != "1" ]; then
+    echo "tlsConfigProfile appears in $calls code lines; it must be exactly one (components/modem/walter_tls.cpp)"
+    grep -rnE 'tlsConfigProfile' components main --include='*.cpp' --include='*.h' --include='*.c' | grep -vE ':[[:space:]]*(//|\*|/\*)'
+    return 1
+  fi
+  hits=$(grep -rnF '"http://' components main --include='*.cpp' --include='*.h' --include='*.c' \
+           | grep -vE ':[[:space:]]*(//|\*|/\*)' || true)
+  if [ -n "$hits" ]; then
+    echo "an http:// literal in the firmware's code:"; echo "$hits"; return 1
+  fi
+  echo "TLS: only URL_AND_CA validation is named, in walter_tls.cpp; tlsConfigProfile is called once; no http:// literal"
+}
+
 step_host_tests() {
   local dir=$BUILD/host
   check_pin_ownership || return 1
   check_selector_off || return 1
   check_core_has_no_modem || return 1
+  check_tls_rail || return 1
   cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
   cmake --build "$dir" &&
@@ -254,6 +296,17 @@ step_build() {
     echo "core/uplink's policy is not in the link (policy.cpp.obj not in the map)"
     return 1
   }
+  # The HTTPS client (task p3-02): the TLS socket over the library and the client, the download
+  # and the fetch in core/ are called from the console, so --gc-sections keeps them; this is the
+  # check that they are there.
+  for obj in "libmodem.a(walter_tls.cpp.obj" "libcore.a(client.cpp.obj" "libcore.a(download.cpp.obj" \
+             "libcore.a(fetch.cpp.obj" "libcore.a(http1.cpp.obj" "libcore.a(trust.cpp.obj"; do
+    grep -q "$obj" "$dir/$PROJECT_NAME.map" || {
+      echo "the HTTPS client is not in the link ($obj not in the map)"
+      return 1
+    }
+  done
+  echo "the HTTPS client is in the link: walter_tls, http1, trust, client, download, fetch"
   echo "walter-modem is in the link ($(grep -c 'dptechnics__walter-modem' "$dir/$PROJECT_NAME.map") references in the map), called from components/modem/walter_uplink.cpp"
   echo "ccache: $(ccache -s 2>/dev/null | grep -E 'Hits|Misses|hit rate' | tr -s ' ' | tr '\n' ';')"
 }

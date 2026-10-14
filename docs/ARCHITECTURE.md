@@ -44,6 +44,12 @@ components/
                         time must be inside to be the network's, the 3GPP power-saving timers,
                         and the policy - the whole sequence of getting onto the LTE-M network,
                         every step's deadline and the budget one wake may spend (task p3-01)
+    net/                HTTPS (task p3-02): the URL (https only), HTTP/1.1 as bytes - the request
+                        writer and the response parser - over a TLS socket, the roots this
+                        firmware trusts and the loader that writes them into the modem once, the
+                        client with its rules (redirects, statuses, the bound), the download in
+                        ranges, resumable, budgeted. update/fetch.h is the three steps of a
+                        release over them, update/tls_check.h the trial's handshake
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text (task p0-03: help, status, reboots,
                         pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
@@ -53,7 +59,8 @@ components/
                         rak update, rak update --first-install, rak update status, rak role
                         scanner|repeater; task p2-04: self status, receive, switch, confirm,
                         reject; task p2-05: rak watch, rak watch reset-caps, rak ladder; task
-                        p3-01: lte, lte up, lte down, lte time, lte id)
+                        p3-01: lte, lte up, lte down, lte time, lte id; task p3-02: http get,
+                        fetch, trust tls)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
                         board, health and the supervisor hold a record each in), text out, a restart
@@ -61,7 +68,10 @@ components/
                         region (task p2-02); the Walter's own two application slots and their
                         rollback states (task p2-04); the uplink - the steps of getting onto the
                         network and the four things worth asking once it is there, each with a
-                        deadline (task p3-01); a key-value store and a sleeper (later).
+                        deadline (task p3-01); a TLS connection whose chain is verified against
+                        one named root with the host name checked, and the modem's certificate
+                        slots and profiles; one HTTP request with the body as a stream of
+                        pieces (task p3-02); a key-value store and a sleeper (later).
                         ("hal/" when this file was written; ESP-IDF owns a component of
                         that name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
@@ -70,7 +80,8 @@ components/
                         region (tasks p2-02, p2-03), the OTA slots behind esp_ota_* (task p2-04)
   modem/                the Walter's LTE modem behind interfaces/' uplink: the one component that
                         names a WalterModem symbol, on UART2 because UART1 is the radio's (task
-                        p3-01)
+                        p3-01); and its TLS over socket 1 and its certificate slots, with the one
+                        call in this firmware that configures a TLS profile (task p3-02)
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained
                         storage as a map; two application slots with the bootloader's rules at a
@@ -78,7 +89,10 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         trial, confirmation and rollback run through a simulated reset (task p2-04)
   console_host/         the console on stdin and stdout over a simulated flash, so that
                         tools/walterctl.py is tested before a board exists (task p2-02)
-  sim/                  the scripted RAK on a fake UART (task p1-02); the simulated SWD target at
+  sim/                  the scripted RAK on a fake UART (task p1-02); a scripted HTTPS server
+                        behind a fake TLS socket that refuses a chain not ending at the root
+                        asked for, drops after N bytes and stalls, and the firmware's own
+                        HTTP/1.1 over it (task p3-02); the simulated SWD target at
                         the wire level (task p1-03); the simulated nRF52840 behind it - its two
                         access ports, its flash, FICR, UICR, NVMC and core (task p1-04); a flash
                         region that only clears bits and can lose power at any operation
@@ -90,7 +104,8 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
 tools/                  verify.ps1, release/ (the release tooling), walterctl.py (the laptop's end
                         of `image receive`), bench tools
-keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02)
+keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02);
+                        tls/: the TLS roots a server's chain must end at, each with its header (task p3-02)
 spec/                   a copy of the system specification and its fixtures - never edited here
 docs/                   this file, bench.md, release.md, console.md, field.md
 tasks/                  the piles
@@ -662,9 +677,47 @@ clock which goes backwards makes a MeshCore node's own traffic look replayed. Re
 `interfaces::WallClock` - so that the link client has one to give - is the wake cycle's step 2 and
 is task p3-05's; until then `main/` still answers "I have no time to give".
 
-HTTPS through the modem's own HTTP and TLS, with the server's chain **verified** against a root
-loaded into the modem — never "validate nothing". Requests are small; a download is in ranges,
-resumable, hashed as it arrives, written straight to the image store.
+**HTTPS** (task p3-02): the modem's TLS, **over one of its sockets and not through its HTTP
+client** — read at `walter-modem` 1.5.0, the modem's HTTP (`AT+SQNHTTPQRY`/`+SQNHTTPRING`/
+`AT+SQNHTTPRCV`) hands back a response's status, content type and length and nothing else: no
+`Location`, so a redirect cannot be followed (and a GitHub release download is one); no
+`Content-Range`, `ETag` or `Last-Modified`, so a range cannot be checked or a changed file noticed;
+and its receive omits the size (a "known bug" in the library) and then reads to the next `OK`,
+which a binary image can contain. So `core/net/http1.h` writes and parses HTTP/1.1 itself - some
+600 lines, every rule a host test, the parser fuzzed - over `interfaces/tls_socket.h`, whose one
+implementation is `AT+SQNSD` in command mode with `AT+SQNSSCFG` naming a TLS profile. Every
+request is one connection (`Connection: close`); a received `+SQNSRECV: <id>,<len>` is followed by
+exactly `len` raw bytes, which the library reads by count, so the path is binary-safe.
+
+**The chain is verified, and nothing in this firmware can ask otherwise.** The roots
+(`keys/tls/*.pem`, ISRG Root X1 and USERTrust ECC; each with its subject, fingerprint, expiry,
+source and the chains observed, held to the certificate at build time) are written into the modem's
+certificate slots **once** - the loader keeps a hash of what it wrote in retained storage and
+rewrites only what differs - and `WalterTlsStore::configureProfile` is the **one** call to the
+library's `tlsConfigProfile`: it asks for the chain and the host name to be validated
+(`URL_AND_CA`), TLS 1.2, and takes no argument that could ask for less. A host test and
+`tools/verify.sh` hold that the library's other validation levels are named nowhere in this
+firmware and that the call is one. The modem validates against one slot per profile, so each root
+has a slot and a profile and a host is held to one root (`core/net/trust.h`: `github.com` to
+USERTrust, every other host to ISRG); a host whose chain ends elsewhere fails its handshake.
+
+Above the socket: a **client** (`core/net/client.h`) that refuses anything but `https://` before
+the modem is touched, follows at most three redirects and only to `https://`, never carries an
+`Authorization` header to another host, reads 401/403 as *denied* and 429/5xx as *later* with
+`Retry-After` capped at an hour, and cuts a body at the caller's bound rather than buffering it; a
+**download** (`core/net/download.h`) in ranges of 64 KB, each with its deadline and three attempts,
+resuming from what the sink holds, refusing a 206 whose `Content-Range` is not the range asked
+for out of the size expected, restarting the sink from zero on a 200 (a server that ignores
+ranges, or `If-Range` saying the file changed) rather than appending, never delivering more than
+the manifest's size, inside a budget of bytes and seconds per wake; and the **fetch of a release**
+(`core/update/fetch.h`): `manifest.json` and its `.sig`, small and bounded, checks 1-3 before a
+byte of the image is asked for, the image into the store in ranges, checks 4-6 over the bytes as
+they lie in flash, the record. The console's `http get`, `fetch` and `trust tls` drive them;
+the wake cycle (task p3-05) will.
+
+The self-update trial's third condition (S-6) is a TLS handshake with the configured server
+(`core/update/tls_check.h`), its chain verified; no server is configured until task p3-03, so the
+condition does not apply, as before.
 
 ## 10. One wake
 
@@ -734,5 +787,6 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | updates | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
 | supervisor | ✔ a radio silent on cue, fake pins, a simulated chip, a month of random behaviour | — | nRESET held to ground: the ladder climbs and stops; the Walter's own power-up is not an incident |
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
-| modem, HTTPS | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower, a server |
+| modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
+| HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
 | duty cycle | ✔ the policy | sleep entry and wake | current asleep; wake by UART |

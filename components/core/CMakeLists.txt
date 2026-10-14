@@ -59,6 +59,17 @@ idf_component_register(
        "uplink/failure.cpp"
        "uplink/psm.cpp"
        "uplink/policy.cpp"
+       # The HTTPS client (task p3-02): the URL, HTTP/1.1 as bytes, the transport over a TLS
+       # socket, the roots and their loader, the client, the download in ranges; and the fetch of
+       # a release and the self-update trial's TLS handshake over them.
+       "net/url.cpp"
+       "net/http1.cpp"
+       "net/http_over_tls.cpp"
+       "net/trust.cpp"
+       "net/client.cpp"
+       "net/download.cpp"
+       "update/fetch.cpp"
+       "update/tls_check.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 
@@ -102,6 +113,21 @@ add_custom_command(
   VERBATIM)
 target_sources(${COMPONENT_LIB} PRIVATE ${_trust_header})
 target_include_directories(${COMPONENT_LIB} PRIVATE ${_generated})
+
+# The TLS roots (task p3-02): keys/tls/*.pem -> tls_roots.h, generated into the build directory
+# by tools/gen_tls_roots.py - which holds every PEM's header (subject, fingerprint, expiry) to the
+# certificate itself and refuses to write the table otherwise - and included by net/trust.cpp
+# alone.
+set(_tls_header ${_generated}/tls_roots.h)
+file(GLOB _tls_pems ${_repo}/keys/tls/*.pem)
+add_custom_command(
+  OUTPUT ${_tls_header}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${_generated}
+  COMMAND ${_python} ${_repo}/tools/gen_tls_roots.py ${_repo}/keys/tls ${_tls_header}
+  DEPENDS ${_repo}/tools/gen_tls_roots.py ${_tls_pems}
+  COMMENT "the TLS roots: keys/tls/*.pem -> tls_roots.h"
+  VERBATIM)
+target_sources(${COMPONENT_LIB} PRIVATE ${_tls_header})
 
 # Before core/ compiles, every one of its files is read for an ESP-IDF include
 # (tools/cmake/no_idf_include.cmake); one is a failed build with a sentence.

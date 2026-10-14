@@ -60,7 +60,21 @@ add_custom_command(
   COMMENT "the trust table: keys/release-keys.txt -> trust_keys.h"
   VERBATIM)
 
-add_library(core STATIC ${CORE_SOURCES} ${TRUST_HEADER})
+# The TLS roots (task p3-02): keys/tls/*.pem -> tls_roots.h, exactly as components/core/
+# CMakeLists.txt makes it for the firmware; the generator holds each PEM's header to the
+# certificate and refuses a mismatch, so a wrong fingerprint in keys/tls/ is a failed build here
+# as well as there.
+set(TLS_HEADER ${GENERATED}/tls_roots.h)
+file(GLOB TLS_PEMS ${REPO}/keys/tls/*.pem)
+add_custom_command(
+  OUTPUT ${TLS_HEADER}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${GENERATED}
+  COMMAND ${PYTHON3} ${REPO}/tools/gen_tls_roots.py ${REPO}/keys/tls ${TLS_HEADER}
+  DEPENDS ${REPO}/tools/gen_tls_roots.py ${TLS_PEMS}
+  COMMENT "the TLS roots: keys/tls/*.pem -> tls_roots.h"
+  VERBATIM)
+
+add_library(core STATIC ${CORE_SOURCES} ${TRUST_HEADER} ${TLS_HEADER})
 target_include_directories(core PUBLIC ${CORE}/include ${INTERFACES}/include)
 target_include_directories(core PRIVATE ${GENERATED})
 twinoak_ours(core)

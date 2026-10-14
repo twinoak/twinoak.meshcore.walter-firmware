@@ -709,3 +709,72 @@ The task's own list names this section §10; that number was already the supervi
   together. The one to look at first after the attach times is `kModemCallCeilingMs` (30 s, the
   library's own command timeout): if a deaf `AT` really does sit there for 30 seconds, a wake that
   finds a dead modem spends a minute of battery on finding out.
+
+## 12. HTTPS
+
+From task p3-02 (`docs/ARCHITECTURE.md` §9; `docs/console.md`, *HTTPS*; `keys/tls/README.md`).
+Needs §11 walked: a SIM, the antenna, `lte up` saying *up*. Nothing of this section could be run
+in a session - the client, the download and the fetch are tested against a scripted server through
+the firmware's own HTTP, and the one thing a session cannot script is the modem's TLS stack.
+**The third item is the test that the rail is real on the modem and not only in the source.**
+
+The task's own list names this section §11; that number is the modem's, so it is §12.
+
+- [ ] **`trust tls` after the first boot, then after a reboot.** On a fresh unit, before any
+  request: both roots `not written yet: written at the next request`. Then `lte up` and
+  `http get https://meshmaster.dk/`: the request's trace line is preceded by the roots going in
+  (the first request of a unit's life is slower by two `AT+SQNSNVW` and two `AT+SQNSPCFG`), and
+  `trust tls` says `written, matches this build's root` for both and `2 root(s) written in this
+  boot`. **Press the module's reset and `trust tls` again**: still written, `0 root(s) written in
+  this boot` - the record is in RTC memory and the slots were not rewritten. Pull the power
+  instead, and they are written once more at the next request, which is the documented cost of a
+  power cut.
+- [ ] **`http get https://meshmaster.dk/` → 200.** The chain is `meshmaster.dk <- YR1 <- Root YR
+  <- ISRG Root X1` (read 2026-10-14; `keys/tls/isrg-root-x1.pem`), held to slot 12 by profile 2.
+  Expect `http get: 200 ...`, a `Content-Type`, the first bytes as hex and the time. **Write the
+  time down**: it is a connect, a handshake and a small page over LTE-M, and it is what
+  `kDefaultTotalMs` (60 s) and the fetch's `kManifestRequestMs` are guesses at.
+- [ ] **A host whose chain ends at a root this firmware does not carry → refused.**
+  `http get https://example.com/` (its chain ends at DigiCert as of 2026-10; if it has moved to
+  ISRG or Sectigo by the time this is walked, any host behind DigiCert, GlobalSign or GoDaddy
+  will do - check with `openssl s_client -showcerts` first). Expect *error: http get: no
+  response: the modem refused the connection: the host was unreachable or the TLS handshake
+  failed*. The modem library at 1.5.0 does not say which; this walk does: the same host answers
+  `curl` on the laptop, so the name resolves and the port is open, and what refused it is the
+  handshake against a root it does not chain to. **This is the rail on silicon.** If it answers
+  200 instead, the profile is not validating and nothing else in this section matters until it
+  is: check `AT+SQNSPCFG?` by hand against `WalterModem.cpp`'s `tlsConfigProfile`.
+- [ ] **`http get https://expired.badssl.com/` and `https://wrong.host.badssl.com/` → both
+  refused.** badssl.com's chain ends at DigiCert, so both are refused for the root before the
+  expiry or the name is even reached - which is right but proves less. To test the name check on
+  its own, a host behind ISRG with a certificate for another name is needed: any Let's Encrypt
+  site reached by one of its other names (a bare IP in the URL will not do; the client wants a
+  host). Note which refusal was seen and why.
+- [ ] **`http get https://github.com/`** → 200 (or a redirect followed): the chain
+  `github.com <- Sectigo E36 <- Sectigo Root E46 <- USERTrust ECC` held to slot 13 by profile 3.
+  This is the one host on the other root; a 200 here and on meshmaster.dk is both profiles working.
+  If it is refused, the modem's TLS stack may not take an ECC (P-384) root - Sectigo's E46 root
+  (`crt.sectigo.com`) as an alternative anchor is noted in the task's report.
+- [ ] **`fetch` of the repeater's dry-run release from GitHub, on a test-key build**
+  (`tools/verify.ps1 -TestKey`; never on a unit in service). The base URL is the release's
+  `https://github.com/twinoak/twinoak.meshcore.repeater-firmware/releases/download/<tag>`. Expect
+  the 302 to `release-assets.githubusercontent.com` followed, the six checks passing one by one,
+  the ranges with their `206`s, and `fetch: stored`. **Write down the bytes and the seconds**
+  (`fetch: N bytes in R range(s) ... T ms`): they are what `kRangeBytes` (64 KB), `kRangeTotalMs`
+  (2 min), `kDefaultBudgetBytes` (2 MB) and `kDefaultBudgetS` (10 min) were guessed at, and the
+  bytes per second over a real LTE-M link is the number task p3-05's wake budget is built from.
+- [ ] **Pull power half-way through the fetch and run it again - it resumes.** `image list` after
+  the power cut says `empty; a transfer of sha256 ... stopped at N of M bytes (it can be resumed)`
+  with N a multiple of 65536; the second `fetch` says `resuming at N of M bytes already in flash`,
+  asks for ranges from N on (`range N-...`), and ends `stored`. Then `image verify candidate`.
+- [ ] **A normal build refuses the same fetch at check 1**, after the manifest and its signature
+  and before a byte of the image: `fetch: refused at check 1, the signature: the key id names no
+  key this build trusts; nothing stored, the slot is empty`. The state every unit is in until the
+  release key exists (`keys/README.md`).
+- [ ] **The numbers.** Against the lines above: `kDefaultTotalMs`, `kDefaultPieceMs`
+  (`core/net/http_over_tls.h`), `kRangeBytes`, `kRangeTotalMs`, `kRangePieceMs`, `kRangeTries`,
+  `kRetryPauseMs`, `kDefaultBudgetBytes`, `kDefaultBudgetS` (`core/net/download.h`),
+  `kManifestRequestMs` (`core/update/fetch.h`), `kTrustWriteDeadlineMs` (`core/net/trust.h`),
+  `kHandshakeDeadlineMs` (`core/update/tls_check.h`), and the socket's `kSocketConnectTimeoutS`
+  and `kReceivePollMs` (`components/modem/walter_tls.h`). Each is a constant with a sentence;
+  change the number and the sentence together.

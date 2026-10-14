@@ -421,6 +421,56 @@ Parsed parseLte(char* rest) {
   return accept(verb);
 }
 
+// `http get <url>` (task p3-02): one GET. The URL is the rest of the line, one word; the client
+// is what refuses a scheme other than https, so that the refusal is tested where it lives.
+Parsed parseHttp(char* rest) {
+  if (*rest == 0) return refuse("http needs a subcommand: http get <url>");
+  char* sub = rest;
+  char* arg = sub;
+  while (*arg != 0 && !isSpace(*arg)) ++arg;
+  if (*arg != 0) {
+    *arg++ = 0;
+    while (*arg != 0 && isSpace(*arg)) ++arg;
+  }
+  if (std::strcmp(sub, "get") != 0) return refuse2("unknown http subcommand (get): ", sub);
+  if (*arg == 0) return refuse("http get needs a URL: http get <url>");
+  for (const char* p = arg; *p != 0; ++p) {
+    if (isSpace(*p)) return refuse("http get takes one URL and nothing after it");
+  }
+  Parsed p = accept(Verb::kHttpGet);
+  put(p.command.url, sizeof p.command.url, arg);
+  return p;
+}
+
+// `fetch <base-url> [candidate|scanner]` (task p3-02): a release into the store. The default is
+// the candidate slot; golden is never a target (it is reached by a promotion).
+Parsed parseFetch(char* rest) {
+  if (*rest == 0) return refuse("fetch needs a base URL: fetch <base-url> [candidate|scanner]");
+  char* url = rest;
+  char* which = url;
+  while (*which != 0 && !isSpace(*which)) ++which;
+  if (*which != 0) {
+    *which++ = 0;
+    while (*which != 0 && isSpace(*which)) ++which;
+  }
+  Parsed p = accept(Verb::kFetch);
+  put(p.command.url, sizeof p.command.url, url);
+  p.command.which = static_cast<std::uint8_t>(image::Which::kCandidate);
+  if (*which == 0) return p;
+  char* after = which;
+  while (*after != 0 && !isSpace(*after)) ++after;
+  if (*after != 0) return refuse("fetch takes a base URL and one word: fetch <base-url> [candidate|scanner]");
+  if (std::strcmp(which, "candidate") == 0) return p;
+  if (std::strcmp(which, "scanner") == 0) {
+    p.command.which = static_cast<std::uint8_t>(image::Which::kScanner);
+    return p;
+  }
+  if (std::strcmp(which, "golden") == 0) {
+    return refuse("fetch: the golden image is reached by a promotion (rak update), not by a fetch");
+  }
+  return refuse2("fetch: not one of candidate, scanner: ", which);
+}
+
 }  // namespace
 
 Parsed parseLine(const char* line) {
@@ -482,9 +532,13 @@ Parsed parseLine(const char* line) {
     return accept(Verb::kReboot);
   }
   if (std::strcmp(verb, "trust") == 0) {
-    if (hasRest) return refuse("trust takes no argument");
-    return accept(Verb::kTrust);
+    if (!hasRest) return accept(Verb::kTrust);
+    // `trust tls` (task p3-02): the roots on the wire, as `trust` is the release keys.
+    if (std::strcmp(rest, "tls") == 0) return accept(Verb::kTrustTls);
+    return refuse2("trust takes no argument, or 'tls': ", rest);
   }
+  if (std::strcmp(verb, "http") == 0) return parseHttp(rest);
+  if (std::strcmp(verb, "fetch") == 0) return parseFetch(rest);
   if (std::strcmp(verb, "image") == 0) {
     std::uint8_t slot = 0;
     Parsed p = parseImage(rest, &slot);

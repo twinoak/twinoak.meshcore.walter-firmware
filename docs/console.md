@@ -69,6 +69,9 @@ next try in 3 wake(s)`. The modem itself is started by the first call that needs
 | `lte down` | the modem's radio off (`AT+CFUN=0`); the context goes with it |
 | `lte time` | the network's time, or a refusal in words when the modem answered with its own default |
 | `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. The only place this firmware prints them |
+| `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time; the response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
+| `fetch <base-url> [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image |
+| `trust tls` | the TLS roots this build trusts - name, subject, SHA-256 fingerprint, expiry, source, the date they were checked - which certificate slot and TLS profile of the modem each goes to, whether the modem's slots are recorded as holding them, and which host is held to which root |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command or
 subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
@@ -348,6 +351,83 @@ error: lte time: the modem answered with its own default, not a time the network
 `lte id` prints the three numbers that identify a subscription. They are printed **because a person
 asked** and are written to no log and sent nowhere by this firmware; a host test greps the console's
 whole transcript for them (`host_test/core/uplink/test_uplink_privacy.cpp`).
+
+## HTTPS
+
+From task p3-02 (`docs/ARCHITECTURE.md` §9; `keys/tls/README.md`). Three lines, none with a slot;
+`http get` and `fetch` need the uplink up (`lte up` first) and are refused in one line otherwise.
+Every connection verifies the server's chain against one of this build's roots **and** the host
+name; there is no command and no setting that asks for less, and a host whose chain ends at a root
+this firmware does not carry is refused.
+
+```
+> http get https://meshmaster.dk/
+http get: https://meshmaster.dk/ (the chain is verified against this build's roots)
+  GET meshmaster.dk/ -> 200 ok, 1024 bytes, 2831 ms
+http get: 200 the response is larger than the bound: cut off there
+  Content-Type: text/html; charset=utf-8
+  Transfer-Encoding: chunked
+  first 32 bytes: 3c21444f43545950452068746d6c3e0a3c68746d6c206c616e673d22656e223e
+  1024 bytes (cut off: a console line reads 1 KB at most) in 2831 ms
+```
+
+A redirect is followed (at most three, only to `https://`) and the last host named: `http get: 200
+ok after a redirect to release-assets.githubusercontent.com`. A refusal is one `error:` line: *only
+https URLs are accepted*, *the uplink is down: 'lte up' first*, or - when the modem would not
+connect - *no response: the modem refused the connection: the host was unreachable or the TLS
+handshake failed (the library does not say which)*. That last wording is honest about the modem
+library at 1.5.0, which answers one `ERROR` for a name that does not resolve and for a chain it
+cannot verify; `docs/bench.md` §12 is where the two are told apart on a desk, by choosing hosts.
+
+```
+> fetch https://github.com/twinoak/twinoak.meshcore.repeater-firmware/releases/download/v0.3.0
+fetch: https://github.com/.../v0.3.0 into the candidate image of slot 0: manifest.json, its .sig, the six checks, the image
+  GET github.com/twinoak/twinoak.meshcore.repeater-firm... -> 302 ok, 0 bytes, 2210 ms
+  GET release-assets.githubusercontent.com/github-produc... -> 200 ok, 1558 bytes, 2644 ms
+fetch: manifest.json, 1558 bytes
+  ...
+fetch: manifest.json.sig, 114 bytes
+fetch: check 1, the signature: passed (key this build trusts)
+fetch: check 2, the manifest: passed
+fetch: check 3, the image for this slot: passed - twinoak-repeater-rak4630-single-868-v0.3.0.bin, 212992 bytes, version 0.3.0+abc1234
+fetch: check 6, the manifest's region against this build's: passed
+  range 0-65535: ok, 206 (attempt 1)
+  range 65536-131071: ok, 206 (attempt 1)
+  range 131072-196607: failed, the connection closed before the body was complete (attempt 1)
+  range 150000-212991: ok, 206 (attempt 2)
+fetch: 212992 bytes in 3 range(s), 1 retry, 0 restart(s), 61234 ms
+fetch: check 4, the file's size and hash: passed
+fetch: check 5, the descriptor inside the file: passed
+fetch: check 6, the region: passed
+fetch: stored: 0.3.0+abc1234 (twinoak-repeater-rak4630-single-868-v0.3.0.bin, 212992 bytes) is the candidate image; 'image list' shows it
+```
+
+A refusal at a check is one line - `fetch: refused at check 1, the signature: the key id names no
+key this build trusts; nothing stored, the slot is empty` - and until the release key exists
+(`keys/README.md`) that is what every normal build says, before a byte of the image is asked for.
+A fetch that runs out of its budget says so with the bytes in flash - `fetch: stopped on the budget
+with 131072 of 212992 bytes in flash` - and the next `fetch` of the same release resumes there
+(`fetch: resuming at 131072 of 212992 bytes already in flash`). A file whose hash is not the
+manifest's is refused at check 4 and the slot emptied, so nothing resumes into it.
+
+```
+> trust tls
+trust tls: 2 roots; the modem's certificate slots are tracked in retained storage
+  0. ISRG Root X1
+     subject C=US, O=Internet Security Research Group, CN=ISRG Root X1
+     sha256 96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6
+     expires 2035-06-04; checked 2026-10-14 from https://letsencrypt.org/certs/isrgrootx1.pem
+     certificate slot 12, TLS profile 2: written, matches this build's root
+  1. USERTrust ECC Certification Authority
+     ...
+     certificate slot 13, TLS profile 3: written, matches this build's root
+  hosts: github.com -> root 1; every other host -> root 0
+  2 root(s) written in this boot
+```
+
+The slots are written at the first request of a boot whose record says they differ - a first
+boot, a power cut (retained storage does not survive one), a release with another root - and not
+otherwise; `trust tls` before that says *not written yet: written at the next request*.
 
 ## The radio's power, as `status` says it
 

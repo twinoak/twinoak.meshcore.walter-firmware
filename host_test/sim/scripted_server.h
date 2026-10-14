@@ -1,0 +1,99 @@
+// A scripted HTTPS server (task p3-02): what stands at the other end of host_test/sim/
+// fake_tls_socket.h. It takes a request as the bytes the firmware's writer produced, parses it
+// (so that what went over the wire is what is checked), and answers from a script - files by
+// path with ranges that can be switched off, redirects, statuses with a Retry-After, a body one
+// byte too long, a 206 with a wrong Content-Range, chunked bodies, bodies with no length, a raw
+// response for the parser's own tests - and it remembers every request it saw, headers included,
+// so that a test can ask whether an Authorization header reached a second host.
+//
+// Which root a host's chain "ends at" is part of the script too: the fake socket refuses a
+// connection whose root is not the host's, the way the modem refuses a chain it cannot verify.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "core/net/trust.h"
+
+namespace sim {
+
+struct ScriptedHost {
+  std::string name;
+  std::uint8_t root;  // which root of core/net/trust.h the chain ends at
+};
+
+struct ServedFile {
+  std::vector<std::uint8_t> bytes;
+  std::string etag;           // sent when not empty
+  std::string last_modified;  // sent when not empty
+  std::string content_type = "application/octet-stream";
+  bool chunked = false;        // Transfer-Encoding: chunked, in chunks of `chunk_size`
+  std::size_t chunk_size = 100;
+  bool no_length = false;      // neither Content-Length nor chunked: the body ends with the connection
+};
+
+struct Redirect {
+  int status = 302;
+  std::string location;
+};
+
+struct StatusRule {
+  int status = 500;
+  std::string retry_after;  // sent when not empty
+  std::string body;
+};
+
+struct SeenRequest {
+  std::string method;
+  std::string host;  // the Host header
+  std::string path;
+  std::map<std::string, std::string> headers;  // names lower-cased
+  std::string body;
+  bool has(const char* name) const;
+  std::string header(const char* name) const;
+};
+
+class ScriptedServer {
+ public:
+  ScriptedServer();
+
+  // -- the script --------------------------------------------------------------------------
+  std::vector<ScriptedHost> hosts;
+  std::map<std::string, ServedFile> files;       // by path (the query is ignored for the lookup)
+  std::map<std::string, Redirect> redirects;
+  std::map<std::string, StatusRule> statuses;
+  bool ranges = true;               // false: a Range header is ignored and the whole file is sent (200)
+  bool wrong_content_range = false; // a 206 whose Content-Range begins one byte late
+  int extra_bytes = 0;              // appended to every file body, Content-Length counting them
+  bool honour_if_range = true;      // false: If-Range is ignored
+  std::string raw_response;         // when set, sent verbatim to any request
+  bool no_response = false;         // the server takes the request and says nothing (a stall)
+
+  // -- what happened -----------------------------------------------------------------------
+  std::vector<SeenRequest> requests;
+
+  // Whether this host is scripted at all, and which root its chain ends at (false when unknown).
+  bool rootOf(const std::string& host, std::uint8_t* root) const;
+
+  // Serve a file: the simplest script. The same bytes under `path`.
+  void serve(const std::string& path, const std::vector<std::uint8_t>& bytes,
+             const std::string& etag = "", const std::string& last_modified = "");
+
+  // The response to a request as it arrived, as the bytes to send back. Empty when `no_response`.
+  std::vector<std::uint8_t> respond(const std::string& request_text);
+
+ private:
+  static std::string statusText(int status);
+  static void append(std::vector<std::uint8_t>& out, const std::string& text);
+  std::vector<std::uint8_t> response(int status, const std::vector<std::string>& headers,
+                                     const std::uint8_t* body, std::size_t body_size,
+                                     bool with_length);
+  std::vector<std::uint8_t> chunkedResponse(int status, const std::vector<std::string>& headers,
+                                            const std::uint8_t* body, std::size_t body_size,
+                                            std::size_t chunk);
+};
+
+}  // namespace sim
