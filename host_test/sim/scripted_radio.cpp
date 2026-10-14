@@ -234,6 +234,17 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
         payload[11] = static_cast<std::uint8_t>(status_flags & 0xFF);
         payload[12] = static_cast<std::uint8_t>(status_flags >> 8);
       }
+      if (override_uptime && payload.size() >= 9 &&
+          (type == link::type::kPing || type == link::type::kStatus)) {
+        // The uptime a radio reports (§5.2 and §5.3). PING's body after the status byte is
+        // nonce u32 then uptime_s u32, so its uptime is at offset 5; STATUS's begins with
+        // uptime_s, at offset 1. A radio that keeps restarting never gets past a small one,
+        // which is one of the two ways a boot loop shows (task p2-05).
+        const std::size_t at = type == link::type::kPing ? 5 : 1;
+        for (std::size_t b = 0; b < 4; ++b) {
+          payload[at + b] = static_cast<std::uint8_t>(uptime_s >> (8 * b));
+        }
+      }
       if (type == link::type::kPing && packet.payload.size >= 4 && payload.size() >= 5) {
         // §5.2: the nonce is echoed. The fixture's response carries the fixture request's nonce;
         // a radio answering *this* request echoes this one, which is what makes the client's
@@ -317,6 +328,15 @@ void ScriptedRadio::answer(std::uint8_t type, std::uint8_t seq,
     }
   }
   queue(bytes, answer_delay_ms);
+}
+
+void ScriptedRadio::forgetPending() {
+  pending_.clear();
+  readable_.clear();
+  remembered_ = false;
+  receiver_.discardPartial();
+  collected_.clear();
+  line_.clear();
 }
 
 void ScriptedRadio::restart(bool announce) {

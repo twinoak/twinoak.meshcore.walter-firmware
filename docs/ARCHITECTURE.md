@@ -34,8 +34,12 @@ components/
                         radio's update as a state machine with its health check and rollback, the
                         battery as the radio reports it (task p2-03); the Walter's own update -
                         the other slot as a transfer target, the switch, the one-boot trial with
-                        its three conditions, and the uplink condition's seam (task p2-04)
-    supervisor/         the radio's heartbeat and the ladder of remedies
+                        its three conditions, and the uplink condition's seam (task p2-04); the
+                        battery's last good reading, for the rungs that are reached over a dead
+                        link (task p2-05)
+    supervisor/         the radio's heartbeat and the ladder of remedies: the four kinds of
+                        silence, the five rungs, the daily caps in retained storage and the
+                        journal, boot-loop detection, the incidents it keeps (task p2-05)
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text (task p0-03: help, status, reboots,
                         pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
@@ -44,9 +48,10 @@ components/
                         trust; task p2-02: image list, verify, erase, bad, receive; task p2-03:
                         rak update, rak update --first-install, rak update status, rak role
                         scanner|repeater; task p2-04: self status, receive, switch, confirm,
-                        reject)
+                        reject; task p2-05: rak watch, rak watch reset-caps, rak ladder)
     cycle/              one wake, start to finish, against interfaces
-  interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
+  interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
+                        board, health and the supervisor hold a record each in), text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
                         region (task p2-02); the Walter's own two application slots and their
                         rollback states (task p2-04); a key-value store, an uplink, a sleeper
@@ -569,20 +574,49 @@ radio image's `link.major` must be one the running Walter speaks.
 
 ## 8. The supervisor
 
-The radio is healthy when it answers `PING`. When it does not, a ladder, each rung tried only
-after the one before failed, each with a wait and a cap:
+(task p2-05, `core/supervisor/supervisor.h`, `docs/supervisor.md`.) The radio is healthy when it
+answers `PING` (§5.2: it proves the firmware's main loop is turning, which a reset line cannot).
+When it does not, **what the silence means is worked out first** (`spec/LINK-PROTOCOL.md` §9): the
+scanner is running (text lines: reported, left alone), this Walter has only just powered up (its
+own glitch reset the radio — §2 rule 5 — and it is still booting: wait), an update is in progress
+(not ours to disturb, S-7), or the radio really is not answering. Only the last is an incident.
 
-1. ask again (the link's own retries, then again after a pause);
-2. a reset pulse;
-3. a power cycle through the kill line;
-4. flash the golden image, then 2;
+Then a ladder, each rung tried only after the one before failed, each with a wait before the radio
+is judged again, and each with a cap:
+
+1. ask again (the link's own three attempts, then three more after a pause);
+2. a reset pulse (`RadioPins::resetPulse()`; §2 rule 2's spacing is waited out, never violated);
+3. a power cycle through the kill line (`RadioPins::killCycle()`; §2 rules 3 and 4);
+4. what is on the chip: the flasher's **read-only** `verify()` of the golden image against the
+   flash. It matches and the bootloader would start it — the firmware is intact, so flashing would
+   change nothing: rung 5. It differs — the golden image goes back through the update machine's
+   rollback path (`Kind::kRoleRepeater`, with `link_known_down` set), journalled as one run.
+   Protected, or unreadable — rung 5 with that reason, and nothing erases a chip to get past it;
 5. stop, record, report at the next check-in. A radio that does not answer after the golden image
-   is back is a hardware fault and is left alone.
+   is back is a hardware fault and is left alone — until a person, the server, or a long quiet
+   period (`kQuietPeriodMs`, measured in days), after which the ladder may be tried once more.
 
-Caps are per day and survive a restart of the Walter. A radio that restarts by itself over and
-over (many `EV_BOOT`s) is a boot loop and takes the same ladder from rung 3. A radio whose restart
+Caps are per day and survive a restart of the Walter: the counts and the window they are counted
+in are in retained storage **and** in the journal (`kind::kSupervisor`, every entry carrying the
+counts after it), so a power cut that clears RTC memory does not forgive them. **A cap is forgiven
+only when a whole day can be shown to have passed**; a clock that cannot be held against the
+record — a deep sleep that restarted it at zero — re-anchors the window and keeps the counts. A cap
+reached is a refusal that is itself journalled and reported.
+
+A radio that restarts by itself over and over (`kBootLoopBoots` `EV_BOOT`s inside
+`kBootLoopWindowMs`, or an uptime that never gets past `kBootLoopUptimeS`) is a boot loop and takes
+the ladder from rung 3 — a reset will not cure what a reset is already doing. A radio whose restart
 followed the Walter's own power-up is not a fault. Before any rung that cuts power or flashes: the
-battery must allow it.
+battery must allow it, judged on `POWER_GET`'s **last good** reading
+(`core/update/last_good_battery.h`) — the gauge is on the radio's I2C, so a dead radio is a dead
+gauge, and the one flash that exists to unbrick a radio may not be refused for want of it. An
+`EV_ATTENTION` (§8) is recorded with its reason, acknowledged by the next request, and handed to
+whoever runs the wake.
+
+What it reports is a compact record per incident — when, what was seen, each rung and its outcome,
+how it ended — three of them in retained storage and all of them in the journal. **When the
+supervisor runs is phase 3's** (§10): in these piles `rak ladder` is the only thing that climbs and
+`rak watch` reads.
 
 ## 9. The uplink
 
@@ -659,7 +693,8 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | nRF52, flasher | ✔ simulated chip, power loss | — | `rak swd id`: part, variant, protection; a real flash, the bootloader starts it |
 | manifest, signature, descriptor | ✔ spec fixtures, RFC vectors | — | — |
 | image store, journal | ✔ simulated flash, power loss | partition access | — |
-| updates, supervisor | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
+| updates | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
+| supervisor | ✔ a radio silent on cue, fake pins, a simulated chip, a month of random behaviour | — | nRESET held to ground: the ladder climbs and stops; the Walter's own power-up is not an incident |
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem, HTTPS | policy against a fake | every modem call | a SIM, a tower, a server |
 | duty cycle | ✔ the policy | sleep entry and wake | current asleep; wake by UART |

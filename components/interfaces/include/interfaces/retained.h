@@ -16,6 +16,8 @@ namespace interfaces {
 enum class RetainedSlot : std::uint8_t {
   kResetRecord = 0,  // core/board: when the last reset pulse ended
   kHealth = 1,     // core/health: the boot counter and the last reasons
+  kSupervisor = 2,           // core/supervisor: the day's counts, their window, a stop in force
+  kSupervisorIncidents = 3,  // core/supervisor: the incidents kept for the next check-in
   kCount
 };
 

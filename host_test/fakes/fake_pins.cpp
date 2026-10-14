@@ -176,6 +176,8 @@ void FakePins::afterChange(std::uint8_t gpio, bool was_reset_asserted, bool was_
         }
         have_last_reset_end_ = true;
         last_reset_end_ms_ = now;
+        ++reset_pulses;
+        if (on_reset_pulse) on_reset_pulse();
       }
       clk_moved_in_reset_ = false;
     }
@@ -209,6 +211,8 @@ void FakePins::afterChange(std::uint8_t gpio, bool was_reset_asserted, bool was_
       if (off < timing_.min_ms || off > timing_.max_ms) {
         violate("kill-bounds", "KILL driven high for " + std::to_string(off) + " ms");
       }
+      ++kill_cycles;
+      if (on_kill_cycle) on_kill_cycle();
     }
   } else if (isRadioPin(gpio) && killDriven() && (driving(gpio) || pulling(gpio))) {
     violate("driven-while-killed", std::string(netOf(gpio)) + " became " + modeName(p.mode) +

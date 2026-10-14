@@ -461,11 +461,20 @@ StepResult RadioUpdate::stepCheck() {
 
   // The battery: above the threshold and not falling fast. Read over the link; a first install
   // has no radio to ask and a person at the console is the gauge.
+  //
+  // A reading that cannot be had at all is a refusal - except for the two cases where there is no
+  // gauge to be had and never will be in that moment. The INA3221 is on the *radio's* I2C
+  // (spec/SYSTEM.md §2, §5.8's POWER_GET), so a caller that has classified the link as down -
+  // task p2-05's supervisor putting the golden image back on a radio that will not answer - is
+  // asking for the one flash that exists to unbrick a radio, and demanding a reading over the
+  // dead link it has just classified would make that flash impossible. What protects the battery
+  // there is the supervisor's own daily cap and its threshold on the last good reading
+  // (core/update/last_good_battery.h), not a gauge this Walter cannot reach.
   BatteryReading battery;
   if (battery_.read(&battery)) {
     if (battery.millivolts < kBatteryMinMv) return refuse(Reason::kBatteryLow);
     if (battery.trend_known && battery.mv_per_hour <= kBatteryFallingMvPerHour) return refuse(Reason::kBatteryFalling);
-  } else if (request_.kind != Kind::kFirstInstall) {
+  } else if (request_.kind != Kind::kFirstInstall && !request_.link_known_down) {
     return refuse(Reason::kBatteryUnknown);
   }
 

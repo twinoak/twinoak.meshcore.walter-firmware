@@ -73,6 +73,13 @@
 //   rak role scanner      flash the stored scanner image; prove that a scanner is there
 //   rak role repeater     flash the golden image back and prove it
 //
+// and the supervisor (task p2-05; docs/supervisor.md):
+//
+//   rak watch             the supervisor's view: healthy since when, the last incidents, today's
+//                         counts against the caps, a stop in force
+//   rak watch reset-caps  the day's counts to zero and a stop lifted (the bench)
+//   rak ladder            climb the ladder now, each rung printed as it is tried
+//
 // and the Walter's own update (task p2-04; docs/update.md). Not `rak` lines: they are about this
 // board's two application slots, and take no slot:
 //
@@ -139,6 +146,10 @@ enum class Verb : std::uint8_t {
   kRakUpdateStatus,
   kRakRoleScanner,
   kRakRoleRepeater,
+  // The supervisor (task p2-05).
+  kRakWatch,
+  kRakWatchResetCaps,
+  kRakLadder,
   // The Walter's own update (task p2-04).
   kSelfStatus,
   kSelfReceive,

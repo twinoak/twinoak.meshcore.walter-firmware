@@ -128,6 +128,8 @@ constexpr Simple kSimple[] = {
     {"status", Verb::kRakStatus}, {"id", Verb::kRakId},        {"power", Verb::kRakPower},
     {"env", Verb::kRakEnv},       {"events", Verb::kRakEvents}, {"text", Verb::kRakText},
     {"flash-test", Verb::kRakFlashTest},
+    // The supervisor (task p2-05): the ladder, run now.
+    {"ladder", Verb::kRakLadder},
 };
 
 // `rak <subcommand> ...`, with the slot (if any) already taken off the front: see parseLine.
@@ -238,6 +240,16 @@ Parsed parseRak(char* rest) {
     if (std::strcmp(arg, "--first-install") == 0) return accept(Verb::kRakUpdateFirstInstall);
     if (std::strcmp(arg, "status") == 0) return accept(Verb::kRakUpdateStatus);
     return refuse2("rak update: unknown word (rak update, rak update --first-install, rak update status): ", arg);
+  }
+  // rak watch [reset-caps] (task p2-05): the supervisor's view, and the bench's way of emptying
+  // the day's counts and lifting a stop.
+  if (std::strcmp(sub, "watch") == 0) {
+    if (!hasArg) return accept(Verb::kRakWatch);
+    for (const char* p = arg; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("rak watch takes one word: rak watch [reset-caps]");
+    }
+    if (std::strcmp(arg, "reset-caps") == 0) return accept(Verb::kRakWatchResetCaps);
+    return refuse2("rak watch: unknown word (rak watch, rak watch reset-caps): ", arg);
   }
   // rak role scanner | repeater (task p2-03).
   if (std::strcmp(sub, "role") == 0) {
