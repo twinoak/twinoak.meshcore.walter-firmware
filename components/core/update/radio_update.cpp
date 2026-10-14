@@ -255,6 +255,10 @@ StepResult RadioUpdate::refuse(Reason reason) {
 // rollback, or a switch back): stuck. From a first install: stuck, "no image to return to".
 StepResult RadioUpdate::fail(Reason reason, ProveStep step, std::uint32_t detail) {
   reason_ = reason;
+  if (!rollback_image_) {
+    status_.fail_reason = reason;
+    status_.fail_step = step;
+  }
   if (rollback_image_) {
     return enter(State::kStuck, describe(reason), reason, step, detail);
   }
@@ -352,7 +356,22 @@ bool RadioUpdate::resume() {
   // The image this run is about, from the store again: the candidate (or the scanner) unless the
   // run is already rolling back, when it is the golden image.
   const image::Which which = rollback ? image::Which::kGolden : sourceOf(p.kind);
-  if (!loadImage(which, rollback || p.kind == Kind::kRoleRepeater)) {
+  if (from == State::kCommitting) {
+    // A reset between the promotion and its `done` entry leaves the journal saying committing
+    // while the candidate is the golden image already and the candidate slot is empty - so the
+    // candidate is not loaded here (it may be gone, rightly), and stepCommitting tells the two
+    // cases apart by the hash the entry carries. The version, for the story, from whichever
+    // record carries that hash.
+    image::Record r;
+    const image::Which places[2] = {image::Which::kGolden, image::Which::kCandidate};
+    for (image::Which place : places) {
+      if (store_.read(place, request_.slot, &r) == image::StoreError::kNone && r.present &&
+          image::sha256Equal(r.sha256, status_.sha256)) {
+        copyText(r.descriptor.version, status_.version, sizeof status_.version);
+        break;
+      }
+    }
+  } else if (!loadImage(which, rollback || p.kind == Kind::kRoleRepeater)) {
     // Gone from the store (a resume long after, or flash rot): the run cannot go on. For a
     // candidate that means rolling back, if it was ever flashed; for the golden image, stuck.
     state_ = from;
@@ -364,7 +383,7 @@ bool RadioUpdate::resume() {
     }
     return true;
   }
-  if (!rollback && p.kind != Kind::kRoleRepeater) {
+  if (from != State::kCommitting && !rollback && p.kind != Kind::kRoleRepeater) {
     for (std::size_t i = 0; i < image::kSha256Size; ++i) status_.sha256[i] = image_.sha256[i];
   }
   // The resumed state is journalled again, with the flag, before its action starts.
@@ -645,12 +664,14 @@ StepResult RadioUpdate::stepProving(bool rollback) {
         if (!power.ok()) return fail(Reason::kNoTelemetry, ProveStep::kPower);
       }
       prove_step_ = ProveStep::kPassed;
-      if (rollback) {
-        return enter(State::kRestored, "the golden image is back and proved", Reason::kNone,
-                     ProveStep::kPassed, status_.prove_elapsed_ms);
-      }
+      // A switch back to the repeater proves the golden image on the rollback path and is done,
+      // not restored: nothing failed.
       if (request_.kind == Kind::kRoleRepeater) {
         return enter(State::kDone, "the repeater is back and proved", Reason::kNone,
+                     ProveStep::kPassed, status_.prove_elapsed_ms);
+      }
+      if (rollback) {
+        return enter(State::kRestored, "the golden image is back and proved", Reason::kNone,
                      ProveStep::kPassed, status_.prove_elapsed_ms);
       }
       return enter(State::kCommitting, "the health check passed", Reason::kNone, ProveStep::kPassed,

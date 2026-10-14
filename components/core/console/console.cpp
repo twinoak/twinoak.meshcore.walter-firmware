@@ -1230,10 +1230,11 @@ void Console::printUpdateOutcome() {
       }
       break;
     case update::State::kRestored:
-      printf("rak update: restored: the candidate failed its health check (%s%s%s) and is on the bad list;\n"
-             "  the golden image %s is back and proved\n", update::describe(st.reason),
-             st.step != update::ProveStep::kNone ? " at " : "",
-             st.step != update::ProveStep::kNone ? update::describe(st.step) : "", st.version);
+      // Two printf calls: the two lines together are longer than printf's 200-byte buffer.
+      printf("rak update: restored: the candidate failed its health check (%s%s%s) and is on the bad list;\n",
+             update::describe(st.fail_reason), st.fail_step != update::ProveStep::kNone ? " at " : "",
+             st.fail_step != update::ProveStep::kNone ? update::describe(st.fail_step) : "");
+      printf("  the golden image %s is back and proved\n", st.version);
       break;
     case update::State::kStuck:
       printf("rak update: STUCK: %s - the radio has no proved application; a person's business now\n",

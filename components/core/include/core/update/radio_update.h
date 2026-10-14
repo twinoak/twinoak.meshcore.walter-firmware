@@ -253,6 +253,11 @@ struct Status {
   board::Slot slot{};
   Reason reason = Reason::kNone;
   ProveStep step = ProveStep::kNone;
+  // The candidate's failure, when there was one: why it was rolled back and at which step of the
+  // health check. `reason` and `step` follow the machine (after a rollback they are the golden
+  // image's proof), these two stay the candidate's, for the console's last line.
+  Reason fail_reason = Reason::kNone;
+  ProveStep fail_step = ProveStep::kNone;
   std::uint8_t sha256[image::kSha256Size] = {};
   char version[image::kVersionSize] = {};  // of the image being flashed or proved
   std::uint32_t prove_elapsed_ms = 0;

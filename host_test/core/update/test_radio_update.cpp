@@ -493,21 +493,10 @@ TEST_CASE("a scanner image that does not show itself: rolled back to the golden 
 }
 
 TEST_CASE("the link major: a radio that refuses HELLO for this Walter's major fails proving") {
-  ReadyUnit unit;
-  bench::Walter& w = *unit.walter;
-  REQUIRE(w.update.start(unit.request()));
-  const State end = w.run([&](const upd::StepResult& s) {
-    if (s.changed && s.after == State::kBooting && unit.world.boots == 1) {
-      // When the candidate comes up, every HELLO is refused: §5.1's ERR_UNSUPPORTED.
-      unit.world.radio.refuseType(core::link::type::kHello, core::link::status::kUnsupported, 100);
-    }
-    if (s.changed && s.after == State::kRollingBack) {
-      unit.world.radio.refuseType(core::link::type::kHello, core::link::status::kUnsupported, 0);
-    }
-  });
-  INFO(w.transitionText());
-  CHECK(end == State::kRestored);
-  CHECK(w.update.reason() == Reason::kLinkMajor);
+  // When the candidate comes up, every HELLO is refused: §5.1's ERR_UNSUPPORTED, a radio that
+  // does not speak this Walter's major. It answered, so it booted; it is not one this Walter can
+  // run, and it goes on the bad list like any other failure.
+  failsAndIsRestored(Boot::kRefuseHello, Reason::kLinkMajor, upd::ProveStep::kHello);
 }
 
 TEST_CASE("a flash that fails - the target goes silent - rolls back when the chip answers again") {

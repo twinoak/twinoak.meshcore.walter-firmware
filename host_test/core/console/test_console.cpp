@@ -324,11 +324,11 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   CHECK(sequences == 3000);
   CHECK(lines > 3000);
   // Fewer of each than task p0-03's version of this test saw: the bag of tokens grew by the
-  // link's twenty-odd (task p1-02) and the SWD commands' dozen (tasks p1-03, p1-04), so a given
-  // line is less often one of these two. The run is seeded, and at this seed it is 36 resets and
-  // over a hundred kills in some 10 000 lines.
-  CHECK(resets > 30);
-  CHECK(kills > 100);
+  // link's twenty-odd (task p1-02), the SWD commands' dozen (tasks p1-03, p1-04) and the update's
+  // ten (task p2-03), so a given line is less often one of these two. The run is seeded, and at
+  // this seed it is 30 resets and 98 kills in some 10 000 lines.
+  CHECK(resets > 25);
+  CHECK(kills > 90);
   MESSAGE(sequences << " sequences, " << lines << " lines, " << resets << " resets, " << kills
                     << " kills, " << rig.restart.asked << " reboots, no rule broken");
 }

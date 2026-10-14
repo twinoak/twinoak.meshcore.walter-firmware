@@ -172,8 +172,15 @@ TEST_CASE("the power goes during every journal write of the good path: the torn 
     unit.world.journal_flash.lose_power_at_op = op;
     // A torn journal write is the Walter's power going: everything of the Walter stops with it.
     unit.world.journal_flash.on_power_loss = [&] { unit.walter->die(); };
-    REQUIRE(unit.walter->update.start(unit.request()));
-    (void)unit.walter->run();
+    // When the cut is inside the very first entry (the check's), start() itself fails - the
+    // machine does not act without its journal - and the Walter is dead before anything moved.
+    const bool started = unit.walter->update.start(unit.request());
+    if (started) {
+      (void)unit.walter->run();
+    } else {
+      CHECK(unit.walter->update.reason() == Reason::kJournal);
+      CHECK_FALSE(unit.walter->update.active());
+    }
     REQUIRE(unit.world.dead);
     const std::uint32_t entries_before = (op - 1) / 2;  // whole entries written before the cut
     const bool torn_body = op % 2 == 1;

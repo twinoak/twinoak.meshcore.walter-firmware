@@ -232,21 +232,26 @@ TEST_CASE("the ring wraps, erasing the oldest sector first, and never the operat
 }
 
 TEST_CASE("the power goes at every write and erase of a wrap: afterwards the newest entry is the last one written, or the one before it") {
+  // Both sectors full (128 entries; the first lap erases nothing, both sectors were blank), then
+  // the 129th: the erase of sector 0 - the oldest - and the entry's two writes.
+  constexpr std::uint32_t kFull = 2 * 64;
   sim::SimFlash probe(2 * 4096);
   Journal pj(probe);
   REQUIRE(pj.begin() == JournalError::kNone);
-  for (std::uint32_t i = 1; i <= 64; ++i) REQUIRE(add(pj, kind::kRadioUpdate, 1) == JournalError::kNone);
+  for (std::uint32_t i = 1; i <= kFull; ++i) REQUIRE(add(pj, kind::kRadioUpdate, 1) == JournalError::kNone);
+  CHECK(pj.erases() == 0);
   const std::uint32_t before = probe.operations();
-  REQUIRE(add(pj, kind::kRadioUpdate, 2) == JournalError::kNone);  // the 65th: erase sector 1, then the two writes
+  REQUIRE(add(pj, kind::kRadioUpdate, 2) == JournalError::kNone);
   const std::uint32_t ops = probe.operations() - before;
   CHECK(ops == 3);
+  CHECK(pj.erases() == 1);
 
   for (std::uint32_t op = 1; op <= ops; ++op) {
     CAPTURE(op);
     sim::SimFlash flash(2 * 4096);
     Journal j(flash);
     REQUIRE(j.begin() == JournalError::kNone);
-    for (std::uint32_t i = 1; i <= 64; ++i) REQUIRE(add(j, kind::kRadioUpdate, 1) == JournalError::kNone);
+    for (std::uint32_t i = 1; i <= kFull; ++i) REQUIRE(add(j, kind::kRadioUpdate, 1) == JournalError::kNone);
     flash.powerOn();
     flash.lose_power_at_op = op;
     CHECK(add(j, kind::kRadioUpdate, 2) != JournalError::kNone);
@@ -255,11 +260,17 @@ TEST_CASE("the power goes at every write and erase of a wrap: afterwards the new
     REQUIRE(again.begin() == JournalError::kNone);
     Entry e;
     REQUIRE(again.last(&e));
-    CHECK(e.seq == 64);
-    CHECK(again.nextSeq() == 65);
+    // The newest entry is the last one written (seq 128, in sector 1), whatever the cut did to
+    // sector 0: half erased, or the torn first entry of the new lap.
+    CHECK(e.seq == kFull);
+    CHECK(again.nextSeq() == kFull + 1);
     REQUIRE(add(again, kind::kRadioUpdate, 3) == JournalError::kNone);
     REQUIRE(again.last(&e));
-    CHECK(e.seq == 65);
+    CHECK(e.seq == kFull + 1);
     CHECK(e.payload[0] == 3);
+    // And the walk back from it is whole: 129 down to the oldest the ring holds, no gap.
+    const auto walked = walk(again);
+    REQUIRE(walked.size() >= 64);
+    for (std::size_t i = 0; i < walked.size(); ++i) CHECK(walked[i].first == kFull + 1 - i);
   }
 }

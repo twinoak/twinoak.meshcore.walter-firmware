@@ -67,6 +67,7 @@ std::size_t ScriptedRadio::read(std::uint8_t* out, std::size_t max) {
   if (!is_open || max == 0) {
     return 0;
   }
+  if (on_access) on_access();
   ripen();
   const std::size_t n = readable_.size() < max ? readable_.size() : max;
   for (std::size_t i = 0; i < n; ++i) {
@@ -83,6 +84,7 @@ std::size_t ScriptedRadio::write(const std::uint8_t* data, std::size_t size) {
   if (!is_open || size == 0) {
     return 0;
   }
+  if (on_access) on_access();
   writes.push_back(std::vector<std::uint8_t>(data, data + size));
   last_activity_ms_ = clock_.nowMs();
   for (std::size_t i = 0; i < size; ++i) {
@@ -399,6 +401,7 @@ void ScriptedRadio::ignoreType(std::uint8_t type, int times) {
 
 void ScriptedRadio::onCommand(const std::string& line) {
   commands.push_back(line);
+  if (deaf) return;  // a radio whose firmware is gone answers no text either
   if (line == "info") {
     sendLine(kInfoLine);
     return;

@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,11 @@ class ScriptedRadio final : public interfaces::ByteStream {
   bool idleFor(std::uint32_t ms) override;
 
   // ---------------------------------------------------------------- the knobs
+  // Called at the top of every read() and write() the Walter makes, before the bytes move: a
+  // bench that owns the passage of time (task p2-03's update bench) brings the radio up to date
+  // with the clock here - a reset the flasher issued has taken effect, a boot that was due has
+  // happened - so that the Walter never hears a firmware the chip no longer holds answer it.
+  std::function<void()> on_access;
   int silence = 0;                    // ignore this many more requests, whole
   bool deaf = false;                  // ignore every request (a radio whose firmware is gone)
   std::uint32_t answer_delay_ms = 0;  // how long after a request its answer appears

@@ -81,6 +81,7 @@ enum class Boot {
   kRefuseTime,      // TIME_SET refused with ERR_RANGE
   kNotInitialised,  // STATUS flags without bit 4
   kNoPower,         // POWER_GET never answers
+  kRefuseHello,     // every HELLO refused ERR_UNSUPPORTED: §5.1, a radio that does not speak this major
 };
 
 struct UpdateWorld {
@@ -114,9 +115,13 @@ struct UpdateWorld {
     seen_resets = chip.counters().resets;
     // A time to give: the health check's TIME_SET is a real one.
     store.wall.give(1760000000);
-    // The world settles whenever a Walter waits: the radio boots, restarts or goes silent on
-    // cue, so that a caller that only steps the machine and delays sees a live radio.
+    // The world settles whenever a Walter waits, and whenever it touches the UART: the radio
+    // boots, restarts or goes silent on cue, so that a caller that only steps the machine and
+    // delays sees a live radio - and so that a HELLO sent right after the flasher's reset, before
+    // any delay, is not answered by the firmware the chip no longer holds (the scripted radio
+    // answers inside write(); a real radio is dark for a second after its reset).
     clock.on_delay = [this](std::uint32_t) { settle(); };
+    radio.on_access = [this] { settle(); };
   }
 
   // Puts an image's bytes on the chip as an earlier flash would have left them: the bytes, and a
@@ -171,7 +176,11 @@ struct UpdateWorld {
   // The radio boots into whatever the chip holds, with the knob applied.
   void radioBoots() {
     ++boots;
+    // A new boot has no memory of the last firmware's quirks: the per-type refusals and
+    // silences a knob set are cleared, and the knob applied again below.
     radio.override_status_flags = false;
+    radio.refuseType(0, 0, 0);
+    radio.ignoreType(0, 0);
     radio.scanner = false;
     core::image::Fields f;
     if (!chipApplication(&f)) {
@@ -188,6 +197,7 @@ struct UpdateWorld {
     radio.deaf = false;
     if (f.role == core::image::Role::kScanner) {
       radio.scanner = true;  // NoiseScope: lines, no frames (§9)
+      if (boot == Boot::kSilent) radio.deaf = true;  // a scanner build whose console never comes up
       radio.restart(false);
       return;
     }
@@ -203,6 +213,7 @@ struct UpdateWorld {
         radio.status_flags = 0;
         break;
       case Boot::kNoPower: radio.ignoreType(core::link::type::kPowerGet, 100); break;
+      case Boot::kRefuseHello: radio.refuseType(core::link::type::kHello, core::link::status::kUnsupported, 100); break;
     }
     radio.restart(!radio.deaf);  // EV_BOOT on the wire, unless nothing is
   }
