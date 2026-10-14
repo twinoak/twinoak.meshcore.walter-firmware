@@ -44,6 +44,10 @@ idf_component_register(
        # transfer that loads one over USB.
        "image/store.cpp"
        "image/receive.cpp"
+       # The radio's update (task p2-03): the journal, the battery over the link, the machine.
+       "update/journal.cpp"
+       "update/link_battery.cpp"
+       "update/radio_update.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

@@ -333,6 +333,13 @@ def main(argv):
                 "150 000 bytes: two of the store's 64 KB resume points fall inside it", seed=55)
     store_image("store-scanner", 2 * 4096, "a scanner image, for the scanner slot", role="scanner",
                 version="0.3.0+scanner", seed=66)
+    # The radio's update (task p2-03) flashes these through the bit-level SWD simulator, many
+    # times over in its power-loss loops, so they are one page each: a golden image and a newer
+    # candidate, each with a version of its own for the health check to hold HELLO against.
+    store_image("update-golden", 4096, "one page: the golden image of the update tests",
+                version="0.3.0+golden0", seed=77)
+    store_image("update-candidate", 4096, "one page: the candidate of the update tests",
+                version="0.3.1+candid0", seed=88)
 
     rfc = index["rfc8032_test_1"]
     text = HEADER % {

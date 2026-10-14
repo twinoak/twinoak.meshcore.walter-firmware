@@ -579,10 +579,14 @@ TEST_CASE("only the store reads and writes the image partition") {
   // interfaces::FlashRegion is named in the interface, in the store, in the platform's partition
   // and where main/ constructs one - and nowhere else in the firmware. The store is the only
   // thing that erases or writes the radio's images, which is why a record can be relied on.
+  // The update journal (task p2-03) holds the second one: the `journal` partition, which is not
+  // the image partition and never names an image's bytes.
   const std::vector<std::string> allowed = {
       "components/interfaces/include/interfaces/flash_region.h",
       "components/core/include/core/image/store.h",
       "components/core/image/store.cpp",
+      "components/core/include/core/update/journal.h",
+      "components/core/update/journal.cpp",
       "components/platform/include/platform/flash_partition.h",
       "components/platform/flash_partition.cpp",
   };

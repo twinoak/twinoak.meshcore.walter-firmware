@@ -45,6 +45,9 @@ class SimFlash final : public interfaces::FlashRegion {
   // powered() is false until powerOn().
   std::uint32_t lose_power_at_op = 0;
   std::function<void()> on_power_loss;
+  // Told after every write and erase that completed (task p2-03: the update's reset-at-every-
+  // journal-entry loop watches the journal's writes go by and pulls the plug after one).
+  std::function<void(const FlashOp&)> on_op;
 
   // The power back: the contents as they were when it went, the countdown cleared. What a Walter
   // that reset in the middle sees.
@@ -53,6 +56,9 @@ class SimFlash final : public interfaces::FlashRegion {
     lose_power_at_op = 0;
     ops_ = 0;
   }
+  // The power gone *between* operations: nothing torn, every operation from now on fails until
+  // powerOn(). A Walter that died right after a write.
+  void powerOff() { powered_ = false; }
   bool powered() const { return powered_; }
 
   // How many writes and erases there have been (what lose_power_at_op counts against).
@@ -82,6 +88,7 @@ class SimFlash final : public interfaces::FlashRegion {
       cutPower();
       return false;
     }
+    if (on_op) on_op(log.back());
     return true;
   }
 
@@ -103,6 +110,7 @@ class SimFlash final : public interfaces::FlashRegion {
       cutPower();
       return false;
     }
+    if (on_op) on_op(log.back());
     return true;
   }
 

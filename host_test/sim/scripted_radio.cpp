@@ -158,6 +158,11 @@ void ScriptedRadio::onFrame(const link::Packet& packet, const std::vector<std::u
     requests.push_back(seen);
     return;
   }
+  if (ignore_type_times_ > 0 && packet.type == ignore_type_) {
+    --ignore_type_times_;
+    requests.push_back(seen);
+    return;
+  }
 
   // §3: the (type, seq) of the last request executed is not executed again - the remembered
   // response is sent again. This is what makes a retry of a SEND_* transmit nothing.
@@ -190,6 +195,10 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
     refuse_ = false;
     return std::vector<std::uint8_t>{refuse_status_};
   }
+  if (refuse_type_times_ > 0 && type == refuse_type_) {
+    --refuse_type_times_;
+    return std::vector<std::uint8_t>{refuse_type_status_};
+  }
   if (answer_with_) {
     answer_with_ = false;
     const Value* one = findCase(answer_case_);
@@ -216,6 +225,12 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
         // §5.1's body, with this radio's own role, capabilities and boot_id in it. The body starts
         // after the status byte: proto_major, proto_minor, role, slot, max_payload, caps, boot_id.
         payload = helloBody(payload, 1);
+      }
+      if (type == link::type::kStatus && override_status_flags && payload.size() >= 13) {
+        // §5.3's body after the status byte: uptime_s u32, reset_reason u8, time_state u8,
+        // epoch u32, flags u16 - so flags is at offset 11.
+        payload[11] = static_cast<std::uint8_t>(status_flags & 0xFF);
+        payload[12] = static_cast<std::uint8_t>(status_flags >> 8);
       }
       if (type == link::type::kPing && packet.payload.size >= 4 && payload.size() >= 5) {
         // §5.2: the nonce is echoed. The fixture's response carries the fixture request's nonce;
@@ -369,6 +384,17 @@ void ScriptedRadio::answerWith(const std::string& case_name) {
 void ScriptedRadio::refuseNext(std::uint8_t status) {
   refuse_ = true;
   refuse_status_ = status;
+}
+
+void ScriptedRadio::refuseType(std::uint8_t type, std::uint8_t status, int times) {
+  refuse_type_ = type;
+  refuse_type_status_ = status;
+  refuse_type_times_ = times;
+}
+
+void ScriptedRadio::ignoreType(std::uint8_t type, int times) {
+  ignore_type_ = type;
+  ignore_type_times_ = times;
 }
 
 void ScriptedRadio::onCommand(const std::string& line) {

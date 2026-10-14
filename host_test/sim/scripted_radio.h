@@ -73,6 +73,16 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // test can skip one and make a gap.
   std::uint8_t event_seq = 0;
 
+  // Phase 2's health check (task p2-03) wants a radio that misbehaves at one request type and
+  // answers every other: the next `times` requests of `type` are refused with `status`, or
+  // ignored whole (silence, as a firmware whose telemetry hangs). 0 times = off.
+  void refuseType(std::uint8_t type, std::uint8_t status, int times = 1);
+  void ignoreType(std::uint8_t type, int times = 1);
+  // STATUS's `flags` (§5.3) as this radio reports them, when a test wants other than the
+  // fixture's: a radio whose bit 4 ("the radio initialised") never comes.
+  bool override_status_flags = false;
+  std::uint16_t status_flags = 0;
+
   // ---------------------------------------------------------------- what it does
   // A new boot_id, the event counter back to 0, nothing remembered - and an EV_BOOT on the wire
   // (§5.1), unless `announce` is false (a radio that was reset while the Walter slept).
@@ -152,6 +162,11 @@ class ScriptedRadio final : public interfaces::ByteStream {
   std::string answer_case_;
   bool refuse_ = false;
   std::uint8_t refuse_status_ = 0;
+  std::uint8_t refuse_type_ = 0;
+  std::uint8_t refuse_type_status_ = 0;
+  int refuse_type_times_ = 0;
+  std::uint8_t ignore_type_ = 0;
+  int ignore_type_times_ = 0;
 };
 
 }  // namespace sim

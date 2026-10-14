@@ -61,6 +61,17 @@
 //   image receive <which> [@slot]
 //                         take manifest.json, its .sig and the image over a framed binary
 //                         transfer on this port (tools/walterctl.py; core/image/receive.h)
+//
+// and the radio's update (task p2-03; docs/update.md). These are `rak` lines, so the slot goes
+// in front as for every other:
+//
+//   rak update            flash the candidate, prove it, promote it - or roll back; each
+//                         transition printed as it happens
+//   rak update --first-install
+//                         the same with no golden image to return to: a person's command only
+//   rak update status     the journal's story of the last update, in words
+//   rak role scanner      flash the stored scanner image; prove that a scanner is there
+//   rak role repeater     flash the golden image back and prove it
 #pragma once
 
 #include <cstddef>
@@ -107,6 +118,12 @@ enum class Verb : std::uint8_t {
   kImageErase,
   kImageBad,
   kImageReceive,
+  // The radio's update (task p2-03).
+  kRakUpdate,
+  kRakUpdateFirstInstall,
+  kRakUpdateStatus,
+  kRakRoleScanner,
+  kRakRoleRepeater,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.

@@ -39,6 +39,19 @@ TEST_CASE("every command parses, with and without a line ending, with surroundin
   CHECK_FALSE(core::console::parseLine("trust all").ok);
   CHECK(verbOf("rak reset") == Verb::kRakReset);
   CHECK(verbOf("rak kill 5") == Verb::kRakKill);
+  // The radio's update (task p2-03).
+  CHECK(verbOf("rak update") == Verb::kRakUpdate);
+  CHECK(verbOf("rak update --first-install") == Verb::kRakUpdateFirstInstall);
+  CHECK(verbOf("rak update status") == Verb::kRakUpdateStatus);
+  CHECK(verbOf("rak @0 update status\r\n") == Verb::kRakUpdateStatus);
+  CHECK(verbOf("rak role scanner") == Verb::kRakRoleScanner);
+  CHECK(verbOf("rak role repeater") == Verb::kRakRoleRepeater);
+  CHECK(parseLine("rak @1 update").command.slot == 1);
+  CHECK(errorOf("rak update now") == "rak update: unknown word (rak update, rak update --first-install, rak update status): now");
+  CHECK(errorOf("rak update status now") == "rak update takes one word: rak update [--first-install | status]");
+  CHECK(errorOf("rak role") == "rak role needs a role: rak role scanner | repeater");
+  CHECK(errorOf("rak role bridge") == "rak role: not one of scanner, repeater: bridge");
+  CHECK(errorOf("rak role scanner now") == "rak role takes one word: rak role scanner | repeater");
   CHECK(verbOf("  status  \r\n") == Verb::kStatus);
   CHECK(verbOf("rak   kill\t7\n") == Verb::kRakKill);
   CHECK(verbOf("rak reset\r") == Verb::kRakReset);

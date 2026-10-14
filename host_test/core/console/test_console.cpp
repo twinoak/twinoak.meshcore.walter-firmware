@@ -265,7 +265,12 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           // the flasher (task p1-05): nothing answers, the lines are released
                           "flash-test", "rak flash-test", "rak flash-test now",
                           // the trust table (task p2-01): no pin, no slot
-                          "trust", "trust me", "rak trust"};
+                          "trust", "trust me", "rak trust",
+                          // the radio's update (task p2-03): this rig has no update machine, so
+                          // every one is refused in one line and touches nothing
+                          "update", "role", "scanner", "repeater", "--first-install",
+                          "rak update", "rak update status", "rak update --first-install",
+                          "rak role scanner", "rak role repeater"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);
