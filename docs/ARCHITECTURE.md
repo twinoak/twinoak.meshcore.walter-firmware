@@ -660,5 +660,6 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | manifest, signature, descriptor | ✔ spec fixtures, RFC vectors | — | — |
 | image store, journal | ✔ simulated flash, power loss | partition access | — |
 | updates, supervisor | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
+| the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem, HTTPS | policy against a fake | every modem call | a SIM, a tower, a server |
 | duty cycle | ✔ the policy | sleep entry and wake | current asleep; wake by UART |

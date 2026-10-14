@@ -227,7 +227,7 @@ extern "C" void app_main() {
   // update, and the console says so.
   static core::update::LinkBattery battery(radio);
   static core::flasher::Flasher update_flasher(radio_pins, g_clock, slots);
-  core::update::SelfUpdate* self = nullptr;
+  core::update::SelfUpdate* self_update_ptr = nullptr;
   if (g_store != nullptr && g_journal != nullptr) {
     static core::update::RadioUpdate update(*g_store, update_flasher, radio, *g_journal, g_clock, battery);
     g_update = &update;
@@ -237,7 +237,7 @@ extern "C" void app_main() {
     // restart's reason.
     static core::update::SelfUpdate self_update(g_own, *g_store, *g_journal, radio, g_uplink, g_clock,
                                                 g_restart, battery, health);
-    self = &self_update;
+    self_update_ptr = &self_update;
   }
 
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
@@ -245,7 +245,7 @@ extern "C" void app_main() {
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
-                                        slots, g_store, g_receiver, g_update, g_journal, self);
+                                        slots, g_store, g_receiver, g_update, g_journal, self_update_ptr);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {
