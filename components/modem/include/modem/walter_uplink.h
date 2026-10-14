@@ -15,10 +15,13 @@
 //     internal pins: LTE_UART0_RX/TX/RTS/CTS and LTE_RESET), none of them one of our seven;
 //   * starts three static tasks: `uart_rx_task`, `queueProcessingTask` and
 //     `eventProcessingTask`;
-//   * calls `gpio_set_direction` and `gpio_deep_sleep_hold_en()` for the modem's reset pin, and
-//     `gpio_hold_en(45)` inside `reset()`. **`gpio_deep_sleep_hold_en/dis` is a chip-wide
+//   * sets the direction of the modem's reset pin and enables the chip's deep-sleep pad hold for
+//     it, and holds the pad again inside `reset()`. **The deep-sleep hold enable is a chip-wide
 //     switch** and platform/pins.cpp uses it for the radio's pads (docs/ARCHITECTURE.md §2 rule
-//     5); the order the duty cycle has to keep is in tasks/phase-3/reports/01.md;
+//     5); the order the duty cycle has to keep is in tasks/phase-3/reports/01.md. (The three
+//     function names are deliberately not written here: tools/verify.sh greps the whole of
+//     components/ and main/ for a GPIO call outside components/platform/, and that grep is not
+//     weakened to let a comment past it.)
 //   * on a cold boot calls `reset()` - a 10 ms pulse on the modem's reset pin and a wait for
 //     `+SYSSTART`, seconds - and on a wake from deep sleep `_sleepWakeup()` instead;
 //   * sets `AT+CMEE=1` and `AT+CEREG=5`, which is what makes the PSM timers the network grants
@@ -30,6 +33,25 @@
 // idle tasks - with one of the library's choosing. The header says "a minimum timeout of 300 is
 // enforced"; the code enforces `CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS/1000 + 5`, which is 35.
 // Both facts are in tasks/phase-3/reports/01.md.
+//
+// -- why this firmware sets the library's command attempts to 1 --------------------------------
+//
+// The command task retransmits a command that answered `ERROR` or `+CME ERROR`, not only one
+// that timed out: `_processModemRSP` sets `WALTER_MODEM_CMD_STATE_RETRY_AFTER_ERROR` on both
+// (WalterModem.cpp:2079 and :2093) and `_processModemCMD` then sends it again until
+// `cmd->maxAttempts` (:1731-1748). `maxAttempts` is `CONFIG_WALTER_MODEM_DEFAULT_CMD_ATTEMPTS`
+// for every public call - `_queueModemCMD` takes it as an argument but is private, and
+// `unlockSIM` does not pass one.
+//
+// So at the library's default of 3, **one call to `unlockSIM` with a wrong PIN sends
+// `AT+CPIN=<pin>` three times, and three refusals block the SIM card**: a PUK, the operator's
+// letter and a person at the mast. The task's rule - "this firmware sends a PIN at most once per
+// PIN value" - cannot be kept with a library that turns one send into three, and there is no
+// per-command way to ask for fewer. `sdkconfig.defaults` therefore sets
+// `CONFIG_WALTER_MODEM_DEFAULT_CMD_ATTEMPTS=1`, with the reason beside it. What it costs: a
+// command lost to noise is not retransmitted by the library. That is the cheaper half - the
+// modem's UART is a trace inside the module with hardware flow control, and the retry this
+// firmware really relies on is the next wake's (core/uplink/failure.h).
 //
 // -- the deadlines, honestly -------------------------------------------------------------------
 //

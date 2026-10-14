@@ -107,10 +107,12 @@ namespace uplink {
 // all; ten seconds is "it is not there", not "it is busy".
 constexpr std::uint32_t kPresentDeadlineMs = 10000;
 
-// A modem reset and its `+SYSSTART`. The library pulses the reset pin for 10 ms and then waits a
-// second before it even listens (WalterModem.cpp, reset()); the Sequans module's own start-up is
-// a few seconds more.
-constexpr std::uint32_t kModemResetDeadlineMs = 30000;
+// A modem reset and its `+SYSSTART`. The library pulses the reset pin for 10 ms, waits a whole
+// second before it even listens, and then waits for `+SYSSTART` for one command timeout
+// (WalterModem.cpp, reset()); the Sequans module's own start-up is a few seconds. So the call
+// itself can take kModemCallCeilingMs plus that second, and a deadline shorter than the sum
+// would be reported as an overrun at every reset of a modem that is really gone.
+constexpr std::uint32_t kModemResetDeadlineMs = 32000;
 
 // `AT+CFUN=4` or `=1`: the modem's radio coming up or going down. Seconds, not milliseconds -
 // it is a radio - and fifteen is past anything the module does when it is healthy.
@@ -170,12 +172,15 @@ constexpr std::uint32_t kTakeDownDeadlineMs = 10000;
 constexpr std::uint32_t kWakeBudgetMs = 240000;
 
 // The longest one blocking call of the modem library can take, whatever deadline it was given:
-// CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS (30 s at the library's Kconfig default) times
-// CONFIG_WALTER_MODEM_DEFAULT_CMD_ATTEMPTS (3). The library waits on a condition variable with
+// CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS (30 s, the library's default) times
+// CONFIG_WALTER_MODEM_DEFAULT_CMD_ATTEMPTS, which `sdkconfig.defaults` sets to 1 and says why
+// (a retried `AT+CPIN=` is a blocked SIM card). The library waits on a condition variable with
 // no timeout of its own (WalterDefines.h, `_returnAfterReply`) and its command task is what
 // gives up, so this is the real ceiling. The budget has to be larger than it or a single stuck
-// command would eat a whole wake; components/modem/walter_uplink.cpp holds the two to each other.
-constexpr std::uint32_t kModemCallCeilingMs = 90000;
+// command would eat a whole wake; the static_assert in components/modem/include/modem/
+// walter_uplink.h holds the library's own configuration to this number, so that raising either
+// Kconfig value fails the build rather than making the budget a lie.
+constexpr std::uint32_t kModemCallCeilingMs = 30000;
 static_assert(kWakeBudgetMs > kModemCallCeilingMs,
               "a wake's budget must leave room for one worst-case modem call");
 

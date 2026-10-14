@@ -1974,6 +1974,10 @@ void Console::lte() {
 
 void Console::lteUp() {
   if (!lteOk()) return;
+  // The wake is begun *first*, and the backoff asked afterwards: "would the backoff have tried
+  // in this wake" is only a true sentence about a wake that has been counted (core/uplink/
+  // policy.h, beginWake). A person asking goes ahead either way.
+  uplink_->beginWake();
   const bool allowed = uplink_->mayTry();
   const std::uint32_t wait = uplink_->wakesUntilNextTry();
   printf("lte up: bringing the uplink up; the budget is %lu s and an attach from cold can take\n",
@@ -1987,7 +1991,6 @@ void Console::lteUp() {
     printf("  (%lu more wake(s)); a person asking goes ahead anyway\n",
            static_cast<unsigned long>(wait));
   }
-  uplink_->beginWake();
   const uplink::Result r = uplink_->bringUp();
   if (r.up) {
     printf("lte up: up in %lu ms (%s)\n", static_cast<unsigned long>(r.spent_ms),
@@ -2005,8 +2008,9 @@ void Console::lteUp() {
     return;
   }
   printf("lte up: %s - %s\n", uplink::describe(r.failure), uplink::means(r.failure));
-  printf("  reached '%s' in %lu ms; the modem is down again%s%s\n", uplink::describe(r.reached),
+  printf("  reached '%s' in %lu ms; the modem is down again%s%s%s\n", uplink::describe(r.reached),
          static_cast<unsigned long>(r.spent_ms),
+         r.modem_reset ? "; the modem was reset (the one reset a wake is allowed)" : "",
          r.abandoned ? "; abandoned: the wake's budget ran out" : "",
          r.overran ? "; a modem call came back after its deadline" : "");
   printNextTry();
