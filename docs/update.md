@@ -1,10 +1,11 @@
-# Updating the radio
+# Updating the radio, and the Walter itself
 
 How the Walter replaces the repeater's firmware without ever leaving the unit worse off than it
-found it (`spec/SYSTEM.md` S-5 and §6, `docs/ARCHITECTURE.md` §7). Task p2-03 built it; the code
-is `components/core/update/` and the tests `host_test/core/update/`. This file is what a person at
-the console needs: the diagram, the health check, what each line printed means, and what state a
-unit is in after a power cut at each step.
+found it (`spec/SYSTEM.md` S-5 and §6, `docs/ARCHITECTURE.md` §7), and how it replaces its own
+(S-6, S-7). Task p2-03 built the radio's half and task p2-04 the Walter's; the code is
+`components/core/update/` and the tests `host_test/core/update/`. This file is what a person at
+the console needs: the diagrams, the checks, what each line printed means, and what state a unit
+is in after a power cut at each step. The Walter's half is the second part of this file.
 
 ## The idea in one paragraph
 
@@ -230,8 +231,232 @@ with a sentence beside it; none has been held against a real radio yet (`docs/be
 | `kStepIdleMs` | 100 ms | what `rak update` sleeps between steps that only waited |
 | `kEntriesPerRunMax` | 48 | more journal entries than this in one run means something is looping, and the machine stops writing |
 
-## What is not here
+## What is not here (the radio's half)
 
 Deciding *when* to update (phase 3's wake cycle; later the server), fetching a candidate (phase
-3's uplink; today `tools/walterctl.py push --as candidate`), the Walter's own update (task p2-04),
-and the supervisor that calls `flash the golden image` as a rung of its ladder (task p2-05).
+3's uplink; today `tools/walterctl.py push --as candidate`), and the supervisor that calls `flash
+the golden image` as a rung of its ladder (task p2-05). The Walter's own update follows.
+
+---
+
+# The Walter's half: updating the Walter itself
+
+`spec/SYSTEM.md` S-6: "The Walter updates itself A/B with rollback, and a new image is confirmed
+only after it has booted, spoken to the RAK and reached the server. A Walter that cannot do all
+three goes back." Task p2-04 built it; the code is `core/update/self_update.h`, the platform's
+part `platform/own_update.cpp`, the tests `host_test/core/update/test_self_update.cpp` and
+`host_test/core/console/test_console_self.cpp`.
+
+## The idea in one paragraph
+
+The Walter has two application slots, `ota_0` and `ota_1` (`partitions.csv`), and ESP-IDF's
+bootloader with **rollback enabled**. A new image of this firmware is received into the other slot
+through the **same six checks** a radio image passes (`spec/FIRMWARE-MANIFEST.md` §5, with the
+descriptor's role `manager` and board `walter`), is made the next to boot, the radio is told, and
+the Walter restarts. The new image then has **one boot** - the bootloader marks its slot
+*pending-verify* and will abort it at the next reset unless it has confirmed itself - to prove it
+can do the unit's job: reach its main loop with the board in the safe state, exchange `HELLO` with
+the radio, and complete one exchange with the backend over the uplink. All three inside the **trial
+window** and it writes itself *valid*; otherwise it writes itself *invalid* and restarts, and the
+bootloader runs the image that worked. Every step is journalled before it is done, so the image
+that boots next - whichever of the two it is - reads what was in the air and closes the story:
+why it was rolled back, and the new image's hash on the bad list so it is never tried again.
+
+```
+self receive ─► received ─► self switch ─► switching ─► restart ─► on trial ─► confirmed
+  (the six checks,            (journal, the boot      (the bootloader:        (all three
+   into the other slot)        pointer, SLEEP_NOTICE)  new -> pending-verify)  conditions)
+                                                                      │
+                     the window passes · a condition fails · any reset · self reject
+                                                                      ▼
+                                                               rolled back
+                                      (the hash on the bad list; invalid; restart into the old image)
+```
+
+## The trial: three conditions, one boot
+
+| | Condition | Met when | Not applicable when |
+|---|---|---|---|
+| 1 | **the main loop**, with the board in the safe state | the console's first `tick()` - the main loop turning after `RadioPins` put the seven pins where they belong | never |
+| 2 | **`HELLO` exchanged with the radio** | the radio answers `HELLO` (or shows itself as a scanner, task p1-02's text mode) | the radio was **known down before the update**: the switch asked `HELLO` and recorded the answer in its journal entry; a caller that has classified the radio as down - the supervisor (task p2-05), or `self switch radio-down` on the console - says so. A dead radio does not condemn a good Walter image; a radio that answered before the update and is silent after it does |
+| 3 | **one exchange with the backend** over the uplink | `UplinkCheck::check()` says *reached* | **no server is configured**: the check says *not configured*. Until phase 3 there is no modem and no server, so this is every unit's state, and the trial confirms on conditions 1 and 2 |
+
+The conditions are tried in order: `HELLO` every `kTrialHelloIntervalMs` once the loop turns; the
+uplink once the radio is settled, again every `kTrialUplinkRetryMs` after a failure. All three
+settled → `esp_ota_mark_app_valid_cancel_rollback()`, the journal says *confirmed*. The window
+passes → the **first missing condition names the rollback**: *the main loop was not reached inside
+the trial window*, *the radio answered before the update and not after it*, *the backend was not
+reached inside the trial window*; the hash goes on the bad list, the journal says *rolled back*,
+and `esp_ota_mark_app_invalid_rollback_and_reboot()` restarts into the previous image.
+
+**A trial is one boot.** The bootloader aborts any slot still *pending-verify* when it runs
+(`bootloader_utility.c`, ESP-IDF v5.5.5), so a reset during the trial - a panic, a watchdog, a
+power cut, a person's finger - is a rollback whatever its reason. The old image boots, finds *on
+trial* (or *switching*, when the new image never got as far as journalling its trial) as the last
+self-update entry, and writes *rolled back: the image restarted during its trial* (or *never
+reached its main loop*), the hash recomputed from the other slot's bytes and put on the bad list.
+One more case is told apart: *switching* with the other slot neither aborted nor invalid means the
+restart came between the journal entry and the boot pointer - *the restart came before the other
+slot was made the next to boot: nothing was tried* - and nothing goes on the bad list; `self
+switch` may be said again.
+
+## The uplink condition until phase 3
+
+Condition 3 is an interface, `core/update/uplink_check.h`, with two implementations: the fake in
+the tests (reached, failed, or not configured, as a test says) and in the firmware
+`UnconfiguredUplink`, whose server host is the build constant `kSelfUpdateServerHost` - **empty**
+today - and which therefore answers *not configured*. What the condition **is**, when a server
+exists, is named by `kUplinkCondition`: **reach the configured server's TLS port and complete a
+handshake with its chain verified** - the strongest statement available without an agent
+(`spec/SYSTEM.md` §8: nothing talks to MeshMaster yet). Phase 3's HTTPS client (`tasks/phase-3/02`)
+implements it over the modem and replaces `UnconfiguredUplink` in `main/`; the settings task gives
+the host a value. A build that names a host it has no way to reach answers *failed*, so that it
+rolls its update back rather than confirming it blind.
+
+**The rule that keeps a factory image from rejecting itself**, stated: *a trial runs only for an
+image that an update made the next to boot, and condition 3 applies only when a server is
+configured.* A factory image is flashed over USB with blank OTA data; at its first boot the
+bootloader gives `ota_0` an entry of its own in the state **valid** (`set_actual_ota_seq`), never
+*new*, which is the only state it turns into *pending-verify*. So no trial runs, nothing is
+journalled, nothing is rejected - and had one run, an unconfigured uplink would have made the third
+condition not applicable. Both halves are tested (`test_self_update.cpp`, "a factory image's first
+boot" and "no server configured").
+
+## The preconditions
+
+Each a named refusal, printed as `error: self receive: <reason>` or `error: self switch: <reason>`;
+nothing is done.
+
+| Refusal | `self receive` | `self switch` | Means |
+|---|:-:|:-:|---|
+| *the running image is itself on trial: never stack an update on an unconfirmed one* | ✔ | ✔ | the running slot is *pending-verify*, or this boot is a trial |
+| *the journal says a radio update is in progress: never both at once (S-7)* | ✔ | ✔ | a radio-update entry that is not terminal |
+| *a transfer into the other slot is open* | ✔ | ✔ | |
+| *the battery could not be read* / *is below the update threshold* / *is falling fast* | | ✔ | `kBatteryMinMv`, `kBatteryFallingMvPerHour` (the radio's update's). The write itself is harmless if interrupted, so `self receive` does not ask; a brown-out during the first boot wastes the one attempt, so `self switch` does |
+| *no image has been received into the other slot* | | ✔ | no *received* entry that nothing has consumed |
+| *the other slot does not hold the image that was received* | | ✔ | the slot's bytes hashed again do not match the entry |
+| *the radio does not answer HELLO and nobody has said why* | | ✔ | `self switch radio-down` says so, and condition 2 is then not applicable |
+| *the platform cannot say which application slot is running* | ✔ | ✔ | no OTA data partition, or a table without two slots |
+
+And what an image is refused for **at the door**, after checks 1, 2 and 3 of `FIRMWARE-MANIFEST`
+§5 and before the other slot is erased: *this image failed its trial once and is never tried again*
+(the bad list, shared with the radio's candidates), *the file is larger than the other application
+slot*, *the file's load_address is not an application slot's offset* (the release writes `ota_0`'s;
+either slot's is right, the ESP32-S3 maps whichever the bootloader chose), and the link-major rule
+below. A radio image offered as the Walter's fails check 3 (no image with role `manager`, board
+`walter`, band `lte-m`); checks 4 and 5 run over the bytes **as they lie in the other slot**, and
+`esp_ota_end` checks they are an application image at all.
+
+## The order of a link-version change (S-7)
+
+"When the link's major version changes, the Walter goes first and speaks both majors until the RAK
+has followed." With the manifest's fields (`spec/FIRMWARE-MANIFEST.md` §2): the manifest's
+**`link.major`** is the major the image speaks - its descriptor's, which check 5 holds it to - and
+the image's **`requires.link_major`** is what must already be there: the radio's major. So:
+
+- an image whose `link.major` is the radio's current major is let in;
+- an image whose `link.major` is **another** major is let in **only if** its `requires.link_major`
+  names the radio's current one - that is how "speaks both" is said: it speaks the new major and
+  requires, hence tolerates, the old;
+- an image that speaks another major and says nothing of the radio's is refused: *the image speaks
+  another link major than the radio and does not say it tolerates the radio's*.
+
+The radio's current major is the session's when `HELLO` has been answered, else the major this
+build speaks (the one the radio was last proved against). The radio's own update then follows:
+its manifest's `link.major` must be one the Walter speaks (`core/image/choose.cpp`, task p2-01).
+The order is enforced here, not left to whoever starts the update.
+
+## The journal
+
+The same ring as the radio's (`core/update/journal.h`), kind *self-update*, 48-byte payloads: the
+state, the new image's slot, the reason, flags, the image's size, the first sixteen bytes of its
+SHA-256 (enough to know it again; the full hash for the bad list is recomputed from the slot's
+bytes and held to these), and the versions switched *from* and *to* as `X.Y.Z`. The states, which
+the radio's update also reads for S-7:
+
+| Entry | Written when | Says |
+|---|---|---|
+| **received** | `self receive` passed the six checks | *received 0.4.0 into slot 1 (12288 bytes, sha256 …)* |
+| **switching** | `self switch`, before the boot pointer moves | *switching to 0.4.0, from 0.3.0 (the radio answered)* - or *(the radio known down)* |
+| **on trial** | the new image's `begin()`, before its first condition | *on trial: 0.4.0 in slot 1* |
+| **confirmed** | all three conditions, or `self confirm` | *confirmed: all three conditions* - *; the radio was known down* / *; no server configured* when one did not apply |
+| **rolled back** | the trial image's rejection, or the old image's finding at boot | *rolled back: <reason>* - one of the three conditions, *restarted during its trial*, *never reached its main loop*, *the restart came before the other slot was made the next to boot*, *rejected on the console*, *the platform refused* |
+
+*switching* and *on trial* are "unconfirmed" to the radio's update (`rak update` is refused with
+*the Walter's own update is unconfirmed: never both at once*).
+
+## After a power cut
+
+| Last entry | This boot is | What `begin()` does |
+|---|---|---|
+| **received** | the old image, nothing in the air | nothing; `self switch` takes the received image |
+| **switching**, the other slot *aborted* or *invalid* | the old image: the new one was booted and never journalled | *rolled back: never reached its main loop*; the hash on the bad list |
+| **switching**, the other slot neither | the old image: the restart came before the boot pointer | *rolled back: the restart came before …: nothing was tried*; nothing on the bad list; the received image still there |
+| **switching**, this slot the one named | the new image, *pending-verify* | the trial |
+| **on trial**, this slot the one named | the new image again - which the bootloader does not do (pending → aborted); seen only if rollback were off | the trial, again |
+| **on trial**, the other slot | the old image: the trial was cut short | *rolled back: restarted during its trial*; the hash on the bad list |
+| **confirmed**, **rolled back** | as the word says | nothing |
+
+## The console
+
+```
+> self receive
+self receive: this Walter's other application slot (1); this port is now a framed binary transfer
+  (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,
+  then the ota file: tools/walterctl.py push --as self
+  what will be accepted: role manager, board walter, band lte-m, an ota file that fits the slot,
+  and all six checks of FIRMWARE-MANIFEST section 5 run here - the laptop is not trusted
+self receive: stored
+  52 chunks, 0 sent twice, 0 out of order, 0 frames dropped
+  'self status' shows it; 'self switch' makes it the next to boot and restarts
+> self switch
+self switch: making 0.4.0 (slot 1) the next to boot, from 0.3.0+abc1234; the radio is told and the Walter restarts
+```
+
+Then, after the restart, among the boot lines:
+
+```
+boot 7: software reset, the Walter's own update, switching to the other slot
+self-update: this image (0.4.0, slot 1) is on trial: 300 s to reach the main loop, HELLO the radio
+  and reach the backend, or it is rolled back ('self status' watches, 'self confirm' / 'self reject' end it)
+...
+self-update: on trial -> confirmed: all three conditions hold: confirmed
+```
+
+or, for a trial that fails, `self-update: on trial -> rolled back: <reason>` and `restarting into
+the previous image`; and after that restart the old image's boot lines say `self-update: rolled
+back: <reason>` only when it is the old image that has to write the entry (a reset during the
+trial), because a trial image that rejected itself has closed the story already.
+
+- `self status`: `running: slot 1 at 0x310000 (3072 KB): valid (confirmed), version 0.4.0+w1`,
+  `other: slot 0 …`, then `on trial for 42 s of 300: main loop met; radio met (1 HELLO); uplink
+  failed, trying again (2 attempts)` while one runs, or `the running image is confirmed` (or
+  *pending-verify*, *aborted* … in the bootloader's words), then `received: 0.4.1 in slot 0 (…),
+  waiting for 'self switch'` when one is, then the last self-update's story, oldest entry first.
+- `self switch [radio-down]`: the preconditions, the entry, the boot pointer, `SLEEP_NOTICE`
+  (`kSwitchExpectBackS`), the restart; it does not come back. `radio-down` says the radio is known
+  to be down, so the trial's second condition does not apply.
+- `self confirm`, `self reject`: end a trial early, for the bench. Both refused when the running
+  image is not on trial.
+
+`tools/walterctl.py push --port COM7 --as self <release-dir>` is the laptop's end: it takes the
+manifest's `ota` file and says `self receive`.
+
+## The numbers - to be set on the bench
+
+| Constant | Today | What it is |
+|---|---:|---|
+| `kTrialWindowMs` | 300 000 ms | from the trial image's main loop until all three conditions must hold; long enough for a cold LTE attach, short enough that a bad image is gone before the wake is over |
+| `kTrialHelloIntervalMs` | 2 000 ms | between `HELLO` tries during the trial |
+| `kTrialUplinkRetryMs` | 30 000 ms | between uplink attempts after a failure |
+| `kSwitchExpectBackS` | 60 s | what `SLEEP_NOTICE` tells the radio before the restart |
+| `kUplinkCondition` | TLS handshake | what condition 3 is when a server exists (`uplink_check.h`); phase 3 implements it |
+| `kSelfUpdateServerHost` / `Port` | "" / 443 | the server to reach; empty = not configured, condition 3 not applicable |
+
+The battery thresholds are the radio's update's (`kBatteryMinMv`, `kBatteryFallingMvPerHour`).
+
+## What is not here
+
+Downloading the image (phase 3's uplink; today `walterctl.py push --as self`), deciding when to
+switch (the wake cycle; the server), the modem's own firmware (the library can; nothing here does),
+and the TLS handshake itself (phase 3's HTTPS client fills `UplinkCheck`).

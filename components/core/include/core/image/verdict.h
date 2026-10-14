@@ -77,6 +77,12 @@ class ExpectedFile {
   std::uint32_t loadAddress() const { return load_address_; }
   const char* name() const { return name_; }        // the file's name in the release
   const char* version() const { return version_; }  // the manifest's version
+  // The box link the image speaks (the manifest's `link.major`) and, when its `requires` names
+  // one, the link major that must already be there (`requires.link_major`). The Walter's own
+  // update (task p2-04) reads S-7's "speaks both majors" off these two before it erases a slot.
+  std::uint32_t linkMajor() const { return link_major_; }
+  bool hasRequiresLinkMajor() const { return has_requires_link_major_; }
+  std::uint32_t requiresLinkMajor() const { return requires_link_major_; }
 
  private:
   friend class ImageVerdict;
@@ -89,6 +95,9 @@ class ExpectedFile {
   std::uint32_t load_address_ = 0;
   char name_[kMaxFileName] = {};
   char version_[kVersionSize] = {};
+  std::uint32_t link_major_ = 0;
+  bool has_requires_link_major_ = false;
+  std::uint32_t requires_link_major_ = 0;
 };
 
 // What passed: this file, for this slot, with this hash and descriptor. Constructed by

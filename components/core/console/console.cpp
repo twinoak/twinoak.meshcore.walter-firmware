@@ -45,6 +45,11 @@ bool isRadioVerb(Verb verb) {
     case Verb::kImageErase:
     case Verb::kImageBad:
     case Verb::kImageReceive:
+    case Verb::kSelfStatus:
+    case Verb::kSelfReceive:
+    case Verb::kSelfSwitch:
+    case Verb::kSelfConfirm:
+    case Verb::kSelfReject:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -78,10 +83,11 @@ bool isRadioVerb(Verb verb) {
 Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
                  interfaces::Clock& clock, interfaces::Restart& restart,
                  link::client::Client& radio, board::SlotLock& slots, image::Store* images,
-                 image::Receiver* receiver, update::RadioUpdate* update, update::Journal* journal)
+                 image::Receiver* receiver, update::RadioUpdate* update, update::Journal* journal,
+                 update::SelfUpdate* self)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
-      flasher_(pins, clock, slots) {}
+      self_(self), flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -128,6 +134,9 @@ void Console::begin() {
     printf("update: the journal says a run was in progress (%s); resuming at %s\n",
            update::describe(update_->request().kind), update::describe(update_->state()));
   }
+  // The Walter's own update (task p2-04): is this boot a trial of a new image, or the old image
+  // back after one? tick() runs a trial from here, a step per turn of the main loop.
+  if (self_ != nullptr) printSelfBoot(self_->begin());
   print("type 'help' for the commands\n");
   prompt();
 }
@@ -173,6 +182,19 @@ void Console::feed(char c) {
 }
 
 void Console::tick() {
+  // The main loop is turning: the trial's first condition (core/update/self_update.h), met once
+  // and for good. Then the trial itself, a step a turn, each change printed.
+  if (self_ != nullptr) {
+    if (!ticked_) {
+      ticked_ = true;
+      self_->mainLoopReached();
+    }
+    if (self_->onTrial()) {
+      const update::SelfStep s = self_->step();
+      printSelfStep(s);
+      if (s.changed) prompt();
+    }
+  }
   // A resumed update, one step a turn (a `rak update` runs its own loop and is not here).
   if (update_ != nullptr && update_->active() && !driving_update_) {
     const update::StepResult s = update_->step();
@@ -244,6 +266,11 @@ void Console::runLine(const char* line) {
     case Verb::kRakUpdateStatus: rakUpdateStatus(); return;
     case Verb::kRakRoleScanner: rakUpdate(update::Kind::kRoleScanner); return;
     case Verb::kRakRoleRepeater: rakUpdate(update::Kind::kRoleRepeater); return;
+    case Verb::kSelfStatus: selfStatus(); return;
+    case Verb::kSelfReceive: selfReceive(); return;
+    case Verb::kSelfSwitch: selfSwitch(p.command.radio_down); return;
+    case Verb::kSelfConfirm: selfConfirm(); return;
+    case Verb::kSelfReject: selfReject(); return;
   }
 }
 
@@ -287,6 +314,15 @@ void Console::help() {
   print("  rak role scanner|repeater\n");
   print("                      flash the stored scanner image and prove a scanner is there; or\n");
   print("                      the golden image back, proved as an update would be\n");
+  print("  self status         this Walter's two application slots, the trial if one is running,\n");
+  print("                      and the last self-update's story from the journal\n");
+  print("  self receive        take a release of this firmware over this port into the other slot\n");
+  print("                      (tools/walterctl.py push --as self); the six checks run here\n");
+  print("  self switch [radio-down]\n");
+  print("                      make the received image the next to boot, tell the radio, restart;\n");
+  print("                      it then has one boot to prove itself (docs/update.md)\n");
+  print("  self confirm        end the running image's trial early: valid (the bench)\n");
+  print("  self reject         end it early: rejected, restart into the old image (the bench)\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -1178,14 +1214,18 @@ void Console::imageReceive(image::Which which) {
 }
 
 void Console::transferEnded() {
-  printf("image receive: %s%s%s\n", receiver_->reason(),
+  const bool self = receiver_->target().use() == image::Use::kOta;
+  printf("%s receive: %s%s%s\n", self ? "self" : "image", receiver_->reason(),
          receiver_->reasonMore()[0] != 0 ? ": " : "", receiver_->reasonMore());
   printf("  %lu chunks, %lu sent twice, %lu out of order, %lu frames dropped\n",
          static_cast<unsigned long>(receiver_->chunks()),
          static_cast<unsigned long>(receiver_->duplicates()),
          static_cast<unsigned long>(receiver_->outOfOrder()),
          static_cast<unsigned long>(receiver_->droppedFrames()));
-  if (receiver_->stored()) print("  'image list' shows it; 'image verify' reads it back\n");
+  if (receiver_->stored()) {
+    print(self ? "  'self status' shows it; 'self switch' makes it the next to boot and restarts\n"
+               : "  'image list' shows it; 'image verify' reads it back\n");
+  }
   prompt();
 }
 
@@ -1359,6 +1399,223 @@ void Console::rakUpdateStatus() {
     printf("the last update did not end: the journal says %s; it is resumed at the next boot\n",
            update::describe(last.state));
   }
+}
+
+// ------------------------------------------------------------ the Walter's own update (p2-04)
+//
+// docs/update.md, "The Walter's half". `self receive` hands the port to the same transfer as
+// `image receive`, with the other application slot as its target; `self switch` restarts the
+// board and does not come back; the trial is run by tick() and printed as it goes.
+
+bool Console::selfOk() {
+  if (self_ != nullptr && receiver_ != nullptr) return true;
+  print("error: there is no self-update in this build (the journal or the rakfw partition of\n"
+        "  partitions.csv was not found at boot)\n");
+  return false;
+}
+
+void Console::printSelfBoot(update::SelfBoot boot) {
+  const update::SelfPayload& p = self_->bootEntry();
+  switch (boot) {
+    case update::SelfBoot::kNothing: return;
+    case update::SelfBoot::kTrialBegun:
+      printf("self-update: this image (%s, slot %u) is on trial: %lu s to reach the main loop, HELLO the radio\n",
+             p.to[0] != 0 ? p.to : "?", static_cast<unsigned>(p.slot),
+             static_cast<unsigned long>(update::kTrialWindowMs / 1000));
+      print("  and reach the backend, or it is rolled back ('self status' watches, 'self confirm' / 'self reject' end it)\n");
+      if ((p.flags & update::kFlagRadioKnownDown) != 0) print("  (the radio was known down before the switch: HELLO is not asked of it)\n");
+      if ((p.flags & update::kFlagUnjournalled) != 0) print("  (no switch was journalled for it: nothing is known of the image but its slot)\n");
+      return;
+    case update::SelfBoot::kRollbackRecorded:
+      printf("self-update: rolled back: %s\n", update::describe(p.reason));
+      printf("  the image %s in slot %u is %s; this is %s again\n", p.to[0] != 0 ? p.to : "?",
+             static_cast<unsigned>(p.slot),
+             (p.flags & update::kFlagNotOnBadList) != 0 ? "not on the bad list (its hash is not known)" : "on the bad list",
+             p.from[0] != 0 ? p.from : core::version());
+      return;
+    case update::SelfBoot::kNoSlots:
+      print("self-update: the platform cannot say which application slot is running; no self-update\n");
+      return;
+    case update::SelfBoot::kJournalFailed:
+      print("self-update: the journal could not be written; the trial runs without its entry\n");
+      return;
+  }
+}
+
+void Console::printSelfStep(const update::SelfStep& s) {
+  if (!s.changed) {
+    if (s.reason == update::SelfReason::kJournal || s.reason == update::SelfReason::kPlatform) {
+      printf("self-update: %s\n", s.note);
+    }
+    return;
+  }
+  printf("self-update: on trial -> %s: %s\n", update::describe(s.after), s.note);
+  if (s.after == update::SelfState::kRolledBack && s.reason != update::SelfReason::kPlatform) {
+    print("  restarting into the previous image\n");
+  }
+}
+
+void Console::printSlot(const char* label, const interfaces::OwnSlot& slot) {
+  printf("%s slot %u at 0x%06lx (%lu KB): %s, version %s\n", label, static_cast<unsigned>(slot.index),
+         static_cast<unsigned long>(slot.address), static_cast<unsigned long>(slot.size / 1024),
+         interfaces::describe(slot.state), slot.version[0] != 0 ? slot.version : "(no image)");
+}
+
+void Console::printSelfEntry(std::size_t number, const update::Entry& entry, const update::SelfPayload& p) {
+  char hash[2 * update::kHash16 + 1];
+  hashHex(p.hash16, 8, hash);
+  printf("  %2lu. seq %lu: %s", static_cast<unsigned long>(number), static_cast<unsigned long>(entry.seq),
+         update::describe(p.state));
+  switch (p.state) {
+    case update::SelfState::kReceived:
+      printf(" %s into slot %u (%lu bytes, sha256 %s...)", p.to, static_cast<unsigned>(p.slot),
+             static_cast<unsigned long>(p.size), hash);
+      break;
+    case update::SelfState::kSwitching:
+      printf(" to %s, from %s%s", p.to, p.from,
+             (p.flags & update::kFlagRadioUp) != 0 ? " (the radio answered)"
+             : (p.flags & update::kFlagRadioKnownDown) != 0 ? " (the radio known down)" : "");
+      break;
+    case update::SelfState::kOnTrial:
+      printf(": %s in slot %u%s", p.to, static_cast<unsigned>(p.slot),
+             (p.flags & update::kFlagUnjournalled) != 0 ? " (no switch was journalled)" : "");
+      break;
+    case update::SelfState::kConfirmed:
+      printf(": %s%s%s", (p.flags & update::kFlagByHand) != 0 ? "on the console" : "all three conditions",
+             (p.flags & update::kFlagRadioNotApplicable) != 0 ? "; the radio was known down" : "",
+             (p.flags & update::kFlagUplinkNotApplicable) != 0 ? "; no server configured" : "");
+      break;
+    case update::SelfState::kRolledBack:
+      printf(": %s%s", update::describe(p.reason),
+             (p.flags & update::kFlagNotOnBadList) != 0 ? " (not on the bad list)" : "");
+      break;
+    case update::SelfState::kNone: break;
+  }
+  print("\n");
+}
+
+void Console::selfStatus() {
+  if (!selfOk()) return;
+  interfaces::OwnSlot running;
+  interfaces::OwnSlot other;
+  if (!self_->runningSlot(&running) || !self_->otherSlot(&other)) {
+    print("self status: the platform cannot say which application slot is running\n");
+    return;
+  }
+  printSlot("running:", running);
+  printSlot("other:  ", other);
+  const update::SelfStatus& st = self_->status();
+  if (st.on_trial) {
+    printf("on trial for %lu s of %lu: main loop %s; radio %s (%lu HELLO%s); uplink %s (%lu attempt%s)\n",
+           static_cast<unsigned long>(st.trial_elapsed_ms / 1000),
+           static_cast<unsigned long>(update::kTrialWindowMs / 1000), update::describe(st.main_loop),
+           update::describe(st.radio), static_cast<unsigned long>(st.hello_tries), st.hello_tries == 1 ? "" : "s",
+           update::describe(st.uplink), static_cast<unsigned long>(st.uplink_tries), st.uplink_tries == 1 ? "" : "s");
+  } else {
+    printf("the running image is %s%s\n",
+           running.state == interfaces::OwnImageState::kValid ? "confirmed"
+           : running.state == interfaces::OwnImageState::kUndefined ? "not on trial (flashed over USB, not by an update; rollback does not apply)"
+                                                                   : interfaces::describe(running.state),
+           self_->bootReason() != update::SelfReason::kNone && st.state == update::SelfState::kRolledBack
+               ? "; the last self-update was rolled back"
+               : "");
+  }
+  update::SelfPayload got;
+  if (self_->received(&got)) {
+    printf("received: %s in slot %u (%lu bytes), waiting for 'self switch'\n", got.to,
+           static_cast<unsigned>(got.slot), static_cast<unsigned long>(got.size));
+  }
+  // The story: the last self-update's entries, oldest first, back to its *received* entry or
+  // sixteen entries - the same shape as rak update status.
+  constexpr std::size_t kStoryMax = 16;
+  static update::Entry entries[kStoryMax];
+  static update::SelfPayload payloads[kStoryMax];
+  std::size_t count = 0;
+  update::Cursor cursor;
+  update::Entry e;
+  bool more = journal_ != nullptr && journal_->first(&cursor, &e);
+  while (more && count < kStoryMax) {
+    update::SelfPayload p;
+    if (update::decode(e, &p)) {
+      entries[count] = e;
+      payloads[count] = p;
+      ++count;
+      if (p.state == update::SelfState::kReceived) break;
+    }
+    more = journal_->previous(&cursor, &e);
+  }
+  if (count == 0) {
+    print("self status: no self-update has been journalled on this unit\n");
+    return;
+  }
+  printf("the last self-update's story (%lu entries):\n", static_cast<unsigned long>(count));
+  for (std::size_t i = count; i > 0; --i) printSelfEntry(count - i + 1, entries[i - 1], payloads[i - 1]);
+}
+
+void Console::selfReceive() {
+  if (!selfOk()) return;
+  const update::SelfReason refused = self_->canReceive();
+  if (refused != update::SelfReason::kNone) {
+    printf("error: self receive: %s\n", update::describe(refused));
+    return;
+  }
+  if (!receiver_->begin(*self_)) {
+    printf("error: self receive: %s\n", receiver_->reason());
+    return;
+  }
+  const image::SlotNeeds& needs = self_->needs();
+  interfaces::OwnSlot other;
+  (void)self_->otherSlot(&other);
+  printf("self receive: this Walter's other application slot (%u); this port is now a framed binary transfer\n",
+         static_cast<unsigned>(other.index));
+  print("  (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,\n");
+  print("  then the ota file: tools/walterctl.py push --as self\n");
+  printf("  what will be accepted: role %s, board %s, band %s, an ota file that fits the slot,\n",
+         needs.role, needs.board, needs.band);
+  print("  and all six checks of FIRMWARE-MANIFEST section 5 run here - the laptop is not trusted\n");
+}
+
+void Console::selfSwitch(bool radio_down) {
+  if (!selfOk()) return;
+  update::SelfPayload got;
+  const bool have = self_->received(&got);
+  if (have) {
+    printf("self switch: making %s (slot %u) the next to boot, from %s; the radio is told and the Walter restarts\n",
+           got.to, static_cast<unsigned>(got.slot), core::version());
+  }
+  pins_.safe();
+  const update::SelfReason refused = self_->switchNow(update::SwitchRequest{radio_down});
+  if (refused != update::SelfReason::kNone) {
+    printf("error: self switch: %s\n", update::describe(refused));
+    return;
+  }
+  // On a board the restart does not return. On the host it does, and the bench rebuilds.
+  print("self switch: restarting\n");
+}
+
+void Console::selfConfirm() {
+  if (!selfOk()) return;
+  const update::SelfReason refused = self_->confirmNow();
+  if (refused != update::SelfReason::kNone) {
+    printf("error: self confirm: %s\n", update::describe(refused));
+    return;
+  }
+  print("self confirm: the running image is confirmed (valid); the trial is over\n");
+}
+
+void Console::selfReject() {
+  if (!selfOk()) return;
+  pins_.safe();
+  const update::SelfReason refused = self_->rejectNow();
+  if (refused == update::SelfReason::kPlatform) {
+    print("self reject: rejected and journalled, but the platform would not roll back: the other slot holds nothing bootable\n");
+    return;
+  }
+  if (refused != update::SelfReason::kNone) {
+    printf("error: self reject: %s\n", update::describe(refused));
+    return;
+  }
+  print("self reject: the running image is rejected; restarting into the previous image\n");
 }
 
 }  // namespace console

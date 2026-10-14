@@ -30,6 +30,13 @@
 // A chunk that arrives twice is acknowledged again and written once; a chunk out of order is
 // answered with kResend and the sequence number wanted; a chunk that is lost is the laptop's to
 // send again when no acknowledgement comes. Nothing of this is new: it is the link's own shape.
+//
+// **Where the bytes go is a TransferTarget** (task p2-04): the image store for a radio's image -
+// `StoreTarget`, what this file was written for - or the Walter's other application slot for its
+// own `ota` image (`self receive`, core/update/self_update.h). The transfer, the framing and the
+// six checks are the same; the target says what it will accept (§5 check 3's three words and the
+// file's use), takes the bytes, hands them back for judging as they lie in flash, and keeps the
+// result only when given the verdict's token.
 #pragma once
 
 #include <cstddef>
@@ -96,14 +103,87 @@ constexpr std::uint32_t kIdleTimeoutMs = 20000;
 // transfer starts so that a mistake is visible rather than silent.
 constexpr const char* kDefaultBand = "868";
 
+// -- where a transfer's bytes go -----------------------------------------------------------------
+//
+// Every method that can refuse answers with a sentence (static text) or nullptr for "done". The
+// receiver puts the sentence in its response and prints it; it never looks inside.
+class TransferTarget {
+ public:
+  virtual ~TransferTarget() = default;
+
+  // What this target will accept: §5 check 3's three words and the slot, the file's use (`swd`
+  // for a radio, `ota` for the Walter's own), and the board profile for check 6 (nullptr for an
+  // `ota` file, which has no region). Valid after a successful begin() on the target's owner.
+  virtual const SlotNeeds& needs() const = 0;
+  virtual Use use() const = 0;
+  virtual const flasher::BoardProfile* profile() const = 0;
+  // One word for the kHello response and the console: "candidate", "the other application slot".
+  virtual const char* name() const = 0;
+
+  // The write. begin takes the verdict's promise and may refuse before erasing anything (the bad
+  // list, a file too large, the wrong slot); `written()` is where a resumed write continues.
+  virtual bool writing() const = 0;
+  virtual std::uint32_t written() const = 0;
+  virtual std::uint32_t expectedSize() const = 0;
+  virtual const char* beginWrite(const ExpectedFile& expected) = 0;
+  virtual const char* write(const std::uint8_t* data, std::uint32_t size) = 0;
+  virtual const char* endWrite() = 0;
+  // The bytes as they lie in flash, for checks 4, 5 and 6 - never what the laptop said it sent.
+  // The source is the target's own and valid until the next call on it.
+  virtual const flasher::ImageSource* staged(const char** why) = 0;
+  // The verdict's token: only now does the target keep anything (a record, a journal entry).
+  virtual const char* commit(const AcceptedImage& token) = 0;
+  // Give up: nothing is kept; whether the bytes stay for a resume is the target's.
+  virtual void abandonWrite() = 0;
+};
+
+// The image store as a target (task p2-02's behaviour, unchanged): a radio slot's golden,
+// candidate or scanner image.
+class StoreTarget final : public TransferTarget {
+ public:
+  explicit StoreTarget(Store& store) : store_(store) {}
+
+  // Which image of which slot. False, with reason(), when the slot has no radio in this build.
+  bool begin(Which which, board::Slot slot);
+  const char* reason() const { return reason_; }
+
+  const SlotNeeds& needs() const override { return needs_; }
+  Use use() const override { return Use::kSwd; }
+  const flasher::BoardProfile* profile() const override { return flasher::profileForSlot(slot_); }
+  const char* name() const override { return image::name(which_); }
+  bool writing() const override { return store_.writing(); }
+  std::uint32_t written() const override { return store_.written(); }
+  std::uint32_t expectedSize() const override { return store_.expectedSize(); }
+  const char* beginWrite(const ExpectedFile& expected) override;
+  const char* write(const std::uint8_t* data, std::uint32_t size) override;
+  const char* endWrite() override;
+  const flasher::ImageSource* staged(const char** why) override;
+  const char* commit(const AcceptedImage& token) override;
+  void abandonWrite() override { store_.abandonWrite(); }
+
+ private:
+  Store& store_;
+  Which which_ = Which::kCandidate;
+  board::Slot slot_;
+  SlotNeeds needs_;
+  char band_[kBandSize] = {};  // the band needs_ points at: a copy, so it outlives a Record
+  const char* reason_ = "";
+  StoredImage staged_;
+};
+
 class Receiver {
  public:
   Receiver(Store& store, ImageVerdict& verdict, interfaces::TextOut& out, interfaces::Clock& clock)
-      : store_(store), verdict_(verdict), out_(out), clock_(clock) {}
+      : store_target_(store), verdict_(verdict), out_(out), clock_(clock) {}
 
-  // Hands the port over. False, with reason(), when the slot has no radio in this build, when
-  // the store refuses the role, or when a transfer is already running.
+  // Hands the port over for a radio image into the store. False, with reason(), when the slot
+  // has no radio in this build, when the store refuses the role, or when a transfer is already
+  // running.
   bool begin(Which which, board::Slot slot);
+
+  // Hands the port over for another target - the Walter's own slot (task p2-04). The target is
+  // the caller's and must be ready to say what it accepts; it outlives the transfer.
+  bool begin(TransferTarget& target);
 
   // Whether the console should keep giving bytes to this object.
   bool active() const { return phase_ != Phase::kIdle; }
@@ -128,17 +208,20 @@ class Receiver {
   std::uint32_t droppedFrames() const { return rx_.dropped(); }
 
   // What this transfer will accept, for the console's ready line.
-  const SlotNeeds& needs() const { return needs_; }
+  const SlotNeeds& needs() const { return target_->needs(); }
+  // Which target the running (or last) transfer went to.
+  const TransferTarget& target() const { return *target_; }
 
  private:
   enum class Phase : std::uint8_t {
     kIdle,       // not running
     kManifest,   // waiting for, or taking, manifest.json
     kSignature,  // ... its .sig
-    kImage,      // ... the image, straight into the store
+    kImage,      // ... the image, straight into the target
     kJudged,     // the image is in flash and complete; kCommit may come
   };
 
+  bool start();
   void handle(const link::Packet& packet);
   void onFile(const link::Packet& packet);
   void onData(const link::Packet& packet);
@@ -154,16 +237,13 @@ class Receiver {
   void refuse(std::uint8_t type, std::uint8_t seq, const char* text, const char* more = nullptr);
   void finish(const char* why, const char* more, bool stored);
 
-  Store& store_;
+  StoreTarget store_target_;
+  TransferTarget* target_ = &store_target_;
   ImageVerdict& verdict_;
   interfaces::TextOut& out_;
   interfaces::Clock& clock_;
 
   Phase phase_ = Phase::kIdle;
-  Which which_ = Which::kCandidate;
-  board::Slot slot_;
-  SlotNeeds needs_;
-  char band_[kBandSize] = {};  // the band needs_ points at: a copy, so it outlives a Record
   const char* reason_ = "";
   const char* more_ = nullptr;
   bool stored_ = false;

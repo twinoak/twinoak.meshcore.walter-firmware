@@ -315,7 +315,7 @@ bool RadioUpdate::start(const Request& request) {
     reason_ = Reason::kRadioUpdateInProgress;
     return false;
   }
-  if (journal_.lastOf(kind::kSelfUpdate, &e) && e.size >= 1 && e.payload[0] == self_update::kSwitching) {
+  if (journal_.lastOf(kind::kSelfUpdate, &e) && e.size >= 1 && self_update::unconfirmed(e.payload[0])) {
     reason_ = Reason::kSelfUpdateUnconfirmed;
     return false;
   }

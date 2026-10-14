@@ -339,6 +339,47 @@ Parsed parseImage(char* rest, std::uint8_t* slot) {
   return p;
 }
 
+// `self <subcommand>` (task p2-04): the Walter's own update. No slot - it is about this board.
+Parsed parseSelf(char* rest) {
+  if (*rest == 0) {
+    return refuse("self needs a subcommand: self status | receive | switch [radio-down] | confirm | reject");
+  }
+  char* sub = rest;
+  char* arg = sub;
+  while (*arg != 0 && !isSpace(*arg)) ++arg;
+  if (*arg != 0) {
+    *arg++ = 0;
+    while (*arg != 0 && isSpace(*arg)) ++arg;
+  }
+  const bool hasArg = *arg != 0;
+  if (std::strcmp(sub, "switch") == 0) {
+    if (!hasArg) return accept(Verb::kSelfSwitch);
+    for (const char* p = arg; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("self switch takes one word: self switch [radio-down]");
+    }
+    if (std::strcmp(arg, "radio-down") == 0) {
+      Parsed p = accept(Verb::kSelfSwitch);
+      p.command.radio_down = true;
+      return p;
+    }
+    return refuse2("self switch: unknown word (self switch, self switch radio-down): ", arg);
+  }
+  Verb verb = Verb::kSelfStatus;
+  if (std::strcmp(sub, "status") == 0) {
+    verb = Verb::kSelfStatus;
+  } else if (std::strcmp(sub, "receive") == 0) {
+    verb = Verb::kSelfReceive;
+  } else if (std::strcmp(sub, "confirm") == 0) {
+    verb = Verb::kSelfConfirm;
+  } else if (std::strcmp(sub, "reject") == 0) {
+    verb = Verb::kSelfReject;
+  } else {
+    return refuse2("unknown self subcommand (status, receive, switch, confirm, reject): ", sub);
+  }
+  if (hasArg) return refuse3("self ", sub, " takes no argument");
+  return accept(verb);
+}
+
 }  // namespace
 
 Parsed parseLine(const char* line) {
@@ -409,6 +450,7 @@ Parsed parseLine(const char* line) {
     if (p.ok) p.command.slot = slot;
     return p;
   }
+  if (std::strcmp(verb, "self") == 0) return parseSelf(rest);
   if (std::strcmp(verb, "rak") == 0) {
     if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
     // The slot (task p1-06): `rak @1 hello`. Optional, and the first word after `rak` rather

@@ -91,6 +91,9 @@ Outcome ImageVerdict::judgeManifest(const std::uint8_t* manifest, std::size_t ma
   e.load_address_ = entry.load_address;
   std::memcpy(e.name_, entry.name, kMaxFileName);
   std::memcpy(e.version_, manifest_.version, kVersionSize);
+  e.link_major_ = manifest_.link_major;
+  e.has_requires_link_major_ = image.has_requires_link_major;
+  e.requires_link_major_ = image.requires_link_major;
   chosen_image_ = choice.image_index;
   chosen_file_ = choice.file_index;
   chosen_profile_ = profile;

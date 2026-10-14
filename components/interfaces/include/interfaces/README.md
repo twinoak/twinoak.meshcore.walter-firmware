@@ -11,5 +11,7 @@ include. Included as `"interfaces/<name>.h"`.
 | `byte_stream.h` | the UART to the radio: open and close (the pins are RadioPins'), read what is there, write, flush, "has the line been idle" | UART1 at 115200 8N1 on GPIO7/8 (`platform/uart`) | `host_test/sim/scripted_radio` — a radio driven by the link's fixtures |
 | `wall_clock.h` | the time of day and where it came from, or "I have no time to give" | nothing yet: phase 3's modem reads it from the network (`main/main.cpp` answers false) | `fake_wall_clock` — a time a test hands over |
 | `flash_region.h` | a region of the Walter's own flash: read, write, erase by sector, the sector size — and the shape of NOR flash, which a write only clears bits of | the `rakfw` partition of `partitions.csv` (`platform/flash_partition`) | `host_test/sim/sim_flash` — only clears bits, counts erases per sector, and can lose power at the Nth operation |
+| `own_update.h` | the Walter's two application slots: which runs and in what state, write an image into the other, make it the next to boot, confirm or reject the running one (task p2-04) | ESP-IDF's OTA machinery over `ota_0`/`ota_1` with rollback enabled (`platform/own_update`) | `host_test/fakes/fake_own_update` — two slots and the bootloader's rules at a reboot (pending → aborted, new → pending), with a power cut at the Nth operation |
 
-Phase 3 adds the key-value store, the uplink and the sleeper.
+Phase 3 adds the key-value store, the uplink and the sleeper (the self-update's uplink condition is
+`core/update/uplink_check.h`, a seam of core's own that phase 3's HTTPS client fills).

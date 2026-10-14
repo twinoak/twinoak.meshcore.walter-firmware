@@ -33,6 +33,8 @@ const char* name(Restart request) {
   switch (request) {
     case Restart::kNotRequested: return "not requested";
     case Restart::kConsole: return "asked for on the console";
+    case Restart::kSelfUpdateSwitch: return "the Walter's own update, switching to the other slot";
+    case Restart::kSelfUpdateRollback: return "the Walter's own update, the trial image rejected itself";
   }
   return "?";
 }

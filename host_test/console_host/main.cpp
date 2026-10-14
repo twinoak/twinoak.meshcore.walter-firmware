@@ -31,6 +31,11 @@
 #include "core/image/trust.h"
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
+#include "core/update/journal.h"
+#include "core/update/link_battery.h"
+#include "core/update/self_update.h"
+#include "core/update/uplink_check.h"
+#include "fakes/fake_own_update.h"
 #include "interfaces/byte_stream.h"
 #include "interfaces/clock.h"
 #include "interfaces/pins.h"
@@ -196,8 +201,24 @@ int main() {
     return 2;
   }
 
+  // The Walter's own update (task p2-04), so that `walterctl.py push --as self` is tested against
+  // the real `self receive`: two simulated application slots of the real size with the
+  // bootloader's rules (host_test/fakes/fake_own_update.h), the journal over a simulated flash,
+  // the battery as the (absent) radio reports it, and no server configured. A switch here asks
+  // for a restart that this program only announces.
+  static fakes::FakeOwnUpdate own(0x300000);
+  static sim::SimFlash journal_flash(core::update::kJournalPartitionBytes);
+  static core::update::Journal journal(journal_flash);
+  if (journal.begin() != core::update::JournalError::kNone) {
+    std::fprintf(stderr, "the simulated journal would not start\n");
+    return 2;
+  }
+  static core::update::LinkBattery battery(link);
+  static core::update::UnconfiguredUplink uplink;
+  static core::update::SelfUpdate self(own, store, journal, link, uplink, g_clock, g_restart, battery, health);
+
   static core::console::Console console(g_out, radio_pins, health, g_clock, g_restart, link, slots,
-                                        &store, &receiver);
+                                        &store, &receiver, nullptr, &journal, &self);
   std::printf("twinoak-walter console host (a simulated flash, the specification's TEST KEY, no radio)\n");
   console.begin();
 

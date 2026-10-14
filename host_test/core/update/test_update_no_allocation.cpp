@@ -37,17 +37,29 @@ const char* const kUpdateIncludes[] = {
     "core/update/journal.h",
     "core/update/link_battery.h",
     "core/update/radio_update.h",
+    "core/update/self_update.h",
+    "core/update/uplink_check.h",
     "interfaces/clock.h",
     "interfaces/flash_region.h",
+    // The Walter's own update (task p2-04): this image's descriptor and the build's version
+    // (what an offered image must be), health for the restart's reason, the verdict's token and
+    // the transfer target, the slots, a restart.
+    "core/health/health.h",
+    "core/image/receive.h",
+    "core/image/this_image.h",
+    "core/image/verdict.h",
+    "core/version.h",
+    "interfaces/own_update.h",
+    "interfaces/restart.h",
 };
 
 }  // namespace
 
 TEST_CASE("nothing under components/core/update/ allocates") {
-  // Seven files: the journal, the machine and the battery, each a header and a source, and the
-  // battery interface.
-  checks::checkNoAllocation("the radio's update",
+  // Ten files: the journal, the radio's machine, the battery and the Walter's own update, each a
+  // header and a source, and the battery and uplink interfaces.
+  checks::checkNoAllocation("the updates",
                             checks::filesUnder(kUpdateDirectories,
                                                sizeof kUpdateDirectories / sizeof kUpdateDirectories[0]),
-                            kUpdateIncludes, sizeof kUpdateIncludes / sizeof kUpdateIncludes[0], 7, 1200);
+                            kUpdateIncludes, sizeof kUpdateIncludes / sizeof kUpdateIncludes[0], 10, 1800);
 }

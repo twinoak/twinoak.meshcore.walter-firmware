@@ -28,11 +28,15 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   switches to it (`sdkconfig.defaults`).
 
 - [ ] **A reset runs the same image** (task p0-01; S-6). Press reset, or unplug and replug, three
-  times. Every time the same banner and `running from ota_0`, and the ota state stays `undefined`:
-  an image flashed over USB is in no OTA state, so the rollback the bootloader does for an updated
-  image (pending-verify → aborted at the second boot) does not apply to it. If the second boot ever
-  says `aborted` or falls to the bootloader's `No bootable app partitions`, the premise in
-  `tasks/phase-0/reports/01.md` (rollback) is wrong and task 02/04 must mark the image valid at boot.
+  times. Every time the same banner and `running from ota_0`, and the ota state is `valid` from
+  the first boot on: the factory image's OTA data is blank, and the bootloader's first boot writes
+  `ota_0` an entry of its own in the state *valid* (`bootloader_utility.c`, `set_actual_ota_seq`:
+  "Set actual ota_seq=1 in otadata[0]" in the bootloader's log) - never *new*, the only state it
+  turns into a trial. (Task p0-01 predicted `undefined`; task p2-04 read the code and corrected
+  this line. `undefined` would only show on a slot whose entry was erased after the first boot.)
+  If the second boot ever says `aborted` or falls to the bootloader's `No bootable app
+  partitions`, the premise in `tasks/phase-0/reports/01.md` (rollback) is wrong and the
+  self-update (task p2-04, §9) must be re-read against what the board does.
 
 - [ ] **Nothing else on the pins** (task p0-01, until task 03). With a meter: GPIO1 (nRESET), 2
   (SWDCLK), 4 (SWDIO), 5 (KILL), 7 (TX) read as inputs (high-impedance, pulled by nothing of ours)
@@ -510,3 +514,74 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   that a wake cycle can afford it), the battery threshold against the real pack's curve. Each is a
   constant in `core/update/radio_update.h` with a sentence; change the number and the sentence
   together.
+
+## 9. Updating the Walter
+
+From task p2-04 (`docs/update.md`, *The Walter's half*; `docs/console.md` *The Walter's own
+update*). Needs: §1 walked, §3 walked (a radio answering `HELLO`, for the trial's second
+condition), a **test-key build** of this firmware on the board, and **two more test-key builds of
+this firmware as releases** (`tools/verify.ps1 -TestKey -Version 0.0.1+bench1`'s dry run in
+`out/release/` is one: `manifest.json`, its `.sig`, the `ota` file) - a good one, and one built to
+fail its trial. There is no build flag for the latter yet (the task asked for one that skips the
+radio's `HELLO`); until phase 3 the simplest broken build is one whose radio UART is left closed
+(comment out `link_port.open()` in `main/main.cpp` for the occasion and never release it), or
+simply unplug the radio before the switch - the trial fails the same way, *the radio answered
+before the update and not after it*. The host tests prove the machine against a fake of the
+bootloader's rules; only a board shows that ESP-IDF's otadata and `esp_ota_*` behave as
+`bootloader_utility.c` was read to say.
+
+- [ ] **The factory image's first boot runs no trial.** After §1's flash: `self status` says
+  `running: slot 0 at 0x010000 (3072 KB): valid (confirmed), version 0.0.0-dev`, `other: slot 1
+  … undefined … (no image)`, `the running image is confirmed`, `no self-update has been
+  journalled on this unit`; nothing of `self-update:` among the boot lines, and the same after
+  three resets. This is the rule that a unit which has never been given a server does not reject
+  itself (`docs/update.md`, *The uplink condition until phase 3*).
+- [ ] **Push the next version and switch.** With the good release on the laptop:
+  `python tools/walterctl.py push --port COM7 --as self <release-dir>`; it says `stored in the
+  Walter's other application slot`. `self status` shows `received: 0.0.1 in slot 1 (N bytes),
+  waiting for 'self switch'` and the story's first line. **Write down how long the push of a
+  ~400 KB image took**: lock-step 240-byte frames over USB Serial/JTAG, the first measurement.
+  Then `self switch`: the line `self switch: making 0.0.1 (slot 1) the next to boot, from
+  0.0.0-dev; the radio is told and the Walter restarts`, and the board restarts. Among the boot
+  lines: `boot N: software reset, the Walter's own update, switching to the other slot`,
+  `running from ota_1 … ota state pending-verify`, `self-update: this image (0.0.1, slot 1) is on
+  trial: 300 s …`. Within seconds (the radio answers at once; no server is configured):
+  `self-update: on trial -> confirmed: all three conditions hold: confirmed`, and `self status`
+  says `running: slot 1 … valid (confirmed), version 0.0.1+bench1` and the four-line story ending
+  `confirmed: all three conditions; no server configured`. **Write down how long the trial
+  took** from the boot line to *confirmed*.
+- [ ] **A version built to fail its trial rolls back, and says why.** Push the broken release
+  `--as self` and `self switch` (or push the good one and unplug the radio's UART before the
+  switch - then `self switch` refuses with *the radio does not answer HELLO and nobody has said
+  why*, which is also worth seeing; plug it back, switch, unplug again during the first seconds of
+  the trial). The trial image boots, `self status` shows `on trial for N s of 300: main loop met;
+  radio pending (K HELLOs); uplink pending`, and after the window: `self-update: on trial ->
+  rolled back: the radio answered before the update and not after it`, `restarting into the
+  previous image`. The old image boots: `boot N: software reset, the Walter's own update, the
+  trial image rejected itself`, `running from ota_0 … ota state valid`; `self status` shows the
+  other slot `invalid (rejected by the image itself)` and the story ending `rolled back: …`;
+  `image bad` lists the broken image's hash. **Pushing the same broken release again is refused**
+  at the door: *this image failed its trial once and is never tried again*, with nothing erased.
+- [ ] **Reset the Walter during a trial.** Push the good release, `self switch`, and press the
+  module's reset while `self status` says *on trial* (use the broken build, or hold the radio in
+  reset so the trial waits on `HELLO`). The board comes up in the **old** image: `running from
+  ota_0`, the other slot `aborted (was on trial at a reset; the bootloader gave up on it)`, and
+  the boot lines say `self-update: rolled back: the image restarted during its trial (the
+  bootloader gave up on it)` and `the image 0.0.1 in slot 1 is on the bad list; this is 0.0.0-dev
+  again`. This is the bootloader's rule - pending → aborted - seen on silicon.
+- [ ] **Pull power while `self receive` is writing.** Mid-push (a 400 KB image gives a comfortable
+  window), unplug the USB. The board comes up in the same image, `self status` shows the running
+  slot as it was and no `received:` line, and the same push run again finishes. The running
+  image was never touched: `esp_ota_begin` erases the *other* slot only.
+- [ ] **`self confirm` and `self reject` on the bench.** During a trial that waits (the radio held
+  in reset): `self confirm` ends it `confirmed: on the console`; or `self reject` ends it with a
+  restart into the old image and `rolled back: rejected on the console`. Both refused with *the
+  running image is not on trial* at any other time.
+- [ ] **S-7 on the board.** During a trial, `rak update` is refused: *the Walter's own update is
+  unconfirmed: never both at once (S-7)*. After `rak update` has begun (the flasher's pages going
+  by), `self switch` is refused: *the journal says a radio update is in progress*.
+- [ ] **The numbers.** The trial window against a real LTE attach when phase 3 has one (today the
+  trial ends within seconds); the `SLEEP_NOTICE` time against how long the board takes from `self
+  switch` to the new image's first `HELLO` - the radio must not have given the Walter up for dead
+  meanwhile (`STATUS` flag bit 2 after the restart). Each is a constant in
+  `core/update/self_update.h` with a sentence; change the number and the sentence together.

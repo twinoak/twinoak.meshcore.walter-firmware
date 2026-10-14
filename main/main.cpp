@@ -24,10 +24,13 @@
 #include "core/update/journal.h"
 #include "core/update/link_battery.h"
 #include "core/update/radio_update.h"
+#include "core/update/self_update.h"
+#include "core/update/uplink_check.h"
 #include "core/version.h"
 #include "platform/boot.h"
 #include "platform/clock.h"
 #include "platform/flash_partition.h"
+#include "platform/own_update.h"
 #include "platform/pins.h"
 #include "platform/retained.h"
 #include "platform/uart.h"
@@ -62,6 +65,11 @@ platform::UsbConsole g_usb;
 platform::RadioUart g_uart;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
+// The two application slots and ESP-IDF's rollback (task p2-04), and the trial's uplink
+// condition: no server is configured until phase 3, so the condition does not apply
+// (core/update/uplink_check.h says why that is the rule and not a gap).
+platform::EspOwnUpdate g_own;
+core::update::UnconfiguredUplink g_uplink;
 
 // The image store and the USB transfer (task p2-02), when the partition is there: the objects
 // themselves are function statics in app_main (the verdict alone is ~30 KB of parser tokens and
@@ -139,8 +147,10 @@ extern "C" void app_main() {
   }
 
   // S-6: an image confirms itself only after it has booted, spoken to the radio and reached the
-  // server. None of that exists yet, so this image confirms nothing: flashed over USB its state is
-  // undefined and it keeps booting; arriving by an update it would be rolled back, which is right.
+  // server. That is the self-update's trial (task p2-04, core/update/self_update.h), begun by
+  // the console's begin() below once the journal is open, and run from the main loop. An image
+  // flashed over USB is in no OTA state and runs no trial: the bootloader marks only a slot that
+  // an update made the next to boot (tasks/phase-0/reports/01.md, rollback).
 
   // Linked, not called (components/modem/modem_anchor.cpp). The volatile keeps the reference.
   const void* volatile anchor = twinoak_modem_library_anchor();
@@ -217,9 +227,17 @@ extern "C" void app_main() {
   // update, and the console says so.
   static core::update::LinkBattery battery(radio);
   static core::flasher::Flasher update_flasher(radio_pins, g_clock, slots);
+  core::update::SelfUpdate* self_update_ptr = nullptr;
   if (g_store != nullptr && g_journal != nullptr) {
     static core::update::RadioUpdate update(*g_store, update_flasher, radio, *g_journal, g_clock, battery);
     g_update = &update;
+    // The Walter's own update (task p2-04): the other slot as a transfer target, the switch, the
+    // trial. Over the real slots (platform/own_update.cpp), the store's bad list, the journal,
+    // the link client, the uplink seam, the battery as the radio reports it, and health for the
+    // restart's reason.
+    static core::update::SelfUpdate self_update(g_own, *g_store, *g_journal, radio, g_uplink, g_clock,
+                                                g_restart, battery, health);
+    self_update_ptr = &self_update;
   }
 
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
@@ -227,7 +245,7 @@ extern "C" void app_main() {
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
-                                        slots, g_store, g_receiver, g_update, g_journal);
+                                        slots, g_store, g_receiver, g_update, g_journal, self_update_ptr);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {
