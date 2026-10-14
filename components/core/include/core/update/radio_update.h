@@ -100,8 +100,10 @@ constexpr std::int16_t kBatteryFallingMvPerHour = -100;
 constexpr std::uint32_t kStepIdleMs = 100;
 
 // How many journal entries one run of this machine may write before something is wrong: the
-// bound protect() holds the journal to (core/update/journal.h). A good path is 7 entries, a
-// rollback 10; resumes add one each.
+// bound protect() holds the journal to (core/update/journal.h). A good path is 6 entries (check,
+// flashing, booting, proving, committing, done), a rollback 7 (check, flashing, booting,
+// rolling-back, its booting, its proving, restored); each resume adds one. Measured by
+// host_test/core/update/test_radio_update_power_loss.cpp.
 constexpr std::uint32_t kEntriesPerRunMax = 48;
 
 // -- the states ---------------------------------------------------------------------------------
