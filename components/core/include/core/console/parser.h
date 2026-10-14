@@ -105,6 +105,17 @@
 //   lte time              the network's time, and whether it is the network's
 //   lte id                the IMEI, the ICCID and the IMSI - **a person asking**, and the only
 //                         place this firmware prints them
+//
+// and the HTTPS client (task p3-02; docs/ARCHITECTURE.md §9). No slot either:
+//
+//   http get <url>        one GET over verified TLS: the status, the headers worth naming, the
+//                         first bytes as hex, the size, the time. https only
+//   fetch <base-url> [candidate|scanner]
+//                         a release from <base-url>/manifest.json: the three steps, each check
+//                         printed as it passes, the image into the candidate (default) or scanner
+//                         slot
+//   trust tls             the roots this firmware trusts - subject, fingerprint, expiry - and
+//                         whether the modem's certificate slots hold them
 #pragma once
 
 #include <cstddef>
@@ -173,6 +184,10 @@ enum class Verb : std::uint8_t {
   kLteDown,
   kLteTime,
   kLteId,
+  // The HTTPS client (task p3-02).
+  kHttpGet,
+  kFetch,
+  kTrustTls,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.
@@ -181,6 +196,9 @@ constexpr std::uint32_t kMaxMemWords = 32;
 // §5.7: a CLI line is 1 to 160 bytes of UTF-8. The parser refuses a longer one here rather than
 // letting the encoder refuse it later, so that the console can say which limit was passed.
 constexpr std::size_t kMaxCliLine = link::kMaxCliLine;
+
+// The longest line the console accepts, without its line ending (the agent firmware's figure).
+constexpr std::size_t kMaxLineLength = 200;
 
 struct Command {
   Verb verb = Verb::kEmpty;
@@ -196,10 +214,10 @@ struct Command {
   // it is; parser.cpp holds it to core/image/store.h's own names.
   std::uint8_t which = 0;
   bool radio_down = false;                // kSelfSwitch: the radio is known to be down
+  // kHttpGet, kFetch: the URL, verbatim (the line's bound is the URL's bound here: a GitHub
+  // redirect's signed URL is for the client to follow, not for a person to type).
+  char url[kMaxLineLength + 1] = {};
 };
-
-// The longest line the console accepts, without its line ending (the agent firmware's figure).
-constexpr std::size_t kMaxLineLength = 200;
 
 struct Parsed {
   bool ok = false;

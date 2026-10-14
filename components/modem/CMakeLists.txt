@@ -9,6 +9,9 @@
 # host_test/ runs against host_test/sim/fake_modem.h (task p3-01).
 idf_component_register(
   SRCS "walter_uplink.cpp"
+       # The TLS socket and the certificate store (task p3-02): the modem's own TLS over one of
+       # its sockets, and the one call that configures a TLS profile.
+       "walter_tls.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces core)
 

@@ -110,7 +110,7 @@ TEST_CASE("trust says this build accepts no update, because keys/release-keys.tx
   CHECK(contains(text, "trust: none: no update will be accepted (keys/release-keys.txt names no key;\n"));
   CHECK(contains(text, "spec/SYSTEM.md section 10 item 1"));
   CHECK_FALSE(contains(text, "TEST KEY"));
-  CHECK(rig.run("trust me") == "error: trust takes no argument\n");
+  CHECK(rig.run("trust me") == "error: trust takes no argument, or 'tls': me\n");  // `trust tls` is task p3-02's
   // Not a radio verb: no slot, no hold, nothing on the pins.
   CHECK(rig.run("rak trust") == "error: unknown rak subcommand (try 'help'): trust\n");
 }
@@ -275,7 +275,10 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           // either, refused in one line, no pin
                           "self", "receive", "switch", "confirm", "reject", "radio-down",
                           "self status", "self receive", "self switch", "self switch radio-down",
-                          "self confirm", "self reject"};
+                          "self confirm", "self reject",
+                          // the HTTPS client (task p3-02): no client on this rig, refused in one
+                          // line, no pin
+                          "http get https://x.example/", "fetch https://x.example/r", "trust tls"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);
@@ -330,10 +333,11 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   CHECK(lines > 3000);
   // Fewer of each than task p0-03's version of this test saw: the bag of tokens grew by the
   // link's twenty-odd (task p1-02), the SWD commands' dozen (tasks p1-03, p1-04) and the update's
-  // ten (task p2-03) and the self-update's twelve (task p2-04), so a given line is less often one
-  // of these two. The run is seeded; the thresholds are a floor under what this seed gives.
+  // ten (task p2-03), the self-update's twelve (task p2-04) and the HTTPS client's three (task
+  // p3-02), so a given line is less often one of these two. The run is seeded; the thresholds
+  // are a floor under what this seed gives (65 kills with p3-02's three tokens; 70 before them).
   CHECK(resets > 20);
-  CHECK(kills > 70);
+  CHECK(kills > 60);
   MESSAGE(sequences << " sequences, " << lines << " lines, " << resets << " resets, " << kills
                     << " kills, " << rig.restart.asked << " reboots, no rule broken");
 }

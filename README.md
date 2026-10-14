@@ -81,9 +81,12 @@ asks of the world, `components/platform/` the ESP-IDF answers, `components/modem
 (`dptechnics/walter-modem`, a managed component pinned in `dependencies.lock`), `main/` the
 start-up. `sdkconfig.defaults` carries a reason per line; `partitions.csv` is checked by
 `tools/check_partitions.py` against every build. `tools/release/` makes a release and refuses the
-ways one can be wrong; `keys/` holds the public halves of the keys a release may be signed with;
-`tools/walterctl.py push` sends a signed release's radio image into a Walter's image store over
-USB, which is the bench's stand-in for a server until phase 3.
+ways one can be wrong; `keys/` holds the public halves of the keys a release may be signed with
+and, under `keys/tls/`, the TLS roots a server's chain must end at (each held to its PEM at build
+time); `tools/walterctl.py push` sends a signed release's radio image into a Walter's image store
+over USB, and the console's `fetch <base-url>` takes the same release over HTTPS with the chain
+verified, in ranges, resumable - the client of phase 3's task 02, which nothing calls by itself
+until the wake cycle does.
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the map;
 [`docs/release.md`](docs/release.md) is how a tag becomes a release;
 [`docs/console.md`](docs/console.md) is the console;

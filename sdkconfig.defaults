@@ -77,7 +77,8 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 # CONFIG_BT_ENABLED is not set
 
 # ---- walter-modem (managed component, 1.5.0) ----------------------------------------------------
-# What this firmware uses of the modem is HTTP with TLS and the sockets underneath (docs/ARCHITECTURE
+# What this firmware uses of the modem is its TLS over its sockets - HTTP/1.1 is core/net's own, because
+# the modem's HTTP client hands back too little of a response (task p3-02) - (docs/ARCHITECTURE
 # §9). The task asked for the unused protocols - MQTT, GNSS, CoAP, BlueCherry, MOTA - to be off
 # where the library's Kconfig allows; at 1.5.0 it allows none of them in practice. Each switch
 # was tried in the build (report 01, deviations): MQTT or GNSS off breaks WalterModem.h, whose

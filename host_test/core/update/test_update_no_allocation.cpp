@@ -52,6 +52,20 @@ const char* const kUpdateIncludes[] = {
     "core/version.h",
     "interfaces/own_update.h",
     "interfaces/restart.h",
+    // The fetch of a release and the trial's TLS handshake (task p3-02): the client, the download
+    // and the roots, the URL's bound, bytes out for the console's lines (snprintf into a stack
+    // buffer and the va_list it takes: no allocation), the TLS socket.
+    "cstdarg",
+    "cstdio",
+    "cstring",
+    "core/net/client.h",
+    "core/net/download.h",
+    "core/net/trust.h",
+    "core/net/url.h",
+    "core/update/fetch.h",
+    "core/update/tls_check.h",
+    "interfaces/text_out.h",
+    "interfaces/tls_socket.h",
 };
 
 }  // namespace

@@ -19,9 +19,12 @@
 #include "core/image/receive.h"
 #include "core/image/store.h"
 #include "core/link/client/client.h"
+#include "core/net/client.h"
+#include "core/net/trust.h"
 #include "core/supervisor/supervisor.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
+#include "core/update/fetch.h"
 #include "core/update/self_update.h"
 #include "core/uplink/policy.h"
 #include "interfaces/clock.h"
@@ -45,7 +48,11 @@ class Console {
           image::Receiver* receiver = nullptr, update::RadioUpdate* update = nullptr,
           update::Journal* journal = nullptr, update::SelfUpdate* self = nullptr,
           supervisor::Supervisor* supervisor = nullptr,
-          uplink::UplinkPolicy* uplink = nullptr);
+          uplink::UplinkPolicy* uplink = nullptr,
+          // The HTTPS client (task p3-02): the client for `http get`, the fetch of a release
+          // for `fetch`, the trust loader for `trust tls`. A build without a store has no fetch.
+          net::Client* http = nullptr, update::Fetch* fetch = nullptr,
+          net::TrustLoader* trust = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -171,6 +178,13 @@ class Console {
   void printPowerSaving(const interfaces::PowerSavingGrant& grant);
   void printNextTry();
 
+  // The HTTPS client (task p3-02).
+  bool httpOk();    // false, with one error line, when this build has no client
+  bool uplinkUp();  // false, with one error line, when the uplink is not up ('lte up' first)
+  void httpGet(const char* url);
+  void fetch(const char* base_url, image::Which which);
+  void trustTls();
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
@@ -185,6 +199,9 @@ class Console {
   update::SelfUpdate* self_ = nullptr;
   supervisor::Supervisor* supervisor_ = nullptr;
   uplink::UplinkPolicy* uplink_ = nullptr;
+  net::Client* http_ = nullptr;
+  update::Fetch* fetch_ = nullptr;
+  net::TrustLoader* trust_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about

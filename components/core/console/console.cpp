@@ -56,6 +56,10 @@ bool isRadioVerb(Verb verb) {
     case Verb::kLteDown:
     case Verb::kLteTime:
     case Verb::kLteId:
+    // The HTTPS client (task p3-02): no slot either.
+    case Verb::kHttpGet:
+    case Verb::kFetch:
+    case Verb::kTrustTls:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -94,10 +98,12 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  link::client::Client& radio, board::SlotLock& slots, image::Store* images,
                  image::Receiver* receiver, update::RadioUpdate* update, update::Journal* journal,
                  update::SelfUpdate* self, supervisor::Supervisor* supervisor,
-                 uplink::UplinkPolicy* uplink)
+                 uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
+                 net::TrustLoader* trust)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
-      self_(self), supervisor_(supervisor), uplink_(uplink), flasher_(pins, clock, slots) {}
+      self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
+      trust_(trust), flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -306,6 +312,9 @@ void Console::runLine(const char* line) {
     case Verb::kLteDown: lteDown(); return;
     case Verb::kLteTime: lteTime(); return;
     case Verb::kLteId: lteId(); return;
+    case Verb::kHttpGet: httpGet(p.command.url); return;
+    case Verb::kFetch: fetch(p.command.url, static_cast<image::Which>(p.command.which)); return;
+    case Verb::kTrustTls: trustTls(); return;
   }
 }
 
@@ -371,6 +380,13 @@ void Console::help() {
   print("  lte time            the network's time, and whether it really is the network's\n");
   print("  lte id              the modem's IMEI and the SIM's ICCID and IMSI, for the label on\n");
   print("                      the box: printed here, and written nowhere else\n");
+  print("  http get <url>      one GET over verified TLS (https only): status, headers, the first\n");
+  print("                      bytes as hex, the size, the time. 'lte up' first\n");
+  print("  fetch <base-url> [candidate|scanner]\n");
+  print("                      a release from <base-url>/manifest.json into the store: the three\n");
+  print("                      steps, each of the six checks printed as it passes (minutes)\n");
+  print("  trust tls           the TLS roots this build trusts, their fingerprints and expiry, and\n");
+  print("                      whether the modem's certificate slots hold them\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -2057,6 +2073,192 @@ void Console::lteId() {
   printf("        IMSI %s\n", id.imsi[0] != 0 ? id.imsi : "unknown");
   print("  these identify a subscription: they are printed because a person asked, and are\n");
   print("  written to no log and sent nowhere by this firmware\n");
+}
+
+// -- the HTTPS client (task p3-02) --------------------------------------------------------------
+
+bool Console::httpOk() {
+  if (http_ != nullptr) return true;
+  print("error: this build has no HTTPS client: nothing was given to the console (main/main.cpp)\n");
+  return false;
+}
+
+bool Console::uplinkUp() {
+  // A rig without an uplink (the host tests') is not held to it; a build with one is.
+  if (uplink_ == nullptr) return true;
+  if (uplink_->state() == interfaces::UplinkState::kUp) return true;
+  printf("error: the uplink is %s: 'lte up' first\n", interfaces::describe(uplink_->state()));
+  return false;
+}
+
+namespace {
+
+// The body of `http get`: the first bytes kept for a hex line, the rest counted. The client's
+// bound is what cuts a long body; this keeps 32 bytes whatever comes.
+class PeekSink final : public interfaces::HttpBodySink {
+ public:
+  bool piece(const std::uint8_t* data, std::size_t size) override {
+    for (std::size_t i = 0; i < size && kept_ < sizeof first_; ++i) first_[kept_++] = data[i];
+    total_ += size;
+    return true;
+  }
+  const std::uint8_t* first() const { return first_; }
+  std::size_t kept() const { return kept_; }
+  std::uint64_t total() const { return total_; }
+
+ private:
+  std::uint8_t first_[32] = {};
+  std::size_t kept_ = 0;
+  std::uint64_t total_ = 0;
+};
+
+// How much of a response `http get` reads before cutting it: a console line is for looking, not
+// for downloading; a kilobyte shows the shape of an answer.
+constexpr std::uint64_t kHttpGetBound = 1024;
+
+}  // namespace
+
+void Console::httpGet(const char* url) {
+  if (!httpOk() || !uplinkUp()) return;
+  // The headers worth naming on a bench: the type and the length, the two validators the
+  // download uses, and whether the server takes ranges.
+  char content_type[64] = {};
+  char etag[64] = {};
+  char last_modified[48] = {};
+  char accept_ranges[16] = {};
+  interfaces::HttpWantedHeader wanted[4] = {};
+  wanted[0].name = "Content-Type";
+  wanted[0].value = content_type;
+  wanted[0].capacity = sizeof content_type;
+  wanted[1].name = "ETag";
+  wanted[1].value = etag;
+  wanted[1].capacity = sizeof etag;
+  wanted[2].name = "Last-Modified";
+  wanted[2].value = last_modified;
+  wanted[2].capacity = sizeof last_modified;
+  wanted[3].name = "Accept-Ranges";
+  wanted[3].value = accept_ranges;
+  wanted[3].capacity = sizeof accept_ranges;
+  net::Options options;
+  options.wanted = wanted;
+  options.wanted_count = 4;
+  options.bound = kHttpGetBound;
+  PeekSink body;
+  printf("http get: %s (the chain is verified against this build's roots)\n", url);
+  http_->setTrace(&out_);
+  const net::Result r = http_->get(url, options, body);
+  http_->setTrace(nullptr);
+  if (r.verdict == net::Verdict::kRefusedUrl) {
+    printf("error: http get: %s\n", r.why);
+    return;
+  }
+  if (r.status == 0) {
+    printf("error: http get: no response: %s\n", r.why);
+    return;
+  }
+  printf("http get: %u %s%s%s\n", static_cast<unsigned>(r.status), net::describe(r.verdict),
+         r.redirects != 0 ? " after a redirect to " : "", r.redirects != 0 ? r.final_host : "");
+  if (r.verdict != net::Verdict::kOk && r.verdict != net::Verdict::kTooLarge) printf("  %s\n", r.why);
+  for (std::size_t i = 0; i < 4; ++i) {
+    if (wanted[i].present) {
+      printf("  %s: %s%s\n", wanted[i].name, wanted[i].value, wanted[i].truncated ? " (cut)" : "");
+    }
+  }
+  if (r.has_content_length) {
+    printf("  Content-Length: %lu\n", static_cast<unsigned long>(r.content_length));
+  } else if (r.chunked) {
+    print("  Transfer-Encoding: chunked\n");
+  }
+  if (body.kept() != 0) {
+    char hex[2 * 32 + 1];
+    hashHex(body.first(), body.kept(), hex);
+    printf("  first %lu bytes: %s\n", static_cast<unsigned long>(body.kept()), hex);
+  }
+  printf("  %lu bytes%s in %lu ms\n", static_cast<unsigned long>(body.total()),
+         r.verdict == net::Verdict::kTooLarge ? " (cut off: a console line reads 1 KB at most)" : "",
+         static_cast<unsigned long>(r.elapsed_ms));
+  if (r.authorization_dropped) print("  (an Authorization header was not carried past the first host)\n");
+}
+
+void Console::fetch(const char* base_url, image::Which which) {
+  if (!httpOk() || !uplinkUp()) return;
+  if (fetch_ == nullptr) {
+    print("error: fetch: this build has no image store, so nothing can be fetched into it\n");
+    return;
+  }
+  printf("fetch: %s into the %s image of slot %u: manifest.json, its .sig, the six checks, the image\n",
+         base_url, image::name(which), static_cast<unsigned>(slot_.index));
+  http_->setTrace(&out_);
+  const update::FetchResult r = fetch_->run(base_url, which, slot_, net::Budget{});
+  http_->setTrace(nullptr);
+  switch (r.verdict) {
+    case update::FetchVerdict::kStored:
+      printf("fetch: stored: %s (%s, %lu bytes) is the %s image; 'image list' shows it\n", r.version,
+             r.file_name, static_cast<unsigned long>(r.expected), image::name(which));
+      return;
+    case update::FetchVerdict::kRefused:
+      printf("fetch: refused at %s: %s; nothing stored, the slot is empty\n",
+             image::describe(r.check), r.why);
+      return;
+    case update::FetchVerdict::kBudget:
+      printf("fetch: stopped on the budget with %lu of %lu bytes in flash: %s\n",
+             static_cast<unsigned long>(r.held), static_cast<unsigned long>(r.expected), r.why);
+      return;
+    case update::FetchVerdict::kLater:
+      printf("fetch: later: %s (Retry-After %lu s, capped); %lu of %lu bytes in flash\n", r.why,
+             static_cast<unsigned long>(r.retry_after_s), static_cast<unsigned long>(r.held),
+             static_cast<unsigned long>(r.expected));
+      return;
+    case update::FetchVerdict::kDenied:
+    case update::FetchVerdict::kFailed:
+    case update::FetchVerdict::kBadUrl:
+    case update::FetchVerdict::kNoSlot:
+    case update::FetchVerdict::kStoreRefused:
+    case update::FetchVerdict::kWrongFile:
+      printf("error: fetch: %s: %s%s\n", update::describe(r.verdict), r.why,
+             r.held != 0 ? " (the bytes in flash stay for a resume)" : "");
+      return;
+  }
+}
+
+void Console::trustTls() {
+  if (trust_ == nullptr) {
+    // The roots are in every build; the loader (and its record) is what a rig may lack.
+    print("trust tls: the roots this build carries (no loader in this build: the modem's slots are not tracked)\n");
+  } else {
+    printf("trust tls: %lu roots; the modem's certificate slots %s\n",
+           static_cast<unsigned long>(net::tlsRootCount()),
+           trust_->recordLost() && trust_->writesThisBoot() == 0
+               ? "have no record (a first boot or a power cut): they are written at the first request"
+               : "are tracked in retained storage");
+  }
+  for (std::uint8_t i = 0; i < net::tlsRootCount(); ++i) {
+    const net::TlsRoot* r = net::tlsRoot(i);
+    printf("  %u. %s\n", static_cast<unsigned>(i), r->name);
+    printf("     subject %s\n", r->subject);
+    printf("     sha256 %s\n", r->sha256_hex);
+    printf("     expires %s; checked %s from %s\n", r->expires, r->checked, r->source);
+    printf("     certificate slot %u, TLS profile %u: ", static_cast<unsigned>(net::certificateSlotOf(i)),
+           static_cast<unsigned>(net::tlsProfileOf(i)));
+    if (trust_ == nullptr) {
+      print("not tracked\n");
+    } else {
+      const net::RootStatus st = trust_->statusOf(i);
+      print(st.matches ? "written, matches this build's root\n"
+                       : (st.recorded ? "written with another root or numbering: rewritten at the next request\n"
+                                      : "not written yet: written at the next request\n"));
+    }
+  }
+  std::size_t rows = 0;
+  const net::HostRoot* hosts = net::hostRoots(&rows);
+  print("  hosts: ");
+  for (std::size_t i = 0; i < rows; ++i) {
+    printf("%s -> root %u; ", hosts[i].suffix, static_cast<unsigned>(hosts[i].root));
+  }
+  printf("every other host -> root %u\n", static_cast<unsigned>(net::kRootIsrgX1));
+  if (trust_ != nullptr) {
+    printf("  %lu root(s) written in this boot\n", static_cast<unsigned long>(trust_->writesThisBoot()));
+  }
 }
 
 }  // namespace console
