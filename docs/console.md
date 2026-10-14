@@ -209,6 +209,26 @@ failure after the halt — a page that will not verify after a retry, a target t
 is reported with its step and address; where the debug port still answers, the radio is reset on
 the way out so that it runs its bootloader rather than sitting halted.
 
+## The radio's update
+
+From task p2-03 (`docs/update.md` has the whole of it: the states, the health check, every line,
+and what a unit is in after a power cut at each step). Each of these drives
+`core::update::RadioUpdate` to its end inside the command, printing a line per transition as the
+journal takes it, with the flasher's progress lines between; the console is busy for the flash and
+then for the proving period (minutes). All four take the slot in front (`rak @0 update`).
+
+| Command | What it does |
+|---|---|
+| `rak update` | the candidate (`image receive candidate`) flashed into the radio, reset into, and put through the health check; then **promoted to golden** - or, if it fails, its hash on the bad list **first**, the golden image flashed back and proved by the same check. Ends `rak update: done: <version> (sha256 …) is the golden image`, or `rak update: restored: the candidate failed its health check (<reason> at <step>) and is on the bad list; the golden image <version> is back and proved`, or `rak update: STUCK: <reason> - the radio has no proved application; a person's business now`. Refused in one `error:` line when a precondition fails - no candidate, on the bad list, the wrong role, board or band, the link down, the battery low or unreadable, **no golden image**, another run journalled as in progress, the Walter's own update unconfirmed (S-7) - with nothing touched |
+| `rak update --first-install` | the same with no golden image to return to: a unit's first repeater image, a person's command only. A failure ends *stuck: no image to return to* |
+| `rak update status` | the journal's story of the last run, oldest entry first, each with its sequence number, state, and - where it has one - the reason and the step; then `the last update ended: <state>`, or where a resumed run is now, or that the journal says one did not end and it is resumed at the next boot. `no update has been journalled on this unit` on a fresh one |
+| `rak role scanner` | flash the stored scanner image (`image receive scanner`) and prove only that something that calls itself a scanner is there (p1-02's text-mode detection); golden and candidate untouched, nothing promoted. Afterwards `rak hello` says *the radio is running the scanner* and `rak text` shows its lines |
+| `rak role repeater` | the golden image flashed back and proved as an update would prove it (through the rolling-back states), then *done*; the node's identity and name are what they were, because the file system above the application region is never touched |
+
+At boot, a run the journal says did not end is announced - `update: the journal says a run was in
+progress (update); resuming at flashing-candidate` - and driven from the main loop one step a turn,
+each transition printed; `rak update` meanwhile answers *an update is already running*.
+
 ## The radio's power, as `status` says it
 
 | | Means |

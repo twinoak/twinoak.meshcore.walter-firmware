@@ -135,10 +135,11 @@ void resetAtEveryEntry(const Scenario& sc, const char* name, std::string* one_st
     unit.reboot();
     CHECK_FALSE(unit.walter->update.resume());
   }
-  MESSAGE(name << ": " << total << " journal entries in the clean run; the Walter reset after each in turn: "
-               << resumed_runs << " resumed and reached " << upd::describe(sc.expected) << ", "
-               << already_terminal << " found the run already over; the longest resumed run wrote "
-               << resumed_entries_max << " entries");
+  // std::string, not const char*: doctest streams a char pointer as a pointer.
+  MESSAGE(std::string(name) << ": " << total << " journal entries in the clean run; the Walter reset after each in turn: "
+                            << resumed_runs << " resumed and reached " << std::string(upd::describe(sc.expected)) << ", "
+                            << already_terminal << " found the run already over; the longest resumed run wrote "
+                            << resumed_entries_max << " entries");
 }
 
 }  // namespace

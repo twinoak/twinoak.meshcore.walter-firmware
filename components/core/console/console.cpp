@@ -125,7 +125,7 @@ void Console::begin() {
   // "a Walter that resets in the middle resumes or rolls back; it never guesses"). tick()
   // drives it from here, one step per turn of the main loop, printing each transition.
   if (update_ != nullptr && update_->resume()) {
-    printf("update: the journal says a %s was in progress; resuming at %s\n",
+    printf("update: the journal says a run was in progress (%s); resuming at %s\n",
            update::describe(update_->request().kind), update::describe(update_->state()));
   }
   print("type 'help' for the commands\n");

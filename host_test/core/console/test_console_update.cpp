@@ -130,7 +130,7 @@ TEST_CASE("a resumed update is announced at boot and driven by tick()") {
   w.out.clear();
   w.console.begin();
   INFO(w.out.text);
-  CHECK(has(w.out.text, "update: the journal says a update was in progress; resuming at flashing-candidate"));
+  CHECK(has(w.out.text, "update: the journal says a run was in progress (update); resuming at flashing-candidate"));
   CHECK(w.update.active());
   CHECK(has(w.runLine("rak update status"), "now: flashing-candidate (resumed)"));
   CHECK(has(w.runLine("rak update"), "error: rak update: an update is already running (flashing-candidate)"));
