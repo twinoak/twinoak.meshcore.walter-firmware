@@ -300,18 +300,21 @@ restart came between the journal entry and the boot pointer - *the restart came 
 slot was made the next to boot: nothing was tried* - and nothing goes on the bad list; `self
 switch` may be said again.
 
-## The uplink condition until phase 3
+## The uplink condition, and the server it reaches
 
-Condition 3 is an interface, `core/update/uplink_check.h`, with two implementations: the fake in
-the tests (reached, failed, or not configured, as a test says) and in the firmware
-`UnconfiguredUplink`, whose server host is the build constant `kSelfUpdateServerHost` - **empty**
-today - and which therefore answers *not configured*. What the condition **is**, when a server
-exists, is named by `kUplinkCondition`: **reach the configured server's TLS port and complete a
-handshake with its chain verified** - the strongest statement available without an agent
-(`spec/SYSTEM.md` §8: nothing talks to MeshMaster yet). Phase 3's HTTPS client (`tasks/phase-3/02`)
-implements it over the modem and replaces `UnconfiguredUplink` in `main/`; the settings task gives
-the host a value. A build that names a host it has no way to reach answers *failed*, so that it
-rolls its update back rather than confirming it blind.
+Condition 3 is an interface, `core/update/uplink_check.h`, with three implementations: the fake in
+the tests (reached, failed, or not configured, as a test says), `UnconfiguredUplink`, and - in the
+firmware since task p3-02 - `TlsHandshakeCheck` (`core/update/tls_check.h`). What the condition
+**is** is named by `kUplinkCondition`: **reach the configured server's TLS port and complete a
+handshake with its chain verified against its root and the host name checked** - the strongest
+statement available without an agent (`spec/SYSTEM.md` §8: nothing talks to MeshMaster yet).
+
+**The server is the `server.url` setting** (task p3-03, `docs/console.md`): the console hands the
+host and the port over at boot and at every change, an empty one is *not configured* and the
+condition does not apply, and a URL with no host this firmware can reach - a port over 65535 -
+is the same thing. That rule is what keeps a factory image, which has no server, from rejecting
+its own first update. A build that names a host it has no way to reach - a non-empty host with no
+modem driver - answers *failed*, so that it rolls its update back rather than confirming it blind.
 
 **The rule that keeps a factory image from rejecting itself**, stated: *a trial runs only for an
 image that an update made the next to boot, and condition 3 applies only when a server is

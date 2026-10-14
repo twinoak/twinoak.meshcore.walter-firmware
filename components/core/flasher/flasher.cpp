@@ -136,6 +136,11 @@ Result Flasher::begin(const Image& image, const BoardProfile& profile, board::Sl
   plan->image = &image;
   counters_ = Counters{};
 
+  // The SWD clock in force (`swd.khz`, task p3-03). Read here and not at construction: a Flasher
+  // is built once at boot - the console's, the update machine's, the supervisor's - and a person
+  // who slows the clock down on a bench to get a long cable to answer means the next flash too.
+  wire_.setHalfPeriodUs(swd::halfPeriodInForceUs());
+
   // 0. The slot (task p1-06): the wires are steered to that radio and held for the whole call,
   // before a pin moves - a flash must not have the debug lines taken from under it, and on a
   // single-radio unit a slot other than 0 is refused here, with nothing done.

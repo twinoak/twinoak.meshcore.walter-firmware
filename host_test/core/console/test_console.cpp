@@ -94,13 +94,15 @@ TEST_CASE("begin prints the boot's reason and a prompt") {
 TEST_CASE("help lists every command") {
   Rig rig;
   const std::string text = rig.run("help");
-  for (const char* cmd : {"help", "status", "reboots", "pins", "rak reset", "rak kill <seconds>",
-                          "reboot", "rak hello", "rak ping", "rak status", "rak id", "rak time",
-                          "rak power", "rak env", "rak cli <line>", "rak events", "rak text",
-                          "trust"}) {
+  for (const char* cmd : {"help", "status", "reboots", "pins", "rak reset",
+                          "rak kill <seconds> [confirm]", "reboot", "rak hello", "rak ping",
+                          "rak status", "rak id", "rak time", "rak power", "rak env",
+                          "rak cli <line>", "rak events", "rak text", "trust"}) {
     CHECK_MESSAGE(contains(text, cmd), cmd);
   }
-  CHECK(contains(text, "(1..30)"));
+  // The rail's bounds and the word, from RadioPins and commands.h (task p3-03).
+  CHECK(contains(text, "1 to 30 whole seconds"));
+  CHECK(contains(text, "'rak kill' wants the word 'confirm' after the number"));
 }
 
 TEST_CASE("trust says this build accepts no update, because keys/release-keys.txt names no key (task p2-01)") {
@@ -115,25 +117,29 @@ TEST_CASE("trust says this build accepts no update, because keys/release-keys.tx
   CHECK(rig.run("rak trust") == "error: unknown rak subcommand (try 'help'): trust\n");
 }
 
-TEST_CASE("status: version, uptime, why it booted, the pins and the radio's power") {
+TEST_CASE("status: one screen - this firmware, why it booted, the radio, the pins") {
   Rig rig;
   rig.clock.advance(12345);
   const std::string text = rig.run("status");
   CHECK(contains(text, core::banner()));
-  CHECK(contains(text, "uptime 12 s, boot 1"));
-  CHECK(contains(text, "booted: power-on reset\n"));
-  CHECK(contains(text, "radio power: on\n"));
-  CHECK(contains(text, "uart: released; swd: released; nRESET: released; kill line: not driven\n"));
-  CHECK(contains(text, "next reset: allowed now\n"));
-  CHECK(contains(text, "LORA_nRESET=input/high"));
-  CHECK(contains(text, "WALTER_TX=input pull-up/high"));
-  CHECK(contains(text, "LORA_PWR_KILL=input/low"));
+  // The descriptor inside this image (task p3-03): role, board, band, link.
+  CHECK(contains(text, "unit: no name (set unit.name); role manager, board walter"));
+  CHECK(contains(text, "booted: power-on reset; uptime 12 s, boot 1 since the record began\n"));
+  CHECK(contains(text, "radio: no session"));
+  CHECK(contains(text, "pins: power on; next reset allowed now\n"));
+  CHECK(contains(text, "  uart released, swd released, nRESET released, kill line not driven\n"));
+  // This rig has no store, no self-update, no uplink and no settings: each says so or is absent,
+  // and nothing crashes (main/ hands over null pointers when a partition is missing).
+  CHECK(contains(text, "images: no store in this build"));
+  CHECK(!contains(text, "next wake"));
+  // The pins get a line each from `pins`, not from `status` (task p3-03: one screen).
+  CHECK(!contains(text, "LORA_nRESET=input/high"));
 }
 
 TEST_CASE("status says how long until a reset is allowed") {
   Rig rig;  // constructed at 0, safe() at 200: a reset is assumed to have ended at 0
   const std::string text = rig.run("status");
-  CHECK(contains(text, "next reset: in 800 ms (two resets are a second apart)\n"));
+  CHECK(contains(text, "pins: power on; next reset not yet (two are a second apart)\n"));
 }
 
 TEST_CASE("pins: one line per pin with net, D-sub, GPIO, mode, level and use") {
@@ -168,9 +174,9 @@ TEST_CASE("rak kill: within bounds it cycles the rail, outside it is refused wit
   Rig rig;
   std::string text = rig.run("rak kill 0");
   CHECK(text == "error: rak kill 0: too short for the rail to collapse (1..30 seconds)\n");
-  text = rig.run("rak kill 31");
+  text = rig.run("rak kill 31 confirm");
   CHECK(text == "error: rak kill 31: longer than the kill limit (1..30 seconds)\n");
-  text = rig.run("rak kill 999999999");
+  text = rig.run("rak kill 999999999 confirm");
   CHECK(contains(text, "longer than the kill limit"));
   CHECK(rig.pins.transitionsOf(kPwrKill.gpio).empty());
   text = rig.run("rak kill 2");
@@ -219,16 +225,16 @@ TEST_CASE("typed bytes are echoed, backspace works, CR LF is one line ending") {
   // "staxx", two erasures (backspace and DEL), "tus", the line ending, then status's output and
   // a prompt
   CHECK(text.rfind("staxx\b \b\b \btus\n", 0) == 0);
-  CHECK(contains(text, "radio power: on"));
+  CHECK(contains(text, "pins: power on"));
   CHECK(text.substr(text.size() - 2) == "> ");
   CHECK(countLines(text) > 5);
   // The LF of the CR LF did not make a second, empty command (which would print a second prompt).
   CHECK(text.find("> ") == text.rfind("> "));
   // A bare CR and a bare LF each end a line.
   text = rig.type("help\r");
-  CHECK(contains(text, "commands:"));
+  CHECK(contains(text, "the unit:"));
   text = rig.type("help\n");
-  CHECK(contains(text, "commands:"));
+  CHECK(contains(text, "the unit:"));
   // Backspace on an empty line does nothing.
   CHECK(rig.type("\b") == "");
 }
@@ -247,8 +253,8 @@ TEST_CASE("an over-long typed line is refused when it ends, and the next line is
 TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   const char* tokens[] = {"help", "status", "reboots", "pins", "rak", "reset", "kill", "reboot",
                           "0", "1", "2", "5", "29", "30", "31", "100", "-1", "1.5", "x", "", "  ",
-                          "rak reset", "rak kill 1", "rak kill 2", "rak kill 30", "rak kill 0",
-                          "rak kill 31", "rak reset rak reset", "RAK RESET", "\x01", "\xff",
+                          "rak reset", "rak kill 1", "rak kill 2", "rak kill 30",
+                          "rak kill 30 confirm", "rak kill 0", "rak kill 31", "rak reset rak reset", "RAK RESET", "\x01", "\xff",
                           // the link (task p1-02): every subcommand, and the words they are made
                           // of, so that half-typed ones are in the bag too
                           "hello", "ping", "id", "time", "set", "power", "env", "cli", "events",
@@ -263,7 +269,8 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           "mem", "rak swd id", "rak swd mem", "rak swd mem 0x10000100 2",
                           "rak swd mem 0x1 2", "rak swd mem 0x20000000 32", "0x10000100",
                           // the flasher (task p1-05): nothing answers, the lines are released
-                          "flash-test", "rak flash-test", "rak flash-test now",
+                          "flash-test", "rak flash-test", "rak flash-test confirm",
+                          "rak flash-test now",
                           // the trust table (task p2-01): no pin, no slot
                           "trust", "trust me", "rak trust",
                           // the radio's update (task p2-03): this rig has no update machine, so
@@ -356,7 +363,9 @@ TEST_CASE("rak hello prints the version, role, slot and capabilities") {
   CHECK(contains(text, "capabilities 0x3f: cli, power, env, mesh-client, observations, attention"));
   // §5.4: a boot_id this end has not seen means the radio's clock wants setting.
   CHECK(contains(text, "its clock has not been set since it booted"));
-  CHECK(contains(rig.run("status"), "link: frames (protocol 1.0); a session is up"));
+  const std::string after = rig.run("status");
+  CHECK(contains(after, "link: frames (protocol 1.0); retries 0"));
+  CHECK(contains(after, "radio: repeater 0.1.0+abc1234, slot 0, link 1.0"));
 }
 
 TEST_CASE("rak ping, rak status, rak id, rak time, rak power, rak env in words") {
@@ -497,7 +506,7 @@ TEST_CASE("every rak command takes @0 without saying so, and @1 is refused on th
                            "rak @1 id", "rak @1 time", "rak @1 power", "rak @1 env",
                            "rak @1 cli get radio", "rak @1 events", "rak @1 text",
                            "rak @1 swd connect", "rak @1 swd id", "rak @1 swd mem 0x10000100",
-                           "rak @1 flash-test"}) {
+                           "rak @1 flash-test confirm"}) {
     CHECK(rig.run(line) == "error: slot 1: this adapter has 1 radio, so slot 0 is the only one\n");
   }
   CHECK(rig.rak.writes.empty());

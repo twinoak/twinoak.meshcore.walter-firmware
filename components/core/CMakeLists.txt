@@ -12,7 +12,9 @@ idf_component_register(
        "board/dual_target.cpp"
        "health/health.cpp"
        "console/parser.cpp"
+       "console/commands.cpp"
        "console/console.cpp"
+       "console/log_ring.cpp"
        "link/codec/cobs.cpp"
        "link/codec/packet.cpp"
        "link/codec/frame.cpp"
@@ -70,6 +72,9 @@ idf_component_register(
        "net/download.cpp"
        "update/fetch.cpp"
        "update/tls_check.cpp"
+       # The settings (task p3-03): the table of keys and the store over interfaces/key_value.h.
+       "settings/keys.cpp"
+       "settings/settings.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

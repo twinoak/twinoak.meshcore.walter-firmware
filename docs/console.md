@@ -1,16 +1,27 @@
 # The console
 
-The Walter is looked at and exercised over the module's USB-C, which is the ESP32-S3's own USB
-Serial/JTAG port: any baud (it is ignored), one command per line, a `>` prompt. Any terminal will
-do (`python -m serial.tools.miniterm COM5 115200`, PuTTY, `screen`). Typed characters are echoed by
-the board, so leave local echo off; backspace works; CR, LF and CR LF all end a line.
+The Walter is provisioned, looked at and exercised over the module's USB-C, which is the
+ESP32-S3's own USB Serial/JTAG port: any baud (it is ignored), one command per line, a `>` prompt.
+Any terminal will do (`python -m serial.tools.miniterm COM5 115200`, PuTTY, `screen`). Typed
+characters are echoed by the board, so leave local echo off; backspace works; CR, LF and CR LF all
+end a line. The value of `set lte.pin` and `set server.token` echoes as asterisks.
 
-The parser is a pure function (`components/core/console/parser.cpp`) and every line shape and
-every refusal below has a host test (`host_test/core/console/`). The commands run against the same
-`RadioPins` the host tests run them against, with fake pins underneath that check the pin rules of
-[`ARCHITECTURE.md`](ARCHITECTURE.md) §2 — including a few thousand random command sequences, none
-of which may break one. This file grows a command at a time with the tasks; phase 3's task 03
-makes it whole.
+Someone who has used the exit node's console should feel at home in this one: the grammar, the
+echo, the refusals and the provisioning session are the agent firmware's
+([`docs/console.md`](https://github.com/twinoak/meshmaster-agent-firmware/blob/master/docs/console.md)
+there).
+
+There is **one parser** (`components/core/console/parser.cpp`), **one command table** with one
+line of help each (`components/core/console/commands.h`) and **one table of settings**
+(`components/core/settings/keys.h`), and this document is held to all three by a host test
+(`host_test/core/console/test_console_grammar.cpp`): every command and every key below is in the
+table, and every refusal has a test in `host_test/core/console/`. The commands run against the
+same `RadioPins` the host tests run them against, with fake pins underneath that check the pin
+rules of [`ARCHITECTURE.md`](ARCHITECTURE.md) §2 — including a few thousand random command
+sequences, none of which may break one.
+
+[`provisioning.md`](provisioning.md) is the session that takes a Walter from the factory image to
+a provisioned unit, line by line, and it is replayed by a host test so that it cannot rot.
 
 ## What the port prints at boot
 
@@ -18,11 +29,16 @@ makes it whole.
 twinoak-walter 0.0.0-dev
 running from ota_0 at 0x010000 (3072 KB), ota state valid
 image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.0
+settings: nvs namespace 'walter', 11 keys; 'get' prints them, 'set <key> <value>' changes one
+settings: NOT encrypted - flash encryption is the owner's choice and is not assumed: a person with this board and a cable can read lte.pin and server.token out of it (docs/console.md)
 uplink: the modem on UART2 behind interfaces::Uplink; not started yet ('lte', 'lte up')
+https: 2 TLS roots (keys/tls), the modem's slots are recorded as written
 image store: rakfw at 0x630000 (6144 KB), 4923392 bytes laid out for 2 radio slots x 3 images; 'image list' says what is in it
+journal: at 0x620000 (64 KB), 0 entries, next seq 1; 'rak update status' tells the story
 link: UART1 115200 8N1 on the radio's two pins, open
 boot 1: power-on reset
 the boot record starts here (a power cut, or the first boot)
+settings: 0 of 11 keys set; log.level info, swd 125 kHz ('get')
 type 'help' for the commands
 >
 ```
@@ -31,53 +47,192 @@ Before the first line, the seven radio-facing pins have already been put in the 
 constructing `RadioPins` is the first thing `app_main` does. The ota state is `valid` on a factory
 image from its first boot (the bootloader writes `ota_0`'s entry itself when the OTA data is blank;
 task p2-04 read the code and `docs/bench.md` §1 says what to expect), `pending-verify` on the
-first boot of an image an update switched to - then a `self-update: … is on trial` line follows
-the journal's - and the boot's `software reset` line names a self-update's restart.
+first boot of an image an update switched to — then a `self-update: … is on trial` line follows
+the journal's — and the boot's `software reset` line names a self-update's restart.
 
 The `uplink:` line is printed **without touching the modem** (task p3-01): all that happens at boot
 is that the backoff's record is read out of RTC memory, and a second line follows it when there is
-something in that record to say - `uplink: last time: not-registered; 14 wakes counted, 6 attempts;
+something in that record to say — `uplink: last time: not-registered; 14 wakes counted, 6 attempts;
 next try in 3 wake(s)`. The modem itself is started by the first call that needs it.
+
+The lines from `boot 1:` down are the console's, and they are the ones **`log.level` governs**:
+at `warn` and `error` a boot says only what has gone wrong, the invitation and the prompt. A
+supervisor's stop is printed at every level.
 
 ## Commands
 
+`help` prints this table, grouped as it is grouped here, with one line each.
+
+### The unit
+
 | Command | What it does |
 |---|---|
-| `help` | the commands, one line each |
-| `status` | the version; the uptime and the boot count; why this boot happened; what is believed about the radio's power; whether the UART, SWD, nRESET and the kill line are in use; how long until the next reset is allowed; the state of the box link and its counters (task p1-02); every pin's mode and level on one line |
+| `help` | the commands, one line each, and the settings keys |
+| `status` | one screen: this firmware and what its descriptor says it is; the unit's name; why this boot happened, the uptime and the boot count; the radio's session, health and clock; the battery as the radio last reported it; the link's counters; the pins in one line; the images the store holds; this firmware's own slot and trial; the uplink's last attempt and when the next one is allowed; the backend; the next wake. **No secret and no IMEI** — the subscription's identity is `lte id` and nowhere else |
+| `get [key]` | one setting, or every setting in the order of the table below. A secret prints `set` or `unset` and never its value; an unset key shows its fallback in brackets (`log.level unset (info)`) |
+| `set <key> <value>` | store a setting. The value is the rest of the line, trimmed, so a value with spaces is fine; it is validated against the table below before it is stored, and a refusal stores nothing. The reply is `ok <key>` — the value is never echoed back, which is what makes a secret's reply the same as anything else's |
+| `erase confirm` | forget every setting and **only** the settings: the images, the journal, the bad list and the supervisor's counts are in other partitions and in RTC memory and are not touched. Without the word it refuses and says what the word is. The fallbacks are in force at once, and the PIN's generation moves so that a refusal recorded against the PIN just forgotten is not applied to the next one |
+| `reboot` | restart the Walter; the pins go to the safe state first and `reboots` after it says *asked for on the console* |
 | `reboots` | why this board last restarted and the four before that, newest first, each with how long the run before it lasted. The record is in RTC memory: it survives a `reboot`, a panic, a watchdog and a deep sleep, and a power cut clears it (and the first line says so) |
+| `dump` | the last 4 kB this port printed, oldest first, **whole lines only** — a board's answer to a journal, for a unit found quiet with a laptop and no history. The same bytes the port printed and no others. **Nothing the radio sent as text is in it** and nothing the mesh said (S-12): a scanner's NDJSON, a CLI reply and an advert's name are printed and not kept. A secret never reaches a printed line, so there is none in the ring either |
+
+### The radio
+
+| Command | What it does |
+|---|---|
 | `pins` | the seven pins, one line each: net, D-sub pin, GPIO, mode as this firmware configured it, the level read from the pad, and what it is in use for (`released`, `uart`, `swd`, `reset`, `kill`); then the radio's power |
 | `rak reset` | one reset pulse: nRESET open-drain low for 100 ms, then released. If the last reset ended less than a second ago the command says how long it waits and waits; it never pulses early (two resets inside half a second put the radio into its UF2 bootloader). The first reset after a boot waits a full second, because the Walter's own power-up may have reset the radio just before |
-| `rak kill <seconds>` | the LoRa 3.3 V rail off for that long: every other radio-facing pin released first (the UART and SWD taken back from whoever held them), the kill line driven high, held, released (never driven low), then the settle time, then the safe state. Whole seconds, 1 to 30 — the bounds are placeholders until the bench measures the rail (`bench.md` §2). The console is busy for the duration |
-| `reboot` | restart the Walter; the pins go to the safe state first and `reboots` after it says *asked for on the console* |
-| `trust` | (task p2-01) first a self-test of the signature arithmetic on this board — `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` (TweetNaCl on the ESP32-S3: expect some hundreds of milliseconds; **write the number down**) — then the key ids this build accepts a release manifest signed with: the trust table generated from `keys/release-keys.txt` (`spec/FIRMWARE-MANIFEST.md` §3, room for three). Today it prints `trust: none: no update will be accepted (keys/release-keys.txt names no key; the release key is made once, by a person: spec/SYSTEM.md section 10 item 1)`, which is the safe state until the key exists. A build made with `-DTWINOAK_TRUST_TEST_KEY=1` (`tools/verify.ps1 -TestKey`) lists the specification's public test key `c17969deb0026955` and adds a `WARNING` that it is a test build (`+TESTKEY` in its version) that must never be released; the same warning is printed at every boot, after the descriptor line |
-| `image list` | (task p2-02) what the image store holds, per radio slot: the layout's arithmetic on the first two lines, then each slot's **golden**, **candidate** and **scanner** image — role, board, band, version, size, load address, the first eight bytes of its SHA-256 and which physical area it is in, then when it was stored, the commit it was built from and the key that signed its manifest — or `empty`, or `empty; a transfer of sha256 … stopped at N of M bytes (it can be resumed)`. Slot 1's areas are listed too, with a line saying this adapter has no radio there |
+| `rak kill <seconds> [confirm]` | the LoRa 3.3 V rail off for that long: every other radio-facing pin released first (the UART and SWD taken back from whoever held them), the kill line driven high, held, released (never driven low), then the settle time, then the safe state. Whole seconds, 1 to 30 — the bounds are placeholders until the bench measures the rail (`bench.md` §2). **Over 5 seconds it wants the word `confirm` after the number**: a repeater off the air for half a minute is a decision, not a typo. The console is busy for the duration |
+| `rak hello` | HELLO: the version, role, slot and capabilities the radio answers with |
+| `rak ping` | PING, with the round trip |
+| `rak status` | STATUS: its uptime, why it booted, its clock, its flags and counters |
+| `rak id` | IDENTITY: the node's public key and advert name. The name is printed and not logged (S-12) |
+| `rak time [set <epoch>]` | TIME_GET; `rak time set <epoch>` is TIME_SET from a person at this console, which is `spec/LINK-PROTOCOL.md` §5.4's third source of time |
+| `rak power` | POWER_GET: the three current-sense channels |
+| `rak env` | ENV_GET: temperature, humidity, pressure |
+| `rak cli <line>` | CLI: one line run by the radio's own console interpreter, and what it answered. The reply is printed and not logged |
+| `rak events` | the events the client has queued |
+| `rak text` | the lines a scanner has sent instead of frames (§9), printed and not logged |
+| `rak swd connect` | acquire the SWD lines, connect, print DPIDR and the power-up, release |
+| `rak swd id` | connect, identify the nRF52840 (FICR), its protection and its core's state, release |
+| `rak swd mem <addr> [words]` | read 1 to 32 words at a word-aligned address (hex `0x…` or decimal), read-only |
+| `rak flash-test confirm` | a two-page pattern at the top of the application region, only if those pages are blank: written, verified, erased again; the radio restarted. **It wants the word**: it is the one command that writes to a radio's flash outside the update machine |
+| `rak update` | flash the candidate, prove it, make it golden — or roll back to the golden image and never try that candidate again (minutes; `docs/update.md`) |
+| `rak update --first-install` | the same with no golden image to return to: a person's command only |
+| `rak update status` | the journal's story of the last update of the radio |
+| `rak role scanner\|repeater` | flash the stored scanner image and prove a scanner is there; or the golden image back, proved as an update would be |
+| `rak watch` | the supervisor's view: whether the radio is healthy, when it was last so, today's counts against the daily caps, the last good battery reading, the radio's restarts, a stop in force, and the last three incidents with every rung they tried. It only reads |
+| `rak watch reset-caps` | the day's counts to zero and a stop lifted, journalled (the bench) |
+| `rak ladder` | climb the supervisor's ladder now — ask, reset, power-cycle, look at the chip, stop — each rung printed as it is tried. Minutes: the waits are the real ones |
+
+### Images, trust and this firmware's own slots
+
+| Command | What it does |
+|---|---|
+| `image list` | what the image store holds, per radio slot: the layout's arithmetic on the first two lines, then each slot's **golden**, **candidate** and **scanner** image — role, board, band, version, size, load address, the first eight bytes of its SHA-256 and which physical area it is in, then when it was stored, the commit it was built from and the key that signed its manifest — or `empty`, or `empty; a transfer of sha256 … stopped at N of M bytes (it can be resumed)`. Slot 1's areas are listed too, with a line saying this adapter has no radio there |
 | `image verify <which>` | read that image back out of flash, hash it as it comes, and hold it to the SHA-256 in its record. `<which>` is `golden`, `candidate` or `scanner`, with an optional `@slot` after it. This is the command that finds flash rot before an update does |
-| `image erase <candidate\|scanner>` | invalidate that slot's record and clear its header sector, so the slot reads empty and a half-finished transfer is not resumed into the next image. **Never the golden image** (S-5: a known-good image is always on hand), and the refusal says so |
+| `image erase <candidate\|scanner>` | invalidate that slot's record and clear its header sector, so the slot reads empty and a half-finished transfer is not resumed into the next image. **Never the golden image** (S-5: a known-good image is always on hand), and the refusal says so. Not to be confused with `erase confirm`, which is the settings |
 | `image bad` | the hashes of candidates that failed their health check (task p2-03), up to eight; an image on this list is refused before a sector is erased |
 | `image receive <which>` | hand this port over to a framed binary transfer and take `manifest.json`, then its `.sig`, then the image — see below |
+| `trust` | (task p2-01) first a self-test of the signature arithmetic on this board — `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` (TweetNaCl on the ESP32-S3: expect some hundreds of milliseconds; **write the number down**) — then the key ids this build accepts a release manifest signed with: the trust table generated from `keys/release-keys.txt` (`spec/FIRMWARE-MANIFEST.md` §3, room for three). Today it prints `trust: none: no update will be accepted (keys/release-keys.txt names no key; the release key is made once, by a person: spec/SYSTEM.md section 10 item 1)`, which is the safe state until the key exists. A build made with `-DTWINOAK_TRUST_TEST_KEY=1` (`tools/verify.ps1 -TestKey`) lists the specification's public test key `c17969deb0026955` and adds a `WARNING` that it is a test build (`+TESTKEY` in its version) that must never be released; the same warning is printed at every boot, after the descriptor line |
+| `trust tls` | the TLS roots this build trusts — name, subject, SHA-256 fingerprint, expiry, source, the date they were checked — which certificate slot and TLS profile of the modem each goes to, whether the modem's slots are recorded as holding them, and which host is held to which root |
 | `self status` | (task p2-04) this Walter's two application slots — which runs, at what address, in which of the bootloader's states (*valid*, *pending-verify*, *aborted* …), which version — then the trial if one is running (how far into the window, which of the three conditions are met), the image received and waiting for `self switch` if any, and the last self-update's story from the journal. See *The Walter's own update* |
 | `self receive` | hand this port over to the same transfer as `image receive`, with the other application slot as its target: a release of **this** firmware's `ota` file, through the six checks (`tools/walterctl.py push --as self`) |
 | `self switch [radio-down]` | make the received image the next to boot: the preconditions, the journal's *switching* entry, the boot pointer, `SLEEP_NOTICE` to the radio, restart. Does not come back. `radio-down` says the radio is known to be down, so the trial's second condition does not apply |
 | `self confirm` | end the running image's trial early: valid (the bench) |
 | `self reject` | end it early: rejected, on the bad list, restart into the previous image (the bench) |
-| `rak watch` | (task p2-05) the supervisor's view: whether the radio is healthy, when it was last so, today's counts against the daily caps, the last good battery reading, the radio's restarts, a stop in force, and the last three incidents with every rung they tried. It only reads. See *The supervisor* |
-| `rak watch reset-caps` | the day's counts to zero and a stop lifted, journalled (the bench) |
-| `rak ladder` | climb the supervisor's ladder now - ask, reset, power-cycle, look at the chip, stop - each rung printed as it is tried. Minutes: the waits are the real ones |
-| `lte` | (task p3-01) the uplink: what the modem is, what the last attempt did and how far it got, when the backoff allows the next one, whether a SIM PIN is set and whether it was refused, the last signal reading, the last time, and what power saving the network granted. **It only reads** - it does not start the modem |
-| `lte up` | bring the uplink up now: the whole sequence inside one wake's budget. **Minutes** - an attach from cold is slow - and it goes ahead even when the backoff would have waited, because a person asked |
+
+### The uplink
+
+| Command | What it does |
+|---|---|
+| `lte` | (task p3-01) the uplink: what the modem is, what the last attempt did and how far it got, when the backoff allows the next one, whether a SIM PIN is set and whether it was refused, the last signal reading, the last time, and what power saving the network granted. **It only reads** — it does not start the modem |
+| `lte up` | bring the uplink up now: the whole sequence inside one wake's budget. **Minutes** — an attach from cold is slow — and it goes ahead even when the backoff would have waited, because a person asked |
 | `lte down` | the modem's radio off (`AT+CFUN=0`); the context goes with it |
 | `lte time` | the network's time, or a refusal in words when the modem answered with its own default |
-| `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. The only place this firmware prints them |
+| `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. **The only place this firmware prints them**, and they are in no log line, no journal entry and no `status` |
 | `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time; the response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
-| `fetch <base-url> [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image |
-| `trust tls` | the TLS roots this build trusts - name, subject, SHA-256 fingerprint, expiry, source, the date they were checked - which certificate slot and TLS profile of the modem each goes to, whether the modem's slots are recorded as holding them, and which host is held to which root |
+| `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
 
-A refusal is one line starting with `error:` and names what was wrong: an unknown command or
-subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
-characters, a control character.
+### The journal
 
-### Which radio: `rak @<slot> …`
+| Command | What it does |
+|---|---|
+| `journal` | the last twelve entries of the flash journal in words, newest first, whatever wrote them: the radio's updates (task p2-03), this firmware's own (p2-04) and the supervisor's ladder (p2-05), with the head, the next sequence number and whether an operation's entries are protected from a wrap. `rak update status` and `self status` tell the story of one run; this is the log |
+
+A refusal is one line starting with `error:` and names what was wrong: an unknown command,
+subcommand or key, an argument where none is taken, a missing or non-numeric value, a value out of
+range, a URL without `https://`, a line over 200 characters, a control character, a missing
+`confirm`.
+
+## Settings
+
+Eleven keys, in the order `get` and `help` print them. Everything is stored in NVS under one
+namespace, `walter`, in the `nvs` partition — which `partitions.csv` puts **above** the
+application slots, so that a factory image cannot reach it
+([`ARCHITECTURE.md`](ARCHITECTURE.md) §11); the agent firmware learned that the expensive way.
+
+| Key | Value | Fallback while unset |
+|---|---|---|
+| `lte.apn` | 1 to 63 printable characters | none: the network's default APN is used, which is what a Danish LTE-M SIM wants |
+| `lte.pin` | 4 to 8 digits; **secret**, never printed | none: no PIN is sent, and a card that asks for one is reported `sim-locked` |
+| `lte.psm` | `off`, `on` | `off`: the modem's radio is put down between wakes (task p3-01's own default) |
+| `server.url` | `https://host[:port][/path]`, the scheme required, at most 128 characters | none: no backend call is made, and a self-update's third condition does not apply |
+| `server.token` | printable, at most 160 characters; **secret**, never printed | none: no backend call is made |
+| `fetch.url` | `https://host[:port][/path]`, at most 128 characters | none: `fetch` needs a base URL on the line |
+| `wake.interval` | `auto`, or 5 to 10080 minutes | `auto`: the battery chooses the interval (task p3-04) |
+| `wake.radio` | `on`, `off`: may a start bit from the radio wake the Walter | `on` |
+| `swd.khz` | 25 to 1000 | `125`, which is the wire's own default half-period of 4 µs and the slowest clock the nRF52840 is specified for |
+| `log.level` | `error`, `warn`, `info`, `debug` | `info` |
+| `unit.name` | 1 to 32 printable characters, a label for a person | none: the unit has no label |
+
+There is no `unset <key>`: `erase confirm` is what makes a key unset again, because the one thing
+a half-provisioned unit must not do is look provisioned.
+
+### What happens when one changes
+
+`set` validates before it stores, and the reply is followed by one line saying what the change
+reaches:
+
+| Key | When it takes effect |
+|---|---|
+| `lte.apn` | the next time the uplink is brought up ('lte up', or the next wake) — the APN is sent when the packet context is defined, and a modem reset now would lose a card that had just been unlocked |
+| `lte.pin` | at once: a refusal remembered against the old PIN is forgotten, and the next uplink sends the new one. Typing the *same* PIN again changes nothing, which is the point: three refusals block a card, and a refused PIN is never sent a second time (`core/uplink/policy.h`, *The PIN*) |
+| `lte.psm` | the next time the uplink is brought up |
+| `server.url` | at once: the host a self-update's trial must reach; the backend call itself is task p3-05's. A URL with no host this firmware can reach — a port over 65535, say — leaves no server configured, and the trial's third condition does not apply rather than failing |
+| `server.token` | kept for the backend call (task p3-05); nothing else reads it |
+| `fetch.url` | the next `fetch` typed with no base URL |
+| `wake.interval` | the next time the interval is chosen, at the end of a wake (task p3-04) |
+| `wake.radio` | the next time the Walter goes to sleep (task p3-04) |
+| `swd.khz` | at once: every SWD command and every flashing from here on — the console's own wire, the update machine's flasher and the supervisor's |
+| `log.level` | at once: a reply is always printed, the lines nobody asked for are not |
+| `unit.name` | at once: what `status` and the boot line call this unit |
+
+### Secrets
+
+`lte.pin` and `server.token` are typed once and printed by nothing afterwards:
+
+* `get` says `set` or `unset` and never the value;
+* `set` echoes the value as asterisks as it is typed, and answers `ok <key>` — the same reply
+  every other key gets;
+* no log line, no journal entry, no `status`, no `dump` and no refusal contains one. A refusal
+  about a PIN says *digits only*, not which digits.
+
+A host test (`host_test/core/console/test_console_secrets.cpp`) sets both and then runs **every
+command of the table**, greps everything the port printed — replies, refusals, boot lines, the
+ring `dump` prints — and the journal's own bytes for both values.
+
+**NVS is not encrypted** unless the owner turns flash encryption on, and this firmware does not
+assume it: without it, a person with the board in hand and a cable can read `lte.pin` and
+`server.token` out of the `nvs` partition. That is the threat model of a unit on a mast in a
+locked cabinet, and it is written down here rather than hidden. The boot says so in one line.
+
+### What protects the hardware is not a setting
+
+The thresholds that keep a radio alive are build constants and stay constants — a typo at a
+console must not be able to remove a safety margin:
+
+* the battery floors for a power cycle and for a flash (`core/update/radio_update.h`,
+  `core/supervisor/supervisor.h`);
+* the supervisor's daily caps, its quiet period and its boot-loop window;
+* the proving period after a flash, and the Walter's own trial window and its three conditions;
+* a wake's budget on the modem, the deadline of every step, and the backoff's own arithmetic;
+* the reset spacing, the kill bounds and the settle time (`docs/ARCHITECTURE.md` §2).
+
+`swd.khz` is the one hardware-facing number that *is* a setting, because a long cable on a bench
+is a reason to slow the debug clock down, and the wire bounds it on both sides whatever is typed.
+
+### A store that is not there, or not ours
+
+A `nvs` partition that is missing or would not open is one line at boot and every key falling
+back; a `set` is then refused rather than lost. A *stored value this firmware will not have* — a
+store written by another firmware, a value a person put there with `nvs_set_str`, a flipped bit —
+is ignored key by key: that key reads as unset and falls back, the boot says how many were
+ignored and names the first, and the bytes are left alone until a `set` replaces them. A unit that
+has never been provisioned and a unit whose settings are rubbish behave the same way, which is
+the state this firmware has to survive anyway.
+
+## Which radio: `rak @<slot> …`
 
 Every `rak …` command takes an optional slot, written directly after the word `rak`:
 
@@ -429,7 +584,7 @@ The slots are written at the first request of a boot whose record says they diff
 boot, a power cut (retained storage does not survive one), a release with another root - and not
 otherwise; `trust tls` before that says *not written yet: written at the next request*.
 
-## The radio's power, as `status` says it
+## The radio's power, as `status` and `pins` say it
 
 | | Means |
 |---|---|
@@ -439,7 +594,26 @@ otherwise; `trust tls` before that says *not written yet: written at the next re
 
 ## What the port prints besides replies
 
-Nothing by itself. The radio's events are collected whenever the main loop turns - every 100 ms or
-less - and wait in the client's queue until `rak events` prints them; nothing is printed as it
-arrives, because a Walter on a mast has nobody reading. ESP-IDF's own boot messages come before the
-banner at the bootloader's log level.
+**Almost nothing by itself.** The radio's events are collected whenever the main loop turns -
+every 100 ms or less - and wait in the client's queue until `rak events` prints them; nothing is
+printed as it arrives, because a Walter on a mast has nobody reading. ESP-IDF's own boot messages
+come before the banner at the bootloader's log level.
+
+The lines that *are* printed without being asked for are these, and `log.level` is what decides
+which of them a port sees:
+
+| At | What |
+|---|---|
+| `error` and above | a supervisor's stop (`supervisor: STOPPED: ...`), which is a unit that has given up on its radio: said at every level |
+| `warn` and above | a settings store that would not open, or stored values this firmware will not have; an update the journal says was in progress and is being resumed |
+| `info` (the default) | the boot's own lines - the reset reason, the boot count, the settings summary - and the supervisor's "today already" line |
+| `debug` | nothing yet. The key exists because the agent firmware's console has it, and because the first thing phase 3's wake cycle will want is somewhere to put a wake's detail |
+
+A resumed update's transitions and a self-update trial's steps are printed as they happen, from
+the main loop, whatever the level: they are the answer to a command somebody typed before the
+reset. The prompt and `type 'help' for the commands` are always printed.
+
+Everything above goes into the 4 kB ring that `dump` prints, and so does every reply. What does
+**not** go into it is anything the radio sent as text - a scanner's NDJSON line, a CLI reply, an
+advert's name (S-12: "Nothing the mesh says is logged as text") - and the bytes of a binary
+transfer. There is no secret in it, because there is no secret in any printed line.

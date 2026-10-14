@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/image/crypto/ed25519.h"
+#include "core/image/this_image.h"
 #include "core/image/trust.h"
 #include "core/link/client/words.h"
 #include "core/nrf52/nrf52.h"
@@ -60,6 +61,13 @@ bool isRadioVerb(Verb verb) {
     case Verb::kHttpGet:
     case Verb::kFetch:
     case Verb::kTrustTls:
+    // The settings and the rest of the console (task p3-03): about the unit, not a radio.
+    case Verb::kGet:
+    case Verb::kGetAll:
+    case Verb::kSet:
+    case Verb::kErase:
+    case Verb::kDump:
+    case Verb::kJournal:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -99,11 +107,12 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  image::Receiver* receiver, update::RadioUpdate* update, update::Journal* journal,
                  update::SelfUpdate* self, supervisor::Supervisor* supervisor,
                  uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
-                 net::TrustLoader* trust)
+                 net::TrustLoader* trust, settings::Settings* settings,
+                 update::UplinkCheck* server)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
-      trust_(trust), flasher_(pins, clock, slots) {}
+      trust_(trust), settings_(settings), server_(server), flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -112,7 +121,11 @@ bool Console::slotOk(board::Slot slot) {
   return false;
 }
 
-void Console::print(const char* text) { out_.write(text, std::strlen(text)); }
+void Console::print(const char* text) {
+  const std::size_t n = std::strlen(text);
+  out_.write(text, n);
+  log_.append(text, n);
+}
 
 // Into a stack buffer: no heap. A line that does not fit is cut, never overrun.
 void Console::printf(const char* format, ...) {
@@ -122,31 +135,72 @@ void Console::printf(const char* format, ...) {
   const int n = std::vsnprintf(buf, sizeof buf, format, args);
   va_end(args);
   if (n <= 0) return;
-  out_.write(buf, static_cast<std::size_t>(n) < sizeof buf ? static_cast<std::size_t>(n)
-                                                           : sizeof buf - 1);
+  const std::size_t length =
+      static_cast<std::size_t>(n) < sizeof buf ? static_cast<std::size_t>(n) : sizeof buf - 1;
+  out_.write(buf, length);
+  log_.append(buf, length);
+}
+
+// Is a line nobody asked for worth printing. `log.level` and below; `info` without a settings
+// store, which is what every build before task p3-03 did.
+bool Console::says(settings::Level level) const {
+  const settings::Level in_force =
+      settings_ != nullptr ? settings_->level() : settings::Level::kInfo;
+  return static_cast<std::uint8_t>(level) <= static_cast<std::uint8_t>(in_force);
 }
 
 void Console::prompt() { print("> "); }
 
 // The banner itself is main's (the bench reads it first, before the slot and the descriptor);
-// this is the boot's reason and the first prompt.
+// this is the settings, the boot's reason and the first prompt. Everything here is a line nobody
+// asked for, so `log.level error` leaves only what has to be said - a supervisor's stop, the
+// invitation and the prompt.
 void Console::begin() {
+  // The settings first: `log.level` decides what the rest of this function prints, and
+  // `swd.khz`, the APN, the PIN and the server have to be in force before any command can run.
+  applySettings();
   const health::BootRecord& boot = health_.thisBoot();
-  if (boot.reason == health::ResetReason::kDeepSleepWake) {
-    printf("boot %lu: %s (%s)\n", static_cast<unsigned long>(health_.boots()),
-           health::name(boot.reason), health::name(boot.wake));
-  } else if (boot.reason == health::ResetReason::kSoftware) {
-    printf("boot %lu: %s reset, %s\n", static_cast<unsigned long>(health_.boots()),
-           health::name(boot.reason), health::name(boot.requested));
-  } else {
-    printf("boot %lu: %s reset\n", static_cast<unsigned long>(health_.boots()),
-           health::name(boot.reason));
+  if (says(settings::Level::kInfo)) {
+    if (boot.reason == health::ResetReason::kDeepSleepWake) {
+      printf("boot %lu: %s (%s)\n", static_cast<unsigned long>(health_.boots()),
+             health::name(boot.reason), health::name(boot.wake));
+    } else if (boot.reason == health::ResetReason::kSoftware) {
+      printf("boot %lu: %s reset, %s\n", static_cast<unsigned long>(health_.boots()),
+             health::name(boot.reason), health::name(boot.requested));
+    } else {
+      printf("boot %lu: %s reset\n", static_cast<unsigned long>(health_.boots()),
+             health::name(boot.reason));
+    }
+    if (!health_.recordSurvived()) print("the boot record starts here (a power cut, or the first boot)\n");
   }
-  if (!health_.recordSurvived()) print("the boot record starts here (a power cut, or the first boot)\n");
+  // The settings, in one line (task p3-03). A store that would not open and a stored value this
+  // firmware will not have are said at `warn`: both mean the unit is running on fallbacks and
+  // a person reading a console has to know it before they trust what `get` says.
+  if (settings_ != nullptr) {
+    if (!settings_->storeReady()) {
+      if (says(settings::Level::kWarn)) {
+        print("settings: the store would not open: every key falls back and a 'set' cannot be "
+              "kept (see the boot lines above)\n");
+      }
+    } else {
+      if (settings_->rejected() != 0 && says(settings::Level::kWarn)) {
+        printf("settings: %lu stored value(s) this firmware will not have were ignored (the "
+               "first is %s); those keys fall back\n",
+               static_cast<unsigned long>(settings_->rejected()), settings_->firstRejected());
+      }
+      if (says(settings::Level::kInfo)) {
+        printf("settings: %lu of %lu keys set; log.level %s, swd %ld kHz%s%s ('get')\n",
+               static_cast<unsigned long>(settings_->setCount()),
+               static_cast<unsigned long>(settings::kKeyCount),
+               settings::name(settings_->level()), static_cast<long>(settings_->swdKhz()),
+               settings_->unitName()[0] != 0 ? "; " : "", settings_->unitName());
+      }
+    }
+  }
   // An update the journal says was in progress is taken up where it was (spec/SYSTEM.md §6:
   // "a Walter that resets in the middle resumes or rolls back; it never guesses"). tick()
   // drives it from here, one step per turn of the main loop, printing each transition.
-  if (update_ != nullptr && update_->resume()) {
+  if (update_ != nullptr && update_->resume() && says(settings::Level::kWarn)) {
     printf("update: the journal says a run was in progress (%s); resuming at %s\n",
            update::describe(update_->request().kind), update::describe(update_->state()));
   }
@@ -160,9 +214,12 @@ void Console::begin() {
     supervisor_->begin();
     const supervisor::Status& w = supervisor_->status();
     if (w.stopped) {
+      // Said at every level, `error` included: a unit that has given up on its radio is the one
+      // thing a person at a console has to be told whatever else they asked to be spared.
       printf("supervisor: STOPPED: %s; %lu s of the quiet period left ('rak watch')\n",
              supervisor::describe(w.stop_reason), static_cast<unsigned long>(w.quiet_left_ms / 1000));
-    } else if (w.counts.resets != 0 || w.counts.power_cycles != 0 || w.counts.flashes != 0) {
+    } else if (says(settings::Level::kInfo) &&
+               (w.counts.resets != 0 || w.counts.power_cycles != 0 || w.counts.flashes != 0)) {
       printf("supervisor: today already: %lu resets, %lu power cycles, %lu flashes%s ('rak watch')\n",
              static_cast<unsigned long>(w.counts.resets),
              static_cast<unsigned long>(w.counts.power_cycles),
@@ -211,7 +268,32 @@ void Console::feed(char c) {
     return;
   }
   line_[length_++] = c;
-  out_.write(&c, 1);
+  // The echo. A secret's value echoes as asterisks (task p3-03, the agent firmware's
+  // `secretValueIsBeingTyped`): what is typed after `set lte.pin ` never appears on the port, so
+  // a shoulder, a screen recording and a scrollback hold stars. The echo does not go through
+  // print(): a typed character is not a line and has no place in the ring `dump` prints.
+  const char echo = secretBeingTyped() ? '*' : c;
+  out_.write(&echo, 1);
+}
+
+// The line so far is `set <key> ` for a key the table calls a secret. Decided from the line and
+// not from a flag, so that a backspace back into the key - `set lte.pinX` corrected to
+// `set lte.apn` - echoes correctly from there on.
+bool Console::secretBeingTyped() const {
+  static const char kSet[] = "set ";
+  constexpr std::size_t kSetLen = sizeof kSet - 1;
+  if (length_ <= kSetLen) return false;
+  if (std::strncmp(line_, kSet, kSetLen) != 0) return false;
+  for (const settings::KeyDef& key : settings::kKeys) {
+    if (!key.secret) continue;
+    const std::size_t n = std::strlen(key.name);
+    // `set <key> ` and at least one character after the space: the key is not a secret and
+    // echoes as it is typed, the space after it echoes, and the value is stars.
+    if (length_ <= kSetLen + n + 1) continue;
+    if (std::strncmp(line_ + kSetLen, key.name, n) != 0) continue;
+    if (line_[kSetLen + n] == ' ') return true;
+  }
+  return false;
 }
 
 void Console::tick() {
@@ -315,128 +397,218 @@ void Console::runLine(const char* line) {
     case Verb::kHttpGet: httpGet(p.command.url); return;
     case Verb::kFetch: fetch(p.command.url, static_cast<image::Which>(p.command.which)); return;
     case Verb::kTrustTls: trustTls(); return;
+    case Verb::kGet: get(*p.command.key); return;
+    case Verb::kGetAll: getAll(); return;
+    case Verb::kSet: set(*p.command.key, p.command.text); return;
+    case Verb::kErase: erase(); return;
+    case Verb::kDump: dump(); return;
+    case Verb::kJournal: journal(); return;
+  }
+}
+// One line of help, the usage in a column and the text wrapped after it. The table
+// (commands.h) holds one sentence per command; this is what makes it fit a terminal.
+void Console::helpLine(const char* usage, const char* text) {
+  constexpr std::size_t kColumn = 22;   // where the text begins
+  constexpr std::size_t kWidth = 96;    // the whole line
+  const std::size_t used = std::strlen(usage);
+  // Two spaces of indent, the usage, and at least one space before the text: a usage that would
+  // leave none gets a line of its own and the text begins under it.
+  const bool inline_text = used + 3 <= kColumn;
+  if (inline_text) {
+    printf("  %-*s", static_cast<int>(kColumn - 2), usage);
+  } else {
+    printf("  %s\n", usage);
+  }
+  const char* p = text;
+  bool first = inline_text;
+  while (*p != 0) {
+    if (!first) printf("%*s", static_cast<int>(kColumn), "");
+    first = false;
+    const std::size_t room = kWidth - kColumn;
+    std::size_t take = std::strlen(p);
+    if (take > room) {
+      // Break at the last space that fits; a word longer than the room is cut at the room.
+      take = room;
+      while (take > 0 && p[take] != ' ') --take;
+      if (take == 0) take = room;
+    }
+    char piece[128];
+    const std::size_t n = take < sizeof piece - 1 ? take : sizeof piece - 1;
+    std::memcpy(piece, p, n);
+    piece[n] = 0;
+    printf("%s\n", piece);
+    p += take;
+    while (*p == ' ') ++p;
   }
 }
 
+// Every command of the table, grouped, with its one line. The table is the only list there is
+// (commands.h): host_test/core/console/test_console_grammar.cpp holds this output, the parser and
+// docs/console.md to it.
 void Console::help() {
-  print("commands:\n");
-  print("  help                the commands\n");
-  print("  status              version, uptime, why it booted, the pins, the radio's power\n");
-  print("  reboots             why this board last restarted, and the four before that\n");
-  print("  pins                the seven radio-facing pins: net, D-sub, GPIO, mode, level\n");
-  print("  rak hello           say hello to the radio: version, role, slot, capabilities\n");
-  print("  rak ping            ping it, with the round trip\n");
-  print("  rak status          its uptime, why it booted, its clock, its flags and counters\n");
-  print("  rak id              its public key and advert name\n");
-  print("  rak time            read its clock; rak time set <epoch> sets it from here\n");
-  print("  rak power           the three current-sense channels\n");
-  print("  rak env             temperature, humidity, pressure\n");
-  print("  rak cli <line>      run one line on the radio's own console\n");
-  print("  rak events          the events the radio has sent\n");
-  print("  rak text            the lines a scanner has sent instead of frames\n");
-  print("  rak swd connect     connect to the radio's debug port over SWD: DPIDR and the power-up\n");
-  print("  rak swd id          identify the radio's chip over SWD: part, variant, flash, protection, core\n");
-  print("  rak swd mem <addr> [words]\n");
-  print("                      read 1 to 32 words of the chip's memory (read-only; hex 0x... or decimal)\n");
-  print("  rak flash-test      write, verify and erase a 2-page pattern at the top of the application\n");
-  print("                      region, only if those pages are blank; the radio restarts\n");
-  print("  trust               the release keys this build accepts an update signed with\n");
-  print("  image list          the radio images this Walter holds, per slot\n");
-  print("  image verify <which>\n");
-  print("                      read one back out of flash and hold it to the hash in its record\n");
-  print("  image erase <candidate|scanner>\n");
-  print("                      forget one; the golden image is never erased\n");
-  print("  image bad           the hashes of candidates that failed a health check\n");
-  print("  image receive <which>\n");
-  print("                      take manifest.json, its .sig and the image over this port\n");
-  print("                      (tools/walterctl.py push); the six checks run here\n");
-  print("  rak update          flash the candidate, prove it, make it golden - or roll back to the\n");
-  print("                      golden image and never try that candidate again (minutes; docs/update.md)\n");
-  print("  rak update --first-install\n");
-  print("                      the same with no golden image to return to (a person's command)\n");
-  print("  rak update status   the journal's story of the last update\n");
-  print("  rak role scanner|repeater\n");
-  print("                      flash the stored scanner image and prove a scanner is there; or\n");
-  print("                      the golden image back, proved as an update would be\n");
-  print("  self status         this Walter's two application slots, the trial if one is running,\n");
-  print("                      and the last self-update's story from the journal\n");
-  print("  self receive        take a release of this firmware over this port into the other slot\n");
-  print("                      (tools/walterctl.py push --as self); the six checks run here\n");
-  print("  self switch [radio-down]\n");
-  print("                      make the received image the next to boot, tell the radio, restart;\n");
-  print("                      it then has one boot to prove itself (docs/update.md)\n");
-  print("  self confirm        end the running image's trial early: valid (the bench)\n");
-  print("  self reject         end it early: rejected, restart into the old image (the bench)\n");
-  print("  rak watch           the supervisor's view: healthy since when, the last incidents,\n");
-  print("                      today's counts against the daily caps (docs/supervisor.md)\n");
-  print("  rak watch reset-caps\n");
-  print("                      empty the day's counts and lift a stop (the bench)\n");
-  print("  rak ladder          climb the supervisor's ladder now - ask, reset, power-cycle, look at\n");
-  print("                      the chip, stop - each rung printed as it is tried (minutes)\n");
-  print("  lte                 the uplink: state, operator, band, signal, what the last attempt\n");
-  print("                      did and when the next one is allowed (it only reads)\n");
-  print("  lte up              bring the uplink up now (minutes: an attach from cold is slow)\n");
-  print("  lte down            the modem's radio off\n");
-  print("  lte time            the network's time, and whether it really is the network's\n");
-  print("  lte id              the modem's IMEI and the SIM's ICCID and IMSI, for the label on\n");
-  print("                      the box: printed here, and written nowhere else\n");
-  print("  http get <url>      one GET over verified TLS (https only): status, headers, the first\n");
-  print("                      bytes as hex, the size, the time. 'lte up' first\n");
-  print("  fetch <base-url> [candidate|scanner]\n");
-  print("                      a release from <base-url>/manifest.json into the store: the three\n");
-  print("                      steps, each of the six checks printed as it passes (minutes)\n");
-  print("  trust tls           the TLS roots this build trusts, their fingerprints and expiry, and\n");
-  print("                      whether the modem's certificate slots hold them\n");
-  print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
-  printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
-         static_cast<unsigned long>(pins_.timing().min_ms / 1000),
-         static_cast<unsigned long>(pins_.timing().max_ms / 1000));
-  print("  reboot              restart the Walter\n");
+  for (std::uint8_t g = 0; g < static_cast<std::uint8_t>(Group::kCount); ++g) {
+    const Group group = static_cast<Group>(g);
+    printf("%s:\n", describe(group));
+    for (const CommandDef& command : kCommands) {
+      if (command.group != group) continue;
+      helpLine(command.usage, command.help);
+    }
+  }
   printf("every 'rak ...' takes an optional slot after the word rak - rak @1 hello - and @0\n"
          "without one; this unit has %u radio and it is slot 0\n",
          static_cast<unsigned>(slots_.slots()));
+  printf("the radio's rail may be taken away for %lu to %lu whole seconds, and over %lu of them\n"
+         "'rak kill' wants the word '%s' after the number\n",
+         static_cast<unsigned long>(pins_.timing().min_ms / 1000),
+         static_cast<unsigned long>(pins_.timing().max_ms / 1000),
+         static_cast<unsigned long>(kKillSecondsWithoutWord), kConfirmWord);
+  // The keys, from the same table `get` and `set` use (core/settings/keys.h).
+  print("settings ('get', 'set <key> <value>'):\n");
+  for (const settings::KeyDef& key : settings::kKeys) {
+    helpLine(key.name, key.help);
+  }
+  print("a value takes effect as the key's row of docs/console.md says; a secret is never printed\n");
 }
 
+// One screen (task p3-03): this firmware and what it is, why it booted, the radio and its clock,
+// the battery as the radio last reported it, the images, the uplink's last attempt, the next
+// wake. **No secret and no IMEI** - the identity of a subscription is `lte id` and nothing else
+// (core/uplink/policy.h, *Privacy*); host_test/core/console/test_console_secrets.cpp greps this
+// output for both.
 void Console::status() {
   const health::BootRecord& boot = health_.thisBoot();
+  const image::Fields self = image::this_image();
+  const char* role = image::role_name(self.role);
   printf("%s\n", core::banner());
-  printf("uptime %lu s, boot %lu since the record began\n",
-         static_cast<unsigned long>(health_.uptimeS()),
-         static_cast<unsigned long>(health_.boots()));
-  if (boot.reason == health::ResetReason::kDeepSleepWake) {
-    printf("booted: %s, %s\n", health::name(boot.reason), health::name(boot.wake));
-  } else if (boot.reason == health::ResetReason::kSoftware) {
-    printf("booted: %s reset, %s\n", health::name(boot.reason), health::name(boot.requested));
+  if (settings_ != nullptr && settings_->unitName()[0] != 0) {
+    printf("unit: %s; role %s, board %s, band %s, link %u.%u\n", settings_->unitName(),
+           role != nullptr ? role : "?", self.board, self.band,
+           static_cast<unsigned>(self.link_major), static_cast<unsigned>(self.link_minor));
   } else {
-    printf("booted: %s reset\n", health::name(boot.reason));
+    printf("unit: no name (set unit.name); role %s, board %s, band %s, link %u.%u\n",
+           role != nullptr ? role : "?", self.board, self.band,
+           static_cast<unsigned>(self.link_major), static_cast<unsigned>(self.link_minor));
   }
-  printf("radio power: %s\n", board::describe(pins_.power()));
-  printf("uart: %s; swd: %s; nRESET: %s; kill line: %s\n",
-         pins_.uartEnabled() ? "enabled" : "released", pins_.swdHeld() ? "acquired" : "released",
-         pins_.resetAsserted() ? "asserted" : "released",
-         pins_.killDriven() ? "driven high" : "not driven");
-  const std::uint32_t wait = pins_.msUntilResetAllowed();
-  if (wait == 0) {
-    print("next reset: allowed now\n");
+  if (boot.reason == health::ResetReason::kDeepSleepWake) {
+    printf("booted: %s, %s; uptime %lu s, boot %lu since the record began\n",
+           health::name(boot.reason), health::name(boot.wake),
+           static_cast<unsigned long>(health_.uptimeS()),
+           static_cast<unsigned long>(health_.boots()));
+  } else if (boot.reason == health::ResetReason::kSoftware) {
+    printf("booted: %s reset, %s; uptime %lu s, boot %lu since the record began\n",
+           health::name(boot.reason), health::name(boot.requested),
+           static_cast<unsigned long>(health_.uptimeS()),
+           static_cast<unsigned long>(health_.boots()));
   } else {
-    printf("next reset: in %lu ms (two resets are a second apart)\n",
-           static_cast<unsigned long>(wait));
+    printf("booted: %s reset; uptime %lu s, boot %lu since the record began\n",
+           health::name(boot.reason), static_cast<unsigned long>(health_.uptimeS()),
+           static_cast<unsigned long>(health_.boots()));
+  }
+
+  // The radio: is it there, what is it, what does it think the time is, and the link's counters.
+  const link::client::Session& session = radio_.session();
+  if (session.up) {
+    printf("radio: %s %s, slot %u, link %u.%u\n", link::client::roleName(session.role),
+           session.fw_version, static_cast<unsigned>(session.slot),
+           static_cast<unsigned>(session.proto_major), static_cast<unsigned>(session.proto_minor));
+  } else {
+    print("radio: no session (nothing has been asked of it since this boot: try 'rak hello')\n");
+  }
+  if (supervisor_ != nullptr) {
+    const supervisor::Status& w = supervisor_->status();
+    printf("radio health: %s%s; clock %s\n", supervisor::describe(w.health),
+           w.stopped ? ", and the supervisor has STOPPED ('rak watch')" : "",
+           w.time_set ? "set from here" : w.time_skipped ? "not set (this unit has no time to give)"
+                                                         : "not set yet");
+    if (w.battery_known) {
+      printf("battery: %lu mV, as the radio reported it %lu s ago\n",
+             static_cast<unsigned long>(w.battery_mv),
+             static_cast<unsigned long>(w.battery_age_ms / 1000u));
+    } else {
+      print("battery: never read (POWER_GET has not answered)\n");
+    }
   }
   const link::client::Counters& counted = radio_.counters();
-  printf("link: %s; %s; retries %lu, timeouts %lu, drops %lu, events %lu\n",
-         link::client::describe(radio_.mode()),
-         radio_.session().up ? "a session is up" : "no session",
-         static_cast<unsigned long>(counted.retries), static_cast<unsigned long>(counted.timeouts),
+  printf("link: %s; retries %lu, timeouts %lu, drops %lu, events %lu\n",
+         link::client::describe(radio_.mode()), static_cast<unsigned long>(counted.retries),
+         static_cast<unsigned long>(counted.timeouts),
          static_cast<unsigned long>(radio_.receiver().dropped()),
          static_cast<unsigned long>(counted.events));
-  print("pins:");
-  for (std::size_t i = 0; i < board::RadioPins::kPinCount; ++i) {
-    const board::PinState s = pins_.state(i);
-    printf(" %s=%s/%s", s.net, modeName(s.mode), s.level ? "high" : "low");
-  }
-  print("\n");
-}
+  // Two lines, so that neither is over a hundred characters: `status` is read in a terminal
+  // window (docs/bench.md §13), and `pins` is the command that says it pin by pin.
+  printf("pins: power %s; next reset %s\n", board::describe(pins_.power()),
+         pins_.msUntilResetAllowed() == 0 ? "allowed now" : "not yet (two are a second apart)");
+  printf("  uart %s, swd %s, nRESET %s, kill line %s\n",
+         pins_.uartEnabled() ? "enabled" : "released",
+         pins_.swdHeld() ? "acquired" : "released",
+         pins_.resetAsserted() ? "asserted" : "released",
+         pins_.killDriven() ? "driven high" : "not driven");
 
+  // The images the store holds for this radio, in one line, and this firmware's own two slots.
+  if (images_ != nullptr) {
+    print("images:");
+    for (std::uint8_t w = 0; w < image::kWhichCount; ++w) {
+      const image::Which which = static_cast<image::Which>(w);
+      image::Record record;
+      const image::StoreError e = images_->read(which, board::Slot{0}, &record);
+      if (e != image::StoreError::kNone) {
+        printf(" %s=%s", image::name(which), image::describe(e));
+      } else if (record.present) {
+        printf(" %s=%s", image::name(which), record.descriptor.version);
+      } else {
+        printf(" %s=empty", image::name(which));
+      }
+    }
+    print("\n");
+  } else {
+    print("images: no store in this build ('image list' says why)\n");
+  }
+  if (self_ != nullptr) {
+    const update::SelfStatus& st = self_->status();
+    interfaces::OwnSlot running;
+    if (self_->runningSlot(&running)) {
+      printf("this firmware: slot %u, %s, version %s; %s\n", static_cast<unsigned>(running.index),
+             interfaces::describe(running.state),
+             running.version[0] != 0 ? running.version : "(no version)",
+             st.on_trial ? "ON TRIAL ('self status')" : "no trial ('self status')");
+    } else {
+      printf("this firmware: the running slot could not be read; %s\n",
+             st.on_trial ? "ON TRIAL ('self status')" : "no trial ('self status')");
+    }
+  }
+
+  // The uplink's last attempt, and when the next one is allowed. Nothing is touched here.
+  if (uplink_ != nullptr) {
+    const uplink::Status& u = uplink_->status();
+    printf("uplink: %s; last %s at %s; %lu wake(s), %lu attempt(s), next in %lu\n",
+           interfaces::describe(uplink_->state()), uplink::describe(u.last_failure),
+           uplink::describe(u.reached), static_cast<unsigned long>(u.wakes),
+           static_cast<unsigned long>(u.tries),
+           static_cast<unsigned long>(u.wakes_until_next_try));
+  }
+  if (server_ != nullptr) {
+    if (server_->serverHost()[0] == 0) {
+      print("backend: no server (set server.url); a self-update's third condition does not apply\n");
+    } else {
+      printf("backend: %s:%u, for a self-update's third condition (task p3-05 makes the call)\n",
+             server_->serverHost(), static_cast<unsigned>(server_->serverPort()));
+    }
+  }
+
+  // The next wake. Nothing sleeps yet - that is task p3-04 - and this line says so rather than
+  // printing a time that would be a guess.
+  if (settings_ != nullptr) {
+    const std::uint32_t interval = settings_->wakeIntervalMinutes();
+    if (interval == 0) {
+      printf("next wake: nothing sleeps yet (task p3-04); wake.interval auto, radio may wake it: "
+             "%s\n", settings_->wakeOnRadio() ? "yes" : "no");
+    } else {
+      printf("next wake: nothing sleeps yet (task p3-04); wake.interval %lu min, radio may wake "
+             "it: %s\n", static_cast<unsigned long>(interval),
+             settings_->wakeOnRadio() ? "yes" : "no");
+    }
+  }
+}
 void Console::reboots() {
   printf("boots since the record began: %lu%s\n", static_cast<unsigned long>(health_.boots()),
          health_.recordSurvived() ? "" : " (the record started at this boot: a power cut, or the first boot)");
@@ -535,7 +707,12 @@ void Console::linkError(const char* what, lc::Fault fault, std::uint8_t status) 
   printf("error: %s: %s\n", what, lc::describe(fault));
 }
 
+// The one place text the radio sent reaches the port: a scanner's NDJSON line (`rak text`), a
+// CLI reply, an advert name. **It is printed and not kept** (spec/SYSTEM.md S-12: "Nothing the
+// mesh says is logged as text"): the bytes go straight to the port, outside print(), and the
+// Quiet holds the ring shut for the newline and for anything a caller prints inside this.
 void Console::printText(link::Text text) {
+  const LogRing::Quiet quiet(log_);
   if (text.data != nullptr && text.size > 0) {
     out_.write(text.data, text.size);
   }
@@ -2186,6 +2363,17 @@ void Console::fetch(const char* base_url, image::Which which) {
     print("error: fetch: this build has no image store, so nothing can be fetched into it\n");
     return;
   }
+  // No base URL on the line: the `fetch.url` setting (task p3-03). The pointer is the settings
+  // store's own buffer and outlives this call.
+  if (base_url == nullptr || base_url[0] == 0) {
+    if (settings_ == nullptr || settings_->fetchUrl()[0] == 0) {
+      print("error: fetch: no base URL, and fetch.url is unset: 'fetch <base-url>' or "
+            "'set fetch.url https://...'\n");
+      return;
+    }
+    base_url = settings_->fetchUrl();
+    printf("fetch: no base URL given; using fetch.url\n");
+  }
   printf("fetch: %s into the %s image of slot %u: manifest.json, its .sig, the six checks, the image\n",
          base_url, image::name(which), static_cast<unsigned>(slot_.index));
   http_->setTrace(&out_);
@@ -2259,6 +2447,239 @@ void Console::trustTls() {
   if (trust_ != nullptr) {
     printf("  %lu root(s) written in this boot\n", static_cast<unsigned long>(trust_->writesThisBoot()));
   }
+}
+
+// -- the settings (task p3-03) --------------------------------------------------------------------
+
+bool Console::settingsOk() {
+  if (settings_ != nullptr) return true;
+  print("error: this build has no settings store: the `nvs` partition is missing or would not "
+        "open, and every key falls back (see the boot lines)\n");
+  return false;
+}
+
+void Console::get(const settings::KeyDef& key) {
+  if (!settingsOk()) return;
+  char line[settings::kMaxValueLen + 64];
+  settings::describeValue(key, settings_->stored(key.id), line, sizeof line);
+  printf("%s\n", line);
+}
+
+void Console::getAll() {
+  if (!settingsOk()) return;
+  char line[settings::kMaxValueLen + 64];
+  for (const settings::KeyDef& key : settings::kKeys) {
+    settings::describeValue(key, settings_->stored(key.id), line, sizeof line);
+    printf("%s\n", line);
+  }
+}
+
+// `set <key> <value>`: the value has already been validated by the parser, so what can still go
+// wrong here is the flash. **The value is never echoed back** - the reply is `ok <key>` for every
+// key, which is what makes a secret's reply the same as anything else's.
+void Console::set(const settings::KeyDef& key, const char* value) {
+  if (!settingsOk()) return;
+  char why[112] = {};
+  if (!settings_->put(key, value, why, sizeof why)) {
+    printf("error: %s\n", why[0] != 0 ? why : "the setting could not be stored");
+    return;
+  }
+  printf("ok %s\n", key.name);
+  settingChanged(key);
+}
+
+void Console::erase() {
+  if (!settingsOk()) return;
+  char why[112] = {};
+  const bool ok = settings_->eraseAll(why, sizeof why);
+  if (!ok) printf("error: %s\n", why);
+  print("every setting forgotten; the images, the journal, the bad list and the supervisor's "
+        "counts are untouched\n");
+  // Everything falls back now, and the things that hold a copy of a setting have to be told.
+  applySettings();
+  printf("the fallbacks are in force: log.level %s, swd %ld kHz, no APN, no PIN, no server\n",
+         settings::name(settings_->level()), static_cast<long>(settings_->swdKhz()));
+}
+
+// What must happen when a key changes, in one place. The table's `effect` column (keys.cpp) says
+// the same thing in words and docs/console.md prints it, so a change here that is not a change
+// there is a lie a reader can catch.
+void Console::settingChanged(const settings::KeyDef& key) {
+  if (settings_ == nullptr) return;
+  switch (key.id) {
+    case settings::Key::kLteApn:
+      if (uplink_ != nullptr) uplink_->apnChanged(settings_->apn());
+      print("the APN is used the next time the uplink is brought up ('lte up')\n");
+      return;
+    case settings::Key::kLtePin:
+      if (uplink_ != nullptr) {
+        // A different PIN: a refusal recorded against the old one is not about this one
+        // (core/uplink/policy.h, *The PIN*).
+        const bool was_refused = uplink_->status().pin_refused;
+        uplink_->pinChanged(settings_->pin(), settings_->pinEpoch());
+        if (was_refused && !uplink_->status().pin_refused) {
+          print("a PIN this unit had been refused is forgotten; the next uplink sends the new one\n");
+        } else {
+          print("the next uplink sends it; a refused PIN is never sent a second time\n");
+        }
+      }
+      return;
+    case settings::Key::kLtePsm:
+      if (uplink_ != nullptr) {
+        uplink_->powerSavingChanged(settings_->psm() ? interfaces::PowerSavingMode::kPsm
+                                                     : interfaces::PowerSavingMode::kOff,
+                                    uplink::kPsmTauSeconds, uplink::kPsmActiveSeconds);
+        printf("power saving is asked for the next time the uplink is brought up (PSM %s, "
+               "TAU %lu s, active %lu s)\n", settings_->psm() ? "on" : "off",
+               static_cast<unsigned long>(uplink::kPsmTauSeconds),
+               static_cast<unsigned long>(uplink::kPsmActiveSeconds));
+      }
+      return;
+    case settings::Key::kServerUrl:
+      if (server_ != nullptr) {
+        server_->setServer(settings_->serverHost(), settings_->serverPort());
+        if (settings_->serverHost()[0] == 0) {
+          print("the URL has no host this firmware can reach: no server is configured and a "
+                "self-update's third condition does not apply\n");
+        } else {
+          printf("a self-update's trial now has to reach %s:%u; the backend call itself is task "
+                 "p3-05's\n", settings_->serverHost(),
+                 static_cast<unsigned>(settings_->serverPort()));
+        }
+      }
+      return;
+    case settings::Key::kSwdKhz: {
+      const std::uint32_t us = swd::setHalfPeriodInForceUs(settings_->swdHalfPeriodUs());
+      printf("every SWD command and every flashing from here on runs at %lu kHz (a half-period "
+             "of %lu us)\n", static_cast<unsigned long>(500u / us), static_cast<unsigned long>(us));
+      return;
+    }
+    case settings::Key::kLogLevel:
+      printf("what is printed when nobody asked is now %s and below; a reply is always printed\n",
+             settings::name(settings_->level()));
+      return;
+    case settings::Key::kServerToken:
+    case settings::Key::kFetchUrl:
+    case settings::Key::kWakeInterval:
+    case settings::Key::kWakeRadio:
+    case settings::Key::kUnitName:
+      // Read where they are used and nowhere kept: the token and the wake keys by task p3-04's
+      // sleeper and p3-05's wake cycle, `fetch.url` by the next `fetch`, `unit.name` by
+      // `status`. Nothing to tell anybody.
+      printf("%s\n", key.effect);
+      return;
+    case settings::Key::kCount:
+      return;
+  }
+}
+
+// Everything a setting is in force for, at boot and after an `erase confirm`. The same calls
+// settingChanged makes, without the lines: nobody typed anything.
+void Console::applySettings() {
+  if (settings_ == nullptr) return;
+  if (!settings_->begun()) settings_->begin();
+  swd::setHalfPeriodInForceUs(settings_->swdHalfPeriodUs());
+  if (uplink_ != nullptr) {
+    uplink_->apnChanged(settings_->apn());
+    uplink_->pinChanged(settings_->pin(), settings_->pinEpoch());
+    uplink_->powerSavingChanged(settings_->psm() ? interfaces::PowerSavingMode::kPsm
+                                                 : interfaces::PowerSavingMode::kOff,
+                                uplink::kPsmTauSeconds, uplink::kPsmActiveSeconds);
+  }
+  if (server_ != nullptr) server_->setServer(settings_->serverHost(), settings_->serverPort());
+}
+
+// -- dump and journal (task p3-03) ----------------------------------------------------------------
+
+// The ring, oldest first. Printed straight to the port and **not** through print(): a dump of
+// the log is not itself a line of the log, and printing it through the ring would copy the ring
+// into itself.
+void Console::dump() {
+  printf("dump: %lu of %lu bytes kept%s\n", static_cast<unsigned long>(log_.kept()),
+         static_cast<unsigned long>(LogRing::kBytes),
+         log_.wrapped() ? "; the ring has wrapped, so the log begins at the first whole line" : "");
+  log_.writeTo(out_);
+  printf("dump: end (%lu byte(s) dropped since this boot)\n",
+         static_cast<unsigned long>(log_.dropped()));
+}
+
+// The flash journal's last entries, whatever wrote them: the radio's updates (task p2-03), this
+// firmware's own (p2-04) and the supervisor's ladder (p2-05). `rak update status` tells the story
+// of one run; this is the log.
+void Console::journal() {
+  if (journal_ == nullptr) {
+    print("error: journal: this build has no `journal` partition (see the boot lines)\n");
+    return;
+  }
+  printf("journal: %lu entries in %lu sectors, next seq %lu, head sector %lu slot %lu, %lu "
+         "sector erase(s) this boot\n",
+         static_cast<unsigned long>(journal_->validEntries()),
+         static_cast<unsigned long>(journal_->sectors()),
+         static_cast<unsigned long>(journal_->nextSeq()),
+         static_cast<unsigned long>(journal_->headSector()),
+         static_cast<unsigned long>(journal_->headSlot()),
+         static_cast<unsigned long>(journal_->erases()));
+  if (journal_->isProtected()) {
+    print("journal: an operation's entries are protected from a wrap: something is in progress\n");
+  }
+  if (journal_->empty()) {
+    print("journal: empty: nothing has been journalled on this unit\n");
+    return;
+  }
+  // The last few, newest first. Bounded: a console line at a time, no array.
+  constexpr std::size_t kShow = 12;
+  print("the last entries, newest first:\n");
+  update::Cursor cursor;
+  update::Entry entry;
+  std::size_t number = 0;
+  bool more = journal_->first(&cursor, &entry);
+  while (more && number < kShow) {
+    printJournalEntry(++number, entry);
+    more = journal_->previous(&cursor, &entry);
+  }
+  if (more) printf("  ... and more before these ('rak update status', 'self status')\n");
+}
+
+void Console::printJournalEntry(std::size_t number, const update::Entry& entry) {
+  switch (entry.kind) {
+    case update::kind::kRadioUpdate: {
+      update::Payload p;
+      if (!update::decode(entry, &p)) break;
+      printUpdateEntry(number, entry, p);
+      return;
+    }
+    case update::kind::kSelfUpdate: {
+      update::SelfPayload p;
+      if (!update::decode(entry, &p)) break;
+      printSelfEntry(number, entry, p);
+      return;
+    }
+    case update::kind::kSupervisor: {
+      supervisor::Payload p;
+      if (!supervisor::decode(entry, &p)) break;
+      printSupervisorEntry(number, entry, p);
+      return;
+    }
+    default: break;
+  }
+  printf("  %2lu. seq %lu: kind 0x%04x, %u byte(s) - nothing in this build reads it\n",
+         static_cast<unsigned long>(number), static_cast<unsigned long>(entry.seq),
+         static_cast<unsigned>(entry.kind), static_cast<unsigned>(entry.size));
+}
+
+void Console::printSupervisorEntry(std::size_t number, const update::Entry& entry,
+                                   const supervisor::Payload& p) {
+  printf("  %2lu. seq %lu: supervisor, %s", static_cast<unsigned long>(number),
+         static_cast<unsigned long>(entry.seq), supervisor::describe(p.what));
+  if (p.cause != supervisor::Cause::kNone) printf(": %s", supervisor::describe(p.cause));
+  if (p.rung != supervisor::Rung::kNone) printf(" (rung: %s)", supervisor::describe(p.rung));
+  printf("; today %lu resets, %lu power cycles, %lu flashes",
+         static_cast<unsigned long>(p.counts.resets),
+         static_cast<unsigned long>(p.counts.power_cycles),
+         static_cast<unsigned long>(p.counts.flashes));
+  if ((p.flags & supervisor::kFlagByHand) != 0) print("; a person's command");
+  if ((p.flags & supervisor::kFlagResumed) != 0) print("; after a restart");
+  print("\n");
 }
 
 }  // namespace console

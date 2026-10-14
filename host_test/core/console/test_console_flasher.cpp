@@ -99,7 +99,7 @@ bool contains(const std::string& text, const char* needle) { return text.find(ne
 
 TEST_CASE("rak flash-test on blank top pages: written, verified, erased again, the radio reset, nothing else touched") {
   Rig rig;
-  const std::string text = rig.run("rak flash-test");
+  const std::string text = rig.run("rak flash-test confirm");
   CHECK(contains(text, "flash-test: slot 0, rak4630-single, two pages at 0x000eb000..0x000ed000"));
   CHECK(contains(text, "reading the pages the image covers: page 1/2"));
   CHECK(contains(text, "writing and verifying the first page: page 2/2"));
@@ -119,7 +119,7 @@ TEST_CASE("rak flash-test on blank top pages: written, verified, erased again, t
   rig.checkApplicationUntouched();
   rig.checkReleased();
   // Again: the same.
-  CHECK(contains(rig.run("rak flash-test"), "rak flash-test: done"));
+  CHECK(contains(rig.run("rak flash-test confirm"), "rak flash-test: done"));
   rig.checkApplicationUntouched();
   rig.checkReleased();
 }
@@ -127,7 +127,7 @@ TEST_CASE("rak flash-test on blank top pages: written, verified, erased again, t
 TEST_CASE("rak flash-test refuses when the pages are not blank, with nothing written and the core never halted") {
   Rig rig;
   rig.chip.setFlashWord(0xECFFC, 0x12345678);
-  const std::string text = rig.run("rak flash-test");
+  const std::string text = rig.run("rak flash-test confirm");
   CHECK(contains(text, "error: rak flash-test: refused while checking the image against the region: the last two pages of the application region are not blank: refused (0x000ecffc)"));
   CHECK(rig.chip.countLog(sim::FlashEvent::Kind::kErasePage) == 0);
   CHECK(rig.chip.countLog(sim::FlashEvent::Kind::kWrite) == 0);
@@ -141,21 +141,21 @@ TEST_CASE("rak flash-test refuses when the pages are not blank, with nothing wri
 TEST_CASE("rak flash-test on a protected chip, on another part, with nothing answering: refused and released") {
   Rig rig;
   rig.chip.approtect = true;
-  std::string text = rig.run("rak flash-test");
+  std::string text = rig.run("rak flash-test confirm");
   CHECK(contains(text, "error: rak flash-test: protected: access-port protection is on, memory access not attempted - failed while the chip is protected"));
   CHECK(rig.chip.counters().protected_accesses == 0);
   rig.checkReleased();
 
   Rig other;
   other.chip.info_part = 0x52833;
-  text = other.run("rak flash-test");
+  text = other.run("rak flash-test confirm");
   CHECK(contains(text, "error: rak flash-test: not an nRF52840 with 4096-byte pages: refused - failed while identifying the chip"));
   CHECK(other.chip.log().empty());
   other.checkReleased();
 
   Rig silent;
   silent.target.silent = true;
-  text = silent.run("rak flash-test");
+  text = silent.run("rak flash-test confirm");
   CHECK(contains(text, "error: rak flash-test: no target: nothing answered on the line - failed while connecting to the debug port"));
   CHECK(contains(text, "pins released"));
   CHECK(!silent.radio.swdHeld());
@@ -168,7 +168,7 @@ TEST_CASE("rak flash-test is refused while the rail is off, with no pin touched"
   rig.clock.on_delay = [&](std::uint32_t) {
     if (done || !rig.radio.killDriven()) return;
     done = true;
-    text = rig.run("rak flash-test");
+    text = rig.run("rak flash-test confirm");
   };
   rig.run("rak kill 1");
   CHECK(done);
@@ -177,15 +177,26 @@ TEST_CASE("rak flash-test is refused while the rail is off, with no pin touched"
   CHECK(rig.pins.violations.empty());
 }
 
-TEST_CASE("help lists rak flash-test; the parser takes no argument with it") {
+TEST_CASE("help lists rak flash-test confirm; the word is the only argument it takes") {
   Rig rig;
   const std::string text = rig.run("help");
-  CHECK(contains(text, "rak flash-test      write, verify and erase a 2-page pattern at the top of the application"));
-  CHECK(core::console::parseLine("rak flash-test").ok);
-  CHECK(core::console::parseLine("rak flash-test").command.verb == core::console::Verb::kRakFlashTest);
+  CHECK(contains(text, "rak flash-test confirm"));
+  CHECK(contains(text, "write, verify and erase a two-page pattern at the top of the radio's"));
+  CHECK(core::console::parseLine("rak flash-test confirm").ok);
+  CHECK(core::console::parseLine("rak flash-test confirm").command.verb ==
+        core::console::Verb::kRakFlashTest);
+  // Without the word it refuses and says what the word is (task p3-03).
+  const core::console::Parsed bare = core::console::parseLine("rak flash-test");
+  CHECK(!bare.ok);
+  CHECK(std::string(bare.error) ==
+        "rak flash-test writes two pages of the radio's flash; to do it, type: rak flash-test confirm");
+  CHECK(contains(rig.run("rak flash-test"), "error: rak flash-test writes two pages"));
   const core::console::Parsed p = core::console::parseLine("rak flash-test now");
   CHECK(!p.ok);
-  CHECK(std::string(p.error) == "rak flash-test takes no argument");
+  CHECK(std::string(p.error) == "rak flash-test: the word is 'confirm'");
+  const core::console::Parsed two = core::console::parseLine("rak flash-test confirm please");
+  CHECK(!two.ok);
+  CHECK(std::string(two.error) == "rak flash-test takes one word: confirm");
   CHECK(!core::console::parseLine("rak flash").ok);
   CHECK(contains(rig.run("rak flash"), "error: unknown rak subcommand (try 'help'): flash"));
 }

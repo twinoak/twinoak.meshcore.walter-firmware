@@ -57,8 +57,17 @@ class FakeUplink final : public upd::UplinkCheck {
     ++checks;
     return verdict;
   }
-  const char* serverHost() const override { return "server.example"; }
-  std::uint16_t serverPort() const override { return 443; }
+  const char* serverHost() const override { return host_; }
+  std::uint16_t serverPort() const override { return port_; }
+  // `server.url` at the console (task p3-03).
+  void setServer(const char* host, std::uint16_t port) override {
+    host_ = host != nullptr ? host : "";
+    port_ = port;
+  }
+
+ private:
+  const char* host_ = "server.example";
+  std::uint16_t port_ = 443;
 };
 
 struct SelfWorld {

@@ -51,7 +51,14 @@ components/
                         ranges, resumable, budgeted. update/fetch.h is the three steps of a
                         release over them, update/tls_check.h the trial's handshake
     power/              what the battery allows; the check-in interval
-    console/            the line parser and the commands' text (task p0-03: help, status, reboots,
+    settings/           the settings a person provisions over USB (task p3-03): keys.h is the
+                        table - one row per key with its type, range, fallback, whether it is a
+                        secret, one line of help and what happens when it changes - and
+                        settings.h the store over interfaces/key_value.h, which reads every key
+                        into RAM once so that the pointers the uplink and the trial keep stay put
+    console/            the line parser, one command table with a line of help each (commands.h,
+                        task p3-03), the 4 kB ring `dump` prints (log_ring.h) and the commands'
+                        text (task p0-03: help, status, reboots,
                         pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
                         time, power, env, cli, events, text; task p1-03: rak swd connect; task
                         p1-04: rak swd id, rak swd mem; task p1-05: rak flash-test; task p2-01:
@@ -60,7 +67,8 @@ components/
                         scanner|repeater; task p2-04: self status, receive, switch, confirm,
                         reject; task p2-05: rak watch, rak watch reset-caps, rak ladder; task
                         p3-01: lte, lte up, lte down, lte time, lte id; task p3-02: http get,
-                        fetch, trust tls)
+                        fetch, trust tls; task p3-03: get, set, erase confirm, dump, journal,
+                        and the word `confirm` on rak flash-test and a long rak kill)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
                         board, health and the supervisor hold a record each in), text out, a restart
@@ -71,20 +79,25 @@ components/
                         deadline (task p3-01); a TLS connection whose chain is verified against
                         one named root with the host name checked, and the modem's certificate
                         slots and profiles; one HTTP request with the body as a stream of
-                        pieces (task p3-02); a key-value store and a sleeper (later).
+                        pieces (task p3-02); a key-value store of short strings that survive a
+                        power cut, which is NVS on the board (task p3-03); and a sleeper
+                        (later).
                         ("hal/" when this file was written; ESP-IDF owns a component of
                         that name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
-                        region (tasks p2-02, p2-03), the OTA slots behind esp_ota_* (task p2-04)
+                        region (tasks p2-02, p2-03), the OTA slots behind esp_ota_* (task p2-04),
+                        the settings in the `nvs` partition behind a key-value store (task p3-03)
   modem/                the Walter's LTE modem behind interfaces/' uplink: the one component that
                         names a WalterModem symbol, on UART2 because UART1 is the radio's (task
                         p3-01); and its TLS over socket 1 and its certificate slots, with the one
                         call in this firmware that configures a TLS profile (task p3-02)
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained
-                        storage as a map; two application slots with the bootloader's rules at a
+                        storage as a map, a settings store as a map that can be empty, corrupt,
+                        read-only or missing (task p3-03); two application slots with the
+                        bootloader's rules at a
                         reboot - pending becomes aborted, new becomes pending - so the Walter's own
                         trial, confirmation and rollback run through a simulated reset (task p2-04)
   console_host/         the console on stdin and stdout over a simulated flash, so that
@@ -107,7 +120,7 @@ tools/                  verify.ps1, release/ (the release tooling), walterctl.py
 keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02);
                         tls/: the TLS roots a server's chain must end at, each with its header (task p3-02)
 spec/                   a copy of the system specification and its fixtures - never edited here
-docs/                   this file, bench.md, release.md, console.md, field.md
+docs/                   this file, bench.md, release.md, console.md, provisioning.md, field.md
 tasks/                  the piles
 ```
 
@@ -790,3 +803,4 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
 | HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
 | duty cycle | ✔ the policy | sleep entry and wake | current asleep; wake by UART |
+| settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |
