@@ -91,3 +91,21 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 # The pinout defaults - RX 14, TX 48, RTS 21, CTS 47, reset 45 - are the module's internal wiring
 # (datasheet, Table "internal pins": LTE_UART0_RX/TX/RTS/CTS and LTE_RESET) and are left as they are.
 # CONFIG_WALTER_MODEM_ENABLE_MQTT, _GNSS, _COAP, _BLUECHERRY, _MOTA: the library's defaults (y).
+#
+# One library setting is *not* left at its default (task p3-01). The library's command task
+# retransmits a command that answered `+CME ERROR`, not only one that timed out
+# (WalterModem.cpp:2093 sets RETRY_AFTER_ERROR, :1731-1748 sends it again), up to
+# WALTER_MODEM_DEFAULT_CMD_ATTEMPTS - and `maxAttempts` is settable per command only through a
+# private method, which `unlockSIM` does not use. At the default of 3, one call with a wrong SIM
+# PIN sends `AT+CPIN=<pin>` three times and **blocks the card**: a PUK, the operator and a person
+# at the mast. "A PIN is sent at most once per PIN value" is not something this firmware can
+# promise over a library that turns one send into three, so:
+CONFIG_WALTER_MODEM_DEFAULT_CMD_ATTEMPTS=1
+# What it costs: a command lost to noise is not retransmitted by the library. That is the cheaper
+# half - the modem's UART is a trace inside the module, with hardware flow control - and the
+# retry this firmware relies on is the next wake's (components/core/uplink/failure.h). It also
+# makes one blocking call's worst case CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS rather than three times
+# it, which is what core/uplink/policy.h sized the wake's budget against (kModemCallCeilingMs,
+# held to this value by a static_assert in components/modem/include/modem/walter_uplink.h).
+# CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS keeps its default of 30 s: a command that needs longer than
+# ten is the module's business and not the UART's, and no bench number says otherwise yet.

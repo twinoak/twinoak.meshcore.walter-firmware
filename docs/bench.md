@@ -656,3 +656,56 @@ run.
   what a mast can afford of its battery in a day; the battery thresholds against the real pack's
   curve under two MCUs awake. Each is a constant in `core/supervisor/supervisor.h` with a sentence;
   change the number and the sentence together.
+
+## 11. The modem
+
+From task p3-01 (`docs/ARCHITECTURE.md` §9; `docs/console.md`, *The uplink*). Needs: **a SIM with
+LTE-M data on a Danish network, an LTE antenna on the module's connector**, and §1 walked (a console
+on USB). Nothing of this phase can be proven in a session: the policy is tested against a fake modem
+that fails in every way a real one does, and every line below is about the real one.
+
+The task's own list names this section §10; that number was already the supervisor's, so it is §11.
+
+- [ ] **`lte up` with the SIM in and the antenna on.** Expect `lte up: up in <n> ms (up)`, a
+  `signal:` line with an RSRP, an RSRQ, an RSSI, the operator's name and a band number, and a
+  `time:` line saying *from the network*. Then `lte time` within a second or two of a phone's
+  clock, and `lte` showing the same readings without going back to the modem. **Write down the
+  attach time and the band**: the band is what the first unit tells us about Danish LTE-M
+  coverage, and the time is the first bench number this task needs.
+- [ ] **How long an attach takes from cold, three times.** `lte down`, wait a minute, `lte up`,
+  three times over, and write down the three numbers. They set `kRegistrationDeadlineMs` (2
+  minutes today, a guess) and through it `kWakeBudgetMs` (4 minutes), which is the biggest single
+  claim this task makes on the battery. QuickSpot's own example waits five minutes; if a real
+  attach here is a minute, both numbers come down and every wake with no coverage gets cheaper.
+- [ ] **The antenna off.** Unscrew it and `lte up`. Expect `not-registered` after
+  `kRegistrationDeadlineMs` and not before, `reached 'waiting for the network'`, and
+  `try again: growing`. Then `lte` again: it must name the number of wakes until the next
+  attempt. Do it three or four times in a row and watch the interval double - 1, 1, 2, 4 - which
+  is the whole point of the backoff.
+- [ ] **No SIM.** Power down, take the card out, power up, `lte up`. Expect `no-sim - no card, or
+  it does not answer` **promptly** (seconds, not the registration deadline), `reached 'the SIM'`,
+  and `try again: next wake; not sooner (a person has to act)`.
+- [ ] **A PIN-locked SIM, if one can be borrowed.** With no PIN provisioned (which is every unit
+  until task p3-03), `lte up` must say `sim-locked`, `try again: never automatically`, and **send
+  nothing to the card** - the whole point. Check `lte`'s `SIM PIN: none is set` line. Do **not**
+  test a wrong PIN on a card anybody needs: the firmware sends it once and the card has three
+  tries, and `sdkconfig.defaults` had to set the modem library's command attempts to 1 to keep
+  that promise at all.
+- [ ] **The current drawn, with the Walter's own supply and a meter in series.** Three numbers,
+  each written down: while searching (the antenna off, inside `lte up`), while attached and idle,
+  and with the modem down after `lte down`. These are what task p3-04's policy table is built
+  from, and the first of them times `kWakeBudgetMs` is what a wake with no coverage costs.
+- [ ] **PSM, once there is a reason to.** The default is *off between wakes* (the modem's radio in
+  its minimum state) and PSM is a setting that nothing sets yet. When task p3-04 has the interval
+  table, build with `kPowerSaving = PowerSavingMode::kPsm` and watch `lte`'s
+  `power saving: … granted: sleep up to <n> s, reachable <n> s` - what the **network** granted,
+  which is not what was asked for. Then measure the same three currents again. Which of PSM, eDRX
+  and an off modem costs least is `spec/SYSTEM.md` §10 item 5 and only this measurement answers it.
+- [ ] **A modem that is really silent.** Hard to arrange honestly - the module is inside the
+  package. If the reset line can be held, `lte up` must say `modem-silent`, report *the modem was
+  reset (the one reset a wake is allowed)*, and not reset it twice.
+- [ ] **The deadlines, against the numbers.** Every one is a named constant with a sentence in
+  `components/core/uplink/policy.h` and the report lists them; change a number and its sentence
+  together. The one to look at first after the attach times is `kModemCallCeilingMs` (30 s, the
+  library's own command timeout): if a deaf `AT` really does sit there for 30 seconds, a wake that
+  finds a dead modem spends a minute of battery on finding out.

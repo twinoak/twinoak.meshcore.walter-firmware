@@ -13,5 +13,8 @@ include. Included as `"interfaces/<name>.h"`.
 | `flash_region.h` | a region of the Walter's own flash: read, write, erase by sector, the sector size — and the shape of NOR flash, which a write only clears bits of | the `rakfw` partition of `partitions.csv` (`platform/flash_partition`) | `host_test/sim/sim_flash` — only clears bits, counts erases per sector, and can lose power at the Nth operation |
 | `own_update.h` | the Walter's two application slots: which runs and in what state, write an image into the other, make it the next to boot, confirm or reject the running one (task p2-04) | ESP-IDF's OTA machinery over `ota_0`/`ota_1` with rollback enabled (`platform/own_update`) | `host_test/fakes/fake_own_update` — two slots and the bootloader's rules at a reboot (pending → aborted, new → pending), with a power cut at the Nth operation |
 
-Phase 3 adds the key-value store, the uplink and the sleeper (the self-update's uplink condition is
-`core/update/uplink_check.h`, a seam of core's own that phase 3's HTTPS client fills).
+| `uplink.h` | the way out of the unit: the steps of getting onto the LTE-M network - is the modem there, the SIM, the RAT, the context, the radio on, attach, registration, packet data - and the four things worth asking once it is up (the time and where it came from, the signal, the identity, what power saving the network granted), each taking a deadline. The order, the deadlines, the wake's budget and the backoff are **not** here: they are `core/uplink/policy.h` | `walter-modem` on UART2 (`modem/walter_uplink`) | `host_test/sim/fake_modem` — a modem that is silent, has no card, a locked card, never registers, registers and drops, gives no time or gives 1970, and that costs its caller time for every call |
+
+Phase 3 adds the key-value store and the sleeper; the uplink is task p3-01's, above. (The
+self-update's uplink condition is `core/update/uplink_check.h`, a seam of core's own that phase 3's
+HTTPS client fills.)

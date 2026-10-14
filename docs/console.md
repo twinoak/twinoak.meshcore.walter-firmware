@@ -18,6 +18,7 @@ makes it whole.
 twinoak-walter 0.0.0-dev
 running from ota_0 at 0x010000 (3072 KB), ota state valid
 image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.0
+uplink: the modem on UART2 behind interfaces::Uplink; not started yet ('lte', 'lte up')
 image store: rakfw at 0x630000 (6144 KB), 4923392 bytes laid out for 2 radio slots x 3 images; 'image list' says what is in it
 link: UART1 115200 8N1 on the radio's two pins, open
 boot 1: power-on reset
@@ -32,6 +33,11 @@ image from its first boot (the bootloader writes `ota_0`'s entry itself when the
 task p2-04 read the code and `docs/bench.md` §1 says what to expect), `pending-verify` on the
 first boot of an image an update switched to - then a `self-update: … is on trial` line follows
 the journal's - and the boot's `software reset` line names a self-update's restart.
+
+The `uplink:` line is printed **without touching the modem** (task p3-01): all that happens at boot
+is that the backoff's record is read out of RTC memory, and a second line follows it when there is
+something in that record to say - `uplink: last time: not-registered; 14 wakes counted, 6 attempts;
+next try in 3 wake(s)`. The modem itself is started by the first call that needs it.
 
 ## Commands
 
@@ -58,6 +64,11 @@ the journal's - and the boot's `software reset` line names a self-update's resta
 | `rak watch` | (task p2-05) the supervisor's view: whether the radio is healthy, when it was last so, today's counts against the daily caps, the last good battery reading, the radio's restarts, a stop in force, and the last three incidents with every rung they tried. It only reads. See *The supervisor* |
 | `rak watch reset-caps` | the day's counts to zero and a stop lifted, journalled (the bench) |
 | `rak ladder` | climb the supervisor's ladder now - ask, reset, power-cycle, look at the chip, stop - each rung printed as it is tried. Minutes: the waits are the real ones |
+| `lte` | (task p3-01) the uplink: what the modem is, what the last attempt did and how far it got, when the backoff allows the next one, whether a SIM PIN is set and whether it was refused, the last signal reading, the last time, and what power saving the network granted. **It only reads** - it does not start the modem |
+| `lte up` | bring the uplink up now: the whole sequence inside one wake's budget. **Minutes** - an attach from cold is slow - and it goes ahead even when the backoff would have waited, because a person asked |
+| `lte down` | the modem's radio off (`AT+CFUN=0`); the context goes with it |
+| `lte time` | the network's time, or a refusal in words when the modem answered with its own default |
+| `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. The only place this firmware prints them |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command or
 subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
@@ -282,6 +293,61 @@ cut, `, read back from the journal`, because RTC memory went with the power and 
 **Nothing drives the supervisor from the main loop.** When it runs is the wake cycle's business
 (phase 3); in this build `rak ladder` is the only thing that climbs, and `begin()` at every boot is
 what reads the record.
+
+## The uplink
+
+From task p3-01 (`docs/ARCHITECTURE.md` §9; `components/core/uplink/policy.h` has the sequence, the
+deadlines and the backoff with a sentence on each number). None of the five takes a slot: a modem is
+not a radio.
+
+```
+> lte up
+lte up: bringing the uplink up; the budget is 240 s and an attach from cold can take
+  most of it. The backoff would have allowed this wake
+lte up: up in 7412 ms (up)
+  signal: RSRP -92 dBm, RSRQ -10.5 dB, RSSI -71 dBm, operator TDC, band 20, LTE-M
+  time: 1791936086 unix seconds, from the network
+  power saving: asked for off (the modem is switched off between wakes); the network has granted nothing (it reports PSM timers when it feels like it)
+```
+
+A failure says which of the five it was, what that means, and how far the sequence got:
+
+```
+> lte up
+lte up: no-sim - no card, or it does not answer
+  reached 'the SIM' in 10041 ms; the modem is down again
+  try again: next wake; not sooner (a person has to act)
+    1 failures in a row; every 1 wake(s); 0 wake(s) until the next is allowed
+```
+
+The five failures and when the firmware tries again by itself:
+
+| | Means | Try again |
+|---|---|---|
+| `modem-silent` | no answer to the first `AT` | after a modem reset, **once** per wake; then the next wake |
+| `no-sim` | no card, or it does not answer | next wake, and not sooner: a person has to act for it to change |
+| `sim-locked` | a PIN is wanted and none is set, or the one set was refused | **never automatically.** Three refusals block a card; `lte up` is a person's way past it, and a PIN that was refused is still never sent again |
+| `not-registered` | searching, denied, or no network inside the deadline | growing: next wake, then every second, fourth … up to the cap |
+| `no-data` | registered, and no packet data | as `not-registered` |
+
+The backoff is counted in **wakes**, not in seconds (a Walter has no clock it can trust across a
+deep sleep), and lives in RTC memory: a reset and a deep sleep keep it, a power cut starts it again
+and the `lte` line says so. `no-time` is not a failure: an uplink that came up without a time is up,
+and `lte` reports the time beside the state.
+
+`lte time` refuses a time that is not the network's rather than passing it on, because this is the
+time that would set the radio's clock (`spec/LINK-PROTOCOL.md` §5.4):
+
+```
+> lte time
+error: lte time: the modem answered with its own default, not a time the network
+  gave it. This firmware refuses it: a wrong clock is worse than none
+  (spec/LINK-PROTOCOL.md section 5.4)
+```
+
+`lte id` prints the three numbers that identify a subscription. They are printed **because a person
+asked** and are written to no log and sent nowhere by this firmware; a host test greps the console's
+whole transcript for them (`host_test/core/uplink/test_uplink_privacy.cpp`).
 
 ## The radio's power, as `status` says it
 

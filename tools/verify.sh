@@ -116,10 +116,29 @@ check_selector_off() {
   echo "the dual adapter's selector is compiled and constructed nowhere (SingleTarget only)"
 }
 
+# components/core/ knows nothing of the modem library (task p3-01, docs/ARCHITECTURE.md §1 and
+# §9): the logic of the uplink - the sequence, the deadlines, the wake's budget, the backoff - is
+# compiled on the host against a fake, so a `WalterModem` anywhere in core/ would be logic that
+# no test can reach. The ESP-IDF include check (tools/cmake/no_idf_include.cmake, run as a build
+# step by both the firmware build and host_test/) already refuses `#include "WalterModem.h"`
+# there; this is the symbol itself, comment lines dropped so that saying the name in a sentence
+# is allowed. A grep, not a promise.
+check_core_has_no_modem() {
+  local hits
+  hits=$(grep -rnE '\b(WalterModem|WALTER_MODEM_[A-Z_]+)\b' components/core \
+           --include='*.cpp' --include='*.h' --include='*.c' \
+           | grep -vE ':[[:space:]]*(//|\*|/\*)' || true)
+  if [ -n "$hits" ]; then
+    echo "a WalterModem symbol in components/core/:"; echo "$hits"; return 1
+  fi
+  echo "components/core/ names no WalterModem symbol (and no ESP-IDF include: the cmake check)"
+}
+
 step_host_tests() {
   local dir=$BUILD/host
   check_pin_ownership || return 1
   check_selector_off || return 1
+  check_core_has_no_modem || return 1
   cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
   cmake --build "$dir" &&
@@ -218,12 +237,24 @@ step_build() {
     line=$(python spec/tools/manifestref.py descriptor "$d") || { echo "no single descriptor in $d"; return 1; }
     echo "descriptor in $(basename "$d") $line"
   done
-  # The modem library was compiled: its objects are in the build, and the anchor is in the map.
+  # The modem library was compiled, and this firmware's own uplink over it is in the link: the
+  # thin thing that calls it (task p3-01, components/modem/walter_uplink.cpp) and the policy that
+  # drives it (core/uplink). Task p0-01's anchor object, which existed only because nothing
+  # called the library, is gone with them.
   local lib=$dir/esp-idf/dptechnics__walter-modem/libdptechnics__walter-modem.a
   if [ ! -f "$lib" ]; then echo "walter-modem was not built: $lib missing"; return 1; fi
   echo "walter-modem: $(ar t "$lib" | tr '\n' ' ')"
-  grep -q "twinoak_modem_library_anchor" "$dir/$PROJECT_NAME.map" || { echo "anchor not linked"; return 1; }
-  echo "walter-modem is in the link ($(grep -c 'dptechnics__walter-modem' "$dir/$PROJECT_NAME.map") references in the map)"
+  # The map names an object by its archive and its base name - `libcore.a(policy.cpp.obj)` - and
+  # not by the path it was compiled from, so these are the two archives' names for them.
+  grep -q "libmodem.a(walter_uplink.cpp.obj" "$dir/$PROJECT_NAME.map" || {
+    echo "components/modem's uplink is not in the link (walter_uplink.cpp.obj not in the map)"
+    return 1
+  }
+  grep -q "libcore.a(policy.cpp.obj" "$dir/$PROJECT_NAME.map" || {
+    echo "core/uplink's policy is not in the link (policy.cpp.obj not in the map)"
+    return 1
+  }
+  echo "walter-modem is in the link ($(grep -c 'dptechnics__walter-modem' "$dir/$PROJECT_NAME.map") references in the map), called from components/modem/walter_uplink.cpp"
   echo "ccache: $(ccache -s 2>/dev/null | grep -E 'Hits|Misses|hit rate' | tr -s ' ' | tr '\n' ';')"
 }
 

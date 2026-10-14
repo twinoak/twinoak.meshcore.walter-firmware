@@ -28,7 +28,9 @@
 #include "core/update/radio_update.h"
 #include "core/update/self_update.h"
 #include "core/update/uplink_check.h"
+#include "core/uplink/policy.h"
 #include "core/version.h"
+#include "modem/walter_uplink.h"
 #include "platform/boot.h"
 #include "platform/clock.h"
 #include "platform/flash_partition.h"
@@ -37,9 +39,6 @@
 #include "platform/retained.h"
 #include "platform/uart.h"
 #include "platform/usb_console.h"
-
-// components/modem: the modem library is linked and called by nothing. See modem_anchor.cpp.
-extern "C" const void* twinoak_modem_library_anchor();
 
 namespace {
 
@@ -154,9 +153,28 @@ extern "C" void app_main() {
   // flashed over USB is in no OTA state and runs no trial: the bootloader marks only a slot that
   // an update made the next to boot (tasks/phase-0/reports/01.md, rollback).
 
-  // Linked, not called (components/modem/modem_anchor.cpp). The volatile keeps the reference.
-  const void* volatile anchor = twinoak_modem_library_anchor();
-  (void)anchor;
+  // The uplink (task p3-01, docs/ARCHITECTURE.md §9): `walter-modem` behind
+  // interfaces::Uplink (components/modem/walter_uplink.cpp) and the policy over it - the
+  // sequence, the deadlines, the wake's budget and the backoff (core/uplink/policy.h).
+  //
+  // **Nothing here touches the modem.** begin() reads the backoff out of retained storage and
+  // that is all; the library itself is started by the first call that needs it, so a wake the
+  // backoff skips costs the modem nothing. When the modem runs is the wake cycle's business
+  // (task p3-05), and until then `lte up` on the console is the only thing that brings it up.
+  static modem::WalterUplink modem_driver(g_clock);
+  static core::uplink::UplinkPolicy uplink(modem_driver, g_clock, g_retained);
+  uplink.begin();
+  {
+    const core::uplink::Status& u = uplink.status();
+    std::printf("uplink: the modem on UART%d behind interfaces::Uplink; not started yet "
+                "('lte', 'lte up')\n", modem::kModemUartPort);
+    if (u.tries != 0 || u.last_failure != core::uplink::Failure::kNone) {
+      std::printf("uplink: last time: %s; %lu wakes counted, %lu attempts; next try in %lu wake(s)\n",
+                  core::uplink::describe(u.last_failure), static_cast<unsigned long>(u.wakes),
+                  static_cast<unsigned long>(u.tries),
+                  static_cast<unsigned long>(u.wakes_until_next_try));
+    }
+  }
 
   // The image store (task p2-02, docs/ARCHITECTURE.md §6): the `rakfw` partition behind
   // interfaces::FlashRegion, the records in it, and `image receive` on this port. A build whose
@@ -265,7 +283,7 @@ extern "C" void app_main() {
   // while this one waits for a byte.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
-                                        self_update_ptr, &supervisor);
+                                        self_update_ptr, &supervisor, &uplink);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {

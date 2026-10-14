@@ -40,6 +40,10 @@ components/
     supervisor/         the radio's heartbeat and the ladder of remedies: the four kinds of
                         silence, the five rungs, the daily caps in retained storage and the
                         journal, boot-loop detection, the incidents it keeps (task p2-05)
+    uplink/             the way out: the failure taxonomy and its backoff in wakes, the window a
+                        time must be inside to be the network's, the 3GPP power-saving timers,
+                        and the policy - the whole sequence of getting onto the LTE-M network,
+                        every step's deadline and the budget one wake may spend (task p3-01)
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text (task p0-03: help, status, reboots,
                         pins, rak reset, rak kill, reboot; task p1-02: rak hello, ping, status, id,
@@ -48,20 +52,25 @@ components/
                         trust; task p2-02: image list, verify, erase, bad, receive; task p2-03:
                         rak update, rak update --first-install, rak update status, rak role
                         scanner|repeater; task p2-04: self status, receive, switch, confirm,
-                        reject; task p2-05: rak watch, rak watch reset-caps, rak ladder)
+                        reject; task p2-05: rak watch, rak watch reset-caps, rak ladder; task
+                        p3-01: lte, lte up, lte down, lte time, lte id)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
                         board, health and the supervisor hold a record each in), text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
                         region (task p2-02); the Walter's own two application slots and their
-                        rollback states (task p2-04); a key-value store, an uplink, a sleeper
-                        (later). ("hal/" when this file was written; ESP-IDF owns a component of
+                        rollback states (task p2-04); the uplink - the steps of getting onto the
+                        network and the four things worth asking once it is there, each with a
+                        deadline (task p3-01); a key-value store and a sleeper (later).
+                        ("hal/" when this file was written; ESP-IDF owns a component of
                         that name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
                         region (tasks p2-02, p2-03), the OTA slots behind esp_ota_* (task p2-04)
-  modem/                the Walter's LTE modem behind interfaces/' uplink
+  modem/                the Walter's LTE modem behind interfaces/' uplink: the one component that
+                        names a WalterModem symbol, on UART2 because UART1 is the radio's (task
+                        p3-01)
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
   fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained
                         storage as a map; two application slots with the bootloader's rules at a
@@ -624,6 +633,35 @@ The modem (`walter-modem`) behind an interface: power up, check the SIM, attach 
 network's time, signal quality; power-saving modes; a taxonomy of failures (no SIM, not
 registered, no data, no route) with a backoff for each. Every modem call has a timeout.
 
+As built (task p3-01): `interfaces/uplink.h` is the *steps* - is the modem there, the SIM, the RAT,
+the context, the radio on, attach, registration, packet data, and the four things worth asking once
+it is up (the time, the signal, the identity, what power saving was granted) - each taking a
+deadline. `core/uplink/` is everything that decides: the order, each step's deadline as a named
+constant, **one budget per wake that the whole of it may spend**, the five named failures
+(`modem-silent`, `no-sim`, `sim-locked`, `not-registered`, `no-data`) with a retry rule each, and
+the backoff **counted in wakes** in retained storage - a Walter has no clock it can trust across a
+deep sleep, so "every fourth wake" is a thing it can count and "in four hours" is not. `no-time` is
+not among the failures: an uplink that came up without a time is up, and the time is reported beside
+it. `components/modem/` is the thin part that calls the library.
+
+Three things the modem's own documents and source decided, rather than this file:
+
+- **UART2.** UART1 is the radio's (`platform/uart.cpp`) and the library's examples use it only
+  because nothing else in them does; the modem's pins go through the GPIO matrix, so the port is
+  ours to pick.
+- **A deadline cannot cut a library call short.** Every blocking call waits on a condition variable
+  with no timeout of its own; the library's command task gives up after
+  `CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS`. So the policy checks the wall before and after each call,
+  refuses to begin one it is already past, and reports an overrun when one comes back late.
+- **The command attempts are set to 1** (`sdkconfig.defaults`), because the library retransmits a
+  command that answered `+CME ERROR` - and three refused `AT+CPIN=` are a blocked SIM card.
+
+A time is believed only inside a window (not before this firmware's date, not absurdly after it):
+it is the time that sets the radio's clock, and `spec/LINK-PROTOCOL.md` §5.4 is explicit that a
+clock which goes backwards makes a MeshCore node's own traffic look replayed. Reading it into
+`interfaces::WallClock` - so that the link client has one to give - is the wake cycle's step 2 and
+is task p3-05's; until then `main/` still answers "I have no time to give".
+
 HTTPS through the modem's own HTTP and TLS, with the server's chain **verified** against a root
 loaded into the modem — never "validate nothing". Requests are small; a download is in ranges,
 resumable, hashed as it arrives, written straight to the image store.
@@ -696,5 +734,5 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | updates | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
 | supervisor | ✔ a radio silent on cue, fake pins, a simulated chip, a month of random behaviour | — | nRESET held to ground: the ladder climbs and stops; the Walter's own power-up is not an incident |
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
-| modem, HTTPS | policy against a fake | every modem call | a SIM, a tower, a server |
+| modem, HTTPS | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower, a server |
 | duty cycle | ✔ the policy | sleep entry and wake | current asleep; wake by UART |

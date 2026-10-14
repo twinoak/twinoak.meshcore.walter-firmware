@@ -392,6 +392,35 @@ Parsed parseSelf(char* rest) {
   return accept(verb);
 }
 
+// `lte [up | down | time | id]` (task p3-01): the uplink. No slot - a modem is not a radio -
+// and a bare `lte` reads and does nothing, which is the shape `rak watch` has for the same
+// reason: looking at something must never be able to change it.
+Parsed parseLte(char* rest) {
+  if (*rest == 0) return accept(Verb::kLte);
+  char* sub = rest;
+  char* arg = sub;
+  while (*arg != 0 && !isSpace(*arg)) ++arg;
+  if (*arg != 0) {
+    *arg++ = 0;
+    while (*arg != 0 && isSpace(*arg)) ++arg;
+  }
+  const bool hasArg = *arg != 0;
+  Verb verb = Verb::kLte;
+  if (std::strcmp(sub, "up") == 0) {
+    verb = Verb::kLteUp;
+  } else if (std::strcmp(sub, "down") == 0) {
+    verb = Verb::kLteDown;
+  } else if (std::strcmp(sub, "time") == 0) {
+    verb = Verb::kLteTime;
+  } else if (std::strcmp(sub, "id") == 0) {
+    verb = Verb::kLteId;
+  } else {
+    return refuse2("unknown lte subcommand (lte, up, down, time, id): ", sub);
+  }
+  if (hasArg) return refuse3("lte ", sub, " takes no argument");
+  return accept(verb);
+}
+
 }  // namespace
 
 Parsed parseLine(const char* line) {
@@ -463,6 +492,7 @@ Parsed parseLine(const char* line) {
     return p;
   }
   if (std::strcmp(verb, "self") == 0) return parseSelf(rest);
+  if (std::strcmp(verb, "lte") == 0) return parseLte(rest);
   if (std::strcmp(verb, "rak") == 0) {
     if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
     // The slot (task p1-06): `rak @1 hello`. Optional, and the first word after `rak` rather
