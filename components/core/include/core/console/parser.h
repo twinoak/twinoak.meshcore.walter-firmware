@@ -94,6 +94,17 @@
 //   self confirm          end a trial early: the running image is valid (the bench)
 //   self reject           end a trial early: the running image is rejected and the board
 //                         restarts into the old one (the bench)
+//
+// and the uplink (task p3-01; docs/ARCHITECTURE.md §9). Not `rak` lines either: a modem has no
+// slot, and the word is `lte` because that is what a person at a bench calls it:
+//
+//   lte                   the state, the operator, the band, the signal, what the last attempt
+//                         did and when the next one is allowed
+//   lte up                bring the uplink up now, inside one wake's budget (minutes)
+//   lte down              the modem's radio off
+//   lte time              the network's time, and whether it is the network's
+//   lte id                the IMEI, the ICCID and the IMSI - **a person asking**, and the only
+//                         place this firmware prints them
 #pragma once
 
 #include <cstddef>
@@ -156,6 +167,12 @@ enum class Verb : std::uint8_t {
   kSelfSwitch,
   kSelfConfirm,
   kSelfReject,
+  // The uplink (task p3-01).
+  kLte,
+  kLteUp,
+  kLteDown,
+  kLteTime,
+  kLteId,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.

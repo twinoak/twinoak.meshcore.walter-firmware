@@ -18,6 +18,7 @@ enum class RetainedSlot : std::uint8_t {
   kHealth = 1,     // core/health: the boot counter and the last reasons
   kSupervisor = 2,           // core/supervisor: the day's counts, their window, a stop in force
   kSupervisorIncidents = 3,  // core/supervisor: the incidents kept for the next check-in
+  kUplink = 4,               // core/uplink: the backoff's wakes, and a PIN that was refused
   kCount
 };
 

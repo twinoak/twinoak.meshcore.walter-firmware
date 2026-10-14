@@ -23,6 +23,7 @@
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
 #include "core/update/self_update.h"
+#include "core/uplink/policy.h"
 #include "interfaces/clock.h"
 #include "interfaces/restart.h"
 #include "interfaces/text_out.h"
@@ -43,7 +44,8 @@ class Console {
           board::SlotLock& slots, image::Store* images = nullptr,
           image::Receiver* receiver = nullptr, update::RadioUpdate* update = nullptr,
           update::Journal* journal = nullptr, update::SelfUpdate* self = nullptr,
-          supervisor::Supervisor* supervisor = nullptr);
+          supervisor::Supervisor* supervisor = nullptr,
+          uplink::UplinkPolicy* uplink = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -158,6 +160,17 @@ class Console {
   void printIncident(std::size_t number, const supervisor::Incident& incident);
   void printRungsTried(std::uint8_t rungs);
 
+  // The uplink (task p3-01). `lte` reads and nothing more; the other four act.
+  bool lteOk();  // false, with one error line, when this build has no uplink
+  void lte();
+  void lteUp();
+  void lteDown();
+  void lteTime();
+  void lteId();
+  void printSignal(const interfaces::Signal& signal);
+  void printPowerSaving(const interfaces::PowerSavingGrant& grant);
+  void printNextTry();
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
@@ -171,6 +184,7 @@ class Console {
   update::Journal* journal_ = nullptr;
   update::SelfUpdate* self_ = nullptr;
   supervisor::Supervisor* supervisor_ = nullptr;
+  uplink::UplinkPolicy* uplink_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about

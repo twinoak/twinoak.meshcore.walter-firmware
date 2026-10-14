@@ -50,6 +50,12 @@ bool isRadioVerb(Verb verb) {
     case Verb::kSelfSwitch:
     case Verb::kSelfConfirm:
     case Verb::kSelfReject:
+    // The uplink (task p3-01): a modem is not a radio and has no slot.
+    case Verb::kLte:
+    case Verb::kLteUp:
+    case Verb::kLteDown:
+    case Verb::kLteTime:
+    case Verb::kLteId:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -87,10 +93,11 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  interfaces::Clock& clock, interfaces::Restart& restart,
                  link::client::Client& radio, board::SlotLock& slots, image::Store* images,
                  image::Receiver* receiver, update::RadioUpdate* update, update::Journal* journal,
-                 update::SelfUpdate* self, supervisor::Supervisor* supervisor)
+                 update::SelfUpdate* self, supervisor::Supervisor* supervisor,
+                 uplink::UplinkPolicy* uplink)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
-      self_(self), supervisor_(supervisor), flasher_(pins, clock, slots) {}
+      self_(self), supervisor_(supervisor), uplink_(uplink), flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -294,6 +301,11 @@ void Console::runLine(const char* line) {
     case Verb::kSelfSwitch: selfSwitch(p.command.radio_down); return;
     case Verb::kSelfConfirm: selfConfirm(); return;
     case Verb::kSelfReject: selfReject(); return;
+    case Verb::kLte: lte(); return;
+    case Verb::kLteUp: lteUp(); return;
+    case Verb::kLteDown: lteDown(); return;
+    case Verb::kLteTime: lteTime(); return;
+    case Verb::kLteId: lteId(); return;
   }
 }
 
@@ -352,6 +364,13 @@ void Console::help() {
   print("                      empty the day's counts and lift a stop (the bench)\n");
   print("  rak ladder          climb the supervisor's ladder now - ask, reset, power-cycle, look at\n");
   print("                      the chip, stop - each rung printed as it is tried (minutes)\n");
+  print("  lte                 the uplink: state, operator, band, signal, what the last attempt\n");
+  print("                      did and when the next one is allowed (it only reads)\n");
+  print("  lte up              bring the uplink up now (minutes: an attach from cold is slow)\n");
+  print("  lte down            the modem's radio off\n");
+  print("  lte time            the network's time, and whether it really is the network's\n");
+  print("  lte id              the modem's IMEI and the SIM's ICCID and IMSI, for the label on\n");
+  print("                      the box: printed here, and written nowhere else\n");
   print("  rak reset           one 100 ms reset pulse to the radio (a second after the last)\n");
   printf("  rak kill <seconds>  the radio's rail off for that long (%lu..%lu), then back\n",
          static_cast<unsigned long>(pins_.timing().min_ms / 1000),
@@ -1853,6 +1872,187 @@ void Console::rakLadder() {
     return;
   }
   printf("rak ladder: the radio is %s: nothing to climb\n", supervisor::describe(w.health));
+}
+
+// -- the uplink (task p3-01) --------------------------------------------------------------------
+
+bool Console::lteOk() {
+  if (uplink_ != nullptr) return true;
+  print("error: this build has no uplink: nothing was given to the console (main/main.cpp)\n");
+  return false;
+}
+
+void Console::printSignal(const interfaces::Signal& s) {
+  print("  signal:");
+  if (s.rsrp_known) printf(" RSRP %d dBm,", static_cast<int>(s.rsrp_dbm));
+  if (s.rsrq_known) {
+    printf(" RSRQ %d.%d dB,", static_cast<int>(s.rsrq_tenth_db / 10),
+           static_cast<int>(s.rsrq_tenth_db < 0 ? -(s.rsrq_tenth_db % 10) : s.rsrq_tenth_db % 10));
+  }
+  if (s.rssi_known) printf(" RSSI %d dBm,", static_cast<int>(s.rssi_dbm));
+  if (!s.rsrp_known && !s.rsrq_known && !s.rssi_known) print(" nothing the modem would say,");
+  printf(" operator %s,", s.operator_name[0] != 0 ? s.operator_name : "unknown");
+  if (s.band != 0) {
+    printf(" band %u,", static_cast<unsigned>(s.band));
+  } else {
+    print(" band unknown,");
+  }
+  printf(" %s\n", interfaces::describe(s.rat));
+}
+
+void Console::printPowerSaving(const interfaces::PowerSavingGrant& g) {
+  printf("  power saving: asked for %s", interfaces::describe(g.requested));
+  if (!g.asked) {
+    print("; the modem has not been asked yet\n");
+    return;
+  }
+  if (!g.granted) {
+    print("; the network has granted nothing (it reports PSM timers when it feels like it)\n");
+    return;
+  }
+  printf("; granted: sleep up to %lu s, reachable %lu s after a transmission\n",
+         static_cast<unsigned long>(uplink::tauSeconds(g.tau_octet)),
+         static_cast<unsigned long>(uplink::activeTimeSeconds(g.active_octet)));
+}
+
+void Console::printNextTry() {
+  const uplink::Status& u = uplink_->status();
+  if (u.retry == uplink::Retry::kNever) {
+    print("  try again: never automatically - a person has to act. 'lte up' still tries\n");
+    return;
+  }
+  printf("  try again: %s\n", uplink::describe(u.retry));
+  printf("    %lu failures in a row; every %lu wake(s); %lu wake(s) until the next is allowed\n",
+         static_cast<unsigned long>(u.failures), static_cast<unsigned long>(u.interval_wakes),
+         static_cast<unsigned long>(u.wakes_until_next_try));
+}
+
+void Console::lte() {
+  if (!lteOk()) return;
+  const uplink::Status& u = uplink_->status();
+  printf("lte: %s%s\n", interfaces::describe(u.state),
+         u.ever_up ? "" : "; it has not been up in this boot");
+  if (u.tried_this_boot) {
+    printf("  last attempt: %s - %s\n", uplink::describe(u.last_failure),
+           uplink::means(u.last_failure));
+    printf("    reached '%s' in %lu ms%s%s%s\n", uplink::describe(u.reached),
+           static_cast<unsigned long>(u.last_spent_ms),
+           u.last_abandoned ? "; abandoned: the wake's budget ran out" : "",
+           u.last_overran ? "; a modem call came back after its deadline" : "",
+           u.modem_reset_this_wake ? "; the modem was reset" : "");
+  } else {
+    print("  last attempt: none in this boot\n");
+  }
+  printNextTry();
+  if (!u.pin_set) {
+    print("  SIM PIN: none is set, so a card that wants one is 'sim-locked' and left alone\n");
+  } else if (u.pin_refused) {
+    print("  SIM PIN: set, and refused once: it is never sent again until the setting changes\n");
+  } else {
+    print("  SIM PIN: set, never refused\n");
+  }
+  if (u.signal_known) {
+    printSignal(u.signal);
+  } else {
+    print("  signal: not read in this boot\n");
+  }
+  if (u.time.origin == interfaces::TimeOrigin::kNetwork) {
+    printf("  time: %lu unix seconds, from the network\n",
+           static_cast<unsigned long>(u.time.epoch));
+  } else {
+    printf("  time: %s\n", interfaces::describe(u.time.origin));
+  }
+  printPowerSaving(u.power_saving);
+  printf("  radio access technology %s; %lu wakes counted, %lu attempts made\n",
+         interfaces::describe(u.rat), static_cast<unsigned long>(u.wakes),
+         static_cast<unsigned long>(u.tries));
+  if (u.record_lost) {
+    print("  the backoff's record was gone at this boot (a first boot, or a power cut: RTC\n");
+    print("  memory does not survive one), so the count began again from zero\n");
+  }
+}
+
+void Console::lteUp() {
+  if (!lteOk()) return;
+  const bool allowed = uplink_->mayTry();
+  const std::uint32_t wait = uplink_->wakesUntilNextTry();
+  printf("lte up: bringing the uplink up; the budget is %lu s and an attach from cold can take\n",
+         static_cast<unsigned long>(uplink::kWakeBudgetMs / 1000u));
+  printf("  most of it. The backoff would %s\n",
+         allowed ? "have allowed this wake"
+                 : (uplink_->status().retry == uplink::Retry::kNever
+                        ? "never have tried by itself; a person asking is the way past that"
+                        : "have waited"));
+  if (!allowed && wait != 0) {
+    printf("  (%lu more wake(s)); a person asking goes ahead anyway\n",
+           static_cast<unsigned long>(wait));
+  }
+  uplink_->beginWake();
+  const uplink::Result r = uplink_->bringUp();
+  if (r.up) {
+    printf("lte up: up in %lu ms (%s)\n", static_cast<unsigned long>(r.spent_ms),
+           interfaces::describe(uplink_->state()));
+    interfaces::Signal s;
+    if (uplink_->signal(&s)) printSignal(s);
+    if (r.time.origin == interfaces::TimeOrigin::kNetwork) {
+      printf("  time: %lu unix seconds, from the network\n",
+             static_cast<unsigned long>(r.time.epoch));
+    } else {
+      printf("  time: %s - the uplink is up all the same\n",
+             interfaces::describe(r.time.origin));
+    }
+    printPowerSaving(uplink_->status().power_saving);
+    return;
+  }
+  printf("lte up: %s - %s\n", uplink::describe(r.failure), uplink::means(r.failure));
+  printf("  reached '%s' in %lu ms; the modem is down again%s%s\n", uplink::describe(r.reached),
+         static_cast<unsigned long>(r.spent_ms),
+         r.abandoned ? "; abandoned: the wake's budget ran out" : "",
+         r.overran ? "; a modem call came back after its deadline" : "");
+  printNextTry();
+}
+
+void Console::lteDown() {
+  if (!lteOk()) return;
+  uplink_->takeDown();
+  printf("lte down: the modem's radio is off (%s)\n", interfaces::describe(uplink_->state()));
+}
+
+void Console::lteTime() {
+  if (!lteOk()) return;
+  // One command's worth of budget, so that a `lte time` at a console cannot sit on the modem.
+  uplink_->openBudget(uplink::kTimeDeadlineMs + 1000);
+  interfaces::NetworkTime when;
+  if (!uplink_->networkTime(&when)) {
+    if (when.origin == interfaces::TimeOrigin::kDefault) {
+      print("error: lte time: the modem answered with its own default, not a time the network\n");
+      print("  gave it. This firmware refuses it: a wrong clock is worse than none\n");
+      print("  (spec/LINK-PROTOCOL.md section 5.4)\n");
+      return;
+    }
+    printf("error: lte time: no answer (%s)\n", interfaces::describe(uplink_->state()));
+    return;
+  }
+  printf("lte time: %lu unix seconds, from the network\n", static_cast<unsigned long>(when.epoch));
+}
+
+void Console::lteId() {
+  if (!lteOk()) return;
+  uplink_->openBudget(uplink::kIdentityDeadlineMs + 1000);
+  interfaces::Identity id;
+  if (!uplink_->identity(&id)) {
+    printf("error: lte id: the modem would not say (%s; the card's numbers need the modem\n",
+           interfaces::describe(uplink_->state()));
+    print("  awake - 'lte up' first, or at least a modem that answers)\n");
+    return;
+  }
+  // The one place this firmware prints these. They go nowhere else - not the log, not the
+  // journal, not anything it sends by itself (core/uplink/policy.h, *Privacy*).
+  printf("lte id: IMEI %s\n", id.imei[0] != 0 ? id.imei : "unknown");
+  printf("        ICCID %s\n", id.iccid[0] != 0 ? id.iccid : "unknown");
+  printf("        IMSI %s\n", id.imsi[0] != 0 ? id.imsi : "unknown");
+  print("  these identify a subscription: they are printed because a person asked, and are\n");
+  print("  written to no log and sent nowhere by this firmware\n");
 }
 
 }  // namespace console

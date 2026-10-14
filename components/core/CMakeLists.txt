@@ -54,6 +54,11 @@ idf_component_register(
        # last good reading that a rung reached over a dead link still has.
        "update/last_good_battery.cpp"
        "supervisor/supervisor.cpp"
+       # The uplink (task p3-01): the failure taxonomy and its backoff, the 3GPP power-saving
+       # timers, and the policy that is the whole sequence of getting onto the network.
+       "uplink/failure.cpp"
+       "uplink/psm.cpp"
+       "uplink/policy.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 
