@@ -32,8 +32,9 @@ components/
                         README.md: the TweetNaCl verification-only extract, jsmn (task p2-01)
     update/             the journal (a fixed-size, append-only ring in its own partition), the
                         radio's update as a state machine with its health check and rollback, the
-                        battery as the radio reports it (task p2-03); the Walter's own update
-                        policy (task p2-04)
+                        battery as the radio reports it (task p2-03); the Walter's own update -
+                        the other slot as a transfer target, the switch, the one-boot trial with
+                        its three conditions, and the uplink condition's seam (task p2-04)
     supervisor/         the radio's heartbeat and the ladder of remedies
     power/              what the battery allows; the check-in interval
     console/            the line parser and the commands' text (task p0-03: help, status, reboots,
@@ -42,19 +43,25 @@ components/
                         p1-04: rak swd id, rak swd mem; task p1-05: rak flash-test; task p2-01:
                         trust; task p2-02: image list, verify, erase, bad, receive; task p2-03:
                         rak update, rak update --first-install, rak update status, rak role
-                        scanner|repeater)
+                        scanner|repeater; task p2-04: self status, receive, switch, confirm,
+                        reject)
     cycle/              one wake, start to finish, against interfaces
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage, text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
-                        region (task p2-02); a key-value store, an uplink, a sleeper (later).
-                        ("hal/" when this file was written; ESP-IDF owns a component of that
-                        name - task p0-01)
+                        region (task p2-02); the Walter's own two application slots and their
+                        rollback states (task p2-04); a key-value store, an uplink, a sleeper
+                        (later). ("hal/" when this file was written; ESP-IDF owns a component of
+                        that name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
-                        UART (task p1-02), the `rakfw` partition behind a flash region (task p2-02)
+                        UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
+                        region (tasks p2-02, p2-03), the OTA slots behind esp_ota_* (task p2-04)
   modem/                the Walter's LTE modem behind interfaces/' uplink
 host_test/              a CMake project of its own: core/ + fakes + simulators + tests, built with the host compiler
-  fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained storage as a map
+  fakes/                fake pins that check the pin rules, a clock whose delays take no time, retained
+                        storage as a map; two application slots with the bootloader's rules at a
+                        reboot - pending becomes aborted, new becomes pending - so the Walter's own
+                        trial, confirmation and rollback run through a simulated reset (task p2-04)
   console_host/         the console on stdin and stdout over a simulated flash, so that
                         tools/walterctl.py is tested before a board exists (task p2-02)
   sim/                  the scripted RAK on a fake UART (task p1-02); the simulated SWD target at
@@ -533,13 +540,32 @@ update's entries (task p2-04) and the supervisor's (task p2-05) under their own 
 entry is protected from the wrap. Tested with the Walter reset after every entry of the good path
 and of a rollback, and with the power cut during every write of every entry.
 
-**Its own**: ESP-IDF's two application slots with rollback. A new image is marked valid only after
-it has booted, exchanged `HELLO` with the radio, and reached the server within a window; otherwise
-the bootloader returns to the previous one at the next reset — which this firmware asks for.
+**Its own** (task p2-04, `core/update/self_update.h`, `docs/update.md` *The Walter's half*):
+ESP-IDF's two application slots with rollback, behind `interfaces/own_update.h`. A release of this
+firmware's `ota` file goes into the other slot through the same six checks as a radio image -
+the transfer of §6 with another `TransferTarget` - and is refused at the door when its hash is on
+the bad list, when it does not fit the slot, when its `load_address` is not a slot's offset, or
+when it speaks another link major than the radio without saying it tolerates the radio's.
+`self switch` journals *switching to <version>, from <version>* with whether the radio answered
+`HELLO`, sets the boot pointer (the slot's state *new*), sends `SLEEP_NOTICE` and restarts. The
+bootloader turns *new* into *pending-verify* and aborts a slot still pending at the next reset, so
+**a trial is one boot** whatever ends it. The new image's trial: inside `kTrialWindowMs` it must
+(1) reach its main loop with the pins safe, (2) exchange `HELLO` with the radio - unless the radio
+was journalled as known down before the switch - and (3) complete one exchange over the uplink
+(`core/update/uplink_check.h`; until phase 3 the firmware's implementation says *no server
+configured* and the condition does not apply, which is what keeps a factory image from rejecting
+itself). All three: `esp_ota_mark_app_valid_cancel_rollback`, *confirmed*. Otherwise: the hash on
+the bad list, *rolled back: <the first missing condition>*, `esp_ota_mark_app_invalid_rollback_and_reboot`.
+The image that boots after any restart reads the journal: the old image finding *switching* or
+*on trial* writes the rollback entry itself (*never reached its main loop*, *restarted during its
+trial*, or *the restart came before the boot pointer: nothing was tried*). The radio's update
+reads *switching* and *on trial* as "unconfirmed" and refuses to start (S-7).
 
 **Never both in one wake** (S-7). When the link's major version changes, the Walter goes first and
 speaks both majors until the radio has followed; the order is enforced here, not left to whoever
-starts the update.
+starts the update: a Walter image whose manifest `link.major` is not the radio's is accepted only
+if its `requires.link_major` names the radio's (it speaks the new and tolerates the old), and a
+radio image's `link.major` must be one the running Walter speaks.
 
 ## 8. The supervisor
 

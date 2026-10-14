@@ -46,6 +46,20 @@ TEST_CASE("every command parses, with and without a line ending, with surroundin
   CHECK(verbOf("rak @0 update status\r\n") == Verb::kRakUpdateStatus);
   CHECK(verbOf("rak role scanner") == Verb::kRakRoleScanner);
   CHECK(verbOf("rak role repeater") == Verb::kRakRoleRepeater);
+  // The Walter's own update (task p2-04).
+  CHECK(verbOf("self status") == Verb::kSelfStatus);
+  CHECK(verbOf("self receive") == Verb::kSelfReceive);
+  CHECK(verbOf("self switch") == Verb::kSelfSwitch);
+  CHECK_FALSE(parseLine("self switch").command.radio_down);
+  CHECK(verbOf("self switch radio-down") == Verb::kSelfSwitch);
+  CHECK(parseLine("self switch radio-down").command.radio_down);
+  CHECK(verbOf("  self confirm \r\n") == Verb::kSelfConfirm);
+  CHECK(verbOf("self reject") == Verb::kSelfReject);
+  CHECK(errorOf("self") == "self needs a subcommand: self status | receive | switch [radio-down] | confirm | reject");
+  CHECK(errorOf("self dance") == "unknown self subcommand (status, receive, switch, confirm, reject): dance");
+  CHECK(errorOf("self status now") == "self status takes no argument");
+  CHECK(errorOf("self switch now") == "self switch: unknown word (self switch, self switch radio-down): now");
+  CHECK(errorOf("self switch radio-down now") == "self switch takes one word: self switch [radio-down]");
   CHECK(parseLine("rak @1 update").command.slot == 1);
   CHECK(errorOf("rak update now") == "rak update: unknown word (rak update, rak update --first-install, rak update status): now");
   CHECK(errorOf("rak update status now") == "rak update takes one word: rak update [--first-install | status]");

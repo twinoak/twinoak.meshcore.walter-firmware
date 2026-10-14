@@ -270,7 +270,12 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
                           // every one is refused in one line and touches nothing
                           "update", "role", "scanner", "repeater", "--first-install",
                           "rak update", "rak update status", "rak update --first-install",
-                          "rak role scanner", "rak role repeater"};
+                          "rak role scanner", "rak role repeater",
+                          // the Walter's own update (task p2-04): no self-update on this rig
+                          // either, refused in one line, no pin
+                          "self", "receive", "switch", "confirm", "reject", "radio-down",
+                          "self status", "self receive", "self switch", "self switch radio-down",
+                          "self confirm", "self reject"};
   const std::size_t token_count = sizeof tokens / sizeof tokens[0];
   std::mt19937 rng(20261011u);
   std::uniform_int_distribution<std::size_t> pick(0, token_count - 1);
@@ -325,10 +330,10 @@ TEST_CASE("property: no sequence of console commands breaks a pin rule") {
   CHECK(lines > 3000);
   // Fewer of each than task p0-03's version of this test saw: the bag of tokens grew by the
   // link's twenty-odd (task p1-02), the SWD commands' dozen (tasks p1-03, p1-04) and the update's
-  // ten (task p2-03), so a given line is less often one of these two. The run is seeded, and at
-  // this seed it is 30 resets and 98 kills in some 10 000 lines.
-  CHECK(resets > 25);
-  CHECK(kills > 90);
+  // ten (task p2-03) and the self-update's twelve (task p2-04), so a given line is less often one
+  // of these two. The run is seeded; the thresholds are a floor under what this seed gives.
+  CHECK(resets > 20);
+  CHECK(kills > 70);
   MESSAGE(sequences << " sequences, " << lines << " lines, " << resets << " resets, " << kills
                     << " kills, " << rig.restart.asked << " reboots, no rule broken");
 }

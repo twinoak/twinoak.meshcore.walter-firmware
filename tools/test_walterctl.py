@@ -79,6 +79,7 @@ def run_push(console, release, which="candidate", extra=()):
 def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--console", required=True, help="the console host binary")
+    parser.add_argument("--generated", help="host_test's generated manifest fixtures (the Walter's own images)")
     args = parser.parse_args(argv[1:])
     if not os.path.isfile(args.console):
         print("no console host at %s" % args.console)
@@ -135,6 +136,43 @@ def main(argv):
         done = run_push(args.console, work)
         check(done.returncode == 1, "a directory with no manifest.json: exit 1")
         check("that is not a release directory" in done.stderr, "and it says so")
+
+        # 7. The Walter's own image (task p2-04): --as self takes the manifest's `ota` file and
+        #    says `self receive`. The spec's walter fixture loads at 0x20000, which is not one of
+        #    this firmware's application slots, so the Walter refuses it and this tool says so in
+        #    the Walter's words.
+        shutil.copyfile(os.path.join(FIXTURES, "image-walter-ota.bin"),
+                        os.path.join(walter, "twinoak-walter-v0.3.0.bin"))
+        done = run_push(args.console, walter, which="self")
+        print(done.stdout)
+        print(done.stderr)
+        check(done.returncode == 1, "the spec's walter fixture --as self: refused, exit 1")
+        check("the file's load_address is not an application slot's offset" in done.stderr,
+              "and the refusal is the Walter's own: the load_address")
+        # And a radio release --as self: this tool's own refusal, no ota file.
+        done = run_push(args.console, release, which="self")
+        check(done.returncode == 1, "a repeater release --as self: exit 1")
+        check("no image in this manifest has an `ota` file" in done.stderr, "and it says why")
+
+        # 8. A Walter image that fits: the generated fixture self-a, loading at ota_0's offset.
+        if args.generated:
+            own = os.path.join(work, "self")
+            os.makedirs(own)
+            with open(os.path.join(args.generated, "self-a.json"), "rb") as fh:
+                own_manifest = fh.read()
+            with open(os.path.join(own, "manifest.json"), "wb") as fh:
+                fh.write(own_manifest)
+            shutil.copyfile(os.path.join(args.generated, "self-a.json.sig"), os.path.join(own, "manifest.json.sig"))
+            ota = next(f for img in json.loads(own_manifest.decode("utf-8"))["images"] for f in img["files"]
+                       if f["use"] == "ota")
+            shutil.copyfile(os.path.join(args.generated, "self-a.bin"), os.path.join(own, ota["name"]))
+            done = run_push(args.console, own, which="self")
+            print(done.stdout)
+            if done.returncode != 0:
+                print(done.stderr)
+            check(done.returncode == 0, "walterctl push --as self against the console: exit 0")
+            check("stored in the Walter's other application slot" in done.stdout, "it says where it went")
+            check("`self switch` makes it the next to boot" in done.stdout, "and what comes next")
 
     print("\n%d checks, %d failed" % (checks, len(failures)))
     for failure in failures:

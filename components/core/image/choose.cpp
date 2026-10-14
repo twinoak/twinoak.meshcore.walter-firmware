@@ -128,8 +128,11 @@ Choice chooseImage(const Manifest& manifest, const SlotNeeds& needs, Use use, co
     return choice;
   }
   // And the link the image itself speaks (the manifest's `link`): S-7 - a radio image of a major
-  // this Walter does not speak is not for this unit yet, whatever `requires` says.
-  if (!unit.speaks(manifest.link_major)) {
+  // this Walter does not speak is not for this unit yet, whatever `requires` says. Not for the
+  // Walter's own `ota` image (task p2-04): that one is *how* a new major arrives - the Walter
+  // goes first - and whether it still speaks the radio's major is the self-update's own rule,
+  // read off `link.major` and `requires.link_major` (core/update/self_update.h).
+  if (use != Use::kOta && !unit.speaks(manifest.link_major)) {
     choice.reason = ChooseReason::kManifestLinkMajor;
     return choice;
   }

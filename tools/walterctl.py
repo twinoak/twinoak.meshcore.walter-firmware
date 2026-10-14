@@ -70,7 +70,9 @@ TRIES = 4            # how often one frame is sent before giving up
 REPLY_TIMEOUT = 5.0  # seconds to wait for one acknowledgement
 HELLO_TIMEOUT = 2.0
 
-WHICH = ("golden", "candidate", "scanner")
+# The three images of a radio slot, and `self`: the Walter's own `ota` image into its other
+# application slot (`self receive`, task p2-04).
+WHICH = ("golden", "candidate", "scanner", "self")
 PROTOCOL = "walter image receive 1"
 
 
@@ -278,8 +280,9 @@ class Transfer:
 # ----------------------------------------------------------------------------- the release
 
 
-def read_release(directory, image_id=None):
-    """The manifest's bytes, its signature line and the swd file of the chosen image."""
+def read_release(directory, image_id=None, use="swd"):
+    """The manifest's bytes, its signature line and the file of `use` (swd for a radio, ota for the
+    Walter's own) of the chosen image."""
     manifest_path = os.path.join(directory, "manifest.json")
     sig_path = manifest_path + ".sig"
     for path in (manifest_path, sig_path):
@@ -295,19 +298,22 @@ def read_release(directory, image_id=None):
     choices = []
     for image in manifest.get("images", []):
         for entry in image.get("files", []):
-            if entry.get("use") == "swd":
+            if entry.get("use") == use:
                 choices.append((image, entry))
+    if not choices and use == "ota":
+        raise Fault("no image in this manifest has an `ota` file: there is no Walter image here "
+                    "(a radio's `swd` file goes with --as golden|candidate|scanner)")
     if not choices:
         raise Fault("no image in this manifest has an `swd` file: there is nothing a Walter can "
-                    "flash over SWD here (an `ota` file is the Walter's own update, task p2-04)")
+                    "flash over SWD here (an `ota` file is the Walter's own update: --as self)")
     if image_id is not None:
         choices = [c for c in choices if c[0].get("id") == image_id]
         if not choices:
             raise Fault("no image with id %r in this manifest" % image_id)
     if len(choices) > 1:
         ids = ", ".join(c[0].get("id", "?") for c in choices)
-        raise Fault("this manifest has more than one image with an swd file (%s); say which with "
-                    "--image" % ids)
+        raise Fault("this manifest has more than one image with an %s file (%s); say which with "
+                    "--image" % (use, ids))
     image, entry = choices[0]
 
     name = entry.get("name")
@@ -333,7 +339,8 @@ def read_release(directory, image_id=None):
 
 
 def push(args):
-    manifest, manifest_bytes, signature, image, entry, data = read_release(args.release, args.image)
+    use = "ota" if args.which == "self" else "swd"
+    manifest, manifest_bytes, signature, image, entry, data = read_release(args.release, args.image, use)
     print("release %s %s, %s: %s, %d bytes, sha256 %s"
           % (manifest.get("product"), manifest.get("version"), image.get("id"),
              entry.get("name"), len(data), entry.get("sha256")[:16] + "..."))
@@ -344,9 +351,12 @@ def push(args):
         transport = SerialPort(args.port)
     transfer = Transfer(transport, verbose=not args.quiet)
     try:
-        line = "image receive %s" % args.which
-        if args.slot:
-            line += " @%d" % args.slot
+        if args.which == "self":
+            line = "self receive"
+        else:
+            line = "image receive %s" % args.which
+            if args.slot:
+                line += " @%d" % args.slot
         transfer.send_line(line)
         transfer.say("sent: %s" % line)
         hello = transfer.hello()
@@ -359,6 +369,11 @@ def push(args):
         status, _, _, text = commit(transfer)
         if status != ST_DONE:
             raise Fault("the Walter did not store it: %s" % text)
+        if args.which == "self":
+            print("stored in the Walter's other application slot: %d of %d bytes sent, %s"
+                  % (sent, len(data), text))
+            print("`self status` on the console shows it; `self switch` makes it the next to boot")
+            return 0
         print("stored as the %s image%s: %d of %d bytes sent, %s"
               % (args.which, " of slot %d" % args.slot if args.slot else "", sent, len(data), text))
         print("`image list` on the console shows it; `image verify %s` reads it back out of flash"
@@ -391,8 +406,9 @@ def main(argv):
     p = sub.add_parser("push", help="send a release's image into the Walter's image store")
     p.add_argument("release", help="a release directory: manifest.json, its .sig, the image files")
     p.add_argument("--as", dest="which", required=True, choices=WHICH,
-                   help="which of the slot's three images to store it as")
-    p.add_argument("--image", help="the manifest image's id, when it has more than one swd file")
+                   help="which of the slot's three images to store it as; `self` for the Walter's own "
+                        "ota image, into its other application slot")
+    p.add_argument("--image", help="the manifest image's id, when it has more than one file of the use")
     p.add_argument("--slot", type=int, default=0, help="the radio's position (0 today)")
     where = p.add_mutually_exclusive_group(required=True)
     where.add_argument("--port", help="the Walter's USB serial port (COM7, /dev/ttyACM0)")

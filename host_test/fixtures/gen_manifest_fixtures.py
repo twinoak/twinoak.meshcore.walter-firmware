@@ -341,6 +341,54 @@ def main(argv):
     store_image("update-candidate", 4096, "one page: the candidate of the update tests",
                 version="0.3.1+candid0", seed=88)
 
+    # ---- the Walter's own images (task p2-04) ---------------------------------------------------
+    # An `ota` file of this firmware's own product - role manager, board walter, band lte-m - with
+    # a descriptor that agrees with a manifest of its own, derived from the spec's walter manifest.
+    # The self-update's rules the tests hold these to: the file fits the other slot (the fake's
+    # slots are 64 KB), its load_address is an application slot's offset (ota_0's, 0x10000, as the
+    # release tooling writes it), and S-7's "speaks both majors": an image whose link.major is not
+    # the radio's is let in only if requires.link_major names the radio's.
+    walter = json.loads(read(fixtures, "manifest-walter.json"))
+
+    def walter_image(name, size, about, version, link_major=1, requires_link_major=1,
+                     load_address=0x10000, seed=1):
+        desc = manifestref.make_descriptor("manager", version, "walter", "lte-m", link_major, 0)
+        blob = manifestref.fake_image(desc, size, 0x400 if size > 0x400 + 96 else 0, seed)
+        m = json.loads(json.dumps(walter))
+        m["version"] = version
+        m["tag"] = "v" + version.split("+")[0]
+        m["link"]["major"] = link_major
+        img = m["images"][0]
+        if requires_link_major is None:
+            img.pop("requires", None)
+        else:
+            img["requires"] = {"link_major": requires_link_major}
+        for f in img["files"]:
+            f["name"] = "twinoak-walter-%s.%s" % (name, f["format"])
+            if f["use"] == "ota":
+                f["size"] = len(blob)
+                f["sha256"] = hashlib.sha256(blob).hexdigest()
+                f["load_address"] = "0x%08X" % load_address
+        manifestref.validate(m)
+        write(name + ".bin", blob)
+        signed(name, manifestref.canonical(m), about, name + ".bin", False)
+        store_images.append((name, name + ".json", name + ".json.sig", name + ".bin", len(blob),
+                             "manager", version, "lte-m", about))
+
+    walter_image("self-a", 3 * 4096, "the Walter's own image: three pages, link 1", "0.4.0+w1", seed=101)
+    walter_image("self-b", 2 * 4096 + 100, "another, an odd size, no requires", "0.4.1+w2",
+                 requires_link_major=None, seed=102)
+    walter_image("self-link2-both", 2 * 4096, "speaks link major 2 and says it tolerates 1: allowed (S-7)",
+                 "0.5.0+w3", link_major=2, requires_link_major=1, seed=103)
+    walter_image("self-link2-only", 2 * 4096, "speaks link major 2 and requires 2: refused at check 3",
+                 "0.5.0+w4", link_major=2, requires_link_major=2, seed=104)
+    walter_image("self-link2-silent", 2 * 4096, "speaks link major 2 and says nothing of 1: refused by the self-update",
+                 "0.5.0+w5", link_major=2, requires_link_major=None, seed=105)
+    walter_image("self-big", 70000, "larger than the fake's 64 KB slot: refused as too large", "0.4.2+w6",
+                 seed=106)
+    walter_image("self-other-slot", 3 * 4096, "load_address ota_1's: allowed (either slot's offset is)",
+                 "0.4.3+w7", load_address=0x310000, seed=107)
+
     rfc = index["rfc8032_test_1"]
     text = HEADER % {
         "test_public_key": c_string(index["test_public_key"]),

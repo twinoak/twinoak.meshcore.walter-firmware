@@ -72,6 +72,21 @@
 //   rak update status     the journal's story of the last update, in words
 //   rak role scanner      flash the stored scanner image; prove that a scanner is there
 //   rak role repeater     flash the golden image back and prove it
+//
+// and the Walter's own update (task p2-04; docs/update.md). Not `rak` lines: they are about this
+// board's two application slots, and take no slot:
+//
+//   self status           the running slot and its state, the other slot's, the trial if one is
+//                         running, the last self-update's story from the journal
+//   self receive          take a release of this firmware over this port, into the other slot,
+//                         through the six checks (tools/walterctl.py push --as self)
+//   self switch [radio-down]
+//                         make the received image the next to boot, tell the radio, restart;
+//                         `radio-down` says the radio is known to be down, so the trial's second
+//                         condition does not apply
+//   self confirm          end a trial early: the running image is valid (the bench)
+//   self reject           end a trial early: the running image is rejected and the board
+//                         restarts into the old one (the bench)
 #pragma once
 
 #include <cstddef>
@@ -124,6 +139,12 @@ enum class Verb : std::uint8_t {
   kRakUpdateStatus,
   kRakRoleScanner,
   kRakRoleRepeater,
+  // The Walter's own update (task p2-04).
+  kSelfStatus,
+  kSelfReceive,
+  kSelfSwitch,
+  kSelfConfirm,
+  kSelfReject,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.
@@ -146,6 +167,7 @@ struct Command {
   // 1 candidate, 2 scanner). A number and not the type so that this header stays the small thing
   // it is; parser.cpp holds it to core/image/store.h's own names.
   std::uint8_t which = 0;
+  bool radio_down = false;                // kSelfSwitch: the radio is known to be down
 };
 
 // The longest line the console accepts, without its line ending (the agent firmware's figure).

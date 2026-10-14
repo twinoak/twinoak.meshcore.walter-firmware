@@ -41,7 +41,9 @@ enum class WakeCause : std::uint8_t {
 // instead of only "software reset". Later tasks add their own; the numbers are stored.
 enum class Restart : std::uint8_t {
   kNotRequested = 0,
-  kConsole = 1,  // `reboot`
+  kConsole = 1,             // `reboot`
+  kSelfUpdateSwitch = 2,    // the Walter's own update: restarting into the other slot (task p2-04)
+  kSelfUpdateRollback = 3,  // the Walter's own update: the trial image rejected itself
 };
 
 const char* name(ResetReason reason);

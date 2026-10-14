@@ -29,19 +29,19 @@ std::uint32_t get32(const std::uint8_t* p) {
          (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
 }
 
+// A StoreError as the transfer's sentence: nullptr for "none".
+const char* said(StoreError error) { return error == StoreError::kNone ? nullptr : describe(error); }
+
 }  // namespace
 
-bool Receiver::begin(Which which, board::Slot slot) {
-  if (active()) {
-    reason_ = "a transfer is already running";
-    return false;
-  }
+// ------------------------------------------------------------------------- the store as a target
+
+bool StoreTarget::begin(Which which, board::Slot slot) {
   const flasher::BoardProfile* profile = flasher::profileForSlot(slot);
   if (profile == nullptr) {
     reason_ = "this adapter has no radio in that slot";
     return false;
   }
-  stored_ = false;
   which_ = which;
   slot_ = slot;
 
@@ -62,7 +62,57 @@ bool Receiver::begin(Which which, board::Slot slot) {
   needs_.role = roleFor(which);
   needs_.board = profile->name;
   needs_.band = band_;
+  reason_ = "";
+  return true;
+}
 
+const char* StoreTarget::beginWrite(const ExpectedFile& expected) {
+  return said(store_.beginWrite(which_, slot_, expected));
+}
+
+const char* StoreTarget::write(const std::uint8_t* data, std::uint32_t size) {
+  return said(store_.write(data, size));
+}
+
+const char* StoreTarget::endWrite() { return said(store_.endWrite()); }
+
+const flasher::ImageSource* StoreTarget::staged(const char** why) {
+  const StoreError opened = store_.openStaged(&staged_);
+  if (opened != StoreError::kNone) {
+    *why = describe(opened);
+    return nullptr;
+  }
+  return &staged_;
+}
+
+const char* StoreTarget::commit(const AcceptedImage& token) { return said(store_.commit(token)); }
+
+// ------------------------------------------------------------------------------- the receiver
+
+bool Receiver::begin(Which which, board::Slot slot) {
+  if (active()) {
+    reason_ = "a transfer is already running";
+    return false;
+  }
+  if (!store_target_.begin(which, slot)) {
+    reason_ = store_target_.reason();
+    return false;
+  }
+  target_ = &store_target_;
+  return start();
+}
+
+bool Receiver::begin(TransferTarget& target) {
+  if (active()) {
+    reason_ = "a transfer is already running";
+    return false;
+  }
+  target_ = &target;
+  return start();
+}
+
+bool Receiver::start() {
+  stored_ = false;
   manifest_size_ = 0;
   manifest_promised_ = 0;
   manifest_done_ = false;
@@ -94,7 +144,7 @@ void Receiver::feed(const std::uint8_t* bytes, std::size_t count) {
 void Receiver::tick() {
   if (!active()) return;
   if (clock_.nowMs() - last_ms_ >= transfer::kIdleTimeoutMs) {
-    if (store_.writing()) store_.abandonWrite();
+    if (target_->writing()) target_->abandonWrite();
     finish("the other end went quiet: nothing stored", nullptr, false);
   }
 }
@@ -104,7 +154,7 @@ void Receiver::respond(std::uint8_t type, std::uint8_t seq, std::uint8_t status,
   std::uint8_t payload[link::kMaxPayload];
   payload[0] = status;
   payload[1] = expect_seq_;
-  put32(payload + 2, store_.writing() ? store_.written() : 0);
+  put32(payload + 2, target_->writing() ? target_->written() : 0);
   std::size_t size = 6;
   const char* parts[3] = {text, more != nullptr ? ": " : nullptr, more};
   for (std::size_t p = 0; p < 3; ++p) {
@@ -127,7 +177,7 @@ void Receiver::respond(std::uint8_t type, std::uint8_t seq, std::uint8_t status,
 }
 
 void Receiver::refuse(std::uint8_t type, std::uint8_t seq, const char* text, const char* more) {
-  if (store_.writing()) store_.abandonWrite();
+  if (target_->writing()) target_->abandonWrite();
   respond(type, seq, transfer::kRefused, text, more);
   finish(text, more, false);
 }
@@ -145,14 +195,14 @@ void Receiver::handle(const link::Packet& packet) {
       // What this is and what it is about to take, so that a laptop speaking another version of
       // this protocol is told rather than left to guess. walterctl holds the text to what it
       // knows and stops if it does not recognise it (tools/walterctl.py).
-      respond(packet.type, packet.seq, transfer::kOk, "walter image receive 1", name(which_));
+      respond(packet.type, packet.seq, transfer::kOk, "walter image receive 1", target_->name());
       return;
     case transfer::kFile: onFile(packet); return;
     case transfer::kData: onData(packet); return;
     case transfer::kEnd: onEnd(packet); return;
     case transfer::kCommit: onCommit(packet); return;
     case transfer::kAbort:
-      if (store_.writing()) store_.abandonWrite();
+      if (target_->writing()) target_->abandonWrite();
       respond(packet.type, packet.seq, transfer::kOk, "aborted");
       finish("the other end aborted: nothing stored", nullptr, false);
       return;
@@ -201,7 +251,7 @@ void Receiver::onFile(const link::Packet& packet) {
     // The same file announced again: the first answer was lost, not the question. Saying how many
     // bytes are in flash and letting the chunks start over is the whole of what is needed - a
     // write that is already open is not reopened (the store would refuse a second one).
-    if (store_.writing() && store_.expectedSize() == size) {
+    if (target_->writing() && target_->expectedSize() == size) {
       phase_ = Phase::kImage;
       respond(packet.type, packet.seq, transfer::kOk, "image, already open");
       return;
@@ -209,8 +259,8 @@ void Receiver::onFile(const link::Packet& packet) {
     // Here the six checks begin: the first three (and the half of the sixth that needs no file)
     // over the manifest and its signature, before one byte of the image is let near the flash.
     const Outcome outcome = verdict_.judgeManifest(
-        manifest_, manifest_size_, signature_, signature_size_, needs_, Use::kSwd,
-        flasher::profileForSlot(slot_));
+        manifest_, manifest_size_, signature_, signature_size_, target_->needs(), target_->use(),
+        target_->profile());
     if (!outcome.ok()) {
       // The check's number and its sentence, the same words the console prints.
       refuse(packet.type, packet.seq, describe(outcome.failed), outcome.why);
@@ -225,9 +275,9 @@ void Receiver::onFile(const link::Packet& packet) {
       refuse(packet.type, packet.seq, "that is not the size the manifest gives for this file");
       return;
     }
-    const StoreError opened = store_.beginWrite(which_, slot_, *expected);
-    if (opened != StoreError::kNone) {
-      refuse(packet.type, packet.seq, describe(opened));
+    const char* opened = target_->beginWrite(*expected);
+    if (opened != nullptr) {
+      refuse(packet.type, packet.seq, opened);
       return;
     }
     phase_ = Phase::kImage;
@@ -279,9 +329,9 @@ void Receiver::onData(const link::Packet& packet) {
       signature_size_ += size;
       break;
     case Phase::kImage: {
-      const StoreError wrote = store_.write(data, static_cast<std::uint32_t>(size));
-      if (wrote != StoreError::kNone) {
-        refuse(packet.type, packet.seq, describe(wrote));
+      const char* wrote = target_->write(data, static_cast<std::uint32_t>(size));
+      if (wrote != nullptr) {
+        refuse(packet.type, packet.seq, wrote);
         return;
       }
       break;
@@ -314,19 +364,18 @@ void Receiver::onEnd(const link::Packet& packet) {
       respond(packet.type, packet.seq, transfer::kOk, "signature in");
       return;
     case Phase::kImage: {
-      if (!store_.writing()) {
+      if (!target_->writing()) {
         refuse(packet.type, packet.seq, "no image is being written");
         return;
       }
-      // The file is complete: the tail of the last sector goes to flash, and the store says so
-      // if fewer bytes arrived than the manifest promised.
-      const StoreError ended = store_.endWrite();
-      if (ended != StoreError::kNone) {
-        refuse(packet.type, packet.seq, "the image is not the length the manifest gives",
-               describe(ended));
+      // The file is complete: the tail goes to flash, and the target says so if fewer bytes
+      // arrived than the manifest promised.
+      const char* ended = target_->endWrite();
+      if (ended != nullptr) {
+        refuse(packet.type, packet.seq, "the image is not the length the manifest gives", ended);
         return;
       }
-      if (store_.written() != image_promised_) {
+      if (target_->written() != image_promised_) {
         refuse(packet.type, packet.seq, "the image is not the length it was announced as");
         return;
       }
@@ -341,20 +390,20 @@ void Receiver::onEnd(const link::Packet& packet) {
 }
 
 void Receiver::onCommit(const link::Packet& packet) {
-  if (phase_ != Phase::kJudged || !store_.writing()) {
+  if (phase_ != Phase::kJudged || !target_->writing()) {
     refuse(packet.type, packet.seq, "the three files are not all in");
     return;
   }
   // Checks 4, 5 and the rest of 6, over the bytes **as they are in the Walter's flash** - not
   // over what arrived on the wire. A file whose hash is not the manifest's is refused here with
   // nothing stored: the record is never written, so the slot stays as it was.
-  StoredImage staged;
-  const StoreError opened = store_.openStaged(&staged);
-  if (opened != StoreError::kNone) {
-    refuse(packet.type, packet.seq, describe(opened));
+  const char* why = "";
+  const flasher::ImageSource* staged = target_->staged(&why);
+  if (staged == nullptr) {
+    refuse(packet.type, packet.seq, why);
     return;
   }
-  const Outcome outcome = verdict_.judgeFile(staged);
+  const Outcome outcome = verdict_.judgeFile(*staged);
   if (!outcome.ok()) {
     refuse(packet.type, packet.seq, describe(outcome.failed), outcome.why);
     return;
@@ -364,9 +413,9 @@ void Receiver::onCommit(const link::Packet& packet) {
     refuse(packet.type, packet.seq, "the verdict gave no token");
     return;
   }
-  const StoreError committed = store_.commit(*token);
-  if (committed != StoreError::kNone) {
-    refuse(packet.type, packet.seq, describe(committed));
+  const char* committed = target_->commit(*token);
+  if (committed != nullptr) {
+    refuse(packet.type, packet.seq, committed);
     return;
   }
   respond(packet.type, packet.seq, transfer::kDone, "stored");

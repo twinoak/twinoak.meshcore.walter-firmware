@@ -21,6 +21,7 @@
 #include "core/link/client/client.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
+#include "core/update/self_update.h"
 #include "interfaces/clock.h"
 #include "interfaces/restart.h"
 #include "interfaces/text_out.h"
@@ -34,16 +35,19 @@ class Console {
   // build can be without them: platform::FlashPartition::begin() fails when the partition table
   // has no `rakfw`, and main/ then hands over nothing rather than a store over a region that is
   // not there. The `image ...` commands say so in one line instead of pretending. The radio's
-  // update and its journal (task p2-03) are the same: no `journal` partition, no update.
+  // update and its journal (task p2-03) are the same: no `journal` partition, no update; and the
+  // Walter's own update (task p2-04) needs both the store (its bad list) and the journal.
   Console(interfaces::TextOut& out, board::RadioPins& pins, health::Health& health,
           interfaces::Clock& clock, interfaces::Restart& restart, link::client::Client& radio,
           board::SlotLock& slots, image::Store* images = nullptr,
           image::Receiver* receiver = nullptr, update::RadioUpdate* update = nullptr,
-          update::Journal* journal = nullptr);
+          update::Journal* journal = nullptr, update::SelfUpdate* self = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
-  // resume() here, and tick() then drives it a step at a time, printing each transition.
+  // resume() here, and tick() then drives it a step at a time, printing each transition. And
+  // where the Walter's own update learns what this boot is (task p2-04): a trial, which tick()
+  // then runs, or a rollback to record.
   void begin();
 
   // One byte from the port. While a transfer is running (`image receive`) the bytes go to it
@@ -51,7 +55,8 @@ class Console {
   void feed(char c);
 
   // Called when no byte arrived: a transfer whose other end has gone away is ended here, so that
-  // a Walter whose cable was pulled mid-transfer does not sit mute for ever.
+  // a Walter whose cable was pulled mid-transfer does not sit mute for ever. The first call is
+  // the main loop turning - the trial's first condition - and every call steps a trial.
   void tick();
 
   // One whole line, as if typed and ended. What feed() calls; tests call it directly.
@@ -127,6 +132,18 @@ class Console {
   void printUpdateOutcome();
   void printUpdateEntry(std::size_t number, const update::Entry& entry, const update::Payload& p);
 
+  // The Walter's own update (task p2-04).
+  bool selfOk();  // false, with one error line, when this build has no self-update
+  void selfStatus();
+  void selfReceive();
+  void selfSwitch(bool radio_down);
+  void selfConfirm();
+  void selfReject();
+  void printSelfBoot(update::SelfBoot boot);
+  void printSelfStep(const update::SelfStep& s);
+  void printSelfEntry(std::size_t number, const update::Entry& entry, const update::SelfPayload& p);
+  void printSlot(const char* label, const interfaces::OwnSlot& slot);
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
@@ -138,7 +155,9 @@ class Console {
   image::Receiver* receiver_ = nullptr;
   update::RadioUpdate* update_ = nullptr;
   update::Journal* journal_ = nullptr;
+  update::SelfUpdate* self_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
+  bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.

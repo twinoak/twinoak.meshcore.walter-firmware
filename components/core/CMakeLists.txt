@@ -48,6 +48,8 @@ idf_component_register(
        "update/journal.cpp"
        "update/link_battery.cpp"
        "update/radio_update.cpp"
+       # The Walter's own update (task p2-04): the other slot as a transfer target, the trial.
+       "update/self_update.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

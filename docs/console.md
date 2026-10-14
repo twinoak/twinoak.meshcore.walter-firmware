@@ -16,7 +16,7 @@ makes it whole.
 
 ```
 twinoak-walter 0.0.0-dev
-running from ota_0 at 0x010000 (3072 KB), ota state undefined (flashed over USB, not by an update; rollback does not apply)
+running from ota_0 at 0x010000 (3072 KB), ota state valid
 image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.0
 image store: rakfw at 0x630000 (6144 KB), 4923392 bytes laid out for 2 radio slots x 3 images; 'image list' says what is in it
 link: UART1 115200 8N1 on the radio's two pins, open
@@ -27,7 +27,11 @@ type 'help' for the commands
 ```
 
 Before the first line, the seven radio-facing pins have already been put in the safe state:
-constructing `RadioPins` is the first thing `app_main` does.
+constructing `RadioPins` is the first thing `app_main` does. The ota state is `valid` on a factory
+image from its first boot (the bootloader writes `ota_0`'s entry itself when the OTA data is blank;
+task p2-04 read the code and `docs/bench.md` §1 says what to expect), `pending-verify` on the
+first boot of an image an update switched to - then a `self-update: … is on trial` line follows
+the journal's - and the boot's `software reset` line names a self-update's restart.
 
 ## Commands
 
@@ -46,6 +50,11 @@ constructing `RadioPins` is the first thing `app_main` does.
 | `image erase <candidate\|scanner>` | invalidate that slot's record and clear its header sector, so the slot reads empty and a half-finished transfer is not resumed into the next image. **Never the golden image** (S-5: a known-good image is always on hand), and the refusal says so |
 | `image bad` | the hashes of candidates that failed their health check (task p2-03), up to eight; an image on this list is refused before a sector is erased |
 | `image receive <which>` | hand this port over to a framed binary transfer and take `manifest.json`, then its `.sig`, then the image — see below |
+| `self status` | (task p2-04) this Walter's two application slots — which runs, at what address, in which of the bootloader's states (*valid*, *pending-verify*, *aborted* …), which version — then the trial if one is running (how far into the window, which of the three conditions are met), the image received and waiting for `self switch` if any, and the last self-update's story from the journal. See *The Walter's own update* |
+| `self receive` | hand this port over to the same transfer as `image receive`, with the other application slot as its target: a release of **this** firmware's `ota` file, through the six checks (`tools/walterctl.py push --as self`) |
+| `self switch [radio-down]` | make the received image the next to boot: the preconditions, the journal's *switching* entry, the boot pointer, `SLEEP_NOTICE` to the radio, restart. Does not come back. `radio-down` says the radio is known to be down, so the trial's second condition does not apply |
+| `self confirm` | end the running image's trial early: valid (the bench) |
+| `self reject` | end it early: rejected, on the bad list, restart into the previous image (the bench) |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command or
 subcommand, an argument where none is taken, a missing or non-numeric duration, a line over 200
@@ -228,6 +237,27 @@ then for the proving period (minutes). All four take the slot in front (`rak @0 
 At boot, a run the journal says did not end is announced - `update: the journal says a run was in
 progress (update); resuming at flashing-candidate` - and driven from the main loop one step a turn,
 each transition printed; `rak update` meanwhile answers *an update is already running*.
+
+## The Walter's own update
+
+From task p2-04 (`docs/update.md`, *The Walter's half*). Not `rak` lines: they are about this
+board's two application slots and take no slot.
+
+| Command | What it does |
+|---|---|
+| `self status` | `running: slot 1 at 0x310000 (3072 KB): valid (confirmed), version 0.4.0+w1` and the same for the other slot; then `on trial for 42 s of 300: main loop met; radio met (1 HELLO); uplink failed, trying again (2 attempts)` while a trial runs, or `the running image is confirmed` (or the bootloader's word for its state); then `received: <version> in slot N (<bytes>), waiting for 'self switch'` when an image is; then `the last self-update's story (N entries):` with one line per journal entry — *received*, *switching to … from …*, *on trial*, *confirmed*, *rolled back: <reason>*. On a fresh unit: `self status: no self-update has been journalled on this unit` |
+| `self receive` | `self receive: this Walter's other application slot (1); this port is now a framed binary transfer` and what will be accepted (role manager, board walter, band lte-m, an ota file that fits the slot); the transfer ends with `self receive: stored` or `self receive: <refusal>`. Refused in one `error:` line when the running image is on trial, a radio update is in progress (S-7) or a transfer is open |
+| `self switch [radio-down]` | `self switch: making <version> (slot N) the next to boot, from <version>; the radio is told and the Walter restarts`, then the restart. Refused in one `error:` line for the battery, a radio update in progress, the running image unconfirmed, nothing received, the other slot changed, or the radio silent without `radio-down` |
+| `self confirm` | `self confirm: the running image is confirmed (valid); the trial is over` |
+| `self reject` | `self reject: the running image is rejected; restarting into the previous image` |
+
+At boot, a trial announces itself - `self-update: this image (0.4.0, slot 1) is on trial: 300 s to
+reach the main loop, HELLO the radio and reach the backend, or it is rolled back` - and is run from
+the main loop; its end is one line, `self-update: on trial -> confirmed: all three conditions hold:
+confirmed` or `self-update: on trial -> rolled back: <reason>`. The old image, back after a trial
+that a reset cut short, says `self-update: rolled back: <reason>` and that the image is on the bad
+list. `reboots` names both restarts: *the Walter's own update, switching to the other slot* and
+*the Walter's own update, the trial image rejected itself*.
 
 ## The radio's power, as `status` says it
 

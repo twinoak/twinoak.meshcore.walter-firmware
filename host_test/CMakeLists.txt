@@ -165,6 +165,6 @@ set_tests_properties(core_tests PROPERTIES
 # walterctl pushing the specification's fixture release into that console, and the refusals it and
 # the Walter answer with (tools/test_walterctl.py).
 add_test(NAME walterctl COMMAND ${PYTHON3} ${REPO}/tools/test_walterctl.py
-         --console $<TARGET_FILE:walter_console>)
+         --console $<TARGET_FILE:walter_console> --generated ${MANIFEST_FIXTURE_DIR})
 set_tests_properties(walterctl PROPERTIES
   ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")

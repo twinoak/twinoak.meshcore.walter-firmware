@@ -225,15 +225,19 @@ struct Payload {
 void encode(const Payload& payload, std::uint8_t out[kPayloadBytes]);
 bool decode(const Entry& entry, Payload* out);  // false unless the entry is a radio-update entry
 
-// -- what the Walter's own update writes (task p2-04 fills the rest) ------------------------------
+// -- what the Walter's own update writes (task p2-04, core/update/self_update.h) ------------------
 //
 // S-7: the machine refuses to start while the Walter's own update is journalled as unconfirmed.
-// Byte 0 of a kind::kSelfUpdate entry's payload is its state; these three values are what this
-// machine reads, and task p2-04 keeps them.
+// Byte 0 of a kind::kSelfUpdate entry's payload is its state; the values are shared here so that
+// this machine and the self-update cannot disagree about which of them mean "unconfirmed".
 namespace self_update {
-constexpr std::uint8_t kSwitching = 1;   // a new image was made the next to boot: on trial
-constexpr std::uint8_t kConfirmed = 2;
-constexpr std::uint8_t kRolledBack = 3;
+constexpr std::uint8_t kReceived = 1;    // an image passed the six checks into the other slot
+constexpr std::uint8_t kSwitching = 2;   // the other slot was made the next to boot: a trial begins at the restart
+constexpr std::uint8_t kOnTrial = 3;     // the new image booted pending-verify and is running its trial
+constexpr std::uint8_t kConfirmed = 4;
+constexpr std::uint8_t kRolledBack = 5;
+// Switching and on trial: the Walter's own update is in the air, and the radio's must wait.
+inline bool unconfirmed(std::uint8_t state) { return state == kSwitching || state == kOnTrial; }
 }  // namespace self_update
 
 // -- the machine's answer to one step ----------------------------------------------------------
