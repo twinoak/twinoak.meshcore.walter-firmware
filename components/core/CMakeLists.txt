@@ -82,6 +82,11 @@ idf_component_register(
        "cycle/wake_guard.cpp"
        "cycle/sleep.cpp"
        "cycle/duty_cycle.cpp"
+       # The wake cycle (task p3-05): the time of day once the network has given one, the
+       # readings kept until somebody takes them, and the one pass over everything above.
+       "cycle/network_clock.cpp"
+       "cycle/telemetry_ring.cpp"
+       "cycle/wake_cycle.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

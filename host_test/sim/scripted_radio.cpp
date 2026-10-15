@@ -228,6 +228,33 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
         // after the status byte: proto_major, proto_minor, role, slot, max_payload, caps, boot_id.
         payload = helloBody(payload, 1);
       }
+      // §5.4: the clock this radio holds. A TIME_SET that is answered OK sets it; STATUS and
+      // TIME_GET then report it until the radio restarts (no RTC is fitted).
+      if (type == link::type::kTimeSet && keeps_clock && packet.payload.size >= 6) {
+        clock_epoch_ = static_cast<std::uint32_t>(packet.payload.data[0]) |
+                       (static_cast<std::uint32_t>(packet.payload.data[1]) << 8) |
+                       (static_cast<std::uint32_t>(packet.payload.data[2]) << 16) |
+                       (static_cast<std::uint32_t>(packet.payload.data[3]) << 24);
+        clock_at_ms_ = clock_.nowMs();
+        clock_set_ = true;
+      }
+      if (type == link::type::kStatus && clock_set_ && payload.size() >= 11) {
+        // §5.3's body after the status byte: uptime_s u32, reset_reason u8, time_state u8,
+        // epoch u32 - so time_state is at offset 6 and the epoch at 7.
+        payload[6] = link::time_state::kSet;
+        const std::uint32_t now = clockEpoch();
+        for (std::size_t b = 0; b < 4; ++b) {
+          payload[7 + b] = static_cast<std::uint8_t>(now >> (8 * b));
+        }
+      }
+      if (type == link::type::kTimeGet && clock_set_ && payload.size() >= 6) {
+        // §5.4's TIME_GET body after the status byte: epoch u32, time_state u8.
+        const std::uint32_t now = clockEpoch();
+        for (std::size_t b = 0; b < 4; ++b) {
+          payload[1 + b] = static_cast<std::uint8_t>(now >> (8 * b));
+        }
+        payload[5] = link::time_state::kSet;
+      }
       if (type == link::type::kStatus && override_status_flags && payload.size() >= 13) {
         // §5.3's body after the status byte: uptime_s u32, reset_reason u8, time_state u8,
         // epoch u32, flags u16 - so flags is at offset 11.
@@ -350,10 +377,18 @@ void ScriptedRadio::forgetPending() {
   line_.clear();
 }
 
+std::uint32_t ScriptedRadio::clockEpoch() const {
+  if (!clock_set_) return 0;
+  return clock_epoch_ + static_cast<std::uint32_t>((clock_.nowMs() - clock_at_ms_) / 1000u);
+}
+
 void ScriptedRadio::restart(bool announce) {
   boot_id = boot_id * 2654435761u + 1u;  // any new number will do
   event_seq = 0;
   remembered_ = false;
+  // §5.4: no RTC is fitted, so the clock is gone and the Walter has to set it again.
+  clock_set_ = false;
+  clock_epoch_ = 0;
   receiver_.discardPartial();
   collected_.clear();
   if (announce) {

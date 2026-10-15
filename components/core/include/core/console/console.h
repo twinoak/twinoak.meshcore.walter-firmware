@@ -24,6 +24,7 @@
 #include "core/console/log_ring.h"
 #include "core/console/parser.h"
 #include "core/cycle/duty_cycle.h"
+#include "core/cycle/wake_cycle.h"
 #include "core/settings/settings.h"
 #include "core/flasher/flasher.h"
 #include "core/health/health.h"
@@ -74,7 +75,11 @@ class Console {
           // `stay`. A pointer like the rest: a build without it answers in one line. **It is
           // the only thing in this firmware that sleeps**, and the console is the only thing
           // that drives it until the wake cycle exists (task p3-05).
-          cycle::DutyCycle* duty = nullptr);
+          cycle::DutyCycle* duty = nullptr,
+          // One whole wake (task p3-05): `cycle now` and `cycle dry`. A pointer like the rest;
+          // a build without it answers in one line. **The wake cycle is what reaches sleep by
+          // itself**, and with a USB host on the port the console runs beside it.
+          cycle::WakeCycle* cycle = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -214,6 +219,14 @@ class Console {
   void fetch(const char* base_url, image::Which which);
   void trustTls();
 
+  // One whole wake (task p3-05).
+  bool cycleOk();  // false, with one error line, when this build has no wake cycle
+  void cycleNow();
+  void cycleDry();
+  void printPass(const cycle::Pass& pass);
+  void printWakeEntry(std::size_t number, const update::Entry& entry,
+                      const cycle::WakePayload& p);
+
   // The duty cycle (task p3-04).
   bool dutyOk();  // false, with one error line, when this build has no duty cycle
   void wake();
@@ -263,6 +276,7 @@ class Console {
   settings::Settings* settings_ = nullptr;
   update::UplinkCheck* server_ = nullptr;
   cycle::DutyCycle* duty_ = nullptr;
+  cycle::WakeCycle* cycle_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about

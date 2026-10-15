@@ -909,3 +909,51 @@ repeater's own console, and a battery you can charge and discharge.
       `wake.interval auto`, then read `wake` (the last ten wakes and their durations), `power`
       (the band and the readings) and `journal` (the band changes). What a day cost the pack is
       the difference between the first and the last `rak power`.
+
+## 15. A day
+
+From task p3-05 (`docs/cycle.md`; `docs/console.md`, *One whole wake*). Needs §14 walked, a SIM
+(§11) and a provisioned unit (§13). This is the section that turns a firmware whose every wake has
+been simulated into one that has actually spent a day looking after a radio.
+
+The task's own list names this section §14; that number is the sleep's (p3-04), so it is §15 — as
+§14 is p3-04's own renumbering of §13, and so on back to §11.
+
+- [ ] **`cycle dry` with the cable in.** Before anything is left alone: `cycle dry` and read the
+      ten steps. Every one should say what it would do and what it is allowed to spend; the
+      preconditions should match what the unit is (a radio that answers, a band, a backoff). The
+      last lines are the seam: `the backend: nothing to do` is this firmware being honest — there
+      is nobody to report to (`spec/SYSTEM.md` §8).
+- [ ] **`cycle now` with the cable in, once.** It runs one whole wake and **ends in deep sleep**,
+      so the port goes quiet: that is the command working. Press reset to come back, then `wake`
+      (the wake before this one, its reason and how long it lasted) and `journal` (the wake's
+      record, if it had news). If it comes back *without* sleeping, the last line says why and
+      that is a finding.
+- [ ] **A day alone.** `set wake.interval 15`, pull the cable, and leave the unit on the battery
+      and the panel for 24 hours. Then: `journal` shows one line per wake **that had news** and
+      not 96 of them — a quiet day may be two or three lines, which is the design
+      (`docs/cycle.md`, *What is journalled*); `wake` shows the last ten wakes, all of them having
+      reached sleep; `rak status` shows the RAK's **uptime at a day** and its clock right, which
+      together are the whole point: the Walter woke 96 times, set the clock each time, and never
+      once reset the radio.
+- [ ] **The letters.** Read one wake's record and check each letter against what the unit was
+      doing: a day with coverage should be `yy-yyyy--y` or so, and any `x`, `r` or `t` should have a
+      reason you can find in `journal` or `rak watch`.
+- [ ] **Cover the panel (or lower a bench supply) until the band changes.** The interval follows
+      (`power` says which band and what it allows), and in `critical` **the modem is not used at
+      all** — `lte` should show no attempt in that wake and the wake record's uplink letter should
+      be `s`, not `x`. Uncover it and watch the band come back up with the hysteresis holding.
+- [ ] **A radio that goes quiet, for a whole wake.** Pull the RAK's nRESET to ground (§2's own
+      item) and let a timer wake happen: the wake record should show the radio `silent`, the
+      ladder climbed, and **the uplink still used** — that is the one thing a unit on a mast must
+      do when its radio dies. `rak watch` has the incident and the day's counts; the counts must
+      be inside the caps.
+- [ ] **A wake that overruns.** With the cable out, make a step hang — the easiest is a SIM pulled
+      half out, so the modem answers and the card does not. The wake should end in a reset inside
+      five minutes; `reboots` then says *the wake did not reach sleep inside its bound*, and the
+      next sleep should be **longer** and not shorter.
+- [ ] **A day's energy, against the simulated figure.** The sessions' simulated month says
+      **421 seconds awake a day at 18 wakes a day** (`tasks/phase-3/reports/05.md`). With an
+      integrating meter in series: zero it, leave the unit for a day, and read the milliamp-hours.
+      That number against §14's "the energy of one whole wake" is what finally says whether the
+      interval table is right.

@@ -72,7 +72,8 @@ components/
                         p3-01: lte, lte up, lte down, lte time, lte id; task p3-02: http get,
                         fetch, trust tls; task p3-03: get, set, erase confirm, dump, journal,
                         and the word `confirm` on rak flash-test and a long rak kill; task p3-04:
-                        wake, power, sleep now, sleep <seconds>, stay)
+                        wake, power, sleep now, sleep <seconds>, stay; task p3-05: cycle now,
+                        cycle dry)
     cycle/              one wake, start to finish, against interfaces. Task p3-04: wake_reason.h
                         is what a wake *means* - the timer, §8's attention inside its repeat
                         window, a spurious wake and its rate limit, a person with a cable, a
@@ -80,7 +81,14 @@ components/
                         wake_guard.h is the bound on a wake (a wake that does not reach sleep is
                         ended by reset); sleep.h is **the one way out of a wake** - journal,
                         SLEEP_NOTICE, the modem down, the pads held, deep sleep - and
-                        duty_cycle.h composes the four. The wake itself is task p3-05's
+                        duty_cycle.h composes the four. Task p3-05: **wake_cycle.h is the wake
+                        itself** - the ten steps in order, each with a precondition that is data,
+                        a bound and an outcome that is written down (docs/cycle.md);
+                        telemetry_ring.h keeps the readings of every wake until somebody takes
+                        them; network_clock.h is the time of day once the network has given one,
+                        and the only thing that gives the radio a time of its own accord;
+                        null_backend.h is the backend that does nothing, which is this
+                        firmware's default
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
                         board, health and the supervisor hold a record each in), text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
@@ -94,7 +102,10 @@ components/
                         power cut, which is NVS on the board (task p3-03); and a sleeper -
                         arm the sources a sleep may be woken by, go into deep sleep (which does
                         not return: a wake is a boot), say which source woke this boot, and
-                        whether a USB host is on the port (task p3-04).
+                        whether a USB host is on the port (task p3-04); and **the backend** -
+                        one exchange of what this unit knows for a closed set of requests it
+                        already knows how to carry out, which is the seam the MeshMaster agent
+                        goes behind (task p3-05, docs/cycle.md; spec/SYSTEM.md §8).
                         ("hal/" when this file was written; ESP-IDF owns a component of
                         that name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
@@ -802,15 +813,46 @@ As built (task p3-04), the parts of that sequence that are not the wake itself:
 - **never awake indefinitely** — `core/cycle/wake_guard.h`: a wake that has not reached sleep in
   five minutes is ended by a reset, the next boot's record says who asked, and the next sleep is
   *lengthened* by the fault rather than shortened. A USB host and the console's `stay` hold it
-  off, and nothing else does. **Nothing arms it in this firmware yet**: there is no wake cycle to
-  reach sleep, so a bound would be a boot loop; `duty.guard().arm()` is task p3-05's one line.
+  off, and nothing else does. `main/` arms it once a boot (task p3-05) and the wake cycle is what
+  reaches sleep; two things may **raise** the bound for the wake in hand — a climb of the
+  supervisor's ladder and an update — and nothing can remove it.
 
 The modem library's own `sleep()` is not used: it arms the timer and nothing else, and it gives
 nothing a chance to hold a pad, write the journal or tell the radio first
 (`tasks/phase-3/reports/01.md`).
 
-**The backend is an interface.** In these piles its implementation does nothing. The MeshMaster
-agent goes behind it when the server side is decided (`spec/proposals/01` and `03`).
+**The wake itself** (task p3-05, `core/cycle/wake_cycle.h`, `docs/cycle.md`): ten steps in the
+order above, each with a name, a precondition, a time bound and an outcome that is written down.
+The preconditions are **data** — `kSteps` is the dependency table and a host test walks it — so
+"the clock was not set because the uplink did not come up" is a row and not a comment. A step that
+fails records why and the wake goes on to the next one that does not depend on it; a step whose
+dependency failed is *skipped*, which is a different word from *failed*. **Every wake ends in
+sleep**: step 10 depends on nothing, is never refused for want of time, and a wake that reaches it
+having done nothing else has still done the one thing that matters. One compact line per wake —
+reason, the radio's state, band, each step's outcome in a letter, the seconds awake, the next
+interval — goes to the console's log, and to the journal when the wake has news (the same
+arithmetic that keeps a sleep out of it, task p3-04).
+
+A wake's budget is two and a half minutes of *ordinary* steps; a climb and an update are outside
+it, each bounded by its own machine, because a wake that spent six minutes on a ladder must still
+be able to reach its uplink and say so. `main/` runs one pass when there is no USB host on the
+port and the console beside it when there is — `cycle now` and `cycle dry` are how a person sees
+what a mast does by itself.
+
+**The time of day** is `core/cycle/network_clock.h`, filled from the cellular network at step 6
+and given to the radio at step 7 (§5.4). It is believed only inside task p3-01's window, it is
+*not* carried across a sleep — the monotonic clock it is kept against restarts at zero, and a
+clock reconstructed over a counter that restarted is the one §5.4 warns about — and a person's
+`rak time set` does not go through it.
+
+**The backend is an interface** (`interfaces/backend.h`). In these piles its implementation does
+nothing (`core/cycle/null_backend.h`): what crosses the seam is a plain structure this firmware
+fills and a **closed set of requests it already knows how to carry out by itself** — fetch a
+release, run either update, change a non-secret setting, climb the ladder, nothing. Nothing there
+names a server, a URL path, a JSON field or a job, and the mesh client's calls are not used at all
+(a host test runs a simulated month of wakes and holds the radio to it). The MeshMaster agent goes
+behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/01` and `03`);
+`docs/cycle.md` has the page for whoever implements it.
 
 ## 11. Flash layout
 
@@ -863,5 +905,6 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
 | HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
+| the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §15): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
 | duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §14) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |

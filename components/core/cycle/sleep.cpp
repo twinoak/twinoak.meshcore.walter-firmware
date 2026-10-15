@@ -166,8 +166,8 @@ SleepResult Sleep::go(const power::Decision& decision, bool arm_radio_line, bool
 }
 
 SleepResult Sleep::goFor(std::uint32_t seconds, const power::Decision& decision,
-                         bool arm_radio_line) {
-  return sleepFor(seconds, decision, arm_radio_line, true);
+                         bool arm_radio_line, bool by_hand) {
+  return sleepFor(seconds, decision, arm_radio_line, by_hand);
 }
 
 SleepResult Sleep::sleepFor(std::uint32_t seconds, const power::Decision& decision,

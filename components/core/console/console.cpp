@@ -76,6 +76,9 @@ bool isRadioVerb(Verb verb) {
     case Verb::kSleepNow:
     case Verb::kSleepFor:
     case Verb::kStay:
+    // One whole wake (task p3-05): the whole unit's, not a radio's.
+    case Verb::kCycleNow:
+    case Verb::kCycleDry:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -116,11 +119,11 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::SelfUpdate* self, supervisor::Supervisor* supervisor,
                  uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
                  net::TrustLoader* trust, settings::Settings* settings,
-                 update::UplinkCheck* server, cycle::DutyCycle* duty)
+                 update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
-      trust_(trust), settings_(settings), server_(server), duty_(duty),
+      trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
       flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -337,9 +340,8 @@ bool Console::secretBeingTyped() const {
 
 void Console::tick() {
   // The duty cycle's bound on a wake (task p3-04): the sleeper is asked whether a host is on the
-  // port, and a wake that has overrun is ended by a reset. **It can only fire when somebody has
-  // armed it**, and in this firmware nothing does - the wake cycle (task p3-05) is what will -
-  // so today this keeps the USB answer up to date and nothing else.
+  // port, and a wake that has overrun is ended by a reset. `main/` arms it once a boot (task
+  // p3-05) and the wake cycle is what reaches sleep; a USB host and `stay` hold it off.
   if (duty_ != nullptr && duty_->tick()) {
     print("the wake did not reach sleep inside its bound: restarting\n");
     return;
@@ -455,6 +457,8 @@ void Console::runLine(const char* line) {
     case Verb::kSleepNow: sleepNow(); return;
     case Verb::kSleepFor: sleepFor(p.command.seconds); return;
     case Verb::kStay: stay(p.command.on); return;
+    case Verb::kCycleNow: cycleNow(); return;
+    case Verb::kCycleDry: cycleDry(); return;
   }
 }
 // One line of help, the usage in a column and the text wrapped after it. The table
@@ -2939,6 +2943,12 @@ void Console::printJournalEntry(std::size_t number, const update::Entry& entry) 
       printSleepEntry(number, entry, p);
       return;
     }
+    case update::kind::kWakeCycle: {
+      cycle::WakePayload p;
+      if (!cycle::decode(entry, &p)) break;
+      printWakeEntry(number, entry, p);
+      return;
+    }
     default: break;
   }
   printf("  %2lu. seq %lu: kind 0x%04x, %u byte(s) - nothing in this build reads it\n",
@@ -2982,6 +2992,86 @@ void Console::printSleepEntry(std::size_t number, const update::Entry& entry,
   if ((p.flags & cycle::kFlagBandChanged) != 0) print("; the band changed");
   if ((p.flags & cycle::kFlagOverridden) != 0) print("; wake.interval");
   if ((p.flags & cycle::kFlagByHand) != 0) print("; a person's command");
+  print("\n");
+}
+
+// -- one whole wake (task p3-05) ----------------------------------------------------------------
+
+bool Console::cycleOk() {
+  if (cycle_ != nullptr) return true;
+  print("error: this build has no wake cycle\n");
+  return false;
+}
+
+void Console::cycleNow() {
+  if (!cycleOk()) return;
+  print("one wake, the ten steps of docs/cycle.md in order; it ends in sleep and does not come "
+        "back\n");
+  printPass(cycle_->run());
+}
+
+void Console::cycleDry() {
+  if (!cycleOk()) return;
+  print("what a wake would do, doing none of it - nothing is sent and nothing is written\n");
+  printPass(cycle_->dry());
+}
+
+void Console::printPass(const cycle::Pass& pass) {
+  for (std::size_t i = 0; i < cycle::kStepCount; ++i) {
+    const cycle::Step step = static_cast<cycle::Step>(i);
+    const cycle::StepRecord& r = pass.step[i];
+    printf("  %2u %-8s %c %-26s %s", static_cast<unsigned>(i + 1), cycle::name(step),
+           cycle::letter(r.outcome), cycle::describe(r.outcome), r.why);
+    if (r.spent_ms != 0) printf(" (%lu ms)", static_cast<unsigned long>(r.spent_ms));
+    if (pass.dry && r.deadline_ms != 0) {
+      printf(" [up to %lu ms]", static_cast<unsigned long>(r.deadline_ms));
+    }
+    print("\n");
+  }
+  char line[200] = {};
+  (void)cycle::recordLine(pass, line, sizeof line);
+  printf("%s\n", line);
+  printf("the wake: %s; the budget %lu ms, %lu left, %lu outside it; the bound %lu ms\n",
+         cycle::describe(pass.ending), static_cast<unsigned long>(pass.budget_ms),
+         static_cast<unsigned long>(pass.left_ms), static_cast<unsigned long>(pass.outside_ms),
+         static_cast<unsigned long>(pass.bound_ms));
+  // The seam, and what it is: a person who types `cycle dry` on a unit that reports to nobody
+  // should be told so, in words (spec/SYSTEM.md §8).
+  printf("the backend: %s; %lu reading(s) offered%s\n", interfaces::describe(pass.exchanged),
+         static_cast<unsigned long>(pass.readings_offered),
+         pass.readings_taken ? " and taken" : "");
+  if (pass.asks != 0) {
+    print("it asked for:");
+    for (std::uint8_t a = 1; a < static_cast<std::uint8_t>(interfaces::Ask::kCount); ++a) {
+      const interfaces::Ask ask = static_cast<interfaces::Ask>(a);
+      if ((pass.asks & interfaces::askBit(ask)) != 0) printf(" %s;", interfaces::describe(ask));
+    }
+    print("\n");
+  }
+  if (pass.carried != interfaces::Ask::kNothing) {
+    printf("it carried out: %s\n", interfaces::describe(pass.carried));
+  }
+}
+
+void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
+                             const cycle::WakePayload& p) {
+  char letters[16] = {};
+  for (std::size_t i = 0; i < cycle::kStepCount && i + 1 < sizeof letters; ++i) {
+    letters[i] = cycle::letter(p.step[i]);
+  }
+  printf("  %2lu. seq %lu: wake %lu, %s: radio %s, band %s, steps %s, awake %lu s, next %lu min",
+         static_cast<unsigned long>(number), static_cast<unsigned long>(entry.seq),
+         static_cast<unsigned long>(p.wakes), cycle::name(p.wake),
+         supervisor::describe(p.radio), power::name(p.band), letters,
+         static_cast<unsigned long>(p.awake_s), static_cast<unsigned long>(p.interval_s / 60u));
+  if ((p.flags & cycle::kWakeFlagBandChanged) != 0) print("; the band changed");
+  if ((p.flags & cycle::kWakeFlagClimbed) != 0) print("; the ladder was climbed");
+  if ((p.flags & cycle::kWakeFlagOnTrial) != 0) print("; this firmware was on trial");
+  if ((p.flags & cycle::kWakeFlagClockSet) != 0) print("; the radio's clock was set");
+  if ((p.flags & cycle::kWakeFlagExchanged) != 0) print("; the backend was reached");
+  if ((p.flags & cycle::kWakeFlagReadingsTaken) != 0) print("; the readings were taken");
+  if ((p.flags & cycle::kWakeFlagShortened) != 0) print("; the sleep was shortened");
+  if (p.carried != interfaces::Ask::kNothing) printf("; %s", interfaces::describe(p.carried));
   print("\n");
 }
 

@@ -162,6 +162,13 @@ const CommandDef kCommands[kCommandCount] = {
     {"sleep <seconds>", "sleep", Group::kDutyCycle,
      "the same, for a number of seconds a person picks: 1 to 604800. What the band allows is "
      "unchanged; only the timer is"},
+    {"cycle now", "cycle now", Group::kDutyCycle,
+     "run one whole wake on request: the ten steps of docs/cycle.md in order, each printed as it "
+     "passes, and then sleep. It does not come back - the next boot is the next wake"},
+    {"cycle dry", "cycle dry", Group::kDutyCycle,
+     "what a wake would do, doing none of it: every step with its bound, its preconditions as "
+     "they stand now, and what the backend seam is behind it. Nothing is sent and nothing is "
+     "written"},
     {"stay [off]", "stay", Group::kDutyCycle,
      "keep the Walter awake without a cable, for the bench, bounded by twelve hours; 'stay off' "
      "ends it. Without it, and without a USB host, a wake that does not reach sleep in five "
