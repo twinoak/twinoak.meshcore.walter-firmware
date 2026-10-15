@@ -18,6 +18,7 @@
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
 #include "core/console/console.h"
+#include "core/cycle/duty_cycle.h"
 #include "core/health/health.h"
 #include "core/image/receive.h"
 #include "core/image/store.h"
@@ -35,6 +36,7 @@
 #include "fakes/fake_clock.h"
 #include "fakes/fake_pins.h"
 #include "fakes/fake_retained.h"
+#include "fakes/fake_sleeper.h"
 #include "fakes/fake_wall_clock.h"
 #include "fakes/sim_key_value.h"
 #include "sim/fake_modem.h"
@@ -83,7 +85,13 @@ struct SettingsConsole {
   sim::SimFlash journal_flash{core::update::kJournalPartitionBytes};
   core::update::Journal journal{journal_flash};
   core::update::LinkBattery battery{link};
+  // The duty cycle (task p3-04), so that `wake`, `power`, `sleep` and `stay` reach something and
+  // so that `status`'s last two lines are the ones a real unit prints - docs/provisioning.md is
+  // replayed against this console, and a document that showed a line no unit prints would be
+  // worse than no document.
+  fakes::FakeSleeper sleeper{clock, pins};
   std::unique_ptr<core::supervisor::Supervisor> supervisor;
+  std::unique_ptr<core::cycle::DutyCycle> duty;
   std::unique_ptr<core::console::Console> console;
 
   // Everything this console has ever printed, run by run.
@@ -100,6 +108,11 @@ struct SettingsConsole {
     supervisor.reset(new core::supervisor::Supervisor(link, radio, slots, health, battery, clock,
                                                       wall, retained, &store, nullptr, nullptr,
                                                       &journal));
+    supervisor->begin();
+    duty.reset(new core::cycle::DutyCycle(sleeper, radio, link, uplink, health, clock, wall,
+                                          restart, retained, supervisor.get(), nullptr, nullptr,
+                                          &journal, &settings));
+    duty->begin();
     build();
   }
   ~SettingsConsole() { CHECK(pins.violations.empty()); }
@@ -110,7 +123,7 @@ struct SettingsConsole {
     console.reset(new core::console::Console(out, radio, health, clock, restart, link, slots,
                                              &store, &receiver, nullptr, &journal, nullptr,
                                              supervisor.get(), &uplink, nullptr, nullptr, nullptr,
-                                             &settings, &server));
+                                             &settings, &server, duty.get()));
   }
 
   // A console with no settings store at all, as a build whose `nvs` partition would not open has.

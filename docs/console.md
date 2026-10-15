@@ -39,6 +39,8 @@ link: UART1 115200 8N1 on the radio's two pins, open
 boot 1: power-on reset
 the boot record starts here (a power cut, or the first boot)
 settings: 0 of 11 keys set; log.level info, swd 125 kHz ('get')
+wake: a power-up: the radio was reset with us and is still booting ('wake', 'power')
+wake: a USB host is on the port, so this Walter stays awake while you are here (and for a minute after the cable goes). 'stay' keeps it awake without one
 type 'help' for the commands
 >
 ```
@@ -134,11 +136,27 @@ supervisor's stop is printed at every level.
 | `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time; the response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
 
+### Sleep and the battery
+
+| Command | What it does |
+|---|---|
+| `wake` | (task p3-04) why this Walter is awake — the timer, the radio's line with the attention behind it, a spurious wake, a person with a cable, a power-up, a crash, a watchdog — the last ten wakes with their reasons and how long each lasted, the spurious count, and whether the radio's line is armed as a wake source. **It only reads** |
+| `power` | the battery's band, the readings behind it (the median and the mean, and every sample kept), the thresholds, what a wake in that band may do, and how long until the next one. It costs one `POWER_GET` on the link. See `docs/power.md` |
+| `sleep now` | go to sleep for the interval the battery chose: the journal, `SLEEP_NOTICE` to the radio, the modem down, the pins safe and held, deep sleep. **It does not come back** — the next boot is the next wake |
+| `sleep <seconds>` | the same, for a number a person picks (1 to 604800). What the band allows is unchanged; only the timer is |
+| `stay [off]` | keep the Walter awake without a cable, for the bench, bounded by twelve hours; `stay off` ends it. Without it, and without a USB host, a wake that has not reached sleep in five minutes is ended by a reset |
+
+A sleep is refused, in one `error:` line, when the radio's update has a step in the air, when a
+transfer into the other application slot is open, or when **this firmware is on trial** — a deep
+sleep during a trial would roll the trial image back, because the bootloader turns a
+`pending-verify` slot into `aborted` at every reset and a wake from deep sleep is one. `self
+confirm` or `self reject` first. See *Sleep, and what wakes it* below.
+
 ### The journal
 
 | Command | What it does |
 |---|---|
-| `journal` | the last twelve entries of the flash journal in words, newest first, whatever wrote them: the radio's updates (task p2-03), this firmware's own (p2-04) and the supervisor's ladder (p2-05), with the head, the next sequence number and whether an operation's entries are protected from a wrap. `rak update status` and `self status` tell the story of one run; this is the log |
+| `journal` | the last twelve entries of the flash journal in words, newest first, whatever wrote them: the radio's updates (task p2-03), this firmware's own (p2-04), the supervisor's ladder (p2-05) and the duty cycle's sleeps (p3-04), with the head, the next sequence number and whether an operation's entries are protected from a wrap. `rak update status` and `self status` tell the story of one run; this is the log |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command,
 subcommand or key, an argument where none is taken, a missing or non-numeric value, a value out of
@@ -584,6 +602,43 @@ The slots are written at the first request of a boot whose record says they diff
 boot, a power cut (retained storage does not survive one), a release with another root - and not
 otherwise; `trust tls` before that says *not written yet: written at the next request*.
 
+## Sleep, and what wakes it
+
+Task p3-04; `docs/power.md` for the band and the interval, `docs/ARCHITECTURE.md` §10 for the wake
+a sleep ends.
+
+**Three things wake a Walter, and one of them is not a wake source.**
+
+| | |
+|---|---|
+| the timer | the check-in. The interval is the battery's (`docs/power.md`) unless `wake.interval` says otherwise |
+| the radio's line | a start bit on `WALTER_RX` (GPIO8, an RTC pin), low level, with the chip's pull-up held through the sleep so that a radio which is off, resetting or being flashed cannot hold the Walter awake. `wake.radio off` turns it off |
+| **USB: no** | this chip cannot wake from deep sleep when a cable is plugged in — `esp_sleep_enable_usb_wakeup()` answers `ESP_ERR_NOT_SUPPORTED` on the ESP32-S3 and the one USB wake ESP-IDF has is light sleep's. So the rule is: **a person presses reset, and a boot that finds a USB host stays awake** — while the host is there and for a minute after the cable goes. The boot says so in a line of its own, and `wake` and `status` repeat it |
+
+A wake on the radio's line listens for up to §8's **whole repeat window** — about eleven seconds:
+the radio sends `0x00 0x00`, waits 300 ms and then repeats the event every second, ten times, and
+the bytes that woke us are gone by the time the UART is listening. A valid `EV_ATTENTION` inside
+the window gives the wake its reason; nothing valid is a **spurious wake**, counted. After three
+spurious wakes the line is **disarmed** as a wake source until the next timer wake, and that is
+said at the boot, by `wake` and in the journal: a chattering line — a loose UART, a radio being
+flashed, a scanner talking to nobody — must not be able to keep the Walter awake.
+
+**The bound on a wake.** Without a USB host and without `stay`, a wake that has not reached sleep
+within five minutes is ended by a reset; the next boot's record says who asked, the wake after it
+reads that as a watchdog, and the interval policy lengthens the next sleep rather than shortening
+it. A reset and not a straight sleep, because a wake that has overrun is a wake in an unknown
+state, and the journal is what carries unfinished work across a boot. In this firmware **nothing
+arms it yet**: nothing reaches sleep by itself until the wake cycle exists (task p3-05), and
+`sleep now` on this console is the only way in.
+
+**What is written down.** Not every sleep. The journal is 1024 entries and it exists so that an
+*update* is never guessed at; a unit checking in every quarter of an hour would wrap the whole log
+in ten days. So an unremarkable sleep — the same band and the same interval as the last one — is
+recorded in RTC memory only, which is where `wake` reads the last ten from, and the journal gets a
+line when there is news: the band changed, the interval was lengthened by a fault, the radio's line
+was disarmed or armed again, the wake was a crash or a watchdog, a person typed `sleep now`, or the
+sleep was refused.
+
 ## The radio's power, as `status` and `pins` say it
 
 | | Means |
@@ -606,7 +661,8 @@ which of them a port sees:
 |---|---|
 | `error` and above | a supervisor's stop (`supervisor: STOPPED: ...`), which is a unit that has given up on its radio: said at every level |
 | `warn` and above | a settings store that would not open, or stored values this firmware will not have; an update the journal says was in progress and is being resumed |
-| `info` (the default) | the boot's own lines - the reset reason, the boot count, the settings summary - and the supervisor's "today already" line |
+| `warn` and above | ...and the radio's line disarmed by spurious wakes, and a run of crash or watchdog wakes (task p3-04): both are a unit behaving differently from the way it was provisioned to |
+| `info` (the default) | the boot's own lines - the reset reason, the boot count, the settings summary, what this wake means and whether a USB host is holding it awake - and the supervisor's "today already" line |
 | `debug` | nothing yet. The key exists because the agent firmware's console has it, and because the first thing phase 3's wake cycle will want is somewhere to put a wake's detail |
 
 A resumed update's transitions and a self-update trial's steps are printed as they happen, from

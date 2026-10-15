@@ -9,6 +9,7 @@ const char* describe(Group group) {
     case Group::kRadio: return "the radio";
     case Group::kImages: return "images, trust and this firmware's own slots";
     case Group::kUplink: return "the uplink";
+    case Group::kDutyCycle: return "sleep and the battery";
     case Group::kJournal: return "the journal";
     case Group::kCount: break;
   }
@@ -146,6 +147,25 @@ const CommandDef kCommands[kCommandCount] = {
      "a release from <base-url>/manifest.json into the candidate (default) or scanner image: the "
      "three steps, each of the six checks as it passes, the image in ranges (minutes). Without a "
      "base URL it uses the setting fetch.url"},
+
+    // -- sleep and the battery (task p3-04) ----------------------------------------------------
+    {"wake", "wake", Group::kDutyCycle,
+     "why this Walter is awake, the last ten wakes with their reasons and how long each lasted, "
+     "the spurious count and whether the radio's line is armed as a wake source"},
+    {"power", "power", Group::kDutyCycle,
+     "the battery's band, the readings behind it, what a wake in that band may do and how long "
+     "until the next one. Every threshold is a placeholder until the bench (docs/power.md)"},
+    {"sleep now", "sleep now", Group::kDutyCycle,
+     "go to sleep now for the interval the battery chose: the journal, SLEEP_NOTICE to the "
+     "radio, the modem down, the pins safe and held, deep sleep. It does not come back - the "
+     "next boot is the next wake"},
+    {"sleep <seconds>", "sleep", Group::kDutyCycle,
+     "the same, for a number of seconds a person picks: 1 to 604800. What the band allows is "
+     "unchanged; only the timer is"},
+    {"stay [off]", "stay", Group::kDutyCycle,
+     "keep the Walter awake without a cable, for the bench, bounded by twelve hours; 'stay off' "
+     "ends it. Without it, and without a USB host, a wake that does not reach sleep in five "
+     "minutes is ended by a reset"},
 
     // -- the journal ---------------------------------------------------------------------------
     {"journal", "journal", Group::kJournal,

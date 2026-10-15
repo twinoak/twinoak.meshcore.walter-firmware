@@ -20,6 +20,12 @@ enum class RetainedSlot : std::uint8_t {
   kSupervisorIncidents = 3,  // core/supervisor: the incidents kept for the next check-in
   kUplink = 4,               // core/uplink: the backoff's wakes, and a PIN that was refused
   kTlsTrust = 5,             // core/net/trust: what was written into the modem's certificate slots
+  // core/cycle and core/power: the last ten wakes with their reasons and durations, the spurious
+  // count and the disarm, and the band the interval policy was last in. **One slot for both**,
+  // not two: platform/retained.cpp gives every slot kRetainedRecordMax bytes whatever its record
+  // holds, and RTC SLOW memory had 316 bytes free before this task (tasks/phase-3/reports/04.md,
+  // *What RTC memory costs*).
+  kDutyCycle = 6,
   kCount
 };
 

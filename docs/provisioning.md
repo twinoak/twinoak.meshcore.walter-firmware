@@ -104,7 +104,8 @@ pins: power on;...
 images: golden=empty candidate=empty scanner=empty
 uplink:...
 backend: meshmaster.dk:443, for a self-update's third condition (task p3-05 makes the call)
-next wake: nothing sleeps yet (task p3-04); wake.interval auto, radio may wake it: yes
+this wake: power-on;...
+next wake: at the end of this wake; last band no-reading, wake.interval auto; line armed
 > set server.url http://meshmaster.dk
 error: server.url: the scheme must be https:// (S-12: TLS is verified)
 > set wake.interval 3

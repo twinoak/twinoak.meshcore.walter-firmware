@@ -75,6 +75,13 @@ idf_component_register(
        # The settings (task p3-03): the table of keys and the store over interfaces/key_value.h.
        "settings/keys.cpp"
        "settings/settings.cpp"
+       # The duty cycle (task p3-04): what the battery allows and how long until the next
+       # check-in; what a wake means; the bound on a wake; and the one way out of one.
+       "power/interval_policy.cpp"
+       "cycle/wake_reason.cpp"
+       "cycle/wake_guard.cpp"
+       "cycle/sleep.cpp"
+       "cycle/duty_cycle.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

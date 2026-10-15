@@ -44,6 +44,9 @@ enum class Restart : std::uint8_t {
   kConsole = 1,             // `reboot`
   kSelfUpdateSwitch = 2,    // the Walter's own update: restarting into the other slot (task p2-04)
   kSelfUpdateRollback = 3,  // the Walter's own update: the trial image rejected itself
+  kWakeOverrun = 4,         // the duty cycle's bound on a wake: it did not reach sleep in time
+                            // (task p3-04, core/cycle/wake_guard.h). The next wake reads this
+                            // as a watchdog, which is what it is - this firmware's own.
 };
 
 const char* name(ResetReason reason);

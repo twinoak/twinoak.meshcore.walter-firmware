@@ -139,6 +139,17 @@
 //                         slot. Without a base URL the `fetch.url` setting is used (task p3-03)
 //   trust tls             the roots this firmware trusts - subject, fingerprint, expiry - and
 //                         whether the modem's certificate slots hold them
+//
+// and sleep (task p3-04; docs/ARCHITECTURE.md §10, docs/power.md). No slot either: a sleep is
+// the whole unit's:
+//
+//   wake                  why this Walter is awake, the last ten wakes with their reasons and
+//                         durations, the spurious count, whether the radio's line is armed
+//   power                 the battery's band, the readings behind it, what the wake may do and
+//                         how long until the next one
+//   sleep now             go to sleep for the interval the battery chose. It does not come back
+//   sleep <seconds>       the same, for a number a person picks (1 to kMaxSleepSeconds)
+//   stay [off]            keep the Walter awake without a cable, for the bench, bounded
 #pragma once
 
 #include <cstddef>
@@ -213,6 +224,12 @@ enum class Verb : std::uint8_t {
   kHttpGet,
   kFetch,
   kTrustTls,
+  // Sleep and the battery (task p3-04).
+  kWake,       // why this wake happened, and the last ten
+  kPower,      // the band, the readings behind it, the next interval
+  kSleepNow,   // sleep for the interval the battery chose
+  kSleepFor,   // `sleep <seconds>`: a person's number
+  kStay,       // `stay` / `stay off`: awake on purpose, for the bench
   // The settings and the rest of the console (task p3-03).
   kGet,      // one key
   kGetAll,   // every key
@@ -224,6 +241,10 @@ enum class Verb : std::uint8_t {
 
 // rak swd mem reads at most this many words: eight lines of four.
 constexpr std::uint32_t kMaxMemWords = 32;
+
+// `sleep <seconds>`: a week, which is core/settings/keys.h's own ceiling for `wake.interval`
+// said in seconds. A person who wants longer wants a different unit.
+constexpr std::uint32_t kMaxSleepSeconds = 7u * 24 * 60 * 60;
 
 // §5.7: a CLI line is 1 to 160 bytes of UTF-8. The parser refuses a longer one here rather than
 // letting the encoder refuse it later, so that the console can say which limit was passed.
@@ -246,6 +267,7 @@ struct Command {
   // it is; parser.cpp holds it to core/image/store.h's own names.
   std::uint8_t which = 0;
   bool radio_down = false;                // kSelfSwitch: the radio is known to be down
+  bool on = false;                        // kStay: `stay` is true, `stay off` false
   // kHttpGet, kFetch: the URL, verbatim (the line's bound is the URL's bound here: a GitHub
   // redirect's signed URL is for the client to follow, not for a person to type). Empty for a
   // `fetch` with no base URL, which means the `fetch.url` setting (task p3-03).

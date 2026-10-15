@@ -305,11 +305,23 @@ void RadioPins::swdRelease() {
   input(kSwdIo.gpio);
 }
 
-bool RadioPins::holdForSleep() {
+bool RadioPins::holdForSleep(bool arm_radio_line) {
   safe();
   std::uint8_t gpios[kPinCount];
-  for (std::size_t i = 0; i < kPinCount; ++i) gpios[i] = kRadioPins[i].gpio;
-  return pins_.holdThroughSleep(gpios, kPinCount, true);
+  std::size_t count = 0;
+  bool ok = true;
+  for (std::size_t i = 0; i < kPinCount; ++i) {
+    // The wake pin, when it is to wake us: the chip's weak pull-up on it, and the pad left out
+    // of the holds here - the platform arms it and holds it (see holdForSleep's comment in the
+    // header). A pull-up and not a driven level: the radio's TX is what drives this line, and
+    // our few tens of microamps through 470 Ohm are what rule 1 already allows TX itself.
+    if (arm_radio_line && kRadioPins[i].gpio == kWalterRx.gpio) {
+      ok = pins_.setMode(kWalterRx.gpio, PinMode::kInputPullUp) && ok;
+      continue;
+    }
+    gpios[count++] = kRadioPins[i].gpio;
+  }
+  return pins_.holdThroughSleep(gpios, count, true) && ok;
 }
 
 bool RadioPins::releaseHolds() {

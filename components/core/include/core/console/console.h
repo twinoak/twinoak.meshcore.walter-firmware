@@ -23,6 +23,7 @@
 #include "core/console/commands.h"
 #include "core/console/log_ring.h"
 #include "core/console/parser.h"
+#include "core/cycle/duty_cycle.h"
 #include "core/settings/settings.h"
 #include "core/flasher/flasher.h"
 #include "core/health/health.h"
@@ -68,7 +69,12 @@ class Console {
           // has no store, and `get` and `set` then say so in one line instead of pretending that
           // what was typed was kept.
           settings::Settings* settings = nullptr,
-          update::UplinkCheck* server = nullptr);
+          update::UplinkCheck* server = nullptr,
+          // The duty cycle (task p3-04): `wake`, `power`, `sleep now`, `sleep <seconds>` and
+          // `stay`. A pointer like the rest: a build without it answers in one line. **It is
+          // the only thing in this firmware that sleeps**, and the console is the only thing
+          // that drives it until the wake cycle exists (task p3-05).
+          cycle::DutyCycle* duty = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -208,6 +214,17 @@ class Console {
   void fetch(const char* base_url, image::Which which);
   void trustTls();
 
+  // The duty cycle (task p3-04).
+  bool dutyOk();  // false, with one error line, when this build has no duty cycle
+  void wake();
+  void power();
+  void decideIfNeeded();  // a band for a sleep, from a reading, when this wake has none
+  void sleepNow();
+  void sleepFor(std::uint32_t seconds);
+  void stay(bool on);
+  void printSleepResult(const cycle::SleepResult& r);
+  void printSleepEntry(std::size_t number, const update::Entry& entry, const cycle::Payload& p);
+
   // The settings (task p3-03).
   bool settingsOk();  // false, with one error line, when this build has no settings store
   void get(const settings::KeyDef& key);
@@ -245,6 +262,7 @@ class Console {
   net::TrustLoader* trust_ = nullptr;
   settings::Settings* settings_ = nullptr;
   update::UplinkCheck* server_ = nullptr;
+  cycle::DutyCycle* duty_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about
