@@ -177,9 +177,23 @@ class RadioPins {
   Outcome selectorProgram(bool uart_sel, bool debug_sel);
   std::uint32_t selectorPrograms() const { return selector_programs_; }
 
-  // Rule 5. safe(), then the seven pads held as they are, for the sleeper (phase 3); and the
+  // Rule 5. safe(), then the seven pads held as they are, for the sleeper (task p3-04); and the
   // reverse at wake: the pads configured to the same state first, then the holds released.
-  bool holdForSleep();
+  //
+  // `arm_radio_line` is a sleep the radio's start bit may wake (docs/ARCHITECTURE.md §10): the
+  // radio's RX pin is given the chip's weak pull-up first - so that a radio which is off,
+  // resetting or being flashed cannot hold the Walter awake with a line that has drifted low -
+  // and then **that one pad is left out of the holds here**, because the platform's wake
+  // preparation routes it to the RTC mux, enables its input and holds it itself as part of
+  // arming the source, and a hold put on before that would block those writes (ESP-IDF v5.5.5,
+  // components/esp_hw_support/sleep_modes.c, `ext1_wakeup_prepare()`; and
+  // docs/en/api-reference/system/sleep_modes.rst, *External Wakeup (ext1)*: "please call
+  // rtc_gpio_hold_dis to disable the hold function to perform any pin re-configuration"). The
+  // pad is held either way, in the same state - by us, or by the chip arming it.
+  //
+  // The pull-up is dropped again by safe(), which every kill calls first (rule 3), so it cannot
+  // survive into a moment when the rail is off.
+  bool holdForSleep(bool arm_radio_line = false);
   bool releaseHolds();
 
   RadioPower power();

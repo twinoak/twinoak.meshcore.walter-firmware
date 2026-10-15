@@ -87,9 +87,17 @@ time); `tools/walterctl.py push` sends a signed release's radio image into a Wal
 over USB, and the console's `fetch <base-url>` takes the same release over HTTPS with the chain
 verified, in ranges, resumable - the client of phase 3's task 02, which nothing calls by itself
 until the wake cycle does.
+It sleeps between check-ins, and the battery it shares with the repeater chooses how long: a full
+pack under a sunny panel gets a wake every quarter of an hour, a sinking one in December gets one a
+day, and below a floor the modem is not used at all — a repeater that keeps repeating is worth more
+than a report that it is about to stop. It wakes on its timer and on a start bit from the radio; a
+cable cannot wake it, so a boot that finds a USB host stays awake (phase 3's task 04,
+[`docs/power.md`](docs/power.md)). The wake that strings the steps together is task 05's.
+
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the map;
 [`docs/release.md`](docs/release.md) is how a tag becomes a release;
 [`docs/console.md`](docs/console.md) is the console;
+[`docs/power.md`](docs/power.md) is what the battery allows;
 [`docs/bench.md`](docs/bench.md) is what only a Walter on a desk can confirm.
 
 The task piles that build the rest, one headless session per task:

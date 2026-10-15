@@ -245,6 +245,17 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
           payload[at + b] = static_cast<std::uint8_t>(uptime_s >> (8 * b));
         }
       }
+      if (type == link::type::kPowerGet && override_power && payload.size() >= 14) {
+        // §5.8's body after the status byte: `valid` at offset 1, then three channels of
+        // (bus_mv u16, current_ma i16). Channel 2 - the battery - is the second, so its bus
+        // voltage is at offset 6 and its current at offset 8.
+        payload[1] = power_valid;
+        payload[6] = static_cast<std::uint8_t>(battery_mv & 0xFF);
+        payload[7] = static_cast<std::uint8_t>(battery_mv >> 8);
+        const std::uint16_t ma = static_cast<std::uint16_t>(battery_ma);
+        payload[8] = static_cast<std::uint8_t>(ma & 0xFF);
+        payload[9] = static_cast<std::uint8_t>(ma >> 8);
+      }
       if (type == link::type::kPing && packet.payload.size >= 4 && payload.size() >= 5) {
         // §5.2: the nonce is echoed. The fixture's response carries the fixture request's nonce;
         // a radio answering *this* request echoes this one, which is what makes the client's
@@ -367,13 +378,16 @@ void ScriptedRadio::sendEvent(const std::string& case_name, std::uint32_t after_
   queue(std::vector<std::uint8_t>(frame, frame + size), after_ms);
 }
 
-void ScriptedRadio::raiseAttention(std::uint8_t reason, std::uint16_t detail, int repeats) {
+void ScriptedRadio::raiseAttention(std::uint8_t reason, std::uint16_t detail, int repeats,
+                                   int first_repeat) {
   // §8: 0x00 0x00 wakes the Walter, 300 ms later the event, then every 1000 ms with `repeat`
   // counting from 0, at most ten times.
   REQUIRE(repeats >= 1);
   REQUIRE(repeats <= core::link::kAttentionRepeats);
+  REQUIRE(first_repeat >= 0);
+  REQUIRE(first_repeat < repeats);
   queue(std::vector<std::uint8_t>{0x00, 0x00}, 0, true);
-  for (int i = 0; i < repeats; ++i) {
+  for (int i = first_repeat; i < repeats; ++i) {
     const std::vector<std::uint8_t> payload{
         reason, static_cast<std::uint8_t>(detail & 0xFF),
         static_cast<std::uint8_t>((detail >> 8) & 0xFF), static_cast<std::uint8_t>(i)};
@@ -384,7 +398,8 @@ void ScriptedRadio::raiseAttention(std::uint8_t reason, std::uint16_t detail, in
     REQUIRE(size != 0);
     event_seq = static_cast<std::uint8_t>(event_seq + 1);
     queue(std::vector<std::uint8_t>(frame, frame + size),
-          300 + static_cast<std::uint32_t>(i) * core::link::kAttentionRepeatMs, true);
+          300 + static_cast<std::uint32_t>(i - first_repeat) * core::link::kAttentionRepeatMs,
+          true);
   }
 }
 

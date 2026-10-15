@@ -663,6 +663,49 @@ Parsed parseLine(const char* line) {
     if (hasRest) return refuse("journal takes no argument");
     return accept(Verb::kJournal);
   }
+  // Sleep and the battery (task p3-04).
+  if (std::strcmp(verb, "wake") == 0) {
+    if (hasRest) return refuse("wake takes no argument");
+    return accept(Verb::kWake);
+  }
+  if (std::strcmp(verb, "power") == 0) {
+    if (hasRest) return refuse("power takes no argument ('rak power' reads the three channels)");
+    return accept(Verb::kPower);
+  }
+  if (std::strcmp(verb, "sleep") == 0) {
+    if (!hasRest) {
+      return refuse("sleep needs 'now' - the interval the battery chose - or a number of seconds");
+    }
+    if (std::strcmp(rest, "now") == 0) return accept(Verb::kSleepNow);
+    for (const char* p = rest; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("sleep takes one argument: 'now' or a number of seconds");
+    }
+    Parsed p = accept(Verb::kSleepFor);
+    if (!parseSeconds(rest, p.command.seconds)) {
+      return refuse2("sleep: not 'now' and not a whole number of seconds: ", rest);
+    }
+    if (p.command.seconds == 0 || p.command.seconds > kMaxSleepSeconds) {
+      Parsed refusal;
+      refusal.ok = false;
+      std::snprintf(refusal.error, sizeof refusal.error,
+                    "sleep: 1 to %lu seconds (a week), or 'now'",
+                    static_cast<unsigned long>(kMaxSleepSeconds));
+      return refusal;
+    }
+    return p;
+  }
+  if (std::strcmp(verb, "stay") == 0) {
+    Parsed p = accept(Verb::kStay);
+    if (!hasRest) {
+      p.command.on = true;
+      return p;
+    }
+    if (std::strcmp(rest, "off") == 0) {
+      p.command.on = false;
+      return p;
+    }
+    return refuse2("stay takes no argument, or 'off': ", rest);
+  }
   if (std::strcmp(verb, "rak") == 0) {
     if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
     // The slot (task p1-06): `rak @1 hello`. Optional, and the first word after `rak` rather

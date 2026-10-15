@@ -26,6 +26,7 @@ enum class Group : std::uint8_t {
   kRadio,       // the radio on the other side of the seven wires
   kImages,      // what is in the store, what this firmware trusts, this firmware's own slots
   kUplink,      // the modem and what goes over it
+  kDutyCycle,   // sleep, the battery's band and what woke us (task p3-04)
   kJournal,     // what was written down in flash
   kCount,
 };
@@ -41,8 +42,8 @@ struct CommandDef {
   const char* help;  // one line; the console wraps it
 };
 
-// 52, the length below: the table's own static_assert holds it.
-constexpr std::size_t kCommandCount = 52;
+// 57, the length below: the table's own static_assert holds it.
+constexpr std::size_t kCommandCount = 57;
 extern const CommandDef kCommands[kCommandCount];
 
 // The word a command that could cost a radio asks for before it does anything: `erase confirm`,

@@ -68,6 +68,14 @@ bool isRadioVerb(Verb verb) {
     case Verb::kErase:
     case Verb::kDump:
     case Verb::kJournal:
+    // Sleep and the battery (task p3-04): about the whole unit. `sleep now` does talk to the
+    // radio - SLEEP_NOTICE is its last request (§8) - but it is not *about* a radio, and the
+    // link client takes the hold around that exchange as it does around every other.
+    case Verb::kWake:
+    case Verb::kPower:
+    case Verb::kSleepNow:
+    case Verb::kSleepFor:
+    case Verb::kStay:
       return false;
     case Verb::kRakReset:
     case Verb::kRakKill:
@@ -108,11 +116,12 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::SelfUpdate* self, supervisor::Supervisor* supervisor,
                  uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
                  net::TrustLoader* trust, settings::Settings* settings,
-                 update::UplinkCheck* server)
+                 update::UplinkCheck* server, cycle::DutyCycle* duty)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
-      trust_(trust), settings_(settings), server_(server), flasher_(pins, clock, slots) {}
+      trust_(trust), settings_(settings), server_(server), duty_(duty),
+      flasher_(pins, clock, slots) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -211,7 +220,10 @@ void Console::begin() {
   // Said out loud only when there is something to say - a unit found quiet should announce a stop
   // and a day that has already spent some of its caps, and keep silent otherwise.
   if (supervisor_ != nullptr) {
-    supervisor_->begin();
+    // Unless main/ has already done it: the duty cycle's wake reason asks the supervisor to
+    // listen for §8's attention before anything else happens in a wake (task p3-04), and a
+    // supervisor that has not read its retained record cannot record one properly.
+    if (!supervisor_->begun()) supervisor_->begin();
     const supervisor::Status& w = supervisor_->status();
     if (w.stopped) {
       // Said at every level, `error` included: a unit that has given up on its radio is the one
@@ -225,6 +237,33 @@ void Console::begin() {
              static_cast<unsigned long>(w.counts.power_cycles),
              static_cast<unsigned long>(w.counts.flashes),
              w.counts_from_journal ? ", read back from the journal" : "");
+    }
+  }
+  // The duty cycle (task p3-04): what this wake means, worked out before anything is done about
+  // it, and - because this board cannot wake on a cable - whether a person is here. Said at
+  // `info`, except a line that was disarmed and a fault, which are at `warn`: both are a unit
+  // behaving differently from the way it was provisioned to.
+  if (duty_ != nullptr) {
+    const cycle::WakeInfo& w = duty_->wake();
+    if (says(settings::Level::kInfo)) {
+      printf("wake: %s ('wake', 'power')\n", cycle::describe(w.wake));
+    }
+    if (w.line_disarmed && says(settings::Level::kWarn)) {
+      printf("wake: the radio's line is NOT armed as a wake source: %lu spurious wake(s) reached "
+             "the limit of %u; the next timer wake arms it again\n",
+             static_cast<unsigned long>(w.spurious_in_window),
+             static_cast<unsigned>(cycle::kSpuriousPerWindow));
+    }
+    if (w.faults_in_a_row != 0 && says(settings::Level::kWarn)) {
+      printf("wake: %lu crash or watchdog wake(s) in a row: the next sleep is lengthened, not "
+             "shortened ('wake')\n", static_cast<unsigned long>(w.faults_in_a_row));
+    }
+    // The USB host. Not in the prompt - `docs/provisioning.md` and every tool that waits for
+    // this port read `> ` and nothing else (tasks/phase-3/reports/04.md, *Deviations*) - but
+    // said here, by `wake`, by `status` and whenever `stay` changes.
+    if (w.usb_host && says(settings::Level::kInfo)) {
+      print("wake: a USB host is on the port, so this Walter stays awake while you are here "
+            "(and for a minute after the cable goes). 'stay' keeps it awake without one\n");
     }
   }
   print("type 'help' for the commands\n");
@@ -297,6 +336,14 @@ bool Console::secretBeingTyped() const {
 }
 
 void Console::tick() {
+  // The duty cycle's bound on a wake (task p3-04): the sleeper is asked whether a host is on the
+  // port, and a wake that has overrun is ended by a reset. **It can only fire when somebody has
+  // armed it**, and in this firmware nothing does - the wake cycle (task p3-05) is what will -
+  // so today this keeps the USB answer up to date and nothing else.
+  if (duty_ != nullptr && duty_->tick()) {
+    print("the wake did not reach sleep inside its bound: restarting\n");
+    return;
+  }
   // The main loop is turning: the trial's first condition (core/update/self_update.h), met once
   // and for good. Then the trial itself, a step a turn, each change printed.
   if (self_ != nullptr) {
@@ -403,6 +450,11 @@ void Console::runLine(const char* line) {
     case Verb::kErase: erase(); return;
     case Verb::kDump: dump(); return;
     case Verb::kJournal: journal(); return;
+    case Verb::kWake: wake(); return;
+    case Verb::kPower: power(); return;
+    case Verb::kSleepNow: sleepNow(); return;
+    case Verb::kSleepFor: sleepFor(p.command.seconds); return;
+    case Verb::kStay: stay(p.command.on); return;
   }
 }
 // One line of help, the usage in a column and the text wrapped after it. The table
@@ -595,18 +647,40 @@ void Console::status() {
     }
   }
 
-  // The next wake. Nothing sleeps yet - that is task p3-04 - and this line says so rather than
-  // printing a time that would be a guess.
-  if (settings_ != nullptr) {
-    const std::uint32_t interval = settings_->wakeIntervalMinutes();
-    if (interval == 0) {
-      printf("next wake: nothing sleeps yet (task p3-04); wake.interval auto, radio may wake it: "
-             "%s\n", settings_->wakeOnRadio() ? "yes" : "no");
+  // The next wake (task p3-04). The band from the readings this wake has - `power` is the
+  // command that takes a new one, and this line does not spend a POWER_GET - and what woke us.
+  if (duty_ != nullptr) {
+    const cycle::WakeInfo& w = duty_->wake();
+    const power::Decision& d = duty_->decision();
+    printf("this wake: %s; %lu wake(s) counted%s\n", cycle::name(w.wake),
+           static_cast<unsigned long>(w.wakes),
+           w.line_disarmed ? "; the radio's line is disarmed ('wake')" : "");
+    if (duty_->decided()) {
+      printf("next wake: %lu min, band %s%s; line %s ('power', 'wake')\n",
+             static_cast<unsigned long>(d.interval_minutes), power::name(d.band),
+             d.overridden ? " (wake.interval)" : "",
+             duty_->lineWillArm() ? "armed" : "not armed");
     } else {
-      printf("next wake: nothing sleeps yet (task p3-04); wake.interval %lu min, radio may wake "
-             "it: %s\n", static_cast<unsigned long>(interval),
-             settings_->wakeOnRadio() ? "yes" : "no");
+      // No reading has been taken this wake, and `status` does not spend a POWER_GET to take
+      // one: `power` is the command that decides. So this says what is known - the band the
+      // last wake ended in - and when the next one will be chosen.
+      char every[16] = "auto";
+      const std::uint32_t asked = duty_->intervalSetting();
+      if (asked != 0) {
+        std::snprintf(every, sizeof every, "%lu min", static_cast<unsigned long>(asked));
+      }
+      printf("next wake: at the end of this wake; last band %s, wake.interval %s; line %s\n",
+             power::name(duty_->reason().band()), every,
+             duty_->lineWillArm() ? "armed" : "not armed");
     }
+  } else if (settings_ != nullptr) {
+    const std::uint32_t interval = settings_->wakeIntervalMinutes();
+    char every[16] = "auto";
+    if (interval != 0) {
+      std::snprintf(every, sizeof every, "%lu min", static_cast<unsigned long>(interval));
+    }
+    printf("next wake: this build has no duty cycle; wake.interval %s, radio may wake it: %s\n",
+           every, settings_->wakeOnRadio() ? "yes" : "no");
   }
 }
 void Console::reboots() {
@@ -2558,14 +2632,18 @@ void Console::settingChanged(const settings::KeyDef& key) {
       printf("what is printed when nobody asked is now %s and below; a reply is always printed\n",
              settings::name(settings_->level()));
       return;
-    case settings::Key::kServerToken:
-    case settings::Key::kFetchUrl:
     case settings::Key::kWakeInterval:
     case settings::Key::kWakeRadio:
+      // Read at the end of a wake, when the interval is chosen and the sources armed (task
+      // p3-04). A decision already taken this wake is stale, so the next sleep takes a new one.
+      if (duty_ != nullptr) duty_->settingsChanged();
+      printf("%s\n", key.effect);
+      return;
+    case settings::Key::kServerToken:
+    case settings::Key::kFetchUrl:
     case settings::Key::kUnitName:
-      // Read where they are used and nowhere kept: the token and the wake keys by task p3-04's
-      // sleeper and p3-05's wake cycle, `fetch.url` by the next `fetch`, `unit.name` by
-      // `status`. Nothing to tell anybody.
+      // Read where they are used and nowhere kept: the token by p3-05's wake cycle,
+      // `fetch.url` by the next `fetch`, `unit.name` by `status`. Nothing to tell anybody.
       printf("%s\n", key.effect);
       return;
     case settings::Key::kCount:
@@ -2587,6 +2665,201 @@ void Console::applySettings() {
                                 uplink::kPsmTauSeconds, uplink::kPsmActiveSeconds);
   }
   if (server_ != nullptr) server_->setServer(settings_->serverHost(), settings_->serverPort());
+  if (duty_ != nullptr) duty_->settingsChanged();
+}
+
+// -- sleep and the battery (task p3-04) ----------------------------------------------------------
+
+bool Console::dutyOk() {
+  if (duty_ != nullptr) return true;
+  print("error: this build has no duty cycle: nothing here can sleep, read the battery's band "
+        "or say what woke it\n");
+  return false;
+}
+
+// `wake`: why this Walter is awake, the last ten with their reasons and durations, the spurious
+// count, and whether the radio's line is armed as a wake source.
+void Console::wake() {
+  if (!dutyOk()) return;
+  const cycle::WakeInfo& w = duty_->wake();
+  printf("this wake: %s\n", cycle::describe(w.wake));
+  if (w.wake == cycle::Wake::kAttention) {
+    printf("  attention: reason %u (%s), detail %u, repeat %u; heard after %lu ms of the %lu ms "
+           "window\n", static_cast<unsigned>(w.attention.reason),
+           link::client::attentionName(w.attention.reason),
+           static_cast<unsigned>(w.attention.detail),
+           static_cast<unsigned>(w.attention.repeat),
+           static_cast<unsigned long>(w.listened_ms),
+           static_cast<unsigned long>(cycle::kAttentionWindowMs));
+  } else if (w.wake == cycle::Wake::kSpurious) {
+    printf("  nothing valid in %lu ms of listening: %lu spurious wake(s) since the last timer "
+           "wake, %lu in all\n", static_cast<unsigned long>(w.listened_ms),
+           static_cast<unsigned long>(w.spurious_in_window),
+           static_cast<unsigned long>(w.spurious_total));
+  }
+  if (w.radio_may_be_booting) {
+    print("  our own power-up reset the radio: it is still booting and is not to be judged yet\n");
+  }
+  printf("the radio's line: %s%s\n",
+         duty_->lineWillArm() ? "armed for the next sleep" : "not armed for the next sleep",
+         w.line_disarmed ? " (disarmed by spurious wakes; the next timer wake arms it again)"
+                         : "");
+  if (w.line_just_disarmed) {
+    printf("  %lu spurious wake(s) reached the limit of %u: the line is disarmed until the next "
+           "timer wake\n", static_cast<unsigned long>(w.spurious_in_window),
+           static_cast<unsigned>(cycle::kSpuriousPerWindow));
+  }
+  if (w.line_rearmed) print("  this timer wake armed the line again\n");
+  if (w.faults_in_a_row != 0) {
+    printf("faults in a row: %lu (a crash or a watchdog lengthens the next sleep, it does not "
+           "shorten it)\n", static_cast<unsigned long>(w.faults_in_a_row));
+  }
+  // Staying awake: a USB host, or `stay`.
+  const cycle::GuardStatus& g = duty_->guard().status();
+  printf("awake %lu s: %s\n", static_cast<unsigned long>(g.awake_ms / 1000u),
+         cycle::describe(g.state));
+  if (g.state == cycle::Guard::kArmed) {
+    printf("  %lu s of the %lu s bound left; after it the wake is ended by a reset\n",
+           static_cast<unsigned long>(g.left_ms / 1000u),
+           static_cast<unsigned long>(cycle::kWakeBoundMs / 1000u));
+  }
+  if (g.staying) {
+    printf("  'stay' is on: %lu s left of it ('stay off' ends it)\n",
+           static_cast<unsigned long>(g.stay_left_ms / 1000u));
+  }
+  printf("wakes counted: %lu%s\n", static_cast<unsigned long>(w.wakes),
+         duty_->reason().recordSurvived()
+             ? ""
+             : " (the wake log starts at this wake: a power cut, or the first boot)");
+  for (std::size_t i = 0; i < duty_->reason().count(); ++i) {
+    const cycle::WakeEntry& e = duty_->reason().at(i);
+    printf("  %2lu. %-9s", static_cast<unsigned long>(i + 1), cycle::name(e.wake));
+    if (e.attention != 0) {
+      printf(" attention %u (%s), detail %u", static_cast<unsigned>(e.attention),
+             link::client::attentionName(e.attention), static_cast<unsigned>(e.detail));
+    }
+    if (i == 0) {
+      print(" - this wake");
+    } else if (e.lasted_s == 0) {
+      print("; it never reached sleep (a reset, a crash or the bound)");
+    } else {
+      printf("; awake %lu s", static_cast<unsigned long>(e.lasted_s));
+    }
+    print("\n");
+  }
+}
+
+// `power`: the band, the readings behind it, what a wake in that band may do, and the interval.
+// It reads the battery over the link, which costs one POWER_GET.
+void Console::power() {
+  if (!dutyOk()) return;
+  const bool had = duty_->readPower();
+  const power::Decision d = duty_->decide();
+  printf("band: %s - %s\n", power::name(d.band), power::describe(d.band));
+  printf("  because: %s%s\n", d.why, d.changed ? "; the band changed this wake" : "");
+  if (!had) print("  this wake's POWER_GET did not answer (the link is down, or channel 2 is not valid)\n");
+  if (d.reading_known) {
+    printf("reading: %lu mV (the median of %lu sample(s))", static_cast<unsigned long>(d.median_mv),
+           static_cast<unsigned long>(d.samples < power::kMedianOf ? d.samples : power::kMedianOf));
+    if (d.current_known) {
+      printf(", %ld mA (%s, the mean of what we have)", static_cast<long>(d.mean_ma),
+             d.mean_ma >= 0 ? "charging" : "discharging");
+    }
+    if (d.from_radio) print(" - from the radio's own attention, not from a reading of ours");
+    print("\n");
+  } else {
+    print("reading: none\n");
+  }
+  for (std::size_t i = 0; i < duty_->battery().sampleCount(); ++i) {
+    const power::Sample& s = duty_->battery().sampleAt(i);
+    printf("  %2lu. %lu mV", static_cast<unsigned long>(i + 1),
+           static_cast<unsigned long>(s.millivolts));
+    if (s.current_known) printf(", %ld mA", static_cast<long>(s.current_ma));
+    print(i == 0 ? " - the newest\n" : "\n");
+  }
+  printf("thresholds (PLACEHOLDERS, docs/power.md): upper %u mV, lower %u mV, floor %u mV, "
+         "hysteresis %u mV\n", static_cast<unsigned>(power::kUpperMv),
+         static_cast<unsigned>(power::kLowerMv), static_cast<unsigned>(power::kFloorMv),
+         static_cast<unsigned>(power::kHysteresisMv));
+  printf("this wake may: modem %s, update %s, flash %s, power-cycle the radio %s\n",
+         d.modem_this_wake ? "yes" : "no", d.may.update ? "yes" : "no",
+         d.may.flash ? "yes" : "no", d.may.power_cycle ? "yes" : "no");
+  if (d.band == power::Band::kSaving && !d.modem_this_wake) {
+    printf("  the modem is used every %lu wake(s) in this band: %lu to go\n",
+           static_cast<unsigned long>(power::kSavingModemEveryNth),
+           static_cast<unsigned long>(d.wakes_until_modem));
+  }
+  printf("next wake: %lu min (%lu s)", static_cast<unsigned long>(d.interval_minutes),
+         static_cast<unsigned long>(d.interval_seconds));
+  if (d.overridden) {
+    printf(", from wake.interval and not the band's %lu min",
+           static_cast<unsigned long>(d.band_minutes));
+  }
+  if (d.fault_doublings != 0) {
+    printf(", doubled %lu time(s) by faults in a row",
+           static_cast<unsigned long>(d.fault_doublings));
+  }
+  print("\n");
+  const cycle::SleepRefusal would = duty_->sleeper().wouldRefuse();
+  if (would != cycle::SleepRefusal::kNone) {
+    printf("a sleep now would be refused: %s\n", cycle::describe(would));
+  }
+}
+
+// The band a sleep goes to sleep in. `sleep now` is "for the interval the battery chose", so it
+// asks the battery when this wake has not already - one POWER_GET on the link - rather than
+// sleeping in the band of "no reading". `power` leaves a decision behind and this reuses it.
+void Console::decideIfNeeded() {
+  if (duty_->decided()) return;
+  (void)duty_->readPower();
+  (void)duty_->decide();
+}
+
+void Console::sleepNow() {
+  if (!dutyOk()) return;
+  decideIfNeeded();
+  print("sleeping: the journal, SLEEP_NOTICE to the radio, the modem down, the pins safe and "
+        "held, then deep sleep\n");
+  printSleepResult(duty_->sleepNow(true));
+}
+
+void Console::sleepFor(std::uint32_t seconds) {
+  if (!dutyOk()) return;
+  decideIfNeeded();
+  printf("sleeping for %lu s\n", static_cast<unsigned long>(seconds));
+  printSleepResult(duty_->sleepFor(seconds));
+}
+
+// What a sleep did. **On a board nothing below is printed**: the sleep does not return. It is
+// what a host test reads, and what a person sees when a sleep was refused.
+void Console::printSleepResult(const cycle::SleepResult& r) {
+  if (r.refusal != cycle::SleepRefusal::kNone) {
+    printf("error: sleep refused: %s\n", cycle::describe(r.refusal));
+    return;
+  }
+  printf("asleep: %lu s, band %s, the radio's line %s; SLEEP_NOTICE %s; the pads %s\n",
+         static_cast<unsigned long>(r.seconds), power::name(r.band),
+         r.radio_line_armed ? "armed" : "not armed",
+         r.notice_sent ? "answered" : link::client::describe(r.notice_fault),
+         r.pins_held ? "held in the safe state" : "NOT held (a pin driver refused)");
+  if (r.epoch != 0) {
+    printf("  expected back at epoch %lu\n", static_cast<unsigned long>(r.epoch));
+  }
+  if (r.journalled) print("  written down in the journal\n");
+}
+
+// `stay` / `stay off`: awake on purpose, without a cable, for the bench.
+void Console::stay(bool on) {
+  if (!dutyOk()) return;
+  duty_->guard().stayAwake(on);
+  if (on) {
+    printf("stay: this Walter will not be put to sleep by the bound on a wake for the next "
+           "%lu s; 'stay off' ends it\n",
+           static_cast<unsigned long>(cycle::kStayBoundMs / 1000u));
+  } else {
+    print("stay off: the bound on a wake applies again (a wake that does not reach sleep in "
+          "five minutes is ended by a reset)\n");
+  }
 }
 
 // -- dump and journal (task p3-03) ----------------------------------------------------------------
@@ -2660,6 +2933,12 @@ void Console::printJournalEntry(std::size_t number, const update::Entry& entry) 
       printSupervisorEntry(number, entry, p);
       return;
     }
+    case update::kind::kDutyCycle: {
+      cycle::Payload p;
+      if (!cycle::decode(entry, &p)) break;
+      printSleepEntry(number, entry, p);
+      return;
+    }
     default: break;
   }
   printf("  %2lu. seq %lu: kind 0x%04x, %u byte(s) - nothing in this build reads it\n",
@@ -2679,6 +2958,30 @@ void Console::printSupervisorEntry(std::size_t number, const update::Entry& entr
          static_cast<unsigned long>(p.counts.flashes));
   if ((p.flags & supervisor::kFlagByHand) != 0) print("; a person's command");
   if ((p.flags & supervisor::kFlagResumed) != 0) print("; after a restart");
+  print("\n");
+}
+
+// A duty-cycle entry (task p3-04): a sleep worth a line, a refusal, or the radio's line armed or
+// disarmed as a wake source.
+void Console::printSleepEntry(std::size_t number, const update::Entry& entry,
+                              const cycle::Payload& p) {
+  printf("  %2lu. seq %lu: duty cycle, %s", static_cast<unsigned long>(number),
+         static_cast<unsigned long>(entry.seq), cycle::describe(p.what));
+  if (p.what == cycle::Wrote::kRefused) {
+    printf(": %s", cycle::describe(p.refusal));
+  } else if (p.what == cycle::Wrote::kSleeping) {
+    printf(" for %lu s, band %s", static_cast<unsigned long>(p.interval_s),
+           power::name(p.band));
+  }
+  printf("; woke by %s, awake %lu s", cycle::name(p.wake), static_cast<unsigned long>(p.awake_s));
+  if (p.median_mv != 0) {
+    printf("; %lu mV", static_cast<unsigned long>(p.median_mv));
+    if ((p.flags & cycle::kFlagCharging) != 0) printf(", charging at %ld mA",
+                                                      static_cast<long>(p.mean_ma));
+  }
+  if ((p.flags & cycle::kFlagBandChanged) != 0) print("; the band changed");
+  if ((p.flags & cycle::kFlagOverridden) != 0) print("; wake.interval");
+  if ((p.flags & cycle::kFlagByHand) != 0) print("; a person's command");
   print("\n");
 }
 

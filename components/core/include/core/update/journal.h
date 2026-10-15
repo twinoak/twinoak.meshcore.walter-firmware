@@ -74,6 +74,7 @@ constexpr std::uint16_t kNone = 0;
 constexpr std::uint16_t kRadioUpdate = 0x0001;  // core/update/radio_update.h (task p2-03)
 constexpr std::uint16_t kSelfUpdate = 0x0002;   // the Walter's own (task p2-04)
 constexpr std::uint16_t kSupervisor = 0x0003;   // the ladder (task p2-05)
+constexpr std::uint16_t kDutyCycle = 0x0004;    // sleep and the band (task p3-04, core/cycle/sleep.h)
 }  // namespace kind
 
 struct Entry {

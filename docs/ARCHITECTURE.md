@@ -50,7 +50,10 @@ components/
                         client with its rules (redirects, statuses, the bound), the download in
                         ranges, resumable, budgeted. update/fetch.h is the three steps of a
                         release over them, update/tls_check.h the trial's handshake
-    power/              what the battery allows; the check-in interval
+    power/              what the battery allows; the check-in interval (task p3-04):
+                        interval_policy.h is a pure function of the readings this wake has, the
+                        band the last one ended in and the settings -> a band, an interval with
+                        hysteresis, and what the wake may do. docs/power.md is its table
     settings/           the settings a person provisions over USB (task p3-03): keys.h is the
                         table - one row per key with its type, range, fallback, whether it is a
                         secret, one line of help and what happens when it changes - and
@@ -68,8 +71,16 @@ components/
                         reject; task p2-05: rak watch, rak watch reset-caps, rak ladder; task
                         p3-01: lte, lte up, lte down, lte time, lte id; task p3-02: http get,
                         fetch, trust tls; task p3-03: get, set, erase confirm, dump, journal,
-                        and the word `confirm` on rak flash-test and a long rak kill)
-    cycle/              one wake, start to finish, against interfaces
+                        and the word `confirm` on rak flash-test and a long rak kill; task p3-04:
+                        wake, power, sleep now, sleep <seconds>, stay)
+    cycle/              one wake, start to finish, against interfaces. Task p3-04: wake_reason.h
+                        is what a wake *means* - the timer, §8's attention inside its repeat
+                        window, a spurious wake and its rate limit, a person with a cable, a
+                        power-up, a crash - with the last ten wakes in retained storage;
+                        wake_guard.h is the bound on a wake (a wake that does not reach sleep is
+                        ended by reset); sleep.h is **the one way out of a wake** - journal,
+                        SLEEP_NOTICE, the modem down, the pads held, deep sleep - and
+                        duty_cycle.h composes the four. The wake itself is task p3-05's
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
                         board, health and the supervisor hold a record each in), text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
@@ -80,15 +91,19 @@ components/
                         one named root with the host name checked, and the modem's certificate
                         slots and profiles; one HTTP request with the body as a stream of
                         pieces (task p3-02); a key-value store of short strings that survive a
-                        power cut, which is NVS on the board (task p3-03); and a sleeper
-                        (later).
+                        power cut, which is NVS on the board (task p3-03); and a sleeper -
+                        arm the sources a sleep may be woken by, go into deep sleep (which does
+                        not return: a wake is a boot), say which source woke this boot, and
+                        whether a USB host is on the port (task p3-04).
                         ("hal/" when this file was written; ESP-IDF owns a component of
                         that name - task p0-01)
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
                         region (tasks p2-02, p2-03), the OTA slots behind esp_ota_* (task p2-04),
-                        the settings in the `nvs` partition behind a key-value store (task p3-03)
+                        the settings in the `nvs` partition behind a key-value store (task p3-03),
+                        deep sleep with its two wake sources - the timer and ext1 on the radio's
+                        line - and the USB Serial/JTAG connection monitor (task p3-04)
   modem/                the Walter's LTE modem behind interfaces/' uplink: the one component that
                         names a WalterModem symbol, on UART2 because UART1 is the radio's (task
                         p3-01); and its TLS over socket 1 and its certificate slots, with the one
@@ -184,6 +199,17 @@ pins) and tested against fake pins that check them on every transition:**
    holds off. (A *power-up* of the ESP32-S3 does glitch GPIO1–14 low for about 60 µs, and that
    reaches nRESET: a Walter power cycle reboots the radio. That is expected, documented in the
    hardware repository, and the supervisor does not mistake it for a fault.)
+   **The wake pin is the one exception** (task p3-04). When the radio's start bit is to wake us,
+   `WALTER_RX` is given the chip's weak pull-up — so that a radio which is off, resetting or
+   being flashed cannot hold the Walter awake with a line that has drifted low — and that one pad
+   is left out of *our* holds, because ESP-IDF's `ext1_wakeup_prepare()` routes it to the RTC
+   mux, enables its input and holds it itself as part of arming the source, and a hold put on
+   first would block those writes (`sleep_modes.rst`, *External Wakeup (ext1)*: "please call
+   `rtc_gpio_hold_dis` to disable the hold function to perform any pin re-configuration"). At the
+   wake the pad is routed back with `rtc_gpio_deinit()` before the UART can have it again, and
+   the order in `main/app_main` is: `safe()` (constructing `RadioPins`), `releaseHolds()`,
+   the sleeper's `begin()`, `safe()` once more. The pull-up is dropped again by `safe()`, which
+   every kill calls first (rule 3), so it cannot survive into a moment when the rail is off.
 6. **The one exception to rule 4's "the clock cannot toggle while nRESET is asserted" is the
    dual adapter's selector, and this firmware never takes it** (task p1-06). The dual adapter —
    designed, not built: the hardware repository's `DUAL-RAK4630-FEASIBILITY.md` §3 at commit
@@ -735,8 +761,16 @@ condition does not apply, as before.
 ## 10. One wake
 
 The Walter sleeps deeply and wakes for one of three reasons: its timer, a start bit from the radio
-(attention), or USB being plugged in (a person; stay awake). One wake is one pass of a fixed
-sequence, each step bounded in time and energy:
+(attention), or USB being plugged in (a person; stay awake). **As built (task p3-04), the third
+is not a wake source**: `esp_sleep_enable_usb_wakeup()` answers `ESP_ERR_NOT_SUPPORTED` on the
+ESP32-S3 — `sleep_modes.c` guards it on `SOC_PM_SUPPORT_USB_WAKEUP`, which the S3's `soc_caps.h`
+does not define — and the one USB wake ESP-IDF has is light sleep's. So the rule became: a person
+presses reset, and a boot that finds a USB host stays awake, while the host is there and for a
+minute after the cable goes. The other two are the sleep timer and **ext1** on GPIO8 at a low
+level (a start bit; the pad's pull-up held through the sleep), ext1 rather than ext0 because ext0
+keeps the whole RTC peripheral domain powered and the sleep current is what the task exists for.
+
+One wake is one pass of a fixed sequence, each step bounded in time and energy:
 
 ```
 why did I wake → is the radio alive (supervisor) → set its clock → read power
@@ -747,6 +781,33 @@ why did I wake → is the radio alive (supervisor) → set its clock → read po
 How long until the next time comes from the battery: a table from state of charge and its trend to
 an interval, with hysteresis. Readings taken while there was no uplink are kept in a bounded ring
 and sent later.
+
+As built (task p3-04), the parts of that sequence that are not the wake itself:
+
+- **why did I wake** — `core/cycle/wake_reason.h`. A wake on the radio's line listens for §8's
+  whole repeat window (about eleven seconds) for a valid `EV_ATTENTION`; nothing valid is a
+  *spurious* wake, counted, and after three of them the line is disarmed as a wake source until
+  the next timer wake. The last ten wakes, with their reasons and how long each lasted, are one
+  record in RTC memory (`interfaces::RetainedSlot::kDutyCycle`), which also carries the band and
+  `saving`'s every-Nth counter. A power-up is read as "the radio was reset with us and is still
+  booting", which is the supervisor's own reading of the same three reset reasons.
+- **how long until the next time** — `core/power/interval_policy.h`, a pure function; the table
+  and every placeholder in it are `docs/power.md`.
+- **tell the radio I am going → sleep** — `core/cycle/sleep.h`, and it is **the one way out of a
+  wake**: the journal (when there is news), `SLEEP_NOTICE` as the last request (§8), the modem
+  down, the pads safe and held, deep sleep. It refuses while the radio's update has a step in the
+  air, while a transfer into the other application slot is open, and **while this firmware is on
+  trial** — the bootloader turns a `pending-verify` slot into `aborted` at every reset, and a
+  wake from deep sleep is one, so a sleep during a trial is a rollback of the image being tried.
+- **never awake indefinitely** — `core/cycle/wake_guard.h`: a wake that has not reached sleep in
+  five minutes is ended by a reset, the next boot's record says who asked, and the next sleep is
+  *lengthened* by the fault rather than shortened. A USB host and the console's `stay` hold it
+  off, and nothing else does. **Nothing arms it in this firmware yet**: there is no wake cycle to
+  reach sleep, so a bound would be a boot loop; `duty.guard().arm()` is task p3-05's one line.
+
+The modem library's own `sleep()` is not used: it arms the timer and nothing else, and it gives
+nothing a chance to hold a pad, write the journal or tell the radio first
+(`tasks/phase-3/reports/01.md`).
 
 **The backend is an interface.** In these piles its implementation does nothing. The MeshMaster
 agent goes behind it when the server side is decided (`spec/proposals/01` and `03`).
@@ -802,5 +863,5 @@ agent goes behind it when the server side is decided (`spec/proposals/01` and `0
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
 | HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
-| duty cycle | ✔ the policy | sleep entry and wake | current asleep; wake by UART |
+| duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §14) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |

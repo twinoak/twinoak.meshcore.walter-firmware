@@ -845,3 +845,67 @@ The task's own list names this section §12; that number is HTTPS's, so it is §
 - [ ] **`set log.level error`, then reboot.** The boot says only the invitation and the prompt;
   `get log.level` still answers, and so does every other command. Then `set log.level info` and
   reboot again: the boot lines are back. A unit on a mast with a noisy port is why this exists.
+
+## 14. Sleep
+
+From task p3-04 (`docs/power.md`; `docs/console.md`, *Sleep, and what wakes it*). Needs §1 and §3
+walked; the last two items need §11 (a SIM) and a meter. **This is the section that turns the
+interval table's placeholders into numbers**, and until it is walked every number in
+`docs/power.md` and `core/power/interval_policy.h` is a guess with a reason beside it.
+
+The task's own list names this section §13; that number is the console's (p3-03), so it is §14.
+
+Needs: a meter that can read microamps and integrate milliamp-hours (a Nordic PPK2, a Joulescope
+or a bench supply with an integrating readout), a scope with two channels, a cable to the
+repeater's own console, and a battery you can charge and discharge.
+
+- [ ] **The Walter's current asleep, modem off.** `lte down`, then `sleep 300` with the meter in
+      series on the Walter's supply. The Walter datasheet's deep-sleep figure is the target;
+      anything a few times higher is a pin being driven or a peripheral left on. If it is high:
+      `pins` before the sleep (everything should read released), then check whether the modem is
+      really down — `WalterModem::begin()` sets its own reset pin's direction and enables the
+      chip's deep-sleep pad hold, and that pin is the module's, not one of our seven.
+- [ ] **A scope on nRESET and on KILL across sleep entry and wake: no pulse.** Two channels, 1 V
+      per division, a timebase that shows the whole transition, triggered on the falling edge of
+      nRESET. There should be no edge at all: the pads are configured to the safe state and then
+      held, and at the wake they are configured to the same state before the holds come off
+      (`docs/ARCHITECTURE.md` §2 rule 5). Then the proof a scope cannot give: `rak status` ten
+      sleeps later, and the radio's **uptime still counting** from the same boot.
+- [ ] **The radio's line wakes it.** From the repeater's own console, the command that raises
+      attention reason 4 (a person asking for the Walter). The Walter wakes inside §8's repeat
+      window, and `wake` says *the radio's line: it raised attention* with *a person asked for
+      the walter*, the detail and which repeat it heard. Try it with the Walter two minutes into
+      a six-hour sleep, so that the wake is unambiguous.
+- [ ] **A line that chatters does not keep it awake.** Unplug the RAK's UART (or hold its TX low)
+      while the Walter sleeps: it either does not wake at all, or wakes at most three times and
+      then says *the radio's line is NOT armed as a wake source* at the boot and in `wake`. Plug
+      it back in and wait for a timer wake: the line is armed again, and `journal` has both
+      entries.
+- [ ] **USB does not wake it, and a boot with a cable stays awake.** With the Walter asleep, plug
+      the cable in: **nothing happens** — this chip cannot wake from deep sleep on USB
+      (`docs/console.md`). Press reset: the boot says *a USB host is on the port, so this Walter
+      stays awake while you are here*. Pull the cable and watch for a minute: nothing sleeps,
+      because nothing in this firmware runs a wake yet (task p3-05 is what arms the bound).
+- [ ] **`stay` and the bound.** `stay`, then `wake`: it says `stay` is on and how long is left.
+      `stay off`: the line about the bound comes back. The bound itself cannot be walked until
+      task p3-05 arms it; when it is, a wake that hangs ends in a reset and `reboots` says *the
+      wake did not reach sleep inside its bound*.
+- [ ] **The energy of one whole wake with an attach** (needs §11). The number that turns the
+      policy's placeholders into a table. With an integrating meter: zero it, `lte up`, let the
+      attach finish, `lte down`, `sleep 60`, read the milliamp-hours. Three times, from cold.
+      Then the same for a wake that only talks to the radio (`rak ping`, `rak power`, `sleep 60`).
+      Write both into `core/power/interval_policy.h`'s comment and into `docs/power.md`.
+      The INA3221's own readings before and after a wake are the second, cheaper way to the same
+      number: `rak power` reads channel 3, the total load.
+- [ ] **The pack's voltage against its state of charge.** Charge it full, then run the unit on it
+      with the interval forced short (`set wake.interval 15`) and write down `rak power`'s channel
+      2 every hour until the repeater browns out. That curve is what the three thresholds are read
+      off, and it is the one measurement nothing in these piles could even approximate.
+- [ ] **The bands, once the thresholds are real.** With a bench supply standing in for the pack,
+      set it to each threshold ±100 mV and read `power`: the band, the interval and what the wake
+      may do. Walk it down and then up again and watch the hysteresis hold — the band should
+      change once per crossing, not twice.
+- [ ] **A day of it.** Leave the unit on the battery and the panel for 24 hours with
+      `wake.interval auto`, then read `wake` (the last ten wakes and their durations), `power`
+      (the band and the readings) and `journal` (the band changes). What a day cost the pack is
+      the difference between the first and the last `rak power`.

@@ -12,6 +12,7 @@
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
 #include "core/console/console.h"
+#include "core/cycle/duty_cycle.h"
 #include "core/health/health.h"
 #include "core/image/choose.h"
 #include "core/image/receive.h"
@@ -46,6 +47,7 @@
 #include "platform/own_update.h"
 #include "platform/pins.h"
 #include "platform/retained.h"
+#include "platform/sleeper.h"
 #include "platform/uart.h"
 #include "platform/usb_console.h"
 
@@ -73,6 +75,10 @@ platform::RtcRetained g_retained;
 platform::EspRestart g_restart;
 platform::UsbConsole g_usb;
 platform::RadioUart g_uart;
+// Deep sleep and its two wake sources (task p3-04): the timer and a start bit from the radio on
+// GPIO8. USB is not one of them - this chip cannot wake from deep sleep on a cable - so a boot
+// that finds a host stays awake instead (components/platform/sleeper.cpp).
+platform::EspSleeper g_sleeper;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
 // The settings (task p3-03): NVS behind interfaces::KeyValue, and the table over it. The store
@@ -113,6 +119,23 @@ extern "C" void app_main() {
   // First: the seven pins in the safe state (docs/ARCHITECTURE.md §2 rule 1). Constructing
   // RadioPins is safe(); nothing runs before it, not even the banner.
   static core::board::RadioPins radio_pins(g_pins, g_clock, g_retained);
+
+  // And then rule 5's other half, in this order (task p3-04; the comment in
+  // core/board/radio_pins.h and components/platform/sleeper.cpp carry the documents):
+  //
+  //   1. constructing RadioPins was safe(): the pads' *registers* now hold the state they were
+  //      held in. They are still latched, so nothing on a wire moved.
+  //   2. releaseHolds(): safe() again, then the latches off - the pad sees no change, because
+  //      what it is released into is what it was held at. This is what keeps nRESET from
+  //      glitching across a wake.
+  //   3. the sleeper's begin(): the wake cause read, and the pad the radio's line was armed on
+  //      routed back from the RTC mux to the IO mux (`rtc_gpio_deinit`), which ESP-IDF requires
+  //      before an ext1 wake pin can be a digital GPIO again - the UART needs it back.
+  //   4. safe() once more, so that the pad that has just come back from the RTC mux is
+  //      configured by the one object that owns these seven pins.
+  (void)radio_pins.releaseHolds();
+  g_sleeper.begin();
+  radio_pins.safe();
 
   // Which radio the seven wires reach (task p1-06; spec/SYSTEM.md S-11). **This is the only
   // place a TargetSelect is constructed, and it is a SingleTarget**: a unit has one radio, slot
@@ -340,6 +363,26 @@ extern "C" void app_main() {
   static core::supervisor::Supervisor supervisor(radio, radio_pins, slots, health, battery, g_clock,
                                                  g_wall, g_retained, g_store, &update_flasher,
                                                  g_update, g_journal);
+  // Its retained record and the journal, read here rather than by the console's begin(), because
+  // the duty cycle below asks it to listen for §8's attention first and a supervisor that has
+  // not read its record cannot record one properly. The console still prints what it found.
+  supervisor.begin();
+
+  // The duty cycle (task p3-04, docs/ARCHITECTURE.md §10, docs/power.md): why this wake
+  // happened, what the battery allows, the bound on a wake, and the one way out of one. **This
+  // is the only object in this firmware that sleeps**, and until the wake cycle exists (task
+  // p3-05) the console is the only thing that drives it: `sleep now`, `sleep <seconds>`, `wake`,
+  // `power`, `stay`.
+  static core::cycle::DutyCycle duty(g_sleeper, radio_pins, radio, uplink, health, g_clock, g_wall,
+                                     g_restart, g_retained, &supervisor, g_update,
+                                     self_update_ptr, g_journal, &settings);
+  // What this wake means, before anything is done about it. For a wake on the radio's line this
+  // listens for up to §8's whole repeat window (about eleven seconds), which is why it is here -
+  // after the link's port is open - and not at the top of this function.
+  duty.begin();
+  // The bound on a wake is deliberately **not** armed: nothing in this firmware reaches sleep by
+  // itself yet, so a bound that reset the Walter would be a boot loop and not a safety rail.
+  // `duty.guard().arm()` is the one line task p3-05 adds (tasks/phase-3/reports/04.md).
 
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
   // time round, the uptime kept in retained storage about once a second. Returning is not an
@@ -348,7 +391,7 @@ extern "C" void app_main() {
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
-                                        g_fetch, &trust, &settings, &g_uplink);
+                                        g_fetch, &trust, &settings, &g_uplink, &duty);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {

@@ -301,8 +301,10 @@ TEST_CASE("status says what the settings are for, and names the unit when it has
   rig.begin();
   std::string text = rig.run("status");
   CHECK(hasText(text, "unit: no name (set unit.name); role manager, board walter"));
-  CHECK(hasText(text, "next wake: nothing sleeps yet (task p3-04); wake.interval auto, "
-                      "radio may wake it: yes"));
+  // The duty cycle has not decided a band this wake - `status` does not spend a POWER_GET - so
+  // it says what is known and when the next interval is chosen (task p3-04).
+  CHECK(hasText(text, "next wake: at the end of this wake; last band no-reading, "
+                      "wake.interval auto; line armed"));
   CHECK(hasText(text, "images: golden=empty candidate=empty scanner=empty"));
   CHECK(hasText(text, "uplink: "));
   // No secret and no subscription identity, whatever is set.
@@ -317,7 +319,7 @@ TEST_CASE("status says what the settings are for, and names the unit when it has
   rig.run("set wake.radio off");
   text = rig.run("status");
   CHECK(hasText(text, "unit: Window at Grenaa; role manager"));
-  CHECK(hasText(text, "wake.interval 180 min, radio may wake it: no"));
+  CHECK(hasText(text, "wake.interval 180 min; line not armed"));
 }
 
 TEST_CASE("status is one screen: a dozen lines, none of them over a hundred characters") {

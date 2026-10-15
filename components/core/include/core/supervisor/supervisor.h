@@ -510,6 +510,13 @@ class Supervisor final : public link::client::RestartWatcher {
   std::size_t incidentCount() const { return incident_count_; }
   const Incident& incidentAt(std::size_t index) const;
 
+  // §8. Reads whatever the radio has sent and records any attention in it. **Climbs nothing,
+  // sends nothing, judges nothing**: it is what a wake on the radio's line calls while it works
+  // out why it woke (task p3-04, core/cycle/wake_reason.h), before anything is decided. The one
+  // place an EV_ATTENTION is decoded in this firmware is here, which is why the wake asks rather
+  // than reading the client's queue itself.
+  void listen() { drainEvents(); }
+
   // §8. The oldest recorded attention, removed: what phase 3's wake hands on. False when there
   // is none.
   bool takeAttention(Attention* out);

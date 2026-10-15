@@ -91,6 +91,11 @@ const Line kLines[] = {
     {"lte id", "lte id"},
     {"http get", "http get https://r.example/x"},
     {"fetch", "fetch https://r.example/v1"},
+    {"wake", "wake"},
+    {"power", "power"},
+    {"sleep now", "sleep now"},
+    {"sleep", "sleep 600"},
+    {"stay", "stay"},
     {"journal", "journal"},
 };
 

@@ -94,6 +94,15 @@ class ScriptedRadio final : public interfaces::ByteStream {
   bool override_uptime = false;
   std::uint32_t uptime_s = 0;
 
+  // §5.8's POWER_GET, when a test wants other than the fixture's three channels. Channel 2 is
+  // the battery - "positive = charging, negative = discharging" - and it is what task p3-04's
+  // interval policy reads to pick a band; `power_valid`'s bit 1 clear is a channel the radio
+  // could not read, which is a reading the policy must treat as none.
+  bool override_power = false;
+  std::uint8_t power_valid = 0x07;
+  std::uint16_t battery_mv = 4000;
+  std::int16_t battery_ma = 0;
+
   // ---------------------------------------------------------------- what it does
   // A new boot_id, the event counter back to 0, nothing remembered - and an EV_BOOT on the wire
   // (§5.1), unless `announce` is false (a radio that was reset while the Walter slept).
@@ -101,7 +110,15 @@ class ScriptedRadio final : public interfaces::ByteStream {
 
   // §8. 0x00 0x00, then the event 300 ms later, then every 1000 ms, `repeat` counting from 0,
   // until a request arrives or it has been sent `repeats` times.
-  void raiseAttention(std::uint8_t reason, std::uint16_t detail, int repeats = 1);
+  //
+  // `first_repeat` is which of them the Walter is in time to hear: §8 says that "a Walter coming
+  // out of deep sleep needs a few hundred milliseconds before its UART listens, which is why the
+  // event is repeated and why losing the first ones is expected", so the repeats before it are
+  // not put on the wire at all and the one at `first_repeat` arrives 300 ms from now, carrying
+  // its own `repeat` number. `raiseAttention(4, 0, 10, 9)` is a Walter that heard only the last
+  // of the ten.
+  void raiseAttention(std::uint8_t reason, std::uint16_t detail, int repeats = 1,
+                      int first_repeat = 0);
 
   // Any event case of the fixtures, by name, with this radio's event seq, after a delay.
   void sendEvent(const std::string& case_name, std::uint32_t after_ms = 0);
