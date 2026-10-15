@@ -147,7 +147,11 @@ target_include_directories(doctest SYSTEM INTERFACE ${CMAKE_CURRENT_LIST_DIR}/th
 # phase 1's task 03 the SWD target.
 file(GLOB_RECURSE FAKE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/fakes/*.cpp)
 file(GLOB_RECURSE SIM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/sim/*.cpp)
-file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp)
+# core/ is the tests of the logic; rails/ is the suite's own statement about the rails
+# (task p3-06): the assertions that are about every test rather than about one, and which doctest
+# runs last because it orders test cases by file path.
+file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp
+                                                 ${CMAKE_CURRENT_LIST_DIR}/rails/*.cpp)
 add_executable(core_tests main.cpp ${FAKE_SOURCES} ${SIM_SOURCES} ${TEST_SOURCES} ${FIXTURE_HEADER}
                ${MANIFEST_FIXTURE_HEADER})
 target_link_libraries(core_tests PRIVATE core doctest)

@@ -31,7 +31,7 @@
 // and `components/soc/esp32s3/include/soc/soc_caps.h` does not define it - and the one USB wake
 // ESP-IDF has is light sleep's anyway (`esp_sleep.h`: `ESP_SLEEP_WAKEUP_USB`, "light sleep
 // only"). So the rule is: **a person presses reset, and a boot that finds a USB host stays
-// awake.** docs/bench.md §14 and tasks/phase-3/reports/04.md say it where a person will look.
+// awake.** docs/bench.md §15 and tasks/phase-3/reports/04.md say it where a person will look.
 //
 // What crosses the sleep is one record in `interfaces::RetainedSlot::kDutyCycle` - the last ten
 // wakes with their reasons and durations, the spurious count, the disarm, the faults in a row,

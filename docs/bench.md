@@ -1,9 +1,65 @@
 # The bench
 
-What no session could check, in the order the rig is brought up (`spec/SYSTEM.md` §7,
-`hardware/pcb/BENCH-BREADBOARD.md` §7): the Walter alone, then UART, reset, SWD, flash, then the
-kill line and I2C. Each task adds its lines under the step it needs; the task's report says the
-same under *Not verified here*. Tick here when walked, with the date.
+**One walk, from an empty desk.** Everything four piles of tasks could not check, in the order the
+rig is brought up (`spec/SYSTEM.md` §7, and the hardware repository's
+`hardware/pcb/BENCH-BREADBOARD.md` §7): the Walter alone, then the UART, the reset line, SWD, the
+first flash, **and only then the kill line** — then images, updates, the supervisor, the modem,
+HTTPS, provisioning, sleep, and a day of it. No board has run this firmware. This file is what
+turns that sentence over.
+
+Walk it in order. A step whose *Needs* are not met is a step that will waste an evening, and a
+number written down in step 2 is one step 16 does not have to guess at.
+
+## How to read a step
+
+Every item is a box with four things in it: **what to connect**, **what to type**, **what should
+be seen**, and — the one that matters when it goes wrong — **what it means if it is not**. Tick
+the box when it is walked, with the date, and write the measured numbers into the item. The
+constants those numbers replace are gathered in one table at the end:
+[*What to bring back*](#what-to-bring-back).
+
+Two marks:
+
+- ⚠ **can damage something, or lose the radio's identity.** Read the item through before typing
+  anything. These are the kill line, opening a protected module, a chip erase by a person, and
+  anything that writes the nRF52's flash.
+- ★ **the three that matter most.** If there is one evening, these are it:
+  1. **§5, the first flash** — `rak flash-test`, then a real image, then the power pulled
+     half-way through. The unit exists so that this cannot brick a radio, and a simulator can only
+     show that the documents were followed, not that the chip agrees with them.
+  2. **§9, the deliberate bad image** — a signed, valid candidate that is broken on purpose: it
+     must fail its health check, the golden image must come back, and the broken one must never be
+     tried again. That is the whole promise of the project, on silicon.
+  3. **§15, a scope on nRESET across sleep and wake** — there must be no edge at all. A Walter
+     that glitches the reset line every time it wakes is a Walter that reboots the repeater every
+     fifteen minutes, and nothing in a host test can see it.
+
+## The walk
+
+| | | Needs before it |
+|---|---|---|
+| [1](#1-the-walter-alone-on-usb) | The Walter alone on USB | a Walter, a USB-C cable, `esptool` |
+| [2](#2-the-pins-and-the-reset-line) | The pins and the reset line | §1, a meter, then a scope, then the RAK wired |
+| [3](#3-the-link) | The link (the UART) | §2, the RAK with the repeater firmware |
+| [4](#4-swd) | SWD | §2, the SWD lines wired, a scope |
+| [5](#5-flashing) ★⚠ | Flashing | §4, a repeater image, time |
+| [6](#6-the-kill-line) ⚠ | The kill line | §§2–5, the kill emulator |
+| [7](#7-the-slot) | The slot | §§1–6 |
+| [8](#8-images) | Images | §1, a test-key build, a signed release |
+| [9](#9-updating-the-radio) ★⚠ | Updating the radio | §5, §8, two releases (one broken on purpose) |
+| [10](#10-updating-the-walter) | Updating the Walter | §1, §3, test-key builds as releases |
+| [11](#11-the-supervisor) ⚠ | The supervisor | §3, §5, §8, a jumper to the RAK's nRESET |
+| [12](#12-the-modem) | The modem | a SIM, an antenna |
+| [13](#13-https) | HTTPS | §12 |
+| [14](#14-provisioning-and-the-console) | Provisioning and the console | §1 (and §§12–13 for two items) |
+| [15](#15-sleep) ★ | Sleep | §1, §3, a scope, an integrating meter |
+| [16](#16-a-day) | A day | §15, §12, §14 |
+| [—](#what-to-bring-back) | **What to bring back** | the numbers, in one table |
+
+The numbers above are this walk's, in walking order; the task files' own section numbers are not
+(the kill line moved to §6, where the hardware's bring-up puts it, and everything after it shifted
+by one). Each task's report says the same items under *Not verified here*;
+`tasks/phase-3/reports/06.md` maps every one of them to a step here.
 
 ## 1. The Walter alone on USB
 
@@ -36,7 +92,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   this line. `undefined` would only show on a slot whose entry was erased after the first boot.)
   If the second boot ever says `aborted` or falls to the bootloader's `No bootable app
   partitions`, the premise in `tasks/phase-0/reports/01.md` (rollback) is wrong and the
-  self-update (task p2-04, §9) must be re-read against what the board does.
+  self-update (task p2-04, §10) must be re-read against what the board does.
 
 - [ ] **Nothing else on the pins** (task p0-01, until task 03). With a meter: GPIO1 (nRESET), 2
   (SWDCLK), 4 (SWDIO), 5 (KILL), 7 (TX) read as inputs (high-impedance, pulled by nothing of ours)
@@ -85,12 +141,13 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   boot line is a `WARNING` and `trust` lists `c17969deb0026955`: never leave such a build on a
   unit that goes out.
 
-## 2. The pins
+## 2. The pins and the reset line
 
 Needs: the Walter on USB, a meter, then a scope, then the RAK4631 on the RAK19001 with the UART,
-nRESET and SWD wired through 470 Ω and 2.2 nF (`BENCH-BREADBOARD.md` §3 and §4), the kill emulator
-of §5 last. The firmware's side is `components/core/board/radio_pins.cpp`; the rules are
-`ARCHITECTURE.md` §2; what the host tests proved is in `tasks/phase-0/reports/03.md`.
+nRESET and SWD wired through 470 Ω and 2.2 nF (`BENCH-BREADBOARD.md` §3 and §4). **The kill
+line is §6**, after the first flash, because that is where the hardware's bring-up puts it. The
+firmware's side is `components/core/board/radio_pins.cpp`; the rules are `ARCHITECTURE.md` §2,
+and what the host tests proved is in `tasks/phase-0/reports/03.md`.
 
 - [ ] **The safe state at boot** (task p0-03). With the meter, after boot: GPIO1 (nRESET), 2
   (SWDCLK), 4 (SWDIO), 5 (KILL), 6 (spare), 8 (RX) are high-impedance; GPIO7 (TX) reads high
@@ -114,31 +171,6 @@ of §5 last. The firmware's side is `components/core/board/radio_pins.cpp`; the 
   two resets are a second apart`, the second pulse comes a second after the first ended, and the
   radio does **not** land in its UF2 bootloader (no USB drive appears on the RAK's port, Serial1
   keeps answering).
-
-- [ ] **`rak kill 5`** (task p0-03; five seconds needs no `confirm`, and more does - task
-  p3-03). With the LED emulator first (`BENCH-BREADBOARD.md` §5 phase
-  1), then the P-FET switch: scope on TX (GPIO7), nRESET and SWDCLK against KILL (GPIO5). TX
-  drops from its pulled-up high to floating (a 10 kΩ to ground on it would show it) and nRESET,
-  SWDCLK, SWDIO are undriven **before** KILL rises; KILL is high for 5 s and then floats (it never
-  goes low-driven: the 100 k pull-down on the A-board's Q3 gate is what takes it down); the LoRa
-  rail falls and returns by itself. While it is down nothing is back-fed: the rail sits at 0 V, not
-  at a diode drop (about 0.6 V would mean something of ours is pushing current into the radio).
-  After it, `status` says `pins: power on` and TX is pulled up again. `rak kill 0` and
-  `rak kill 31 confirm` are refused with the bounds and touch no pin, and `rak kill 31` without
-  the word is refused by the parser before that (task p3-03).
-
-- [ ] **Reset the Walter while a kill is in progress** (task p0-03). `rak kill 30 confirm`,
-  then press
-  the Walter's reset within those 30 s: the kill line floats the moment the S3 resets, the rail
-  comes back by itself, and the new boot says `boot n: reset pin reset`; `status` says
-  `pins: power on` after 200 ms. Nothing of ours holds the radio off across a reset.
-
-- [ ] **The numbers that replace the placeholders** (task p0-03). With the scope on the LoRa rail
-  during `rak kill 1`: how long after KILL rises the rail is below the nRF52's brown-out level
-  (about 1.7 V) and below 0.5 V, with the radio in its normal receive load and with it idle; and
-  after KILL falls, how long until the rail is steady at 3.3 V. Replace `kKillTiming` in
-  `components/core/include/core/board/radio_pins.h` (min, max, settle) — the host tests and
-  `help` follow — and note the measurements in this file.
 
 ## 3. The link
 
@@ -195,6 +227,8 @@ the same fixtures.
   for a frame.
 
 ## 4. SWD
+
+**⚠ the protected-module item: opening one erases the radio's identity, and is a person's job.**
 
 Needs: the Walter on USB with §2 walked, the RAK4631 on the RAK19001 powered, SWDCLK and SWDIO
 wired — D-sub 4 and 5, Walter GPIO2 and GPIO4 — first with short wires, then through 470 Ω and
@@ -290,6 +324,8 @@ every number; the nRF52840 Product Specification ("Debug and trace") gives the c
 
 ## 5. Flashing
 
+**★ one of the three that matter most. ⚠ writes the radio's flash.**
+
 Needs: §4 walked (`rak swd id` answers through the filters), the RAK's own USB console on the
 laptop, a repeater image for the RAK (phase 2's `rak flash`, or a UF2 to load over USB), and
 time: a full flash at 125 kHz is minutes (`tasks/phase-1/reports/05.md` gives the budget). The
@@ -373,7 +409,47 @@ radio, and the simulator can only show the documents were followed, not that the
   says *protected*, the module cannot be re-flashed by the Walter after an interruption without a
   power cycle and a bootloader that opens the port — note it, loudly.
 
-## 6. The slot
+## 6. The kill line
+
+**⚠ takes the radio off the air.**
+
+Needs: §§2-5 walked, and **only now** the kill emulator (`BENCH-BREADBOARD.md` §5 - an LED and a
+resistor in phase 1, the P-FET switch in phase 2), which is the order the hardware's bring-up puts
+it in (`BENCH-BREADBOARD.md` §7 item 5: "Only now add the kill emulator"). A scope with two
+channels and a meter on the LoRa 3.3 V rail. The firmware's side is
+`components/core/board/radio_pins.cpp` rules 3 and 4; what the host tests proved is in
+`tasks/phase-0/reports/03.md`.
+
+**Why the mark.** A kill of a module that is mid-write to its own file system is the one way this
+firmware could damage something it is not meant to touch, and nothing in it can know whether the
+radio is mid-write. Keep the kills short, and never walk this section on a unit in service.
+
+- [ ] **`rak kill 5`** (task p0-03; five seconds needs no `confirm`, and more does - task
+  p3-03). With the LED emulator first (`BENCH-BREADBOARD.md` §5 phase
+  1), then the P-FET switch: scope on TX (GPIO7), nRESET and SWDCLK against KILL (GPIO5). TX
+  drops from its pulled-up high to floating (a 10 kΩ to ground on it would show it) and nRESET,
+  SWDCLK, SWDIO are undriven **before** KILL rises; KILL is high for 5 s and then floats (it never
+  goes low-driven: the 100 k pull-down on the A-board's Q3 gate is what takes it down); the LoRa
+  rail falls and returns by itself. While it is down nothing is back-fed: the rail sits at 0 V, not
+  at a diode drop (about 0.6 V would mean something of ours is pushing current into the radio).
+  After it, `status` says `pins: power on` and TX is pulled up again. `rak kill 0` and
+  `rak kill 31 confirm` are refused with the bounds and touch no pin, and `rak kill 31` without
+  the word is refused by the parser before that (task p3-03).
+
+- [ ] **Reset the Walter while a kill is in progress** (task p0-03). `rak kill 30 confirm`,
+  then press
+  the Walter's reset within those 30 s: the kill line floats the moment the S3 resets, the rail
+  comes back by itself, and the new boot says `boot n: reset pin reset`; `status` says
+  `pins: power on` after 200 ms. Nothing of ours holds the radio off across a reset.
+
+- [ ] **The numbers that replace the placeholders** (task p0-03). With the scope on the LoRa rail
+  during `rak kill 1`: how long after KILL rises the rail is below the nRF52's brown-out level
+  (about 1.7 V) and below 0.5 V, with the radio in its normal receive load and with it idle; and
+  after KILL falls, how long until the rail is steady at 3.3 V. Replace `kKillTiming` in
+  `components/core/include/core/board/radio_pins.h` (min, max, settle) — the host tests and
+  `help` follow — and note the measurements in this file.
+
+## 7. The slot
 
 Task p1-06 adds **no bench step**, and that is its result. A unit has one radio, slot 0, and every
 `rak …` command means that slot without saying so; the dual adapter it makes room for does not
@@ -384,7 +460,7 @@ lines are worth typing once while the rig is up, because they cost nothing:
   *error: slot 1: this adapter has 1 radio, so slot 0 is the only one* — with no frame on the
   UART and nothing on the seven pins. `rak @2 hello` is refused by the parser instead.
 
-- [ ] **Every other item of §§1–5 behaves as it reads.** Nothing in this task changes a pin, a
+- [ ] **Every other item of §§1–6 behaves as it reads.** Nothing in task p1-06 changes a pin, a
   timing or a command's output except `rak flash-test confirm`, whose first line now begins
   `flash-test: slot 0, rak4630-single, …`.
 
@@ -393,7 +469,7 @@ scope on SWDCLK and nRESET (a window of 100–500 µs, two edges, and *no* reset
 pin), the power-on default read back as module A, and `rak @1 hello` answering from the second
 radio. None of it is verifiable today.
 
-## 7. Images
+## 8. Images
 
 From task p2-02 (`docs/ARCHITECTURE.md` §6, `docs/console.md` *Loading a radio image over USB*).
 Needs: a Walter on USB, `pip install pyserial==3.5` on the laptop, and a **test-key build** of this
@@ -460,12 +536,14 @@ item below.
   radio, so slot 0 is the only one*, and nothing on the port changes. The areas for slot 1 are in
   the partition all the same, which is what `image list`'s last lines say.
 
-Nothing here flashes a radio: putting a stored image on the RAK is §8's.
+Nothing here flashes a radio: putting a stored image on the RAK is §9's.
 
-## 8. Updating the radio
+## 9. Updating the radio
+
+**★ one of the three that matter most. ⚠ writes the radio's flash.**
 
 From task p2-03 (`docs/update.md`, `docs/console.md` *The radio's update*). Needs: §5 walked (a
-real flash through the wire, the bootloader starting what was flashed), §7 walked (a repeater
+real flash through the wire, the bootloader starting what was flashed), §8 walked (a repeater
 release in the store), the RAK's own USB console on the laptop, and **two repeater releases
 signed with the key this build trusts** - a good one and, for the second item, one that is valid
 and signed but **broken on purpose**: a build whose link never comes up (the repeater repository
@@ -475,7 +553,7 @@ With task p1-05's flashing session this is the one that matters most: the host t
 procedure against a simulated radio that misbehaves on cue; only a RAK can show that a real
 repeater boots inside the window, takes the clock, and stays up for the period.
 
-- [ ] **The good path, watched.** With the golden image from §7 running on the RAK and a newer
+- [ ] **The good path, watched.** With the golden image from §8 running on the RAK and a newer
   release pushed `--as candidate`: `rak update`. Watch the lines: `check -> flashing-candidate`,
   the flasher's pages, `-> booting: flashed; the radio was reset`, `-> proving: the radio
   answered` (within seconds of the reset: **write down how long**, that is `kBootWindowMs`'s
@@ -500,7 +578,7 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   transitions, and ends *done* or *restored* as it would have without the cut; `rak update status`
   shows the resumed entry *(resumed after a restart)*. During proving, the whole period is run
   again - it is not credited with the minutes before the cut. A RAK cut mid-flash sits in its
-  bootloader until the resumed flash finishes (§5's item 6), which is right.
+  bootloader until the resumed flash finishes (§5's last items), which is right.
 - [ ] **A role switch and back keeps the identity.** `image receive scanner` with a NoiseScope
   release, then `rak role scanner`: `-> done: a scanner is running`, `rak hello` says *the radio is
   running the scanner*, `rak text` shows its `info` line. Then `rak role repeater`: the golden image
@@ -508,10 +586,11 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   proved`, and `rak id` shows **the same public key and name as before** - the file system above
   the application region was never touched. `image list`: golden and candidate as they were,
   `image bad` empty.
-- [ ] **`rak update --first-install` on a module whose application was wiped** (after §5's item 6,
-  or `rak flash-test confirm`'s region). `rak update` is refused (*there is no golden image to return
-  to*); with `--first-install` the candidate is flashed, proved and becomes golden. Do not try the
-  broken candidate this way unless you mean to see *stuck: no image to return to*.
+- [ ] **`rak update --first-install` on a module whose application was wiped** (after §5's
+  power-cut item, or `rak flash-test confirm`'s region). `rak update` is refused (*there is no
+  golden image to return to*); with `--first-install` the candidate is flashed, proved and becomes
+  golden. Do not try the broken candidate this way unless you mean to see *stuck: no image to
+  return to*.
 - [ ] **The numbers.** Against the lines above, `docs/update.md`'s table: the boot window (how long
   a real repeater takes from reset to `HELLO`; the window must be comfortably more), the proving
   period (long enough to catch a build that restarts itself after its first advert; short enough
@@ -519,7 +598,7 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   constant in `core/update/radio_update.h` with a sentence; change the number and the sentence
   together.
 
-## 9. Updating the Walter
+## 10. Updating the Walter
 
 From task p2-04 (`docs/update.md`, *The Walter's half*; `docs/console.md` *The Walter's own
 update*). Needs: §1 walked, §3 walked (a radio answering `HELLO`, for the trial's second
@@ -590,11 +669,13 @@ bootloader's rules; only a board shows that ESP-IDF's otadata and `esp_ota_*` be
   meanwhile (`STATUS` flag bit 2 after the restart). Each is a constant in
   `core/update/self_update.h` with a sentence; change the number and the sentence together.
 
-## 10. The supervisor
+## 11. The supervisor
+
+**⚠ cuts the radio's power, and may reflash its application.**
 
 From task p2-05 (`docs/supervisor.md`: the ladder, the four kinds of silence, the waits and the
 caps as a table, and what to do when it has stopped; `docs/console.md`, *The supervisor*). Needs:
-§3 walked (a radio answering `HELLO`), §5 walked (a real flash through the wire), §7 walked (a
+§3 walked (a radio answering `HELLO`), §5 walked (a real flash through the wire), §8 walked (a
 golden image in the store), and **a jumper or a flying lead** to hold the RAK's nRESET to ground,
 which is how a radio is made to go quiet on a desk. The host tests prove the ladder against a radio
 that misbehaves on cue; only a RAK shows how long a real one takes to come back after each rung,
@@ -636,7 +717,7 @@ run.
   still booting* and do **nothing**. `rak watch` must show no new incident. Twenty seconds later
   (`kWalterPowerUpGraceMs`) the same command asks properly again. **Write down how long the RAK
   actually takes to answer after the Walter's power-up**: that is this constant's bench number.
-- [ ] **A radio running the scanner is left alone.** `rak role scanner` (§8's fourth item), then
+- [ ] **A radio running the scanner is left alone.** `rak role scanner` (§9's fourth item), then
   `rak ladder`: it must say *the radio is running the scanner (NoiseScope): not a fault, left
   alone*, move no pin, and record no incident. `rak role repeater` puts it back.
 - [ ] **The caps, and that they survive.** With the jumper in, climb until the day's resets are
@@ -656,19 +737,17 @@ run.
   and watch for `EV_BOOT`s in `rak events` as the nearest thing.
 - [ ] **The numbers.** Against the lines above, `docs/supervisor.md`'s table: the three waits
   against how long a real RAK takes to come back; `kKillOffMs` against the rail's measured fall and
-  rise (§2's numbers); `kWalterPowerUpGraceMs` against the glitch's real effect; the caps against
+  rise (§6's numbers); `kWalterPowerUpGraceMs` against the glitch's real effect; the caps against
   what a mast can afford of its battery in a day; the battery thresholds against the real pack's
   curve under two MCUs awake. Each is a constant in `core/supervisor/supervisor.h` with a sentence;
   change the number and the sentence together.
 
-## 11. The modem
+## 12. The modem
 
 From task p3-01 (`docs/ARCHITECTURE.md` §9; `docs/console.md`, *The uplink*). Needs: **a SIM with
 LTE-M data on a Danish network, an LTE antenna on the module's connector**, and §1 walked (a console
 on USB). Nothing of this phase can be proven in a session: the policy is tested against a fake modem
 that fails in every way a real one does, and every line below is about the real one.
-
-The task's own list names this section §10; that number was already the supervisor's, so it is §11.
 
 - [ ] **`lte up` with the SIM in and the antenna on.** Expect `lte up: up in <n> ms (up)`, a
   `signal:` line with an RSRP, an RSRQ, an RSSI, the operator's name and a band number, and a
@@ -714,15 +793,13 @@ The task's own list names this section §10; that number was already the supervi
   library's own command timeout): if a deaf `AT` really does sit there for 30 seconds, a wake that
   finds a dead modem spends a minute of battery on finding out.
 
-## 12. HTTPS
+## 13. HTTPS
 
 From task p3-02 (`docs/ARCHITECTURE.md` §9; `docs/console.md`, *HTTPS*; `keys/tls/README.md`).
-Needs §11 walked: a SIM, the antenna, `lte up` saying *up*. Nothing of this section could be run
+Needs §12 walked: a SIM, the antenna, `lte up` saying *up*. Nothing of this section could be run
 in a session - the client, the download and the fetch are tested against a scripted server through
 the firmware's own HTTP, and the one thing a session cannot script is the modem's TLS stack.
 **The third item is the test that the rail is real on the modem and not only in the source.**
-
-The task's own list names this section §11; that number is the modem's, so it is §12.
 
 - [ ] **`trust tls` after the first boot, then after a reboot.** On a fresh unit, before any
   request: both roots `not written yet: written at the next request`. Then `lte up` and
@@ -783,13 +860,11 @@ The task's own list names this section §11; that number is the modem's, so it i
   and `kReceivePollMs` (`components/modem/walter_tls.h`). Each is a constant with a sentence;
   change the number and the sentence together.
 
-## 13. Provisioning and the console
+## 14. Provisioning and the console
 
 From task p3-03 (`docs/provisioning.md`; `docs/console.md`, *Settings*). Needs §1 walked, and
-§§11–12 for the last two items. Everything else here is a laptop, a cable and five minutes, and
+§§12–13 for the last two items. Everything else here is a laptop, a cable and five minutes, and
 it is the one section a person walks on **every** unit before it leaves the bench.
-
-The task's own list names this section §12; that number is HTTPS's, so it is §13.
 
 - [ ] **The session of `docs/provisioning.md`, typed.** Line for line, against the document. A
   host test replays the same session against the firmware's own console
@@ -830,14 +905,14 @@ The task's own list names this section §12; that number is HTTPS's, so it is §
   filters) and `set swd.khz 1000` (the wire's floor of 1 µs, so 500 kHz, above
   `BENCH-BREADBOARD.md` §4's predicted ceiling - **this is where the real ceiling is found**).
   Write down the fastest setting at which `rak swd id` is reliable over ten runs and put it in
-  `docs/bench.md` §4 beside the other SWD numbers.
-- [ ] **`set lte.pin` with the card's real PIN, and with a wrong one** (needs §11: a SIM). With
+  §4 beside the other SWD numbers.
+- [ ] **`set lte.pin` with the card's real PIN, and with a wrong one** (needs §12: a SIM). With
   the right one, `lte up` attaches. With a wrong one, `lte up` says `sim-locked`, `lte` says the
   PIN was refused, and **a second `lte up` does not send it again** - which is the one rail in
   this firmware that protects something that cannot be undone (three refusals block a card). Then
   `set lte.pin <the right one>`: the line says the refusal is forgotten, and `lte up` attaches.
   Do this with a SIM you can afford to lose, or with one whose PUK you have.
-- [ ] **`set server.url` and a self-update's third condition** (needs §12). Set it to a host the
+- [ ] **`set server.url` and a self-update's third condition** (needs §13). Set it to a host the
   unit can reach over TLS, then `self status`: the trial's third condition is *a TLS handshake
   with `<host>:443`*. Unset (after `erase confirm`), the same line says the condition does not
   apply. That is the difference between a unit that has a server and one that has not, and it is
@@ -846,14 +921,14 @@ The task's own list names this section §12; that number is HTTPS's, so it is §
   `get log.level` still answers, and so does every other command. Then `set log.level info` and
   reboot again: the boot lines are back. A unit on a mast with a noisy port is why this exists.
 
-## 14. Sleep
+## 15. Sleep
+
+**★ one of the three that matter most (the scope on nRESET, the second item).**
 
 From task p3-04 (`docs/power.md`; `docs/console.md`, *Sleep, and what wakes it*). Needs §1 and §3
-walked; the last two items need §11 (a SIM) and a meter. **This is the section that turns the
+walked; the last two items need §12 (a SIM) and a meter. **This is the section that turns the
 interval table's placeholders into numbers**, and until it is walked every number in
 `docs/power.md` and `core/power/interval_policy.h` is a guess with a reason beside it.
-
-The task's own list names this section §13; that number is the console's (p3-03), so it is §14.
 
 Needs: a meter that can read microamps and integrate milliamp-hours (a Nordic PPK2, a Joulescope
 or a bench supply with an integrating readout), a scope with two channels, a cable to the
@@ -890,7 +965,7 @@ repeater's own console, and a battery you can charge and discharge.
       `stay off`: the line about the bound comes back. The bound itself cannot be walked until
       task p3-05 arms it; when it is, a wake that hangs ends in a reset and `reboots` says *the
       wake did not reach sleep inside its bound*.
-- [ ] **The energy of one whole wake with an attach** (needs §11). The number that turns the
+- [ ] **The energy of one whole wake with an attach** (needs §12). The number that turns the
       policy's placeholders into a table. With an integrating meter: zero it, `lte up`, let the
       attach finish, `lte down`, `sleep 60`, read the milliamp-hours. Three times, from cold.
       Then the same for a wake that only talks to the radio (`rak ping`, `rak power`, `sleep 60`).
@@ -910,14 +985,11 @@ repeater's own console, and a battery you can charge and discharge.
       (the band and the readings) and `journal` (the band changes). What a day cost the pack is
       the difference between the first and the last `rak power`.
 
-## 15. A day
+## 16. A day
 
-From task p3-05 (`docs/cycle.md`; `docs/console.md`, *One whole wake*). Needs §14 walked, a SIM
-(§11) and a provisioned unit (§13). This is the section that turns a firmware whose every wake has
+From task p3-05 (`docs/cycle.md`; `docs/console.md`, *One whole wake*). Needs §15 walked, a SIM
+(§12) and a provisioned unit (§14). This is the section that turns a firmware whose every wake has
 been simulated into one that has actually spent a day looking after a radio.
-
-The task's own list names this section §14; that number is the sleep's (p3-04), so it is §15 — as
-§14 is p3-04's own renumbering of §13, and so on back to §11.
 
 - [ ] **`cycle dry` with the cable in.** Before anything is left alone: `cycle dry` and read the
       ten steps. Every one should say what it would do and what it is allowed to spend; the
@@ -943,7 +1015,7 @@ The task's own list names this section §14; that number is the sleep's (p3-04),
       (`power` says which band and what it allows), and in `critical` **the modem is not used at
       all** — `lte` should show no attempt in that wake and the wake record's uplink letter should
       be `s`, not `x`. Uncover it and watch the band come back up with the hysteresis holding.
-- [ ] **A radio that goes quiet, for a whole wake.** Pull the RAK's nRESET to ground (§2's own
+- [ ] **A radio that goes quiet, for a whole wake.** Pull the RAK's nRESET to ground (§11's own
       item) and let a timer wake happen: the wake record should show the radio `silent`, the
       ladder climbed, and **the uplink still used** — that is the one thing a unit on a mast must
       do when its radio dies. `rak watch` has the incident and the day's counts; the counts must
@@ -955,5 +1027,226 @@ The task's own list names this section §14; that number is the sleep's (p3-04),
 - [ ] **A day's energy, against the simulated figure.** The sessions' simulated month says
       **421 seconds awake a day at 18 wakes a day** (`tasks/phase-3/reports/05.md`). With an
       integrating meter in series: zero it, leave the unit for a day, and read the milliamp-hours.
-      That number against §14's "the energy of one whole wake" is what finally says whether the
+      That number against §15's "the energy of one whole wake" is what finally says whether the
       interval table is right.
+
+## What to bring back
+
+Every named constant this firmware carries that **no measurement has settled** - the ones the
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 107 of
+them, in 17 files. Each has a sentence beside it where it is declared; **change the number and the
+sentence together**, and nowhere else - the host tests, the console's help and the documents all
+follow the constant.
+
+`tools/check_rails.py` holds this table to the source on every verified commit: a constant marked
+for the bench with no row here, or a row naming a constant the source no longer marks, fails the
+build. So the list cannot go stale, and a number that has been settled leaves the table by losing
+its mark in the source - which is the same edit as writing the measurement down.
+
+Write the measurement in the third column, with the date, and then make the edit.
+
+**`board/radio_pins.h`** (1) - **§6** measures the rail's fall under load and its settle time, on
+a scope.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kKillTiming` | `1000, 30000, 200` | |
+
+**`update/radio_update.h`** (9) - **§9** measures a real repeater from reset to HELLO, and how
+long a bad build takes to show itself.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kBootWindowMs` | `20000` | |
+| `kBootHelloIntervalMs` | `2000` | |
+| `kProvingPeriodMs` | `180000` | |
+| `kProvingPingIntervalMs` | `3000` | |
+| `kScannerWindowMs` | `20000` | |
+| `kBatteryMinMv` | `3700` | |
+| `kBatteryFallingMvPerHour` | `-100` | |
+| `kStepIdleMs` | `100` | |
+| `kEntriesPerRunMax` | `48` | |
+
+**`update/self_update.h`** (4) - **§10** measures the trial, from the boot line to confirmed, with
+a real attach in it.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kTrialWindowMs` | `300000` | |
+| `kTrialHelloIntervalMs` | `2000` | |
+| `kTrialUplinkRetryMs` | `30000` | |
+| `kSwitchExpectBackS` | `60` | |
+
+**`supervisor/supervisor.h`** (20) - **§11** measures how long a real RAK takes to answer after
+each rung, and what a day can afford.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kHeartbeatIntervalMs` | `60000` | |
+| `kAskAgainPauseMs` | `30000` | |
+| `kAfterResetMs` | `30000` | |
+| `kAfterPowerCycleMs` | `60000` | |
+| `kAfterGoldenImageMs` | `120000` | |
+| `kKillOffMs` | `5000` | |
+| `kResetsPerDay` | `6` | |
+| `kPowerCyclesPerDay` | `3` | |
+| `kFlashesPerDay` | `1` | |
+| `kCapWindowMs` | `86400000` | |
+| `kCapWindowS` | `kCapWindowMs / 1000` | |
+| `kQuietPeriodMs` | `3u * 24 * 60 * 60 * 1000` | |
+| `kBootLoopWindowMs` | `600000` | |
+| `kBootLoopBoots` | `3` | |
+| `kBootLoopUptimeS` | `120` | |
+| `kWalterPowerUpGraceMs` | `20000` | |
+| `kPowerCycleMinMv` | `3500` | |
+| `kFlashMinMv` | `update::kBatteryMinMv` | |
+| `kStepIdleMs` | `update::kStepIdleMs` | |
+| `kEntriesPerClimbMax` | `32` | |
+
+**`update/last_good_battery.h`** (1) - **§11** measures the pack's curve: how old a reading may be
+and still authorise a reflash.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kBatteryStaleAfterMs` | `6u * 60 * 60 * 1000` | |
+
+**`uplink/failure.h`** (1) - **§12** measures how long a unit with no coverage should wait before
+searching again.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kBackoffCapWakes` | `16` | |
+
+**`uplink/policy.h`** (23) - **§12** measures three cold attaches, and the current drawn while
+searching.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kPresentDeadlineMs` | `10000` | |
+| `kModemResetDeadlineMs` | `32000` | |
+| `kOpStateDeadlineMs` | `15000` | |
+| `kSimDeadlineMs` | `10000` | |
+| `kRatDeadlineMs` | `10000` | |
+| `kPdpDeadlineMs` | `10000` | |
+| `kPowerSavingDeadlineMs` | `10000` | |
+| `kAttachDeadlineMs` | `15000` | |
+| `kRegistrationDeadlineMs` | `120000` | |
+| `kRegistrationPollMs` | `1000` | |
+| `kDataDeadlineMs` | `15000` | |
+| `kDataTries` | `5` | |
+| `kDataRetryMs` | `2000` | |
+| `kTimeDeadlineMs` | `10000` | |
+| `kTimeTries` | `3` | |
+| `kTimeRetryMs` | `2000` | |
+| `kSignalDeadlineMs` | `10000` | |
+| `kIdentityDeadlineMs` | `15000` | |
+| `kTakeDownDeadlineMs` | `10000` | |
+| `kWakeBudgetMs` | `240000` | |
+| `kModemCallCeilingMs` | `30000` | |
+| `kPsmTauSeconds` | `3600` | |
+| `kPsmActiveSeconds` | `60` | |
+
+**`net/download.h`** (9) - **§13** measures the bytes and the seconds of a real release fetched
+over LTE-M.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kRangeBytes` | `64 * 1024` | |
+| `kRangeTotalMs` | `120000` | |
+| `kRangePieceMs` | `15000` | |
+| `kRangeTries` | `3` | |
+| `kRetryPauseMs` | `2000` | |
+| `kMinRangeSeconds` | `10` | |
+| `kDefaultBudgetBytes` | `2u * 1024u * 1024u` | |
+| `kDefaultBudgetS` | `600` | |
+| `kMaxValidatorLength` | `128` | |
+
+**`net/http_over_tls.h`** (2) - **§13** measures a connect, a handshake and a small page over
+LTE-M.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kDefaultTotalMs` | `60000` | |
+| `kDefaultPieceMs` | `15000` | |
+
+**`net/trust.h`** (1) - **§13** measures how long the modem takes to take two roots into its
+slots.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kTrustWriteDeadlineMs` | `20000` | |
+
+**`update/fetch.h`** (1) - **§13** measures the manifest and its signature over LTE-M.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kManifestRequestMs` | `60000` | |
+
+**`update/uplink_check.h`** (1) - **§14** measures a TLS handshake with the configured server.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kUplinkCondition` | `UplinkCondition::kTlsHandshake` | |
+
+**`cycle/wake_reason.h`** (1) - **§15** measures a chattering line, and how often a real one is
+spurious.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kSpuriousPerWindow` | `3` | |
+
+**`power/interval_policy.h`** (14) - **§15** measures the pack's voltage against its state of
+charge, and the energy of one wake.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kUpperMv` | `4000` | |
+| `kLowerMv` | `3600` | |
+| `kFloorMv` | `3400` | |
+| `kHysteresisMv` | `60` | |
+| `kChargingMa` | `50` | |
+| `kPlentyMinutes` | `15` | |
+| `kNormalMinutes` | `60` | |
+| `kSavingMinutes` | `360` | |
+| `kCriticalMinutes` | `1440` | |
+| `kUnknownMinutes` | `kNormalMinutes` | |
+| `kSavingModemEveryNth` | `4` | |
+| `kMaxFaultDoublings` | `4` | |
+| `kSamplesKept` | `5` | |
+| `kMedianOf` | `3` | |
+
+**`cycle/telemetry_ring.h`** (1) - **§16** measures how many wakes of readings a quiet day has to
+hold.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kReadingsKept` | `10` | |
+
+**`cycle/wake_cycle.h`** (17) - **§16** measures what a wake with an attach costs the pack, and
+how long each step really takes.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kWakeBudgetMs` | `150000` | |
+| `kLeastMs` | `1000` | |
+| `kWhyBoundMs` | `kAttentionWindowMs + 1000` | |
+| `kRadioBoundMs` | `40000` | |
+| `kLadderBoundMs` | `360000` | |
+| `kUpdateBoundMs` | `1200000` | |
+| `kTrialBoundMs` | `update::kTrialWindowMs + 60000` | |
+| `kStateBoundMs` | `15000` | |
+| `kUplinkBoundMs` | `kWakeBudgetMs` | |
+| `kUplinkLeastMs` | `20000` | |
+| `kClockBoundMs` | `10000` | |
+| `kBackendBoundMs` | `60000` | |
+| `kBackendLeastMs` | `30000` | |
+| `kSleepBoundMs` | `15000` | |
+| `kClockSkewS` | `60` | |
+| `kDownloadMinutes` | `5` | |
+| `kSlicesMax` | `5000` | |
+
+**`cycle/wake_guard.h`** (1) - **§16** measures the longest honest wake: an attach and a download.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kWakeBoundMs` | `5u * 60 * 1000` | |

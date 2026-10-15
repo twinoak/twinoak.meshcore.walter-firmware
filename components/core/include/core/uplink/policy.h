@@ -99,7 +99,7 @@ namespace uplink {
 // -- the deadlines, each with a sentence ---------------------------------------------------------
 //
 // Every one of them is a guess until a modem on a bench with a SIM in it says otherwise; the
-// report lists them as "to be set on the bench" and `docs/bench.md` §11 is how they are measured
+// report lists them as "to be set on the bench" and `docs/bench.md` §12 is how they are measured
 // (the third item there - how long an attach takes from cold, three times - is the one that
 // matters most, because kRegistrationDeadlineMs is most of the budget).
 
@@ -137,7 +137,7 @@ constexpr std::uint32_t kAttachDeadlineMs = 15000;
 // The wait for the network to register us, and how often the modem's buffered state is looked
 // at. Two minutes: QuickSpot's own example waits five (examples/https, `waitForNetwork`'s
 // default of 300 s), and five minutes of searching per wake is a battery this unit does not
-// have. **The first number the bench changes** - `docs/bench.md` §11, "how long an attach takes
+// have. **The first number the bench changes** - `docs/bench.md` §12, "how long an attach takes
 // from cold, three times".
 constexpr std::uint32_t kRegistrationDeadlineMs = 120000;
 constexpr std::uint32_t kRegistrationPollMs = 1000;
@@ -167,7 +167,7 @@ constexpr std::uint32_t kTakeDownDeadlineMs = 10000;
 // How long one wake may spend on the modem at all, when the wake cycle does not say. Four
 // minutes: the sequence above, once, with the registration wait in it, plus room for one
 // worst-case library call. TO BE SET ON THE BENCH against the current drawn while searching
-// (`docs/bench.md` §11, the last item) - this number times that current is what a wake with no
+// (`docs/bench.md` §12, the last item) - this number times that current is what a wake with no
 // coverage costs the battery.
 constexpr std::uint32_t kWakeBudgetMs = 240000;
 

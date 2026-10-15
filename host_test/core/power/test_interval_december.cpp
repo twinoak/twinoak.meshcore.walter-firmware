@@ -4,7 +4,7 @@
 //
 // What is simulated and what is not. The *policy* is the real one; the pack is not. There is no
 // measured discharge curve for this unit - that is `spec/SYSTEM.md` §10 item 5 and
-// `docs/bench.md` §14 - so the model below is deliberately crude and deliberately stated: a
+// `docs/bench.md` §15 - so the model below is deliberately crude and deliberately stated: a
 // linear drain, a daily bump that shrinks as a Danish December does, and a fixed cost per wake
 // with and without the modem. What it is good for is the *shape*: that the bands are reached in
 // order, that a unit in `saving` makes about one attach a day, that `critical` makes none, and
@@ -57,7 +57,7 @@ struct Day {
 // The cost of a wake, in hundredths of a millivolt. PLACEHOLDERS, like everything else here: a
 // wake that only talks to the radio is a second or two of a hundred milliamps, and a wake with an
 // attach is a minute or two of it - which on a pack of a couple of amp-hours is a fraction of a
-// millivolt off the curve, not several. docs/bench.md §14 is where the real pair comes from, and
+// millivolt off the curve, not several. docs/bench.md §15 is where the real pair comes from, and
 // the day it does these two and `kBaselineCentiPerMinute` move together.
 constexpr std::int32_t kWakeCenti = 3;         // 0.03 mV
 constexpr std::int32_t kModemWakeCenti = 20;   // 0.2 mV

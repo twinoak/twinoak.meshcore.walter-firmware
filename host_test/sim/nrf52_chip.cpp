@@ -36,6 +36,32 @@ Nrf52Chip::Nrf52Chip(fakes::FakeClock& clock)
   setUicrWord(regs::uicr::kPselReset1, 18);
   setUicrWord(regs::uicr::kApprotect, 0xFFFFFF00u | regs::uicr::kApprotectHwDisabled);
   setUicrWord(regs::uicr::kRegOut0, 0xFFFFFFF8u | 5u);
+  flashTally().chips++;
+}
+
+// The suite's own tally of what reached simulated flash (task p3-06, rail R4).
+FlashTally& flashTally() {
+  static FlashTally tally;
+  return tally;
+}
+
+// Rail R4: an erase or a write outside the declared window already failed the test where it
+// happened (`fail()` below). This is the other half - a test that flashed and never declared a
+// window at all, which is a test that is not asserting the rail. The sentence names the two calls
+// that declare one, so that the fix is in the message.
+Nrf52Chip::~Nrf52Chip() {
+  FlashTally& tally = flashTally();
+  tally.erases += counters_.erases;
+  tally.writes += counters_.writes;
+  const bool flashed = counters_.erases > 0 || counters_.writes > 0;
+  if (!flashed) return;
+  tally.flashed++;
+  if (only_touch_) return;
+  tally.undeclared++;
+  FAIL_CHECK("no test may flash a chip without saying which region may be touched: this one did "
+             << counters_.erases << " erase(s) and " << counters_.writes
+             << " word write(s) with no onlyTouch() (docs/ARCHITECTURE.md §5; "
+                "sim::Nrf52Chip::onlyTouch(begin, end) and alsoTouch() for the settings page)");
 }
 
 AccessPort& Nrf52Chip::ahbAp() { return ahb_; }
@@ -567,6 +593,7 @@ void Nrf52Chip::writeFlash(std::uint32_t addr, std::uint32_t value) {
     return;
   }
   if (!allowed(addr, 4)) {
+    if (report_outside) flashTally().outside++;
     fail("a flash write at " + hex(addr) + " outside the region the test allowed [" + hex(only_begin_) + ", " +
          hex(only_end_) + ")");
   }
@@ -591,6 +618,7 @@ void Nrf52Chip::writeFlash(std::uint32_t addr, std::uint32_t value) {
 // "After erasing a flash page, all bits in the page are set to 1."
 void Nrf52Chip::erasePage(std::uint32_t addr) {
   if (!allowed(addr, kPageBytes)) {
+    if (report_outside) flashTally().outside++;
     fail("a page erase at " + hex(addr) + " outside the region the test allowed [" + hex(only_begin_) + ", " +
          hex(only_end_) + ")");
   }

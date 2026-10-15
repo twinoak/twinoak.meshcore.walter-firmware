@@ -35,9 +35,57 @@ const char* netOf(std::uint8_t gpio) {
 
 }  // namespace
 
+// The suite's own tally (task p3-06, rails R1 and R2): one object for the process, so that "the
+// rules held" is a statement about every test that drove a pin and not about the one in hand.
+PinTally& pinTally() {
+  static PinTally tally;
+  return tally;
+}
+
 FakePins::FakePins(FakeClock& clock, const core::board::KillTiming& timing)
     : clock_(clock), timing_(timing) {
   pins_[kNReset.gpio].external = true;  // the nRF52's own pull-up
+  pinTally().instances++;
+}
+
+bool FakePins::allows(const char* rule) const {
+  for (const std::string& allowed : allowed_) {
+    if (allowed == rule) return true;
+  }
+  return false;
+}
+
+int FakePins::undeclaredViolations() const {
+  int n = 0;
+  for (const Violation& v : violations) {
+    if (!allows(v.rule.c_str())) n++;
+  }
+  return n;
+}
+
+// The rules are checked at the transition (`strict`), and again here - because a test can turn
+// `strict` off. A violation nobody declared with allow() fails the test at the end of it, which is
+// the one thing `strict = false` must not be able to hide.
+FakePins::~FakePins() {
+  PinTally& tally = pinTally();
+  tally.operations += static_cast<unsigned>(operations);
+  tally.reset_pulses += static_cast<unsigned>(reset_pulses);
+  tally.kill_cycles += static_cast<unsigned>(kill_cycles);
+  for (const Violation& v : violations) {
+    const bool declared = allows(v.rule.c_str());
+    if (!report_undeclared && !declared) continue;  // the test that demonstrates this check
+    tally.violations++;
+    tally.by_rule[v.rule]++;
+    if (declared) {
+      tally.declared++;
+      continue;
+    }
+    tally.undeclared++;
+    tally.undeclared_by_rule[v.rule]++;
+    FAIL_CHECK("a pin rule was broken and no test declared it: " << v.rule << " - " << v.detail
+               << " at " << v.at_ms << " ms (fakes::FakePins::allow(\"" << v.rule
+               << "\") is how a test says it wants to see one fire)");
+  }
 }
 
 bool FakePins::isRadioPin(std::uint8_t gpio) const {

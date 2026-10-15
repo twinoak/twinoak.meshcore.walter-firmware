@@ -94,7 +94,7 @@ namespace supervisor {
 // -- the waits, the caps, the windows and the thresholds ----------------------------------------
 //
 // Every one of them is named here, with a sentence, and every one is a PLACEHOLDER until a radio
-// has been watched on the bench: docs/supervisor.md tabulates them and docs/bench.md §10 is how
+// has been watched on the bench: docs/supervisor.md tabulates them and docs/bench.md §11 is how
 // they are measured. Change a number and its sentence together.
 
 // How often the heartbeat asks, at most. The wake cycle (phase 3) calls step() once a wake, so

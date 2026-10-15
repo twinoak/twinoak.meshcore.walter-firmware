@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "core/console/commands.h"
+#include "fixtures/command_lines.h"
 #include "settings_console_rig.h"
 
 using bench::hasText;
@@ -33,75 +34,11 @@ namespace {
 constexpr const char* kPin = "86421357";
 constexpr const char* kToken = "mma_zQ7x4LpR8vK2nT6yW1sB3dF5gH9jM0cV";
 
-// One line per command of the table: the command, and what to type after it so that it runs.
-struct Line {
-  const char* word;  // the table's `word`
-  const char* line;  // what to type
-};
-
-const Line kLines[] = {
-    {"help", "help"},
-    {"status", "status"},
-    {"get", "get"},
-    {"set", "set unit.name Window at Grenaa"},
-    {"erase", "erase"},  // the refusal: the forgetting has its own case below
-    {"reboot", "reboot"},
-    {"reboots", "reboots"},
-    {"dump", "dump"},
-    {"pins", "pins"},
-    {"rak reset", "rak reset"},
-    {"rak kill", "rak kill 1"},
-    {"rak hello", "rak hello"},
-    {"rak ping", "rak ping"},
-    {"rak status", "rak status"},
-    {"rak id", "rak id"},
-    {"rak time", "rak time"},
-    {"rak power", "rak power"},
-    {"rak env", "rak env"},
-    {"rak cli", "rak cli get radio"},
-    {"rak events", "rak events"},
-    {"rak text", "rak text"},
-    {"rak swd connect", "rak swd connect"},
-    {"rak swd id", "rak swd id"},
-    {"rak swd mem", "rak swd mem 0x10000100 4"},
-    {"rak flash-test", "rak flash-test confirm"},
-    {"rak update", "rak update"},
-    {"rak update --first-install", "rak update --first-install"},
-    {"rak update status", "rak update status"},
-    {"rak role", "rak role scanner"},
-    {"rak watch", "rak watch"},
-    {"rak watch reset-caps", "rak watch reset-caps"},
-    {"rak ladder", "rak ladder"},
-    {"image list", "image list"},
-    {"image verify", "image verify candidate"},
-    {"image erase", "image erase candidate"},
-    {"image bad", "image bad"},
-    {"image receive", "image receive candidate"},
-    {"trust", "trust"},
-    {"trust tls", "trust tls"},
-    {"self status", "self status"},
-    {"self receive", "self receive"},
-    {"self switch", "self switch"},
-    {"self confirm", "self confirm"},
-    {"self reject", "self reject"},
-    {"lte", "lte"},
-    {"lte up", "lte up"},
-    {"lte down", "lte down"},
-    {"lte time", "lte time"},
-    {"lte id", "lte id"},
-    {"http get", "http get https://r.example/x"},
-    {"fetch", "fetch https://r.example/v1"},
-    {"wake", "wake"},
-    {"power", "power"},
-    {"sleep now", "sleep now"},
-    {"sleep", "sleep 600"},
-    {"stay", "stay"},
-    {"cycle now", "cycle now"},
-    {"cycle dry", "cycle dry"},
-    {"journal", "journal"},
-};
-
-constexpr std::size_t kLineCount = sizeof kLines / sizeof kLines[0];
+// Every command of the table, with what to type after it: fixtures/command_lines.h, which task
+// p3-06's rail R8 walks too. The first case below holds it to core/console/commands.h.
+using Line = fixtures::CommandLine;
+constexpr const Line* kLines = fixtures::kCommandLines;
+constexpr std::size_t kLineCount = fixtures::kCommandLineCount;
 
 }  // namespace
 
@@ -109,14 +46,15 @@ TEST_CASE("the list below has a line for every command of the table") {
   CHECK(kLineCount == kCommandCount);
   for (const CommandDef& command : kCommands) {
     bool found = false;
-    for (const Line& line : kLines) {
-      if (std::strcmp(line.word, command.word) == 0) found = true;
+    for (std::size_t i = 0; i < kLineCount; ++i) {
+      if (std::strcmp(kLines[i].word, command.word) == 0) found = true;
     }
     CHECK_MESSAGE(found, std::string(command.word));
   }
   // And every line is a line the parser takes, or a refusal it names - never an unknown command,
   // which would mean this test ran nothing.
-  for (const Line& line : kLines) {
+  for (std::size_t i = 0; i < kLineCount; ++i) {
+    const Line& line = kLines[i];
     const core::console::Parsed p = core::console::parseLine(line.line);
     if (!p.ok) {
       CHECK_MESSAGE(std::string(p.error).find("unknown") == std::string::npos, std::string(line.line));
@@ -137,7 +75,8 @@ TEST_CASE("with both secrets set, no command prints either of them") {
   rig.rak.sendLine("{\"noise\":-112,\"note\":\"what the mesh said\"}");
   rig.clock.advance(50);
 
-  for (const Line& line : kLines) {
+  for (std::size_t i = 0; i < kLineCount; ++i) {
+    const Line& line = kLines[i];
     const std::string text = rig.run(line.line);
     CHECK_MESSAGE(text.find(kPin) == std::string::npos, std::string(line.line));
     CHECK_MESSAGE(text.find(kToken) == std::string::npos, std::string(line.line));

@@ -99,7 +99,7 @@ fails all keep the counts, which is the side to err on:
 
 Every wait, cap, window and threshold is a named constant in
 `components/core/include/core/supervisor/supervisor.h`, with a sentence beside it. **Not one of
-them has met a real radio**; `docs/bench.md` §10 is how they are measured. Change a number and its
+them has met a real radio**; `docs/bench.md` §11 is how they are measured. Change a number and its
 sentence together.
 
 | Constant | Today | What it is |

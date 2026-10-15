@@ -333,7 +333,7 @@ TEST_CASE("status is one screen: a dozen lines, none of them over a hundred char
   while (at < text.size()) {
     const std::size_t end = text.find('\n', at);
     const std::string line = text.substr(at, end == std::string::npos ? end : end - at);
-    // docs/bench.md §13: it is read in a terminal window, and a line that wraps hides itself.
+    // docs/bench.md §14: it is read in a terminal window, and a line that wraps hides itself.
     CHECK_MESSAGE(line.size() <= 100, line);
     ++lines;
     if (end == std::string::npos) break;
