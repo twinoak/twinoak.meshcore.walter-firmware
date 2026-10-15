@@ -1,0 +1,11 @@
+# RESP_CODE_CONTACT (3), one contact of CMD_GET_CONTACTS / CMD_GET_CONTACT_BY_KEY: pubkey[32],
+# type (2 = repeater), flags, out_path_len (0x02: two hops, 1-byte hashes; 0xFF = unknown),
+# out_path[64] (a1, 7f then zeros), name[32], last_advert u32, lat i32, lon i32, lastmod u32.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:166-187 MyMesh::writeContactRespFrame
+# fw companion-v1.17.1 d9296435 src/helpers/ContactInfo.h:8-20 ContactInfo -- field types; OUT_PATH_UNKNOWN 0xFF
+# 148 bytes
+03c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2020002a17f0000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+000000004772656e6161204368696d6e65792023310000000000000000000000
+00000000c08bd26880985c032052a600888cd268

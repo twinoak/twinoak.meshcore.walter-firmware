@@ -1,0 +1,12 @@
+# PUSH_CODE_LOGIN_SUCCESS (0x85), ver 7+, for an admin login: is_admin (1), pubkey_prefix[6],
+# server_timestamp u32 (the repeater's clock, reflected as the reply's tag), permissions
+# (3 = admin), FIRMWARE_VER_LEVEL.
+# Byte 1 is the repeater's `is_admin ? 1 : 0` (reply_data[6] of handleLoginReq) and the role
+# is the permission byte after the timestamp (reply_data[7]); until tasks/phase-3.5/41 this
+# file carried the role in both places and the codec read byte 1 as the role. The companion's
+# own comment on that byte reads "permissions (eg. is_admin)", which is how it happened.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:90-145 MyMesh::handleLoginReq -- reply_data[6] = is_admin, reply_data[7] = permissions, reply_data[12] = FIRMWARE_VER_LEVEL
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:690-702 MyMesh::onContactResponse -- ver 7+ login branch: data[6] to byte 1, data[7] to byte 12
+# fw companion-v1.17.1 d9296435 src/helpers/ClientACL.h:5-9 PERM_ACL_ADMIN -- role is the low two bits: guest 0, read-only 1, read-write 2, admin 3
+# 14 bytes
+8501c3d4e5f60718ec8cd2680302

@@ -1,0 +1,10 @@
+# PUSH_CODE_TRACE_DATA (0x89) with flags 1, which is two bytes a hash: path_len 6 is three hops
+# (a1b2, c3d4, a1b2 - out to c3d4 and back), and there are 6 >> 1 = 3 SNRs.
+# The hash size of a trace is 1 << (flags & 3), so 0, 1, 2, 3 mean 1, 2, 4, 8 bytes - a different
+# encoding from a packet path's length byte, which is (byte >> 6) + 1. Reading the trace flags as
+# "size - 1" is right for 1 and 2 by coincidence and wrong for everything else
+# (tasks/phase-3.5/42).
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:821-845 MyMesh::onTraceRecv -- reserved, path_len (bytes), flags, tag[4], auth[4], hashes[path_len], snrs[path_len >> path_sz], final snr
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:41-67 Mesh::onRecvPacket -- PAYLOAD_TYPE_TRACE: path_sz = flags & 3 and the hash size is 1 << path_sz - NOT path_sz + 1
+# 22 bytes
+8900060111223344deadbeefa1b2c3d4a1b21df61a1e

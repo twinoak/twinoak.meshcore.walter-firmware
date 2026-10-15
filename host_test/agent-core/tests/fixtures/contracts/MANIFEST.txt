@@ -1,0 +1,52 @@
+# The contract fixtures of the .NET agent, copied - never edited here.
+# source: twinoak/meshmaster.dk/tests/fixtures/contracts at commit 0595dc2ed3c5d08a0dfada50b8b9e56503b085da
+# written by tools/sync-fixtures.ps1; see README.md in this directory
+#
+# sha256                                                           bytes  name
+50eff832915e825560612dd0a3a0f52f1c0ef7bcbc1ec89222bda1c5001b3ab7      43  AclSetPayload.json
+6ba2c399877ae4f5b54a6bae56efd787a02f252848245aeb087f4fa14e77cbec      85  AclSetResult.json
+0aa11b683e155673eac3cee6ad8522461776764b1db8c38d7dcdd9adf42efc3b      15  AdvertRequestPayload.json
+4716835472f634990290eaca0692a8fe9a49911330ab2dfdb74068f882b16c98      46  AdvertRequestResult.json
+486664f1a504c8df318c3385f693b8944142ce1fc19856d739e41addd5abc10b      50  AgentBudget.json
+26c224b258135d329aecd0df24994acc0a238466b0ede9d5365100e48eb0edc3     186  AgentConfig.json
+7536f7d030b008d05c6b3c253bd0d6581d22f9d2309933842b90edf5c036a68f     544  AgentHeartbeat.json
+790e2e60323f5ddab3ff51ef437bf9293329cfeb9fc5137367206d5642282c6d     428  ClaimedJob.json
+c4014a3c623935dc4451d33152df277780772059953fca9bf5ada01723797db5      10  ClaimRequest.json
+8da5fb70b79c7be2f67364f874bca9d8eebba3a09e51f6ec6e53911e4b726c8a     475  ClaimResponse.json
+eca3b6d765c6e2c265dadd65640df25b8781a37fff3559b2f3389064312ae450      49  CliPayload.json
+44685f101c0b49962165fe3d31c5d44bc8efe62b08381e0541e15ba510943186      81  CliResult.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  ClockSyncPayload.json
+b9c76747fb826f8ae03d22517cc489f97d564f4b0ac4bbc36ebfd205d397fcfa     110  ClockSyncResult.json
+7ca8babf155b312f49b4a7a532d1876256840e788ac95c4cd49599139657ff42     276  ConfigApplyPayload.json
+90b2f4a9190809300912b2f67aaa14251ac6066efd33545e54b0ef742acff26c     513  ConfigApplyResult.json
+6c945415c21aaab1e736be14d617eb5fe16f668f333ac4c8467fdb81e1782eb2      48  ConfigReadPayload.json
+5e009150b10210158b148ab73cc0b3cb78b4d7743b9dbd9b15bf2b60ed6c3ea8     161  ConfigReadResult.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  DiscoverPayload.json
+75f1964f28c0d18db7a99330703a85274af9463ca0bea44c3c16428cd7f0379c     103  DiscoverResult.json
+f3fcee1023093881ad66669f4a6c27f2523456176f44850dc492c80e83b5a906      52  ExtendReply.json
+ddf7b377e511fa2097ceb4e8e0f9f6b0d9f2b37dabeba5307768c8d06a2d95d7      16  ExtendRequest.json
+dc7ff0a2038bb700cea361ce1766f3dda059896ecf25e77518ce6efae5fc81f0     135  HeartbeatReply.json
+e8c9f9cf26126ea31d80e15a1f1969d491043ba7fba1b678fcdf67d52125fac0     144  JobCredential.json
+f39804cbd8b263563ddf42a595076e1102ed76a4dcbcc0baeeb70b009ea35865      65  JobResultReply.json
+34cd010a95cad09aedd255f885380001052975cf9ddb7ae90befd956e865f80e     545  JobResultReport.json
+35e98e9b2f5470ade07dfca24441c5f7a3fc420bda6df6c56fdcb7dea2c00933      33  JobTimeouts.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  NeighboursPayload.json
+a4137b88462e1f7ef8786145e5549ec97b2d9844eb18a0a4df08a099bd87ea22     105  NeighboursResult.json
+a4902440aff8b2eba4e06d4e448cef8afbdbbf496b764d19e35c34d4ea85e6dd     265  Observation.json
+d5d0fd8678164c830e7189dd93fbd855c1d2beeb68435fb2f49088d36eb00571     295  ObservationBatch.json
+8dd44c431626c1eeed128c623057bdb76b2aa5c36f287d69d78c8d8635780ff0      81  ObservationFields.json
+a07539c272af34d11b6b761815b1706b0e56212104bf02151e19f7de777104eb      32  ObservationsReply.json
+6ef84cb584a787f2a275f42bdaccd3c3fe979ae235bd787571ab5cef14ffbbac      26  PasswordSetPayload.json
+da3e30ea5439ee56fe40d84a9495ea1b1ed0364541e12a52c62f977e6cca69c6      68  PasswordSetResult.json
+3633fc10e9021b496cd2693160d174a36ee1c8331c265536501cb478444fcdb3      52  ProgressReply.json
+66a1cdede83562a28e73b476f7304578d136dc847803e4af95b4af308328706f      91  ProgressReport.json
+1c1afb3657f79985ab0ac8dae75972a706e1d4b8a17d98f1894f127c73000377      47  RadioParameters.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  RebootPayload.json
+7b731d186f9ad59a58b90c94d1288177716b09356971bf482dccc0fe6ff084df      34  RebootResult.json
+22507394421e31d00a74fc1e79a4a5fc7118b583c429698a85f2c33a9308e99d      57  RepeaterRef.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  StatusPayload.json
+b3aaafec07681e4e0c6f1db24675cacd796c59b6e2af16b2941beb7aca3d8c11     311  StatusResult.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  TelemetryPayload.json
+ea61c2030bd102149d75c65f746b1887f99378be386d138fd1ba61f1c191bc81     130  TelemetryResult.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  TracePayload.json
+f026581ab8520eb649891652d67c8748289f52817783d307c268c410f40b9264      65  TraceResult.json

@@ -55,6 +55,8 @@
 #include "platform/uart.h"
 #include "platform/usb_console.h"
 
+#include "agent_anchor.h"
+
 namespace {
 
 // esp_ota_img_states_t, esp_flash_partitions.h (ESP-IDF 5.5.5) - what the bootloader does with
@@ -317,6 +319,16 @@ extern "C" void app_main() {
   // written against it.
   const void* volatile verdict_anchor = core::image::verdictAnchor();
   (void)verdict_anchor;
+
+  // The agent core (task p4-01, main/agent_anchor.cpp, docs/ARCHITECTURE.md §13): the exit-node
+  // firmware's job logic at a pinned commit, linked and called by nothing until task 05 puts
+  // AgentLoop::wake() behind the backend seam. The anchor is what keeps --gc-sections from
+  // dropping it, so that this build proves the library links for the board and not only that it
+  // compiles; the version it reports is the library's own.
+  const void* volatile agent_core_anchor = main_app::agentCoreAnchor();
+  (void)agent_core_anchor;
+  std::printf("agent-core: %s, linked; the seam is still core/cycle/null_backend.h\n",
+              main_app::agentCoreVersion());
 
   std::fflush(stdout);
 

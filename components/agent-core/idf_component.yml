@@ -1,0 +1,29 @@
+## agent-core as a managed ESP-IDF component: the version a consumer pins and the one dependency
+## it brings with it.
+##
+## The version is this repository's (library.json says the same number, and docs/upstream.md says
+## that a tag `vX.Y.Z` of this repository is the library's version too). A consumer takes it from
+## the repository rather than from the component registry - nothing is published there - which the
+## component manager spells as a `git` source with a `path`:
+##
+##   dependencies:
+##     twinoak/agent-core:
+##       git: https://github.com/twinoak/twinoak.meshmaster.exitnode-firmware.git
+##       path: lib/agent-core
+##       version: v0.2.0
+##
+## ArduinoJson is the one dependency, at exactly the version platformio.ini's [libs] pins, from
+## the component registry: the component manager resolves it and adds it to this component's
+## requirements, so CMakeLists.txt names it nowhere. Pinned exactly and not as a range, which is
+## this repository's rule for every dependency (tasks/README.md) and the Walter's too.
+version: "0.2.0"
+description: >-
+  The portable half of the MeshMaster exit-node agent: the job runner, the agent loop, the agent
+  API's envelopes and results, the reply codec, the airtime budget, the session cache, the
+  observation ring and the offline result buffer, on three interfaces (IMesh, IUplink, IPlatform).
+url: "https://github.com/twinoak/twinoak.meshmaster.exitnode-firmware"
+license: "MIT"
+dependencies:
+  idf: ">=5.0"
+  bblanchon/arduinojson:
+    version: "==7.4.3"

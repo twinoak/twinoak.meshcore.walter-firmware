@@ -1,0 +1,8 @@
+# CMD_SEND_BINARY_REQ (50): pubkey[32], REQ_TYPE_GET_TELEMETRY_DATA (3), inverse permission
+# mask 0, three reserved bytes, four random bytes (fixed here). The mask is the first of four
+# reserved bytes and the repeater inverts it: 0 means "everything my permissions allow".
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1671-1691 MyMesh::handleCmdFrame -- CMD_SEND_BINARY_REQ passes req_data through untouched
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:240-245 MyMesh::handleRequest -- perm_mask = ~payload[1]; a guest is forced to base telemetry
+# 42 bytes
+32c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2030000000001020304

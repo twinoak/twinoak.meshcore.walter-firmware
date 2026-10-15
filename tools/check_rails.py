@@ -43,8 +43,32 @@ COMMENT = re.compile(r"^\s*(//|\*|/\*)")
 # ---- the plumbing ------------------------------------------------------------------------------
 
 
+# The copied trees: another repository's files, at a commit, never edited here (task p4-01,
+# docs/upstream.md). They are not this firmware's code, so the rails below are not about them -
+# `sources()` leaves them out so that every rail keeps the scope it was written with - and the one
+# entry that *is* about them is A, which names them itself.
+COPIED = ("components/agent-core/", "host_test/agent-core/")
+
+
 def sources(*dirs):
-    """Every source file under those directories, repository-relative, sorted."""
+    """Every source file of ours under those directories, repository-relative, sorted. The copied
+    agent core is not ours and is not here; entry A is what scans it."""
+    found = []
+    for d in dirs:
+        base = os.path.join(ROOT, d)
+        for parent, _subdirs, names in os.walk(base):
+            for name in sorted(names):
+                if name.endswith(SOURCE_EXT):
+                    path = os.path.join(parent, name)
+                    rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+                    if any(rel.startswith(prefix) for prefix in COPIED):
+                        continue
+                    found.append(rel)
+    return sorted(found)
+
+
+def copied_sources(*dirs):
+    """Every source file under a copied tree, repository-relative, sorted."""
     found = []
     for d in dirs:
         base = os.path.join(ROOT, d)
@@ -758,7 +782,159 @@ def check_bench_table(r):
     return r
 
 
-EXTRA = [("B", "docs/bench.md's *What to bring back* is complete", check_bench_table)]
+# ---- A: the copied agent core keeps its own boundary, and the copy is a copy ------------------
+
+AGENT_CORE = "components/agent-core"
+AGENT_CORE_HOST = "host_test/agent-core"
+
+# What a file of the library may include, as an allow list and not a deny list, which is how
+# upstream's own test/test_library states it: a header of Arduino's, the ESP-IDF's, FreeRTOS's or
+# MeshCore's that nobody thought to forbid is forbidden anyway. The deny list is kept beside it so
+# that a failure says which rule was broken rather than merely that a name was unexpected.
+AGENT_CORE_FORBIDDEN_HEADERS = (
+    ("Arduino.h", "Arduino"), ("Stream.h", "Arduino"), ("Print.h", "Arduino"),
+    ("SPIFFS.h", "Arduino"), ("Preferences.h", "NVS (Preferences)"),
+    ("HTTPClient.h", "the Arduino HTTP client"), ("WiFiClientSecure.h", "the Arduino TLS client"),
+    ("MeshCore.h", "MeshCore"), ("Mesh.h", "MeshCore"),
+)
+AGENT_CORE_FORBIDDEN_PREFIXES = (
+    ("esp_", "the ESP-IDF"), ("freertos/", "FreeRTOS"), ("helpers/", "MeshCore"),
+)
+# Names of the board that may not appear in the library's code (comments stripped: a comment may
+# name one to say what the library's own constant stands for). MeshCore's three buffer constants
+# are here because the library has constants of its own for them (docs/library.md §3.1).
+AGENT_CORE_FORBIDDEN_NAMES = (
+    "Serial", "ESP.", "esp_", "freertos", "MAX_PACKET_PAYLOAD", "MAX_PATH_SIZE", "PUB_KEY_SIZE",
+    "delay(",
+)
+
+# Every way of not verifying a certificate, as upstream's test_tls_policy writes them - split so
+# that a grep of this tree for one of them finds only the file that forbids it.
+TLS_BYPASSES = (
+    "set" + "Insecure", "INSE" + "CURE", "verify" + "=false", "VERIFY" + "_NONE",
+    "VERIFY" + "_OPTIONAL", "skip_cert_" + "common_name_check", "setFinger" + "print",
+    "setCACert(" + "NULL", "setCACert(" + "nullptr", "esp_tls_" + "insecure",
+)
+# A store or a file system: the library reads no setting and writes no file, and a password that
+# passed through it must have nowhere to land (docs/library.md §8, upstream's
+# Credential.NoModuleThePasswordPassesThroughNamesTheStoreOrAFileSystem).
+STORAGE_APIS = ("nvs_", "Preferences", "fopen(", "ofstream", "SPIFFS", "LittleFS", "FatFs")
+
+
+def is_standard_header(name):
+    """A C++ standard header: no dot and no slash. Every header of a platform has one or the
+    other, which makes this exact enough (upstream's test_library says the same)."""
+    return "." not in name and "/" not in name
+
+
+def rail_agent_core(r):
+    """docs/ARCHITECTURE.md §13 and docs/upstream.md: the agent core is another repository's
+    library at one commit, copied and never edited here. It keeps its own boundary - nothing of
+    Arduino, the ESP-IDF, WiFi, NVS or MeshCore, and nothing but <agent/...>, ArduinoJson and the
+    standard library - it skips no certificate verification and it names no store; and the copy is
+    held to its manifests by tools/sync-agent-core.ps1 -Verify, which tools/verify.ps1 runs."""
+    if not os.path.isdir(os.path.join(ROOT, AGENT_CORE)):
+        return r.broken("%s is not there: the agent core has not been copied "
+                        "(tools/sync-agent-core.ps1 -Ref <tag>)" % AGENT_CORE)
+    files = copied_sources(AGENT_CORE)
+
+    # -- the boundary, as an allow list
+    bad = []
+    for path in files:
+        for number, line in enumerate(read(path).splitlines(), 1):
+            m = INCLUDE.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            rule = None
+            for header, why in AGENT_CORE_FORBIDDEN_HEADERS:
+                if name == header:
+                    rule = why
+            for prefix, why in AGENT_CORE_FORBIDDEN_PREFIXES:
+                if name.startswith(prefix):
+                    rule = why
+            if "WiFi" in name or "MeshCore" in name:
+                rule = "WiFi" if "WiFi" in name else "MeshCore"
+            if rule is not None:
+                bad.append((path, number, "%s - that is %s" % (line.strip(), rule)))
+                continue
+            allowed = name.startswith("agent/") or name == "ArduinoJson.h" or is_standard_header(name)
+            if not allowed:
+                bad.append((path, number, "%s - neither <agent/...>, nor ArduinoJson, nor the "
+                                          "standard library" % line.strip()))
+    if bad:
+        r.broken("the agent core includes something that is not its own:", shown(bad))
+    else:
+        r.looked_at("%d files under %s, every include <agent/...>, ArduinoJson or the standard "
+                    "library" % (len(files), AGENT_CORE))
+
+    # Inside the library a header is reached as <agent/X.h> too, so that a consumer's include path
+    # is the only one that has to be right.
+    quoted = [h for h in grep(r'#\s*include\s*"', files, code_only=False)]
+    if quoted:
+        r.broken("the agent core includes a header with quotes:", shown(quoted))
+    else:
+        r.looked_at("no quoted include inside the library")
+
+    # -- the names of the board
+    named = []
+    for path in files:
+        code = without_comments(read(path))
+        for name in AGENT_CORE_FORBIDDEN_NAMES:
+            if name in code:
+                named.append((path, 0, "names %s" % name))
+    if named:
+        r.broken("the agent core names something of the board:", shown(named))
+    else:
+        r.looked_at("none of %d forbidden names of the board in the library's code"
+                    % len(AGENT_CORE_FORBIDDEN_NAMES))
+
+    # -- TLS, over the library and the copied test support alike
+    copied = files + copied_sources(AGENT_CORE_HOST)
+    bypasses = []
+    for pattern in TLS_BYPASSES:
+        bypasses.extend(grep(re.escape(pattern), copied, code_only=False))
+    if bypasses:
+        r.broken("a way of skipping certificate verification in the copied trees:", shown(bypasses))
+    else:
+        r.looked_at("%d copied files, none of the %d ways of skipping certificate verification"
+                    % (len(copied), len(TLS_BYPASSES)))
+
+    # -- a store or a file system the library could leave a password in
+    storage = []
+    for api in STORAGE_APIS:
+        storage.extend(grep(re.escape(api), files))
+    if storage:
+        r.broken("the agent core names a store or a file system (a password passes through it):",
+                 shown(storage))
+    else:
+        r.looked_at("the library names no store and no file system")
+
+    # -- the copy is a copy, and something checks that it is
+    r.problems(must_exist("tools/sync-agent-core.ps1",
+                          AGENT_CORE + "/MANIFEST.txt",
+                          AGENT_CORE_HOST + "/MANIFEST.txt",
+                          AGENT_CORE + "/CMakeLists.txt",
+                          AGENT_CORE + "/idf_component.yml"),
+               "the copy or its copier is gone:")
+    r.problems(must_contain("tools/verify.ps1", "sync-agent-core.ps1", "-Verify"),
+               "tools/verify.ps1 no longer holds the copy against its manifests:")
+    r.problems(must_contain("host_test/rails/test_rail_agent_core.cpp",
+                            "the agent core's commit is in two places"),
+               "the test that holds the two manifests' commits equal is gone:")
+    r.problems(must_contain("host_test/CMakeLists.txt", "agent_core", "GTest::gtest",
+                            "test_${suite}.cpp"),
+               "the host build no longer compiles the library and its two suites:")
+    r.says("held here, by tools/sync-agent-core.ps1 -Verify (every file of both trees against its "
+           "manifest, before the container starts) and by "
+           "host_test/rails/test_rail_agent_core.cpp (the pin in two places, held equal)")
+    return r
+
+
+EXTRA = [
+    ("A", "the copied agent core keeps its boundary, and the copy is a copy", rail_agent_core),
+    ("B", "docs/bench.md's *What to bring back* is complete", check_bench_table),
+]
 
 
 # ---- the run -----------------------------------------------------------------------------------
@@ -768,7 +944,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="the rails, in one place")
     parser.add_argument("--list", action="store_true", help="the table, nothing run")
     parser.add_argument("--verbose", "-v", action="store_true", help="what each rail looked at")
-    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R14, B)")
+    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R14, A, B)")
     args = parser.parse_args(argv)
 
     entries = RAILS + EXTRA
@@ -786,7 +962,7 @@ def main(argv=None):
                 print("       " + line.strip())
         return 0
 
-    print("rails: %d entries, one per rail of tasks/phase-3/06-the-rails-and-the-bench.md"
+    print("rails: %d entries - one per rail of tasks/phase-3/06-the-rails-and-the-bench.md, plus what later piles added"
           % len(entries))
     failed = []
     for ident, name, fn in entries:

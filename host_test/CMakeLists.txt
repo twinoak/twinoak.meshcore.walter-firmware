@@ -164,6 +164,106 @@ target_compile_definitions(core_tests PRIVATE
   TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}"
   TWINOAK_REPO_ROOT="${REPO}")
 
+# -- agent-core, on the host (task p4-01) -------------------------------------------------------
+# The copied library of docs/ARCHITECTURE.md §13, compiled here from `components/agent-core/` -
+# **the same files the board build compiles**, not a second copy - with this project's sanitizers
+# and this repository's flags, so that a warning in the library is an error here as it is there.
+# The library is a component of its own and is not under components/core/: core/'s no-ESP-IDF rule
+# is core/'s, and the library's own boundary (no Arduino, no esp_*, nothing but <agent/...>,
+# ArduinoJson and the standard library) is held by tools/check_rails.py's rail A.
+set(AGENT_CORE ${REPO}/components/agent-core)
+set(ARDUINOJSON ${REPO}/managed_components/bblanchon__arduinojson)
+if(NOT EXISTS ${ARDUINOJSON}/src/ArduinoJson.h)
+  message(FATAL_ERROR
+    "agent-core needs ArduinoJson, which is a managed component and is not resolved yet: "
+    "${ARDUINOJSON}/src/ArduinoJson.h is missing. tools/verify.sh's `deps` step resolves it "
+    "(tools/verify.ps1 -Only deps) and runs before the host tests; this project compiles the "
+    "same bytes the board gets and does not fetch its own copy.")
+endif()
+
+# The sources are the ones the component's own CMakeLists.txt registers, read out of it rather
+# than globbed: "the same bytes the board gets" has to mean the same *set* too, and a bump that
+# adds a source upstream must not quietly be host-only or board-only. The file is never edited
+# here, so reading it is reading upstream.
+file(READ ${AGENT_CORE}/CMakeLists.txt AGENT_CORE_CMAKE)
+string(REGEX MATCHALL "\"src/[A-Za-z0-9_]+\\.cpp\"" AGENT_CORE_REGISTERED "${AGENT_CORE_CMAKE}")
+list(TRANSFORM AGENT_CORE_REGISTERED REPLACE "\"" "")
+list(SORT AGENT_CORE_REGISTERED)
+file(GLOB AGENT_CORE_ON_DISK RELATIVE ${AGENT_CORE} CONFIGURE_DEPENDS ${AGENT_CORE}/src/*.cpp)
+list(SORT AGENT_CORE_ON_DISK)
+if(NOT AGENT_CORE_REGISTERED STREQUAL AGENT_CORE_ON_DISK)
+  message(FATAL_ERROR
+    "components/agent-core/CMakeLists.txt registers [${AGENT_CORE_REGISTERED}] and src/ holds "
+    "[${AGENT_CORE_ON_DISK}]. The copy is byte for byte upstream's, so this is upstream's to fix: "
+    "docs/upstream.md, tier two.")
+endif()
+list(TRANSFORM AGENT_CORE_REGISTERED PREPEND ${AGENT_CORE}/ OUTPUT_VARIABLE AGENT_CORE_SOURCES)
+list(LENGTH AGENT_CORE_SOURCES AGENT_CORE_COUNT)
+message(STATUS "agent-core: ${AGENT_CORE_COUNT} sources from components/agent-core, ArduinoJson from managed_components")
+
+add_library(agent_core STATIC ${AGENT_CORE_SOURCES})
+target_include_directories(agent_core PUBLIC ${AGENT_CORE}/include)
+# ArduinoJson is upstream's dependency and not ours: a system include path, as doctest's and
+# core/third_party's are, so that its warnings stay its own and -Werror stays about the library.
+target_include_directories(agent_core SYSTEM PUBLIC ${ARDUINOJSON}/src)
+# This repository's flags, in **the strict dialect** and not our usual gnu++17: `ConfigReply.cpp`
+# has a parameter named `unix`, and GCC predefines `unix` as 1 in any GNU dialect on a Linux host,
+# which turns that file into fifteen errors. The board build never sees it - the xtensa cross
+# compiler has no such predefine - and upstream's own host build is `-std=c++17`, which is the
+# dialect the library is written to (docs/library.md §2: "it carries no -std= of its own, so the
+# standard is yours to choose"). Reported upstream; tasks/phase-4/reports/01.md carries the diff.
+twinoak_ours(agent_core c++17)
+# The two sources that include ArduinoJson, and only those two. GCC 13 at -O2 reports
+# `-Wmaybe-uninitialized` inside ArduinoJson's own CollectionIterator - `ObjectImpl.hpp:36` and
+# `:43`, `return iterator()` - and attributes it to the function it was inlined into, which is
+# ours, so the -isystem above does not silence it; the board build does not see it because
+# ESP-IDF exempts -Wextra for a managed component. It is the dependency's warning and not the
+# library's, so it is turned off per file rather than per target, the way
+# core/third_party/tweetnacl/tweetnacl_verify.c's two exemptions are: every other warning of
+# these two files is still an error.
+set_source_files_properties(${AGENT_CORE}/src/ConfigReply.cpp ${AGENT_CORE}/src/JobEnvelopes.cpp
+  PROPERTIES COMPILE_OPTIONS "-Wno-maybe-uninitialized")
+
+# -- the library's own suites, here (task p4-01) ------------------------------------------------
+# test/test_runner (45 cases: all thirteen job types, one send per command, the credential wiped,
+# the lease, the offline buffer) and test/test_loop (31: the loop, the heartbeat's bytes, the
+# backoff, the reboot guard and every wake case), copied under host_test/agent-core/ with the
+# three fakes and both fixture sets beside them, at upstream's own paths - run here against the
+# same bytes. That they pass here as they do upstream is the proof the copy is whole
+# (docs/library.md §12).
+#
+# They are GoogleTest and this repository's own tests are doctest, so GoogleTest is here for these
+# two binaries and nothing else - pinned to 1.17.0, the version upstream's [env:native] passes
+# them with, by the release tarball's URL and its SHA-256 (no tag, no branch, no floating ref).
+# The download lands in the build directory, which is a named volume, so only a cold run fetches
+# it; a cold run needs the network for the managed components anyway (tools/verify.sh's `deps`).
+include(FetchContent)
+FetchContent_Declare(googletest
+  URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
+  URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)      # the suites use none of it
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+set(AGENT_CORE_HOST ${CMAKE_CURRENT_LIST_DIR}/agent-core)
+# Each suite has a main() of its own, as it does upstream, so each is its own binary and its own
+# ctest entry: a failure names the suite. The three defines are upstream's [env:native]'s, over
+# this copy instead of over that tree - which is why the copy keeps upstream's paths
+# (tools/sync-agent-core.ps1): PROJECT_DIR has to be a directory with `test/support/FakeMesh.h`,
+# `platformio.ini` and `tests/fixtures/companion/` under it for the runner's `Citations` case.
+foreach(suite runner loop)
+  set(target agent_core_${suite}_tests)
+  add_executable(${target} ${AGENT_CORE_HOST}/test/test_${suite}/test_${suite}.cpp)
+  target_link_libraries(${target} PRIVATE agent_core GTest::gtest)
+  target_include_directories(${target} PRIVATE ${AGENT_CORE_HOST}/test)
+  target_compile_definitions(${target} PRIVATE
+    PROJECT_DIR="${AGENT_CORE_HOST}"
+    FIXTURES_DIR="${AGENT_CORE_HOST}/tests/fixtures/contracts"
+    COMPANION_DIR="${AGENT_CORE_HOST}/tests/fixtures/companion")
+  twinoak_ours(${target} c++17)
+endforeach()
+
 # -- the console behind a pipe (task p2-02) -----------------------------------------------------
 # The firmware's own console and image store, over a simulated flash, on stdin and stdout, so that
 # tools/walterctl.py - the laptop's end of `image receive` - is tested before a board exists. It is
@@ -179,6 +279,13 @@ enable_testing()
 add_test(NAME core_tests COMMAND core_tests --no-intro)
 set_tests_properties(core_tests PROPERTIES
   ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")
+
+# The library's own two suites (task p4-01), under the same sanitizers as everything else here.
+foreach(suite runner loop)
+  add_test(NAME agent_core_${suite} COMMAND agent_core_${suite}_tests)
+  set_tests_properties(agent_core_${suite} PROPERTIES
+    ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")
+endforeach()
 
 # walterctl pushing the specification's fixture release into that console, and the refusals it and
 # the Walter answer with (tools/test_walterctl.py).

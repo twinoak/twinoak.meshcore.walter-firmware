@@ -1,0 +1,25 @@
+{
+  "name": "agent-core",
+  "version": "0.2.0",
+  "description": "The portable half of the MeshMaster exit-node agent: the job runner, the agent loop, the envelopes and results of the agent API, the reply codec, the airtime budget, the session cache, the observation ring and the offline result buffer - on three interfaces (IMesh, IUplink, IPlatform) and nothing of Arduino, the ESP-IDF, WiFi, NVS or MeshCore. A second firmware takes this at a tag the way this one takes MeshCore.",
+  "keywords": "meshcore, meshmaster, lora, mesh, agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/twinoak/twinoak.meshmaster.exitnode-firmware.git"
+  },
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {
+    "bblanchon/ArduinoJson": "7.4.3"
+  },
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src",
+    "flags": [
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ]
+  }
+}

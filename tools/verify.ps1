@@ -1,20 +1,28 @@
 <#
 .SYNOPSIS
-  Verifies the repository: the rails, the spec copy, the host tests, the firmware build and the
-  partition table, all inside the pinned ESP-IDF image. Green here is the bar for pushing (S-10).
+  Verifies the repository: the rails, the two checked copies, the host tests, the firmware build
+  and the partition table, all inside the pinned ESP-IDF image. Green here is the bar for pushing
+  (S-10).
 
 .DESCRIPTION
-  Reads tools/idf-image.txt (tag and digest), pulls the image by digest if it is not present, and
-  runs tools/verify.sh in it with the repository bind-mounted at /project, a named volume for the
-  build directory (/build) and one for the caches (/ccache). Logs land in out/verify/, the images in
-  out/images/. Runs from Windows PowerShell 5.1, and from pwsh on Linux - CI runs exactly this.
+  First, on this machine and in no container: tools/sync-agent-core.ps1 -Verify, which holds the
+  copied agent core and its test support against the MANIFEST.txt of each tree (task p4-01). It is
+  here rather than in verify.sh because the copier is a PowerShell script and because a copy that
+  is not what it says it is makes everything after it meaningless; it needs no network and no
+  sibling clone.
+
+  Then: reads tools/idf-image.txt (tag and digest), pulls the image by digest if it is not present,
+  and runs tools/verify.sh in it with the repository bind-mounted at /project, a named volume for
+  the build directory (/build) and one for the caches (/ccache). Logs land in out/verify/, the
+  images in out/images/. Runs from Windows PowerShell 5.1, and from pwsh on Linux - CI runs exactly
+  this.
 
   The host-tests step begins with tools/check_rails.py: every rail this firmware promises, one
   entry each, the greps among them (task p3-06). `python tools/check_rails.py --list` prints the
   table without running anything.
 
   .\tools\verify.ps1                 everything
-  .\tools\verify.ps1 -Only build     one step: spec, spec-tools, host-tests, release-tests,
+  .\tools\verify.ps1 -Only build     one step: spec, spec-tools, deps, host-tests, release-tests,
                                      build, partitions, release
   .\tools\verify.ps1 -Clean          remove the build and cache volumes first (a cold run)
   .\tools\verify.ps1 -Shell          a bash in the same container, same mounts, for a look around
@@ -30,7 +38,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('', 'spec', 'spec-tools', 'host-tests', 'release-tests', 'build', 'partitions', 'release')]
+    [ValidateSet('', 'spec', 'spec-tools', 'deps', 'host-tests', 'release-tests', 'build', 'partitions', 'release')]
     [string]$Only = '',
     [switch]$Clean,
     [switch]$Shell,
@@ -40,6 +48,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+# The checked copies of the agent core (task p4-01, docs/upstream.md), before anything is built:
+# components/agent-core/ is the library the board build compiles and host_test/agent-core/ is the
+# fakes, the fixtures and the library's own two suites, each byte for byte what its MANIFEST.txt
+# says and both at one commit. -Shell is a look around and skips it.
+if (-not $Shell) {
+    & (Join-Path $PSScriptRoot 'sync-agent-core.ps1') -Verify
+    if ($LASTEXITCODE -ne 0) { throw 'the agent-core copy is not what its manifests say; nothing was built' }
+}
 
 # The image, from the one place that names it.
 $pin = @{}

@@ -1,0 +1,9 @@
+# CMD_SEND_LOGIN (26): pubkey[32], password bytes (the companion keeps at most 15). The
+# password here is the fixture's "hunter2"; the agent zeroes a real one after sending. No
+# password at all is the ACL login: the repeater then answers only a key its ACL already holds.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1528-1549 MyMesh::handleCmdFrame -- CMD_SEND_LOGIN: password = &cmd_frame[1 + 32], NUL-terminated at len
+# fw companion-v1.17.1 d9296435 src/helpers/BaseChatMesh.cpp:572-591 BaseChatMesh::sendLogin -- strlen capped at 15
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:90-145 MyMesh::handleLoginReq -- data[0] == 0 is the blank-password ACL branch
+# 40 bytes
+1ac3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b268756e74657232

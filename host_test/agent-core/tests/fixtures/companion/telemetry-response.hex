@@ -1,0 +1,12 @@
+# PUSH_CODE_TELEMETRY_RESPONSE (0x8B): reserved, pubkey_prefix[6], Cayenne LPP (big-endian):
+# ch1 voltage 4.01 V, ch2 humidity 55.5 %, ch2 pressure 1013.2 hPa, ch1 temperature 21.5 C.
+# That order is the firmware's, not a choice: the battery is written before querySensors() and
+# the MCU temperature after it, so a channel-1 temperature always follows the channel-2 sensors
+# (until tasks/phase-3.5/42 this fixture had the two channel-1 readings adjacent, which the
+# firmware cannot emit).
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:240-262 MyMesh::handleRequest -- REQ_TYPE_GET_TELEMETRY_DATA: addVoltage(ch 1), querySensors(), addTemperature(ch 1) last
+# fw companion-v1.17.1 d9296435 src/helpers/sensors/EnvironmentSensorManager.cpp:667-672 EnvironmentSensorManager::querySensors -- external sensors start at TELEM_CHANNEL_SELF + 1 = channel 2
+# fw companion-v1.17.1 d9296435 src/helpers/sensors/LPPDataHelpers.h:5-31 LPP_VOLTAGE -- type codes, sizes and multipliers; channel then type, big-endian
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:729-735 MyMesh::onContactResponse -- telemetry branch: reserved, prefix[6], then data[4..]
+# 23 bytes
+8b00c3d4e5f607180174019102686f02732794016700d7

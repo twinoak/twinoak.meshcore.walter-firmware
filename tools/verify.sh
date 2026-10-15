@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # The definition of "verified", run inside the ESP-IDF image (S-10). tools/verify.ps1 starts it
 # there with the repository at /project, a build volume at /build and a cache volume at /ccache;
-# CI runs verify.ps1 and nothing else. Seven steps, each to out/verify/<step>.log, one summary
+# CI runs verify.ps1 and nothing else. Eight steps, each to out/verify/<step>.log, one summary
 # line each, exit 1 when anything failed:
 #
 #   spec          python spec/tools/specsync.py verify spec   - the copy is byte for byte the spec's
 #   spec-tools    linkref.py check, manifestref.py check      - the spec's own reference code agrees
 #                 with its fixtures (cryptography pinned in tools/requirements-verify.txt)
+#   deps          idf.py reconfigure                          - the managed components resolved
+#                 into managed_components/ before anything compiles against them (task p4-01:
+#                 host_test/ builds agent-core against the ArduinoJson the board gets)
 #   host-tests    tools/check_rails.py, then host_test/ under ASan+UBSan, ctest
 #                 - **the rails** first (task p3-06: one entry per rail, the greps that used to be
 #                 in this file among them - pin ownership, the dual adapter's selector, core/ and
@@ -19,7 +22,7 @@
 #   release       a dry run of the whole release over the build just made, into out/release/:
 #                 build_release.py, signed with the specification's public test key, then verified
 #
-#   tools/verify.sh            all seven
+#   tools/verify.sh            all eight
 #   tools/verify.sh <step>     one of them (verify.ps1 -Only <step>)
 #
 # TWINOAK_VERSION (verify.ps1 -Version, and the release workflow) is the version baked into the
@@ -45,7 +48,7 @@ LOGS=$OUT/verify
 IMAGES=$OUT/images
 RELEASE=$OUT/release
 PROJECT_NAME=twinoak-walter
-STEPS="spec spec-tools host-tests release-tests build partitions release"
+STEPS="spec spec-tools deps host-tests release-tests build partitions release"
 ONLY=${1:-}
 # One version string for the build, the descriptor inside the image and the dry run's manifest
 # (spec/FIRMWARE-MANIFEST.md §4: the three must say the same thing), and the tag that names the
@@ -133,10 +136,14 @@ if bad:
 EOF
 }
 
-step_build() {
+# Every idf.py of this script, with the one build directory and the three cache variables that
+# must be passed every time. -DPROJECT_VER is always given, even when it is the default: it is a
+# cmake cache variable, and a build that inherited one from an earlier run would say a version
+# nobody asked for. sdkconfig.defaults is the configuration: when it changes, the generated
+# sdkconfig is dropped so that the change takes effect (ESP-IDF only fills in options that are
+# missing from sdkconfig).
+idf_run() {
   local dir=$BUILD/fw
-  # sdkconfig.defaults is the configuration: when it changes, the generated sdkconfig is dropped so
-  # that the change takes effect (ESP-IDF only fills in options that are missing from sdkconfig).
   local stamp=$dir/sdkconfig.defaults.sha256
   local want; want=$(sha256sum sdkconfig.defaults | cut -d' ' -f1)
   if [ -f "$dir/sdkconfig" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
@@ -144,18 +151,38 @@ step_build() {
     rm -f "$dir/sdkconfig" "$dir/sdkconfig.old"
   fi
   mkdir -p "$dir" && echo "$want" > "$stamp"
-  local t0; t0=$(date +%s)
-  # -DPROJECT_VER is always given, even when it is the default: it is a cmake cache variable, and a
-  # build that inherited one from an earlier run would say a version nobody asked for.
   idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
-         -DTWINOAK_TRUST_TEST_KEY="$TESTKEY" build || return 1
+         -DTWINOAK_TRUST_TEST_KEY="$TESTKEY" "$@"
+}
+
+# The managed components, into managed_components/ (task p4-01). This runs before the host tests
+# because host_test/ compiles `agent-core` against the ArduinoJson **the board gets** - the same
+# bytes, not a second copy - and the component manager is what puts them there. `reconfigure` is
+# the resolution plus a cmake configure of the build directory the build step then uses, so
+# nothing is configured twice.
+#
+# Resolution needs the network on a cold run, as the pip install of spec-tools does; afterwards
+# IDF_COMPONENT_CACHE_PATH (/ccache/components) answers. Nothing here reaches for the agent core
+# itself: that is a checked copy under components/agent-core/, verified by
+# tools/sync-agent-core.ps1 -Verify before this script is started at all (docs/upstream.md).
+step_deps() {
+  idf_run reconfigure || return 1
+  local json=managed_components/bblanchon__arduinojson/src/ArduinoJson.h
+  if [ ! -f "$json" ]; then echo "the component manager did not produce $json"; return 1; fi
+  echo "managed components: $(ls managed_components | tr '\n' ' ')"
+  echo "--- dependencies.lock"
+  cat dependencies.lock
+}
+
+step_build() {
+  local dir=$BUILD/fw
+  local t0; t0=$(date +%s)
+  idf_run build || return 1
   echo "idf.py build: $(( $(date +%s) - t0 )) s"
   # The factory image: bootloader, table, otadata and application as one file from 0x0 (what a
   # board out of the box is flashed with; the release publishes it as -factory.bin).
-  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
-         -DTWINOAK_TRUST_TEST_KEY="$TESTKEY" merge-bin -o "$PROJECT_NAME-factory.bin" || return 1
-  idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
-         -DTWINOAK_TRUST_TEST_KEY="$TESTKEY" size || return 1
+  idf_run merge-bin -o "$PROJECT_NAME-factory.bin" || return 1
+  idf_run size || return 1
   # Evidence to out/images/: what a bench flashes, and what task 02 releases.
   cp "$dir/$PROJECT_NAME.bin" "$dir/$PROJECT_NAME.elf" "$dir/$PROJECT_NAME.map" \
      "$dir/$PROJECT_NAME-factory.bin" "$dir/bootloader/bootloader.bin" \
@@ -322,6 +349,7 @@ for s in $STEPS; do
   case $s in
     spec)        run_step spec step_spec ;;
     spec-tools)  run_step spec-tools step_spec_tools ;;
+    deps)        run_step deps step_deps ;;
     host-tests)  run_step host-tests step_host_tests ;;
     release-tests) run_step release-tests step_release_tests ;;
     build)       run_step build step_build ;;

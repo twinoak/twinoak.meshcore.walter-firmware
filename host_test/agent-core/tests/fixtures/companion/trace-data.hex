@@ -1,0 +1,8 @@
+# PUSH_CODE_TRACE_DATA (0x89): reserved, path_len (3 hash bytes), flags (0: 1-byte hashes),
+# tag[4], auth_code[4], path_hashes (a1 b2 a1: the round trip out to b2 and back),
+# path_snrs (3 x i8, x4: 29 -> 7.25, -10 -> -2.5, 26 -> 6.5), final snr (30 -> 7.5).
+# path_len counts *bytes*, and the number of SNRs is path_len >> path_sz.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:821-845 MyMesh::onTraceRecv -- reserved, path_len (bytes), flags, tag[4], auth[4], hashes[path_len], snrs[path_len >> path_sz], final snr
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:41-67 Mesh::onRecvPacket -- PAYLOAD_TYPE_TRACE: path_sz = flags & 3 and the hash size is 1 << path_sz - NOT path_sz + 1
+# 19 bytes
+8900030011223344deadbeefa1b2a11df61a1e

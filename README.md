@@ -58,8 +58,12 @@ Also not done, and not hidden: **no release key exists yet**, so a unit accepts 
   implementation does nothing. Nothing in phases 0–3 names a server endpoint, a JSON field or a
   job, because the MeshMaster side was not decided when they were written and a guess would have
   had to be unwritten. The agent — for its own repeater over the UART, and as an exit node for the
-  neighbours through the repeater's radio — is phase 4, and it waits on two piles in other
-  repositories (`spec/SYSTEM.md` §8).
+  neighbours through the repeater's radio — is phase 4 (`spec/SYSTEM.md` §8). **Its job logic is
+  here**, as of task p4-01: the exit-node firmware's `agent-core` library at a pinned commit,
+  compiled for the board and for the host and linked into the image, with its own two suites
+  passing in this repository's host tests ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §13,
+  [`docs/upstream.md`](docs/upstream.md)). What is still missing is the three implementations it
+  stands on and the wiring — phase 4's tasks 02 to 05 — so nothing talks to a server yet.
 - **It sends no mesh traffic.** The box link has a call for every mesh request the protocol
   defines; this firmware uses none of them, and a grep and a simulated month of wakes hold it to
   that.
@@ -82,8 +86,8 @@ definition of "verified":**
 .\tools\verify.ps1                # everything: the rails, the spec copy, the host tests, the
                                   # release tooling, the firmware, the partition table, a dry-run
                                   # release
-.\tools\verify.ps1 -Only build    # one step (spec, spec-tools, host-tests, release-tests,
-                                  # build, partitions, release)
+.\tools\verify.ps1 -Only build    # one step (spec, spec-tools, deps, host-tests,
+                                  # release-tests, build, partitions, release)
 .\tools\verify.ps1 -Clean         # a cold run: throw the build and cache volumes away first
 .\tools\verify.ps1 -Shell         # a bash inside the same container, same mounts
 .\tools\verify.ps1 -Version 0.3.1+1a2b3c4
@@ -105,6 +109,14 @@ reading them is the test — `components/modem/` the LTE modem (`dptechnics/walt
 component pinned in `dependencies.lock`), and `main/` the start-up that constructs the real things.
 `sdkconfig.defaults` carries a reason per line; `partitions.csv` is checked against every build.
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the map.
+
+`components/agent-core/` is the one thing under `components/` that is **not ours**: the MeshMaster
+agent's job logic, taken from `twinoak.meshmaster.exitnode-firmware` at one commit as a checked
+copy with a manifest, never edited here, together with its fakes, its fixtures and its own two
+suites under `host_test/agent-core/` — which run in this repository's host tests.
+`tools/verify.ps1` holds both copied trees against their manifests before it starts the container.
+[`docs/upstream.md`](docs/upstream.md) is how it got here and how it is kept up to date;
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §13 is what it does.
 
 **How it gets built.** One task, one branch, one PR, one headless session each
 ([`tasks/`](tasks/README.md); [`tasks/RUNBOOK.md`](tasks/RUNBOOK.md) is the procedure). Review
@@ -182,6 +194,7 @@ every test in the suite rather than one).
 | secrets stay where they are | a token and a PIN in NVS, a repeater's password in RAM for the length of an exchange; no command, log line, journal entry or wake record carries either |
 | nothing the mesh said is logged as text | and no mesh request is sent at all |
 | slowly, and within limits | everything the supervisor does to the repeater has a wait, a backoff and a daily cap |
+| the agent core is a copy and keeps its boundary | every file of `components/agent-core/` and `host_test/agent-core/` byte for byte what its manifest says, the pin in two places held equal, every `#include` in the library its own or ArduinoJson or the standard library, and no store, no file system and no way of skipping certificate verification in either tree |
 
 ## Licence
 

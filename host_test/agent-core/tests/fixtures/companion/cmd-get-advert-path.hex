@@ -1,0 +1,6 @@
+# CMD_GET_ADVERT_PATH (42): reserved 0, pubkey[32]. Local, no airtime; answered with
+# RESP_CODE_ADVERT_PATH or ERR_CODE_NOT_FOUND.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1844-1846 MyMesh::handleCmdFrame -- CMD_GET_ADVERT_PATH: pub_key = &cmd_frame[2], wants len >= 34
+# 34 bytes
+2a00c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeff
+a1b2

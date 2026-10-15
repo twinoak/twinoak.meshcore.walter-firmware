@@ -1,0 +1,7 @@
+# PUSH_CODE_LOGIN_FAIL (0x86): reserved, pubkey_prefix[6]. Note what this frame is *not*: stock
+# firmware answers a wrong password with silence (handleLoginReq returns 0), so a refusal reaches
+# the app only from firmware that chooses to send one.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:703-707 MyMesh::onContactResponse -- the else branch
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:90-145 MyMesh::handleLoginReq -- `return 0` - no reply at all - for a password it does not take
+# 8 bytes
+8600c3d4e5f60718

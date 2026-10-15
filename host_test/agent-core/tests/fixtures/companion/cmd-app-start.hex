@@ -1,0 +1,6 @@
+# CMD_APP_START (1): app-proto-ver, six reserved bytes, app name. The firmware reads the name at
+# cmd_frame[8] and wants len >= 8; it takes the protocol version from CMD_DEVICE_QUERY, not from
+# byte 1, so byte 1 is ours to state and not theirs to read.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1043-1049 MyMesh::handleCmdFrame -- CMD_APP_START: app_name = &cmd_frame[8]
+# 15 bytes
+01030000000000006d6d6167656e74

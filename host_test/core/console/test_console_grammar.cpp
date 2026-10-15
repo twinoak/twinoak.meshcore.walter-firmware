@@ -57,6 +57,13 @@ bool documented(const std::string& doc, const char* word) {
   return false;
 }
 
+// Our own sources under components/ and main/. **Not components/agent-core/**: that is the copied
+// MeshMaster agent library (task p4-01, docs/ARCHITECTURE.md §13), it is never edited here, and
+// its words are the agent protocol's job types and not this console's grammar - six of its lines
+// compare the job type `"status"`, which is also a command of ours and means something else
+// entirely. Its own boundary is held by tools/check_rails.py's rail A.
+const char* const kNotOurs = "agent-core";
+
 std::vector<fs::path> firmwareSources() {
   std::vector<fs::path> files;
   for (const char* dir : {"components", "main"}) {
@@ -64,6 +71,7 @@ std::vector<fs::path> firmwareSources() {
     REQUIRE(fs::is_directory(root));
     for (const auto& entry : fs::recursive_directory_iterator(root)) {
       if (!entry.is_regular_file()) continue;
+      if (entry.path().generic_string().find(kNotOurs) != std::string::npos) continue;
       const std::string ext = entry.path().extension().string();
       if (ext == ".cpp" || ext == ".h") files.push_back(entry.path());
     }

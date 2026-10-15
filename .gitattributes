@@ -7,6 +7,12 @@
 # (spec/tools/specsync.py verify spec). Git must not touch a single one of its files.
 spec/** -text
 
+# The agent core, its host fakes and the contract fixtures are copies too, compared byte for byte
+# against the MANIFEST.txt of each tree (tools/sync-agent-core.ps1 -Verify, task p4-01). Git must
+# not touch a single one of their files either.
+components/agent-core/** -text
+host_test/agent-core/** -text
+
 # Images and other binaries, for the avoidance of doubt.
 *.bin binary
 *.elf binary

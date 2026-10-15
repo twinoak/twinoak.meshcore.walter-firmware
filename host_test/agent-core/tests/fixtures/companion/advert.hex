@@ -1,0 +1,5 @@
+# PUSH_CODE_ADVERT (0x80): a repeat advert from a known contact, the public key alone.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:353-362 MyMesh::onDiscoveredContact -- not-new branch
+# 33 bytes
+80c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2

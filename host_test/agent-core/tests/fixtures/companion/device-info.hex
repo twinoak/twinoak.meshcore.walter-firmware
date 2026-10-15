@@ -1,0 +1,12 @@
+# RESP_CODE_DEVICE_INFO (13), the answer to CMD_DEVICE_QUERY: fw_ver_code, max_contacts/2,
+# max_group_channels, ble_pin u32, build_date[12], manufacturer[40], firmware_version[20],
+# repeat (ver 9+), path_hash_mode (ver 10+). A v1.17.x companion is FIRMWARE_VER_CODE 13 and
+# writes every field; the two fixtures beside this one are the older shapes the codec accepts.
+# The strings are the field companion's: v1.17.0, built 9 Aug 2026, on a Heltec V3.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1023-1042 MyMesh::handleCmdFrame -- CMD_DEVICE_QUERY branch
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.h:8-8 FIRMWARE_VER_CODE -- 13 at both v1.17 tags
+# fw companion-v1.17.0 727fc051 examples/companion_radio/MyMesh.h:10-16 FIRMWARE_BUILD_DATE -- the build date and version string of the tag the field companion runs
+# 82 bytes
+0d0d64080000000039204175672032303236000048656c746563205633000000
+0000000000000000000000000000000000000000000000000000000076312e31
+372e30000000000000000000000000000000

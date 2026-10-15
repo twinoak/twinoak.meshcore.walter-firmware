@@ -1,0 +1,10 @@
+# PUSH_CODE_BINARY_RESPONSE (0x8C) to REQ_TYPE_GET_NEIGHBOURS with pubkey_prefix_length 8:
+# reserved, tag[4], total i16, returned i16, then per entry prefix[8], heard_seconds_ago u32,
+# snr i8 (x4): 7f8e9dacbbcad9e8 60 s ago at 7.5 dB, c0ffee0011223344 an hour ago at -2.25 dB.
+# The entry stride is whatever pubkey_prefix_length the request asked for, plus five; nothing in
+# the reply repeats it, so the caller has to remember what it asked.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:276-371 MyMesh::handleRequest -- REQ_TYPE_GET_NEIGHBOURS: neighbours_count i16, results_count i16, then prefix, heard_seconds_ago u32, snr i8
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:740-746 MyMesh::onContactResponse -- binary branch
+# 36 bytes
+8c0055667788020002007f8e9dacbbcad9e83c0000001ec0ffee001122334410
+0e0000f7

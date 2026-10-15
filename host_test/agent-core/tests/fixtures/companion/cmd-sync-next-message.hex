@@ -1,0 +1,5 @@
+# CMD_SYNC_NEXT_MESSAGE (10): the code alone. Answered with the next frame off the offline queue
+# (a CONTACT_MSG_RECV_V3, say) or RESP_CODE_NO_MORE_MESSAGES.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1368-1378 MyMesh::handleCmdFrame -- CMD_SYNC_NEXT_MESSAGE branch
+# 1 bytes
+0a

@@ -1,0 +1,6 @@
+# CMD_LOGOUT (29): pubkey[32]. Local: it ends the companion's keep-alive connection bookkeeping
+# and sends nothing over the air, so the repeater's own session is untouched.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1699-1702 MyMesh::handleCmdFrame -- CMD_LOGOUT: stopConnection then writeOKFrame
+# 33 bytes
+1dc3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2

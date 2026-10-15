@@ -1,0 +1,8 @@
+# CMD_SEND_TRACE_PATH (36) with flags 1: two bytes a hash, three hops (a1b2 c3d4 a1b2), so six
+# path bytes and len - 10 = 6. The flags byte is the *exponent* of the hash size, not the size
+# minus one: 1 << 1 = 2. Until tasks/phase-3.5/42 both this port's writer and its fake companion
+# read it as size - 1, which agrees for 1 and 2 bytes a hash and sends 4 for three.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1764-1789 MyMesh::handleCmdFrame -- CMD_SEND_TRACE_PATH: path_len % (1 << path_sz) must be 0
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:41-67 Mesh::onRecvPacket -- hash size is 1 << (flags & 3)
+# 16 bytes
+2411223344deadbeef01a1b2c3d4a1b2

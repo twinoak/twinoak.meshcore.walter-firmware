@@ -1,0 +1,8 @@
+# CMD_SEND_PATH_DISCOVERY_REQ (52): reserved 0, pubkey[32]. The reserved byte must be 0 or the
+# firmware ignores the frame. Inside, it is a flooded base-telemetry request with the contact's
+# path forced to unknown - which is why a repeater that answers no telemetry answers nothing
+# (tasks/phase-3.5/39: two of these got silence from ten metres away).
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1602-1630 MyMesh::handleCmdFrame -- CMD_SEND_PATH_DISCOVERY_REQ builds req_data = {GET_TELEMETRY_DATA, ~TELEM_PERM_BASE, 0,0,0, random[4]} and forces OUT_PATH_UNKNOWN
+# 34 bytes
+3400c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeff
+a1b2

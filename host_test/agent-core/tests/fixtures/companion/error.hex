@@ -1,0 +1,5 @@
+# RESP_CODE_ERR (1) with ERR_CODE_NOT_FOUND (2): the recipient is not a contact.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:153-158 MyMesh::writeErrFrame
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:130-135 ERR_CODE_UNSUPPORTED_CMD -- the six error codes
+# 2 bytes
+0102

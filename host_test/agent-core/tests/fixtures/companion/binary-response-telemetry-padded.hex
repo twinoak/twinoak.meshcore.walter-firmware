@@ -1,0 +1,15 @@
+# PUSH_CODE_BINARY_RESPONSE (0x8C) to a REQ_TYPE_GET_TELEMETRY_DATA, as a repeater with no external
+# sensors answers it: reserved, tag[4], ch1 voltage 4.11 V, ch1 temperature 16.7 C, and then the
+# four zero bytes the cipher block padded the 12-byte plaintext with. Nothing in the frame says
+# where the readings stop; channel 0 does, because TELEM_CHANNEL_SELF is 1 and no repeater writes
+# a channel 0. Job 43's own bytes, off the air on 26 September 2026 - the frame around them was not
+# captured, so this is transcribed like the rest and cited like the rest.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:240-262 MyMesh::handleRequest -- REQ_TYPE_GET_TELEMETRY_DATA: addVoltage(ch 1), querySensors(), addTemperature(ch 1) last
+# fw companion-v1.17.1 d9296435 src/helpers/sensors/EnvironmentSensorManager.cpp:667-672 EnvironmentSensorManager::querySensors -- external sensors start at TELEM_CHANNEL_SELF + 1 = channel 2
+# fw companion-v1.17.1 d9296435 src/helpers/sensors/LPPDataHelpers.h:5-31 LPP_VOLTAGE -- type codes, sizes and multipliers; channel then type, big-endian
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:740-746 MyMesh::onContactResponse -- binary branch: reserved, tag[4], then data[4..], padding and all
+# fw companion-v1.17.1 d9296435 src/Utils.cpp:116-121 Utils::encrypt -- a partial last block is zero-padded to CIPHER_BLOCK_SIZE, and the padding travels
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:165-172 Mesh::onRecvPacket -- "remainder of packet (may be padded with zeroes!)"
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:488-490 Mesh::createDatagram -- the RESPONSE is one encrypted datagram, which is why there is a block to pad to
+# 18 bytes
+8c006f1e2d3c0174019b016700a700000000

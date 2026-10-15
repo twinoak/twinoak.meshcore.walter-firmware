@@ -1,0 +1,21 @@
+# The same reply at its ceiling: 23 entries, which is the most one can carry. handleRequest's own
+# loop would write 25 (4 + 25 x 7 = 179 <= sizeof(reply_data) - 4), but the reply is one encrypted
+# RESPONSE datagram and Mesh::createDatagram refuses to build one whose plaintext exceeds
+# MAX_PACKET_PAYLOAD - CIPHER_MAC_SIZE - (CIPHER_BLOCK_SIZE - 1) = 167 bytes, so 4 + 23 x 7 = 165
+# fits and 24 entries (172) are never sent at all - an ACL of 24 or more is silence, not a short
+# list, and MAX_CLIENTS is 32. The keys are nn x 6 for nn = 01..17 hex and the levels cycle 1, 2, 3.
+# 4 + 161 = 165 plaintext bytes, so the padding is 11.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:262-275 MyMesh::handleRequest -- REQ_TYPE_GET_ACCESS_LIST && sender->isAdmin(): ofs starts at 4, then pub_key[6] and permissions per entry, permissions == 0 skipped
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:211-213 MyMesh::handleRequest -- reply_data[0..3] is the sender_timestamp reflected back as the tag
+# fw companion-v1.17.1 d9296435 src/Utils.cpp:116-121 Utils::encrypt -- a partial last block is zero-padded to CIPHER_BLOCK_SIZE, and the padding travels
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:165-172 Mesh::onRecvPacket -- "remainder of packet (may be padded with zeroes!)"
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:740-746 MyMesh::onContactResponse -- binary branch: reserved, tag[4], then data[4..], padding and all
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:488-490 Mesh::createDatagram -- data_len + CIPHER_MAC_SIZE + CIPHER_BLOCK_SIZE-1 > MAX_PACKET_PAYLOAD returns NULL, and the caller's if (reply) drops it
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.h:62-63 MAX_CLIENTS -- 32, so an ACL too big for one datagram is a state a real repeater can be in
+# 178 bytes
+8c0011aa22bb0101010101010102020202020202030303030303030404040404
+0401050505050505020606060606060307070707070701080808080808020909
+09090909030a0a0a0a0a0a010b0b0b0b0b0b020c0c0c0c0c0c030d0d0d0d0d0d
+010e0e0e0e0e0e020f0f0f0f0f0f031010101010100111111111111102121212
+1212120313131313131301141414141414021515151515150316161616161601
+171717171717020000000000000000000000
