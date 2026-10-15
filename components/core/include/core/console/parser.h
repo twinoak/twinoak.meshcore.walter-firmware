@@ -150,6 +150,11 @@
 //   sleep now             go to sleep for the interval the battery chose. It does not come back
 //   sleep <seconds>       the same, for a number a person picks (1 to kMaxSleepSeconds)
 //   stay [off]            keep the Walter awake without a cable, for the bench, bounded
+//
+// and one whole wake (task p3-05; docs/cycle.md). No slot either: a wake is the whole unit's:
+//
+//   cycle now             run one pass of the ten steps, each printed as it passes, and sleep
+//   cycle dry             what a pass would do, doing none of it
 #pragma once
 
 #include <cstddef>
@@ -230,6 +235,9 @@ enum class Verb : std::uint8_t {
   kSleepNow,   // sleep for the interval the battery chose
   kSleepFor,   // `sleep <seconds>`: a person's number
   kStay,       // `stay` / `stay off`: awake on purpose, for the bench
+  // One whole wake (task p3-05).
+  kCycleNow,   // run a pass now: the ten steps, then sleep
+  kCycleDry,   // what a pass would do, doing none of it
   // The settings and the rest of the console (task p3-03).
   kGet,      // one key
   kGetAll,   // every key

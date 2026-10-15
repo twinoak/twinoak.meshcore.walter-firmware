@@ -96,6 +96,8 @@ const Line kLines[] = {
     {"sleep now", "sleep now"},
     {"sleep", "sleep 600"},
     {"stay", "stay"},
+    {"cycle now", "cycle now"},
+    {"cycle dry", "cycle dry"},
     {"journal", "journal"},
 };
 

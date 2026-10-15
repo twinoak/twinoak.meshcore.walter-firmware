@@ -25,8 +25,10 @@
 //   `stay`       the console's bench switch, which is itself bounded by `kStayBoundMs`: a person
 //                who forgets to type `stay off` loses nothing but the rest of the day.
 //
-// Nothing else does. An update does not: an update journals every step and is resumed at the
-// next boot by design (task p2-03), which is exactly why the reset is safe.
+// Nothing else does. An update does not *hold it off*: an update journals every step and is
+// resumed at the next boot by design (task p2-03), which is exactly why the reset is safe. What
+// an update - and the supervisor's ladder - may do is **raise this wake's bound** to what that
+// machine needs, which task p3-05 added and `allow()` below is: a longer bound, still a bound.
 //
 // Logic: no ESP-IDF include, no heap. The restart goes through `interfaces::Restart`, so a host
 // test watches it being asked for instead of dying.
@@ -49,6 +51,21 @@ namespace cycle {
 // the uplink's: when the bench says what an attach really costs, both numbers move together.
 constexpr std::uint32_t kWakeBoundMs = 5u * 60 * 1000;
 
+// **The bound a wake may raise itself to**, and the two things that need it: the supervisor's
+// ladder and an update. A climb waits out thirty, sixty and a hundred and twenty seconds between
+// its rungs (`core/supervisor/supervisor.h`) and the state of a climb does not survive a sleep,
+// so a climb either finishes inside its wake or starts again at rung 1 in the next one; and a
+// flash of a megabyte over a 100 kHz debug port, a boot window and a three-minute proving period
+// (`core/update/radio_update.h`) is "several wakes' worth of time", which task p3-05's own words
+// allow a wake to be held open for. So `allow()` raises this wake's bound to what the machine in
+// hand needs, and `core/cycle/wake_cycle.h` is the only caller.
+//
+// A raised bound is still a bound: a wake that overruns *it* is reset, the work is in the
+// journal, and the next boot resumes it (`core/update/journal.h`). That is the whole reason the
+// reset is safe.
+constexpr std::uint32_t kRaisedBoundMax = 30u * 60 * 1000;
+static_assert(kRaisedBoundMax > kWakeBoundMs, "a raised bound is longer than the ordinary one");
+
 // How long `stay` keeps the Walter awake without a cable. Twelve hours: a bench day, and not a
 // week. `stay off` ends it sooner.
 constexpr std::uint32_t kStayBoundMs = 12u * 60 * 60 * 1000;
@@ -70,6 +87,7 @@ const char* describe(Guard state);
 
 struct GuardStatus {
   Guard state = Guard::kDisarmed;
+  std::uint32_t bound_ms = kWakeBoundMs;  // what this wake's bound is, raised or not
   std::uint32_t awake_ms = 0;        // how long this wake has been awake
   std::uint32_t left_ms = 0;         // until the bound, 0 when it does not apply or has passed
   bool usb_host = false;             // a host now
@@ -83,11 +101,15 @@ class WakeGuard {
  public:
   WakeGuard(interfaces::Clock& clock, interfaces::Restart& restart, health::Health& health);
 
-  // A wake has begun and is to be timed from now. Whoever runs the wake calls it (task p3-05);
-  // in this firmware today nothing sleeps by itself, so `main/` leaves it disarmed and `wake`
-  // says so - a bound that reset a Walter which has no way to reach sleep would be a boot loop,
-  // not a safety rail (tasks/phase-3/reports/04.md, *Decisions*).
-  void arm();
+  // A wake has begun and is to be timed from now, with `bound_ms` to reach sleep in. `main/`
+  // calls it once a boot (task p3-05) and the wake cycle is what reaches sleep.
+  void arm(std::uint32_t bound_ms = kWakeBoundMs);
+
+  // Raise the bound of the wake in hand to `bound_ms`, **without moving when it began**: a step
+  // that has turned out to need longer than an ordinary wake says so (see kRaisedBoundMax). It
+  // never lowers a bound and never arms a disarmed guard, and it is capped at kRaisedBoundMax.
+  void allow(std::uint32_t bound_ms);
+  std::uint32_t bound() const { return status_.bound_ms; }
   // The wake reached sleep, or a person took over: the bound stops applying.
   void disarm();
   bool armed() const { return armed_; }
@@ -114,6 +136,7 @@ class WakeGuard {
   health::Health& health_;
   GuardStatus status_{};
   std::uint64_t armed_at_ms_ = 0;
+  std::uint32_t bound_ms_ = kWakeBoundMs;
   std::uint64_t staying_since_ms_ = 0;
   std::uint64_t usb_gone_at_ms_ = 0;
   bool armed_ = false;

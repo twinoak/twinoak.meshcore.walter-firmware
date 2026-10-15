@@ -178,8 +178,12 @@ class Sleep {
   // band `decision` settled on. **On the board this does not return.** `by_hand` marks a
   // person's `sleep now` in the journal.
   SleepResult go(const power::Decision& decision, bool arm_radio_line, bool by_hand = false);
-  // The same, for a number of seconds a person typed: the band is read but its interval is not.
-  SleepResult goFor(std::uint32_t seconds, const power::Decision& decision, bool arm_radio_line);
+  // The same, for a number of seconds somebody else chose: the band is read but its interval is
+  // not. `by_hand` is true for a person's `sleep <seconds>` and **false for the wake cycle's own
+  // shortened interval** (task p3-05, step 10: a download that is half done in `plenty`), which
+  // is not a person doing something and must not be journalled as one.
+  SleepResult goFor(std::uint32_t seconds, const power::Decision& decision, bool arm_radio_line,
+                    bool by_hand = true);
 
   // Whether a sleep would be refused now, without doing anything about it: what `status` and the
   // wake cycle ask before they start one.

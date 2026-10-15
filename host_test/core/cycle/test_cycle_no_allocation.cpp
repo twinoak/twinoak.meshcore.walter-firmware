@@ -1,6 +1,7 @@
-// No allocation in the duty cycle (task p3-04), and a list of what it is allowed to know about:
-// every source under `core/power/` and `core/cycle/` read line by line for a word that allocates
-// or an include that could bring one in (host_test/checks/no_allocation.h).
+// No allocation in the duty cycle (task p3-04) or the wake cycle (task p3-05), and a list of
+// what they are allowed to know about: every source under `core/power/` and `core/cycle/` read
+// line by line for a word that allocates or an include that could bring one in
+// (host_test/checks/no_allocation.h).
 //
 // The include list is the second half of this and the more interesting one. The duty cycle is
 // the thing that runs *last* in a wake, with the least battery left, so a heap is the last thing
@@ -37,10 +38,20 @@ const char* const kCycleDirectories[] = {
 const char* const kCycleIncludes[] = {
     "cstddef",
     "cstdint",
-    // Its own four, and the adapter.
+    // The wake record is one formatted line and the journal's payload is bytes (task p3-05):
+    // <cstdio> for snprintf, <cstdarg> for the one variadic line printer, <cstring> for strlen.
+    // None of the three allocates; the words that do are what this test is really about.
+    "cstdarg",
+    "cstdio",
+    "cstring",
+    // Its own, and the adapter.
     "core/cycle/attention_source.h",
     "core/cycle/duty_cycle.h",
+    "core/cycle/network_clock.h",
+    "core/cycle/null_backend.h",
     "core/cycle/sleep.h",
+    "core/cycle/telemetry_ring.h",
+    "core/cycle/wake_cycle.h",
     "core/cycle/wake_guard.h",
     "core/cycle/wake_reason.h",
     // The pure policy.
@@ -59,6 +70,20 @@ const char* const kCycleIncludes[] = {
     "core/update/radio_update.h",
     "core/update/self_update.h",
     "core/uplink/policy.h",
+    // And what one wake runs besides them (task p3-05): the store it reports and shortens a
+    // sleep for, the fetch of a release, the window a network time is believed inside, and this
+    // firmware's own version and descriptor.
+    "core/image/store.h",
+    "core/image/this_image.h",
+    "core/link/client/words.h",
+    "core/net/download.h",
+    "core/update/fetch.h",
+    "core/uplink/clock_window.h",
+    "core/version.h",
+    // The seam, which is plain data and pure virtual like every other interface.
+    "interfaces/backend.h",
+    "interfaces/text_out.h",
+    "interfaces/uplink.h",
     // The world, each pure virtual. **No ESP-IDF**: that is tools/cmake/no_idf_include.cmake's
     // business as well, and this is the second lock on the same door.
     "interfaces/clock.h",
@@ -83,7 +108,7 @@ TEST_CASE("nothing under components/core/cycle/ allocates") {
       "the duty cycle",
       checks::filesUnder(kCycleDirectories,
                          sizeof kCycleDirectories / sizeof kCycleDirectories[0]),
-      kCycleIncludes, sizeof kCycleIncludes / sizeof kCycleIncludes[0], 8, 1200);
+      kCycleIncludes, sizeof kCycleIncludes / sizeof kCycleIncludes[0], 14, 2500);
 }
 
 TEST_CASE("nothing in interfaces/ allocates, and it includes only the freestanding headers") {

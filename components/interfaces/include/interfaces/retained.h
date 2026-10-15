@@ -26,6 +26,13 @@ enum class RetainedSlot : std::uint8_t {
   // holds, and RTC SLOW memory had 316 bytes free before this task (tasks/phase-3/reports/04.md,
   // *What RTC memory costs*).
   kDutyCycle = 6,
+  // core/cycle/telemetry_ring.h (task p3-05): the readings of each wake's step 4 kept while
+  // there is nobody to give them to, and the asks this firmware refused and has not yet been
+  // able to tell anybody about. **One record for both**, for the reason the slot above says: a
+  // slot costs kRetainedRecordMax bytes whatever it holds, and RTC SLOW memory had 176 bytes
+  // free when task p3-05 began. The next task that wants a slot does not have one, and
+  // tasks/phase-3/reports/05.md says what to do about it.
+  kWakeCycle = 7,
   kCount
 };
 

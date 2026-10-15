@@ -145,6 +145,8 @@ supervisor's stop is printed at every level.
 | `sleep now` | go to sleep for the interval the battery chose: the journal, `SLEEP_NOTICE` to the radio, the modem down, the pins safe and held, deep sleep. **It does not come back** — the next boot is the next wake |
 | `sleep <seconds>` | the same, for a number a person picks (1 to 604800). What the band allows is unchanged; only the timer is |
 | `stay [off]` | keep the Walter awake without a cable, for the bench, bounded by twelve hours; `stay off` ends it. Without it, and without a USB host, a wake that has not reached sleep in five minutes is ended by a reset |
+| `cycle now` | (task p3-05) run **one whole wake** on request: the ten steps of `docs/cycle.md` in order, each printed with its outcome, its reason and what it spent, and then sleep. **It does not come back** unless the sleep was refused |
+| `cycle dry` | what a wake *would* do, doing none of it: every step with its bound, its preconditions as they stand now, the band and the interval, and what is behind the backend seam. Nothing is sent, nothing is written, no byte of the modem or the link is touched |
 
 A sleep is refused, in one `error:` line, when the radio's update has a step in the air, when a
 transfer into the other application slot is open, or when **this firmware is on trial** — a deep
@@ -156,7 +158,7 @@ confirm` or `self reject` first. See *Sleep, and what wakes it* below.
 
 | Command | What it does |
 |---|---|
-| `journal` | the last twelve entries of the flash journal in words, newest first, whatever wrote them: the radio's updates (task p2-03), this firmware's own (p2-04), the supervisor's ladder (p2-05) and the duty cycle's sleeps (p3-04), with the head, the next sequence number and whether an operation's entries are protected from a wrap. `rak update status` and `self status` tell the story of one run; this is the log |
+| `journal` | the last twelve entries of the flash journal in words, newest first, whatever wrote them: the radio's updates (task p2-03), this firmware's own (p2-04), the supervisor's ladder (p2-05), the duty cycle's sleeps (p3-04) and the wake records (p3-05), with the head, the next sequence number and whether an operation's entries are protected from a wrap. `rak update status` and `self status` tell the story of one run; this is the log |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command,
 subcommand or key, an argument where none is taken, a missing or non-numeric value, a value out of
@@ -627,9 +629,14 @@ flashed, a scanner talking to nobody — must not be able to keep the Walter awa
 within five minutes is ended by a reset; the next boot's record says who asked, the wake after it
 reads that as a watchdog, and the interval policy lengthens the next sleep rather than shortening
 it. A reset and not a straight sleep, because a wake that has overrun is a wake in an unknown
-state, and the journal is what carries unfinished work across a boot. In this firmware **nothing
-arms it yet**: nothing reaches sleep by itself until the wake cycle exists (task p3-05), and
-`sleep now` on this console is the only way in.
+state, and the journal is what carries unfinished work across a boot. `main/` arms it once a boot
+(task p3-05), so a wake that hangs anywhere ends in a reset rather than in a flat battery.
+
+Two things may **raise** that bound for the wake in hand, and nothing else can: the supervisor's
+ladder, whose waits add up to four minutes before it flashes anything, and an update, which the
+task's own words allow to hold a wake open "up to its own bound" — a megabyte over a 100 kHz debug
+port does not fit in five minutes. A raised bound is still a bound: a wake that overruns it is
+reset, and the journal is what takes the work up again at the next boot (`docs/cycle.md`).
 
 **What is written down.** Not every sleep. The journal is 1024 entries and it exists so that an
 *update* is never guessed at; a unit checking in every quarter of an hour would wrap the whole log
@@ -638,6 +645,36 @@ recorded in RTC memory only, which is where `wake` reads the last ten from, and 
 line when there is news: the band changed, the interval was lengthened by a fault, the radio's line
 was disarmed or armed again, the wake was a crash or a watchdog, a person typed `sleep now`, or the
 sleep was refused.
+
+## One whole wake
+
+Task p3-05; `docs/cycle.md` is the page — the ten steps, the dependency table, the budgets, what a
+wake record's letters mean, and what an implementer of the backend seam has to provide.
+
+**On a unit on a mast the console is not running.** A boot that finds no USB host runs one pass of
+the wake cycle and sleeps; a boot that finds one stays awake, the console runs, and nothing sleeps
+by itself. That is the same rule as before — this chip cannot wake from deep sleep on a cable — and
+it is why `cycle now` and `cycle dry` exist: they are how a person with the board in hand sees
+what a mast does by itself.
+
+```
+> cycle dry
+what a wake would do, doing none of it - nothing is sent and nothing is written
+   1 why      y done                       the timer: the check-in [up to 11300 ms]
+   2 radio    y it would run               [up to 40000 ms]
+   ...
+  10 sleep    y it would run               [up to 15000 ms]
+wake 12 timer: radio healthy, band normal, steps yyyyyyyyyy, 0 s awake, next 60 min
+the wake: a dry run: nothing was done; the budget 240000 ms, 240000 left, 0 outside it; the bound 300000 ms
+the backend: the exchange failed; 3 reading(s) offered
+```
+
+The last line is the seam, and on this firmware it is honest: **the backend does nothing.** The
+implementation in this repository answers *nothing to do* every wake, for ever
+(`core/cycle/null_backend.h`), because the server side is three accepted proposals and a decision
+about where it will be built, not a protocol (`spec/SYSTEM.md` §8). The readings of every wake are
+kept in a bounded ring and offered to it; nobody takes them, so the oldest are dropped and the
+dropped count is kept.
 
 ## The radio's power, as `status` and `pins` say it
 

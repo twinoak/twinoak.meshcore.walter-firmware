@@ -20,16 +20,25 @@ WakeGuard::WakeGuard(interfaces::Clock& clock, interfaces::Restart& restart,
   refresh();
 }
 
-void WakeGuard::arm() {
+void WakeGuard::arm(std::uint32_t bound_ms) {
   armed_ = true;
   overrun_ = false;
   armed_at_ms_ = clock_.nowMs();
+  bound_ms_ = bound_ms != 0 && bound_ms <= kRaisedBoundMax ? bound_ms : kWakeBoundMs;
+  refresh();
+}
+
+void WakeGuard::allow(std::uint32_t bound_ms) {
+  if (!armed_) return;
+  const std::uint32_t want = bound_ms > kRaisedBoundMax ? kRaisedBoundMax : bound_ms;
+  if (want > bound_ms_) bound_ms_ = want;
   refresh();
 }
 
 void WakeGuard::disarm() {
   armed_ = false;
   overrun_ = false;
+  bound_ms_ = kWakeBoundMs;
   refresh();
 }
 
@@ -89,15 +98,16 @@ void WakeGuard::refresh() {
   } else {
     status_.state = Guard::kDisarmed;
   }
-  status_.left_ms = status_.state == Guard::kArmed && status_.awake_ms < kWakeBoundMs
-                        ? kWakeBoundMs - status_.awake_ms
+  status_.bound_ms = bound_ms_;
+  status_.left_ms = status_.state == Guard::kArmed && status_.awake_ms < bound_ms_
+                        ? bound_ms_ - status_.awake_ms
                         : 0;
 }
 
 bool WakeGuard::tick() {
   refresh();
   if (status_.state != Guard::kArmed) return false;
-  if (status_.awake_ms < kWakeBoundMs) return false;
+  if (status_.awake_ms < bound_ms_) return false;
   // The bound has passed with nothing holding it off. Record who asked before asking, so that
   // the next boot can say it even if the restart is instant - which on a board it is.
   overrun_ = true;

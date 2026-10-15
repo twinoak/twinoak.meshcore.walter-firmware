@@ -40,8 +40,20 @@ interfaces::Identity FakeModem::makeIdentity() {
   return id;
 }
 
+void FakeModem::walterBooted(std::uint64_t world_ms) {
+  base_ms_ = world_ms;
+  // A wake begins, and nothing of the attach before the sleep is timed from: the radio was taken
+  // down on the way out of that wake (core/cycle/sleep.h), so there is nothing left to time.
+  attached_ = false;
+  attached_at_ms_ = 0;
+  registered_at_ms_ = 0;
+  was_registered_ = false;
+  searching_since_ms_ = 0;
+  searching_ = false;
+}
+
 bool FakeModem::spend(std::uint32_t cost, std::uint64_t deadline) {
-  const std::uint64_t now = clock_.nowMs();
+  const std::uint64_t now = this->now();
   if (now >= deadline) {
     ++timeouts;
     return false;
@@ -58,7 +70,7 @@ bool FakeModem::spend(std::uint32_t cost, std::uint64_t deadline) {
 
 void FakeModem::stopSearching() {
   if (!searching_) return;
-  searching_ms += clock_.nowMs() - searching_since_ms_;
+  searching_ms += now() - searching_since_ms_;
   searching_ = false;
 }
 
@@ -67,7 +79,7 @@ void FakeModem::stopSearching() {
 bool FakeModem::registeredNow() const {
   if (!started_ || op_ != interfaces::OpState::kFull) return false;
   if (!attached_ || denied || never_registers) return false;
-  const std::uint64_t now = clock_.nowMs();
+  const std::uint64_t now = this->now();
   const std::uint64_t registered_at = attached_at_ms_ + registers_after_ms;
   if (now < registered_at) return false;
   if (drops_after_registering && now >= registered_at + drops_after_ms) return false;
@@ -77,7 +89,7 @@ bool FakeModem::registeredNow() const {
 bool FakeModem::dataNow() const {
   if (!registeredNow() || !data_ever_ready) return false;
   const std::uint64_t registered_at = attached_at_ms_ + registers_after_ms;
-  return clock_.nowMs() >= registered_at + data_ready_after_ms;
+  return now() >= registered_at + data_ready_after_ms;
 }
 
 interfaces::UplinkState FakeModem::state() const {
@@ -176,7 +188,7 @@ bool FakeModem::opState(interfaces::OpState state, std::uint64_t deadline_ms) {
   if (state == interfaces::OpState::kFull) {
     if (!searching_) {
       searching_ = true;
-      searching_since_ms_ = clock_.nowMs();
+      searching_since_ms_ = now();
     }
   } else {
     stopSearching();
@@ -203,7 +215,7 @@ bool FakeModem::attach(std::uint64_t deadline_ms) {
   }
   if (!spend(cost_ms, deadline_ms)) return false;
   attached_ = true;
-  attached_at_ms_ = clock_.nowMs();
+  attached_at_ms_ = now();
   return true;
 }
 

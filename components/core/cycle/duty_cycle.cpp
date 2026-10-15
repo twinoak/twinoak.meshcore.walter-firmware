@@ -74,9 +74,9 @@ SleepResult DutyCycle::sleepNow(bool by_hand) {
   return sleep_.go(decision_, lineWillArm(), by_hand);
 }
 
-SleepResult DutyCycle::sleepFor(std::uint32_t seconds) {
+SleepResult DutyCycle::sleepFor(std::uint32_t seconds, bool by_hand) {
   if (!decided_) (void)decide();
-  return sleep_.goFor(seconds, decision_, lineWillArm());
+  return sleep_.goFor(seconds, decision_, lineWillArm(), by_hand);
 }
 
 bool DutyCycle::tick() {

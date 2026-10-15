@@ -128,6 +128,8 @@ struct CycleWalter {
     ++w.boots;
     pins.record_log = false;
     w.journal_flash.powerOn();
+    // The modem is handed deadlines on *this* Walter's clock, which began now (sim/fake_modem.h).
+    w.modem.walterBooted(w.clock.nowMs());
     // The order main/ uses: the pins safe, the holds released, the wake cause read, safe again.
     // Nothing here has to release a hold - the fake pins keep theirs across a `boot()` the way
     // real pads keep theirs across a sleep - but doing it in this order is what the firmware

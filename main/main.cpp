@@ -13,6 +13,10 @@
 #include "core/board/slot.h"
 #include "core/console/console.h"
 #include "core/cycle/duty_cycle.h"
+#include "core/cycle/network_clock.h"
+#include "core/cycle/null_backend.h"
+#include "core/cycle/telemetry_ring.h"
+#include "core/cycle/wake_cycle.h"
 #include "core/health/health.h"
 #include "core/image/choose.h"
 #include "core/image/receive.h"
@@ -102,16 +106,20 @@ core::update::Journal* g_journal = nullptr;
 core::update::RadioUpdate* g_update = nullptr;
 core::update::Fetch* g_fetch = nullptr;
 
-// The time of day, which this firmware does not know yet: phase 3's modem reads it from the
-// cellular network and fills this in (interfaces/wall_clock.h). Until then the link client has no
-// time to give the radio and does not pretend otherwise - spec/LINK-PROTOCOL.md §5.4 is explicit
-// that a clock that goes backwards makes a MeshCore node's own traffic look replayed, and a made-up
-// time is how that happens. `rak time set <epoch>` on the console is the way to set it today.
-class NoWallClock final : public interfaces::WallClock {
- public:
-  bool now(interfaces::WallTime*) override { return false; }
-};
-NoWallClock g_wall;
+// The time of day (task p3-05, core/cycle/network_clock.h): filled from the cellular network by
+// the wake cycle's step 6 and given to the radio by its step 7. It answers "I have no time to
+// give" until the modem has been asked and the answer passed task p3-01's window - and again
+// after every wake from deep sleep, because the monotonic clock this is kept against restarts at
+// zero and a time carried across a sleep by arithmetic over a counter that restarted is exactly
+// the clock spec/LINK-PROTOCOL.md §5.4 warns about. `rak time set <epoch>` is still a person's
+// way in, and it does not go through here.
+core::cycle::NetworkClock g_wall(g_clock);
+
+// The backend seam (task p3-05, interfaces/backend.h): **this implementation does nothing**, and
+// that is the firmware's default. The server side is three accepted proposals and a decision
+// about where it will be built, not a protocol (spec/SYSTEM.md §8), and the MeshMaster agent goes
+// behind this interface in phase 4.
+core::cycle::NullBackend g_backend;
 
 }  // namespace
 
@@ -370,9 +378,9 @@ extern "C" void app_main() {
 
   // The duty cycle (task p3-04, docs/ARCHITECTURE.md §10, docs/power.md): why this wake
   // happened, what the battery allows, the bound on a wake, and the one way out of one. **This
-  // is the only object in this firmware that sleeps**, and until the wake cycle exists (task
-  // p3-05) the console is the only thing that drives it: `sleep now`, `sleep <seconds>`, `wake`,
-  // `power`, `stay`.
+  // is the only object in this firmware that sleeps**, and task p3-05's wake cycle below is what
+  // drives it; the console's `sleep now`, `sleep <seconds>`, `wake`, `power` and `stay` still
+  // reach it directly.
   static core::cycle::DutyCycle duty(g_sleeper, radio_pins, radio, uplink, health, g_clock, g_wall,
                                      g_restart, g_retained, &supervisor, g_update,
                                      self_update_ptr, g_journal, &settings);
@@ -380,9 +388,25 @@ extern "C" void app_main() {
   // listens for up to §8's whole repeat window (about eleven seconds), which is why it is here -
   // after the link's port is open - and not at the top of this function.
   duty.begin();
-  // The bound on a wake is deliberately **not** armed: nothing in this firmware reaches sleep by
-  // itself yet, so a bound that reset the Walter would be a boot loop and not a safety rail.
-  // `duty.guard().arm()` is the one line task p3-05 adds (tasks/phase-3/reports/04.md).
+  // The bound on a wake, armed: this is the one line task p3-05 adds
+  // (tasks/phase-3/reports/04.md). From here a wake that has not reached sleep in five minutes -
+  // or in the longer bound a climb or an update may raise it to - is ended by a reset, and the
+  // next boot's record says who asked. A USB host holds it off, and so does `stay`.
+  duty.guard().arm();
+
+  // The readings of every wake's step 4, kept while there is nobody to give them to (task
+  // p3-05, core/cycle/telemetry_ring.h): a bounded ring in retained storage, oldest dropped
+  // first, with the count of what was dropped - and the asks this firmware refused and has not
+  // yet been able to tell anybody about.
+  static core::cycle::TelemetryRing readings(g_retained);
+  readings.begin();
+
+  // **One wake, start to finish** (task p3-05, docs/cycle.md): the ten steps in order, each
+  // bounded, each outcome written down, ending in sleep. Everything above is handed to it as an
+  // interface; the backend is `g_backend`, which does nothing.
+  static core::cycle::WakeCycle cycle(duty, radio, uplink, g_backend, readings, g_wall, g_clock,
+                                      &supervisor, g_update, self_update_ptr, g_fetch, g_store,
+                                      g_journal, &settings);
 
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
   // time round, the uptime kept in retained storage about once a second. Returning is not an
@@ -391,8 +415,30 @@ extern "C" void app_main() {
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
-                                        g_fetch, &trust, &settings, &g_uplink, &duty);
+                                        g_fetch, &trust, &settings, &g_uplink, &duty, &cycle);
   console.begin();
+  // One turn of the loop before the wake, because the trial's first condition is "the main loop
+  // was reached with the board in the safe state" (core/update/self_update.h) and the console is
+  // what says so. A wake that found itself on trial has to be able to meet that condition before
+  // its step 9 tries to finish the trial.
+  console.tick();
+
+  // And then the wake itself. **With a USB host on the port a person is here**: the console runs
+  // and nothing sleeps by itself (task p3-04 - this chip cannot wake from deep sleep on a cable,
+  // so a boot that finds a host stays awake while it is there and for a minute after it goes).
+  // Without one, this is a unit on a mast: one pass of the wake cycle, which ends in deep sleep
+  // and **does not return**. If it does return - the sleep was refused, the Walter is restarting
+  // into another slot, or the bound ended the wake - the loop below takes over and the bound is
+  // what ends it.
+  if (!duty.wake().usb_host && !duty.guard().staying()) {
+    const core::cycle::Pass& pass = cycle.run();
+    std::printf("the wake did not end in sleep: %s\n", core::cycle::describe(pass.ending));
+    std::fflush(stdout);
+  } else {
+    std::printf("a USB host is on the port, so this wake is a person's: the console runs and "
+                "nothing sleeps by itself ('cycle dry' says what a wake would do, 'cycle now' "
+                "runs one)\n");
+  }
   std::uint32_t last_tick_s = 0;
   for (;;) {
     const int c = console_up ? g_usb.readByte(100) : -1;
@@ -404,6 +450,10 @@ extern "C" void app_main() {
     // Whatever the radio sent while nobody was asking: events queued, scanner lines kept. It
     // reads what is there and returns - nothing here blocks on the radio.
     radio.poll();
+    // The bound on the wake, and the USB host it is held off by: asked every time round (task
+    // p3-04, core/cycle/wake_guard.h). A wake that has not reached sleep inside its bound is
+    // ended here by a reset, and the journal is what carries any unfinished work across it.
+    (void)duty.tick();
     const std::uint32_t up = health.uptimeS();
     if (up != last_tick_s) {
       last_tick_s = up;

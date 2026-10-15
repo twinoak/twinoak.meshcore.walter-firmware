@@ -125,6 +125,16 @@ class FakeModem final : public interfaces::Uplink {
                    interfaces::PowerSavingGrant* out) override;
   void takeDown() override;
 
+  // -- the Walter's clock, and why this needs telling about it --------------------------------
+  //
+  // **The deadlines this modem is given are on the Walter's own monotonic clock**, which restarts
+  // at zero at every wake from deep sleep (`interfaces/clock.h`, and host_test's benches model it
+  // with a boot clock over the world's). This object's arithmetic has to be on the same clock, or
+  // a second wake would hand it deadlines in its own past and every call would time out at once.
+  // A bench that walks more than one wake calls this at every boot; one that walks a single wake
+  // need not, because the two clocks are then the same.
+  void walterBooted(std::uint64_t world_ms);
+
   // -- for the tests --------------------------------------------------------------------------
   // The default readings, as functions so that a test can start from them and change one field.
   static interfaces::Signal makeSignal();
@@ -137,12 +147,15 @@ class FakeModem final : public interfaces::Uplink {
   // Spends `cost` of the clock, bounded by the deadline. False when the deadline came first: the
   // clock is then exactly at the deadline, which is what a call that times out looks like.
   bool spend(std::uint32_t cost, std::uint64_t deadline);
+  // Now, on the Walter's clock (see walterBooted()).
+  std::uint64_t now() const { return clock_.nowMs() - base_ms_; }
   bool answers() const { return !deaf && !deaf_until_reset; }
   bool registeredNow() const;
   bool dataNow() const;
   void stopSearching();
 
   fakes::FakeClock& clock_;
+  std::uint64_t base_ms_ = 0;  // where the Walter's own clock began, in the world's time
   bool started_ = false;
   bool unlocked_ = false;
   interfaces::OpState op_ = interfaces::OpState::kOff;

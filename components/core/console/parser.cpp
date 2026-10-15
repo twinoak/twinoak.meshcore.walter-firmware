@@ -694,6 +694,13 @@ Parsed parseLine(const char* line) {
     }
     return p;
   }
+  // One whole wake (task p3-05).
+  if (std::strcmp(verb, "cycle") == 0) {
+    if (!hasRest) return refuse("cycle needs 'now' - run a whole wake - or 'dry'");
+    if (std::strcmp(rest, "now") == 0) return accept(Verb::kCycleNow);
+    if (std::strcmp(rest, "dry") == 0) return accept(Verb::kCycleDry);
+    return refuse2("cycle takes 'now' or 'dry': ", rest);
+  }
   if (std::strcmp(verb, "stay") == 0) {
     Parsed p = accept(Verb::kStay);
     if (!hasRest) {

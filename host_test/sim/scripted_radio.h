@@ -88,6 +88,16 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // fixture's: a radio whose bit 4 ("the radio initialised") never comes.
   bool override_status_flags = false;
   std::uint16_t status_flags = 0;
+  // §5.4's clock, as the radio keeps it. The first-batch boards have no RTC fitted, so the
+  // radio's clock is **lost at every restart** and set over the link - and a bench that did not
+  // model that would have the Walter set the clock at every wake for ever, which is not what a
+  // unit does. A TIME_SET that is answered OK is remembered here; STATUS and TIME_GET then
+  // report `set` and the epoch, advancing with the clock, until the radio restarts. `keeps_clock`
+  // false is the radio that forgets it again at once (a firmware whose clock does not stick).
+  bool keeps_clock = true;
+  bool clockSet() const { return clock_set_; }
+  std::uint32_t clockEpoch() const;
+
   // The uptime PING and STATUS report (§5.2, §5.3), when a test wants other than the fixture's
   // hour: a radio that never gets past a couple of minutes is restarting itself, which is the
   // second way the supervisor sees a boot loop (task p2-05).
@@ -190,6 +200,11 @@ class ScriptedRadio final : public interfaces::ByteStream {
   std::uint8_t remembered_type_ = 0;
   std::uint8_t remembered_seq_ = 0;
   std::vector<std::uint8_t> remembered_payload_;
+
+  // §5.4's clock, as this radio keeps it.
+  bool clock_set_ = false;
+  std::uint32_t clock_epoch_ = 0;
+  std::uint64_t clock_at_ms_ = 0;
 
   bool answer_with_ = false;
   std::string answer_case_;

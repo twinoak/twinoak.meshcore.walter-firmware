@@ -88,8 +88,9 @@ class DutyCycle {
   // The one way out of a wake: decide(), then sleep for the interval it chose. **On the board
   // this does not return.**
   SleepResult sleepNow(bool by_hand = false);
-  // `sleep <seconds>`: a person's number, the band's allowance unchanged.
-  SleepResult sleepFor(std::uint32_t seconds);
+  // `sleep <seconds>`: a person's number, the band's allowance unchanged. `by_hand` false is the
+  // wake cycle's shortened interval (task p3-05, step 10), which is nobody's hand.
+  SleepResult sleepFor(std::uint32_t seconds, bool by_hand = true);
 
   // The modem was used in this wake, or was not and the band is `saving`: the every-Nth counter.
   // Whoever runs the wake calls one of them, so that a wake the uplink's backoff skipped does
