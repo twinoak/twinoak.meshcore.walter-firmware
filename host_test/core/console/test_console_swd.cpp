@@ -153,5 +153,7 @@ TEST_CASE("a different DPIDR is printed as what it is") {
 
 TEST_CASE("help lists rak swd connect") {
   Rig rig;
-  CHECK(contains(rig.run("help"), "rak swd connect     connect to the radio's debug port over SWD"));
+  const std::string text = rig.run("help");
+  CHECK(contains(text, "rak swd connect"));
+  CHECK(contains(text, "connect to the radio's debug port: DPIDR and the power-up, then the lines"));
 }

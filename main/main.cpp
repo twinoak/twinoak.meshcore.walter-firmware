@@ -25,6 +25,7 @@
 #include "core/net/download.h"
 #include "core/net/http_over_tls.h"
 #include "core/net/trust.h"
+#include "core/settings/settings.h"
 #include "core/supervisor/supervisor.h"
 #include "core/update/fetch.h"
 #include "core/update/tls_check.h"
@@ -41,6 +42,7 @@
 #include "platform/boot.h"
 #include "platform/clock.h"
 #include "platform/flash_partition.h"
+#include "platform/key_value.h"
 #include "platform/own_update.h"
 #include "platform/pins.h"
 #include "platform/retained.h"
@@ -73,10 +75,14 @@ platform::UsbConsole g_usb;
 platform::RadioUart g_uart;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
+// The settings (task p3-03): NVS behind interfaces::KeyValue, and the table over it. The store
+// is above the application slots in partitions.csv, so a factory image cannot reach it
+// (docs/ARCHITECTURE.md §11).
+platform::NvsKeyValue g_nvs;
 // The two application slots and ESP-IDF's rollback (task p2-04). The trial's uplink condition
-// is a TLS handshake with the configured server (task p3-02, core/update/tls_check.h); until task
-// p3-03 gives the unit a server, the host is empty and the condition does not apply
-// (core/update/uplink_check.h says why that is the rule and not a gap).
+// is a TLS handshake with the configured server (task p3-02, core/update/tls_check.h), and the
+// server is the `server.url` setting (task p3-03): unset, the host is empty and the condition
+// does not apply (core/update/uplink_check.h says why that is the rule and not a gap).
 platform::EspOwnUpdate g_own;
 
 // The image store and the USB transfer (task p2-02), when the partition is there: the objects
@@ -161,6 +167,28 @@ extern "C" void app_main() {
   // flashed over USB is in no OTA state and runs no trial: the bootloader marks only a slot that
   // an update made the next to boot (tasks/phase-0/reports/01.md, rollback).
 
+  // The settings (task p3-03, core/settings/keys.h): the `nvs` partition behind
+  // interfaces::KeyValue and the table of eleven keys over it. Read once, here; the console's
+  // begin() is what puts them in force (`log.level` before it prints anything, `swd.khz`, the
+  // APN, the PIN, the server a self-update's trial must reach). A partition that would not open
+  // is one line and every key falling back - which is a unit that was never provisioned, and
+  // that is a state this firmware has to survive anyway.
+  static core::settings::Settings settings(g_nvs);
+  if (g_nvs.begin()) {
+    settings.begin();
+    std::printf("settings: nvs namespace '%s', %u keys%s; 'get' prints them, "
+                "'set <key> <value>' changes one\n", platform::kSettingsNamespace,
+                static_cast<unsigned>(core::settings::kKeyCount),
+                g_nvs.wasRebuilt() ? " (the partition had to be erased and rebuilt: a new unit, "
+                                     "or a layout change)" : "");
+    std::printf("settings: NOT encrypted - flash encryption is the owner's choice and is not "
+                "assumed: a person with this board and a cable can read lte.pin and "
+                "server.token out of it (docs/console.md)\n");
+  } else {
+    std::printf("settings: the `nvs` partition would not open (esp_err %d): every key falls back "
+                "and a 'set' cannot be kept\n", g_nvs.lastError());
+  }
+
   // The uplink (task p3-01, docs/ARCHITECTURE.md §9): `walter-modem` behind
   // interfaces::Uplink (components/modem/walter_uplink.cpp) and the policy over it - the
   // sequence, the deadlines, the wake's budget and the backoff (core/uplink/policy.h).
@@ -200,7 +228,8 @@ extern "C" void app_main() {
   static core::net::Client http_client(https, g_clock);
   static core::net::Download download(http_client, g_clock);
   // The trial's third condition over the real uplink (S-6): a TLS handshake with the configured
-  // server; no server is configured until task p3-03, so it answers "not configured".
+  // server, which is `server.url` (task p3-03) - the console's begin() hands it over. Unset, it
+  // answers "not configured" and the condition does not apply.
   static core::update::TlsHandshakeCheck g_uplink(tls_socket, &trust, g_clock);
   std::printf("https: %lu TLS roots (keys/tls), %s; 'trust tls', 'http get <url>', 'fetch <base-url>'\n",
               static_cast<unsigned long>(core::net::tlsRootCount()),
@@ -319,7 +348,7 @@ extern "C" void app_main() {
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
-                                        g_fetch, &trust);
+                                        g_fetch, &trust, &settings, &g_uplink);
   console.begin();
   std::uint32_t last_tick_s = 0;
   for (;;) {

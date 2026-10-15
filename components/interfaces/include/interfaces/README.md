@@ -17,7 +17,9 @@ include. Included as `"interfaces/<name>.h"`.
 
 | `tls_socket.h` | a TLS connection to a host: open with the chain **verified against one named root and the host name checked**, send, receive, close - there is no way to ask for less; and the modem's certificate slots and TLS profiles (`TlsStore`), whose one profile-configuring call always asks for the chain and the name (task p3-02) | the modem's own TLS over its socket 1 (`modem/walter_tls`) | `host_test/sim/fake_tls_socket` — a scripted server behind it that refuses a host whose chain does not end at the root asked for, costs time, drops after N bytes, stalls |
 | `http.h` | one HTTP request: method, host, path, a few headers, an optional body → the status, the response headers the caller named, the body as a stream of pieces to a sink; a deadline on the whole and on each piece (task p3-02) | `core/net/http_over_tls` - HTTP/1.1 written and parsed in core/ over `tls_socket.h`, the one implementation on the board and on the host | `host_test/sim/fake_http` — the same `HttpOverTls` over the fake socket and the scripted server, so every test runs the board's parser |
+| `key_value.h` | where the settings live: a handful of short strings under names, kept across a power cut. Strings only, no blobs, no integers, no iteration - and **no eraseAll**, so that `erase confirm` forgetting "the settings and only the settings" is the shape of the code (task p3-03). The table of keys, their types and their fallbacks are `core/settings/keys.h`'s, which is host-portable | NVS in the `nvs` partition, one namespace `walter`, committed after every write (`platform/key_value`) | `host_test/fakes/sim_key_value` — a map that can be empty, hold a value this firmware will not have, refuse a write, refuse an erase, or not be there at all |
 
-Phase 3 adds the key-value store and the sleeper; the uplink is task p3-01's and the TLS socket and HTTP are task p3-02's, above. (The
-self-update's uplink condition is `core/update/uplink_check.h`, a seam of core's own that phase 3's
-HTTPS client fills.)
+Phase 3 adds the sleeper (task p3-04); the uplink is task p3-01's, the TLS socket and HTTP are
+task p3-02's and the key-value store is task p3-03's, above. (The self-update's uplink condition
+is `core/update/uplink_check.h`, a seam of core's own that phase 3's HTTPS client fills and whose
+server is the `server.url` setting.)

@@ -7,13 +7,23 @@
 // Behaviour as the agent firmware's console: a `>` prompt, typed characters echoed (so leave
 // local echo off), backspace honoured, CR, LF and CR LF all end a line, a refusal is one line
 // beginning `error:` that names what was wrong. docs/console.md describes it.
+//
+// Task p3-03 made it one thing. One grammar (parser.h), one table of commands with one line of
+// help each (commands.h), one document held to that table by a host test, one settings store
+// (core/settings/settings.h) whose secrets no command prints, and one ring of the last few
+// kilobytes this port said (log_ring.h) that `dump` prints. **Everything the console prints goes
+// through print() or printf()** - there is no third way out - which is what makes the ring whole
+// and what lets one test grep every line of every command for a secret.
 #pragma once
 
 #include <cstddef>
 
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
+#include "core/console/commands.h"
+#include "core/console/log_ring.h"
 #include "core/console/parser.h"
+#include "core/settings/settings.h"
 #include "core/flasher/flasher.h"
 #include "core/health/health.h"
 #include "core/image/receive.h"
@@ -52,7 +62,13 @@ class Console {
           // The HTTPS client (task p3-02): the client for `http get`, the fetch of a release
           // for `fetch`, the trust loader for `trust tls`. A build without a store has no fetch.
           net::Client* http = nullptr, update::Fetch* fetch = nullptr,
-          net::TrustLoader* trust = nullptr);
+          net::TrustLoader* trust = nullptr,
+          // The settings (task p3-03) and the server a self-update's trial must reach, which is
+          // what `server.url` sets. Both pointers: a build whose `nvs` partition would not open
+          // has no store, and `get` and `set` then say so in one line instead of pretending that
+          // what was typed was kept.
+          settings::Settings* settings = nullptr,
+          update::UplinkCheck* server = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -84,9 +100,16 @@ class Console {
   bool slotOk(board::Slot slot);
 
   void prompt();
+  // The two ways anything of this console reaches the port, and the only two: both keep what
+  // they printed in the ring that `dump` prints (log_ring.h).
   void print(const char* text);
   void printf(const char* format, ...) __attribute__((format(printf, 2, 3)));
+  // A line nobody asked for - a boot's own lines, a resumed update's transitions, a trial's
+  // steps - printed only at `log.level` and below (task p3-03). A reply and a refusal are never
+  // gated: a person who typed a command gets an answer whatever the level says.
+  bool says(settings::Level level) const;
   void help();
+  void helpLine(const char* usage, const char* text);
   void status();
   void reboots();
   void pins();
@@ -185,6 +208,24 @@ class Console {
   void fetch(const char* base_url, image::Which which);
   void trustTls();
 
+  // The settings (task p3-03).
+  bool settingsOk();  // false, with one error line, when this build has no settings store
+  void get(const settings::KeyDef& key);
+  void getAll();
+  void set(const settings::KeyDef& key, const char* value);
+  void erase();
+  // What must happen when a key changes, and the one place it happens: the console is what holds
+  // the uplink policy, the server seam and the SWD clock, so it is what tells them. The table's
+  // `effect` column says the same thing in words, for `help` and docs/console.md.
+  void settingChanged(const settings::KeyDef& key);
+  // Everything the settings are in force for at boot, before a person changes anything.
+  void applySettings();
+  void dump();
+  void journal();
+  void printJournalEntry(std::size_t number, const update::Entry& entry);
+  void printSupervisorEntry(std::size_t number, const update::Entry& entry,
+                            const supervisor::Payload& p);
+
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
   health::Health& health_;
@@ -202,15 +243,23 @@ class Console {
   net::Client* http_ = nullptr;
   update::Fetch* fetch_ = nullptr;
   net::TrustLoader* trust_ = nullptr;
+  settings::Settings* settings_ = nullptr;
+  update::UplinkCheck* server_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.
   flasher::Flasher flasher_;
+  // The last few kilobytes this port printed, for `dump`. A member for the same reason the
+  // flasher is one: 4 KB does not belong on the main task's 3584-byte stack.
+  LogRing log_;
   char line_[kMaxLineLength + 8] = {};
   std::size_t length_ = 0;
   bool last_was_cr_ = false;
+  // While a secret's value is being typed the echo is asterisks (the agent firmware's
+  // `secretValueIsBeingTyped`): the line so far begins `set <a secret key> `.
+  bool secretBeingTyped() const;
 };
 
 }  // namespace console

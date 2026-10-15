@@ -34,8 +34,10 @@
 #include "core/update/journal.h"
 #include "core/update/link_battery.h"
 #include "core/update/self_update.h"
+#include "core/settings/settings.h"
 #include "core/update/uplink_check.h"
 #include "fakes/fake_own_update.h"
+#include "fakes/sim_key_value.h"
 #include "interfaces/byte_stream.h"
 #include "interfaces/clock.h"
 #include "interfaces/pins.h"
@@ -217,8 +219,15 @@ int main() {
   static core::update::UnconfiguredUplink uplink;
   static core::update::SelfUpdate self(own, store, journal, link, uplink, g_clock, g_restart, battery, health);
 
+  // The settings (task p3-03) over a map, so that `get`, `set`, `erase confirm` and `dump` are
+  // the firmware's own here too and tools/walterctl.py meets the console a board has.
+  static fakes::SimKeyValue kv;
+  static core::settings::Settings settings(kv);
+  settings.begin();
+
   static core::console::Console console(g_out, radio_pins, health, g_clock, g_restart, link, slots,
-                                        &store, &receiver, nullptr, &journal, &self);
+                                        &store, &receiver, nullptr, &journal, &self, nullptr,
+                                        nullptr, nullptr, nullptr, nullptr, &settings, &uplink);
   std::printf("twinoak-walter console host (a simulated flash, the specification's TEST KEY, no radio)\n");
   console.begin();
 

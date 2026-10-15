@@ -1,16 +1,36 @@
 // The console's line parser: one line in, one command or one refusal out (task p0-03). A pure
 // function, after the agent firmware's src/console/Parser.h, so that every line shape and every
-// refusal has a host test. What a command does is console.h.
+// refusal has a host test. What a command does is console.h; the list of commands with one line
+// of help each - the one `help` prints and the one `docs/console.md` is held to - is
+// core/console/commands.h.
+//
+// **Every line of this console is parsed here and nowhere else.** The commands came a task at a
+// time from phase 0 onwards; task p3-03 made them one grammar, one table and one document, and
+// host_test/core/console/test_console_grammar.cpp holds all three to each other and reads the
+// sources to show that parseLine has exactly one caller.
 //
 // The grammar (one line per command, a `>` prompt; docs/console.md):
 //
 //   help                  the commands
-//   status                version, uptime, why it booted, the pins and the radio's power
+//   status                one screen: this firmware, the radio, the battery, the images, the
+//                         uplink, the next wake
 //   reboots               why this board last restarted, and the four before that
 //   pins                  the seven pins: net, D-sub, GPIO, mode, level
 //   rak reset             one reset pulse on nRESET (waits out the spacing)
-//   rak kill <seconds>    the LoRa rail off for that long, then back
+//   rak kill <seconds> [confirm]
+//                         the LoRa rail off for that long, then back; over
+//                         kKillSecondsWithoutWord it wants the word
 //   reboot                restart the Walter
+//
+// and the settings (task p3-03; core/settings/keys.h is the table of keys):
+//
+//   get                   every setting, in the table's order
+//   get <key>             one setting; a secret prints `set` or `unset`, never its value
+//   set <key> <value>     store one; the value is the rest of the line, trimmed, and is
+//                         validated against the table before it is stored
+//   erase confirm         forget every setting and nothing else
+//   dump                  the last few kilobytes the port printed, whole lines only
+//   journal               the last entries of the flash journal, in words
 //
 // Every `rak` command takes an optional slot - `rak @1 hello` - directly after the word `rak`
 // (task p1-06; spec/SYSTEM.md S-11: "The Walter addresses radios by *slot*; there is one slot
@@ -41,8 +61,11 @@
 //
 // and the flasher (task p1-05):
 //
-//   rak flash-test        a two-page pattern at the top of the application region, only if those
-//                         pages are blank: written, verified, erased again; the radio restarted
+//   rak flash-test confirm
+//                         a two-page pattern at the top of the application region, only if those
+//                         pages are blank: written, verified, erased again; the radio restarted.
+//                         It writes to a radio's flash outside the update machine, so it wants
+//                         the word (task p3-03)
 //
 // and the trust table (task p2-01):
 //
@@ -110,10 +133,10 @@
 //
 //   http get <url>        one GET over verified TLS: the status, the headers worth naming, the
 //                         first bytes as hex, the size, the time. https only
-//   fetch <base-url> [candidate|scanner]
+//   fetch [base-url] [candidate|scanner]
 //                         a release from <base-url>/manifest.json: the three steps, each check
 //                         printed as it passes, the image into the candidate (default) or scanner
-//                         slot
+//                         slot. Without a base URL the `fetch.url` setting is used (task p3-03)
 //   trust tls             the roots this firmware trusts - subject, fingerprint, expiry - and
 //                         whether the modem's certificate slots hold them
 #pragma once
@@ -122,7 +145,9 @@
 #include <cstdint>
 
 #include "core/board/slot.h"
+#include "core/console/commands.h"
 #include "core/link/codec/wire.h"
+#include "core/settings/keys.h"
 
 namespace core {
 namespace console {
@@ -188,6 +213,13 @@ enum class Verb : std::uint8_t {
   kHttpGet,
   kFetch,
   kTrustTls,
+  // The settings and the rest of the console (task p3-03).
+  kGet,      // one key
+  kGetAll,   // every key
+  kSet,
+  kErase,    // `erase confirm`: the settings, and only the settings
+  kDump,
+  kJournal,
 };
 
 // rak swd mem reads at most this many words: eight lines of four.
@@ -215,9 +247,17 @@ struct Command {
   std::uint8_t which = 0;
   bool radio_down = false;                // kSelfSwitch: the radio is known to be down
   // kHttpGet, kFetch: the URL, verbatim (the line's bound is the URL's bound here: a GitHub
-  // redirect's signed URL is for the client to follow, not for a person to type).
+  // redirect's signed URL is for the client to follow, not for a person to type). Empty for a
+  // `fetch` with no base URL, which means the `fetch.url` setting (task p3-03).
   char url[kMaxLineLength + 1] = {};
+  // kGet and kSet: the row of core/settings/keys.h's table. A pointer into that table, which is
+  // static storage and outlives everything.
+  const settings::KeyDef* key = nullptr;
 };
+
+// kSet's value is `text`, which kRakCli already sized: a setting's longest value and a CLI line
+// are both 160 bytes, so one buffer does for both and Command does not grow.
+static_assert(settings::kMaxValueLen <= kMaxCliLine, "a setting's value has to fit Command::text");
 
 struct Parsed {
   bool ok = false;

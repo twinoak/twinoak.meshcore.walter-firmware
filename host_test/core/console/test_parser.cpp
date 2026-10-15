@@ -67,16 +67,39 @@ TEST_CASE("every command parses, with and without a line ending, with surroundin
   CHECK(errorOf("rak role bridge") == "rak role: not one of scanner, repeater: bridge");
   CHECK(errorOf("rak role scanner now") == "rak role takes one word: rak role scanner | repeater");
   CHECK(verbOf("  status  \r\n") == Verb::kStatus);
-  CHECK(verbOf("rak   kill\t7\n") == Verb::kRakKill);
+  CHECK(verbOf("rak   kill\t5\n") == Verb::kRakKill);
   CHECK(verbOf("rak reset\r") == Verb::kRakReset);
 }
 
 TEST_CASE("rak kill carries its seconds") {
   CHECK(parseLine("rak kill 5").command.seconds == 5);
   CHECK(parseLine("rak kill 0").command.seconds == 0);  // the bounds are RadioPins', not the parser's
-  CHECK(parseLine("rak kill 30").command.seconds == 30);
-  CHECK(parseLine("rak kill 007").command.seconds == 7);
-  CHECK(parseLine("rak kill 999999999").command.seconds == 999999999u);
+  // Over kKillSecondsWithoutWord the word is part of the line (task p3-03); the seconds are the
+  // same number either way.
+  CHECK(parseLine("rak kill 30 confirm").command.seconds == 30);
+  CHECK(parseLine("rak kill 005").command.seconds == 5);
+  CHECK(parseLine("rak kill 0007 confirm").command.seconds == 7);
+  CHECK(parseLine("rak kill 999999999 confirm").command.seconds == 999999999u);
+}
+
+TEST_CASE("over a few seconds rak kill wants the word, and says which word (task p3-03)") {
+  // Up to and including the bound, no word is needed.
+  CHECK(parseLine("rak kill 5").ok);
+  CHECK(core::console::kKillSecondsWithoutWord == 5);
+  // Over it, the refusal names the whole line to type.
+  CHECK_FALSE(parseLine("rak kill 6").ok);
+  CHECK(errorOf("rak kill 6") ==
+        "rak kill: over 5 s takes the radio off the air; to do it, type: rak kill 6 confirm");
+  CHECK(errorOf("rak kill 30") ==
+        "rak kill: over 5 s takes the radio off the air; to do it, type: rak kill 30 confirm");
+  CHECK(parseLine("rak kill 6 confirm").ok);
+  CHECK(parseLine("rak kill 6 confirm").command.seconds == 6);
+  // A word that is not the word, and one word too many.
+  CHECK(errorOf("rak kill 6 yes") == "rak kill: the only word after the seconds is 'confirm'");
+  CHECK(parseLine("rak kill 2 confirm").ok);  // the word is allowed below the bound as well
+  CHECK(errorOf("rak kill 6 confirm now") == "rak kill takes a number and at most one word: confirm");
+  // A kill the parser takes is not a kill RadioPins takes: the bounds are still the pins' own.
+  CHECK(parseLine("rak kill 0").ok);
 }
 
 TEST_CASE("a blank line is nothing to do and no error") {
@@ -109,7 +132,7 @@ TEST_CASE("a bad number is refused with the text that was given") {
   CHECK(errorOf("rak kill 5s") == "rak kill: not a whole number of seconds: 5s");
   CHECK(errorOf("rak kill 1234567890") == "rak kill: not a whole number of seconds: 1234567890");
   CHECK(errorOf("rak kill") == "rak kill needs a duration: rak kill <seconds>");
-  CHECK(errorOf("rak kill 5 6") == "rak kill takes one number: rak kill <seconds>");
+  CHECK(errorOf("rak kill 5 6") == "rak kill: the only word after the seconds is 'confirm'");
 }
 
 TEST_CASE("unknown commands and subcommands are named in the refusal") {
@@ -249,7 +272,7 @@ TEST_CASE("every rak command takes an optional slot after the word rak, @0 witho
   CHECK(verbOf("rak @1 hello") == Verb::kRakHello);
   CHECK(verbOf("rak @1 reset") == Verb::kRakReset);
   CHECK(verbOf("rak @1 swd id") == Verb::kRakSwdId);
-  CHECK(verbOf("rak @1 flash-test") == Verb::kRakFlashTest);
+  CHECK(verbOf("rak @1 flash-test confirm") == Verb::kRakFlashTest);
   CHECK(parseLine("rak @1 kill 5").command.seconds == 5);
   CHECK(parseLine("rak @1 kill 5").command.slot == 1);
   CHECK(parseLine("rak @1 swd mem 0x10000100 4").command.address == 0x10000100);

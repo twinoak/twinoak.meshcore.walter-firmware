@@ -184,40 +184,49 @@ constexpr std::uint32_t kModemCallCeilingMs = 30000;
 static_assert(kWakeBudgetMs > kModemCallCeilingMs,
               "a wake's budget must leave room for one worst-case modem call");
 
-// -- the settings (task p3-03 gives them; build constants until then) ----------------------------
+// -- the settings ------------------------------------------------------------------------------
+//
+// Three of these are now `lte.apn`, `lte.pin` and `lte.psm` at the console
+// (core/settings/keys.h, task p3-03): the console hands them over at boot and at every change
+// (apnChanged, pinChanged, powerSavingChanged), and what is left here is what a unit does
+// before anybody has provisioned it - which is every unit out of the box, and which has to
+// work. The PSM mode's fallback in the settings table is held to kPowerSaving below by a
+// static_assert, so a unit with no setting behaves exactly as task p3-01 left it.
 
 // The APN. Empty is "let the network choose", which is what a Danish LTE-M SIM wants and what
-// QuickSpot's own examples use (`#define CELLULAR_APN ""`). A setting from task p3-03.
+// QuickSpot's own examples use (`#define CELLULAR_APN ""`). `lte.apn` sets it.
 constexpr const char* kApn = "";
 
 // The SIM's PIN. Empty is "none is set", and a card that asks for one then gets nothing and is
-// reported `sim-locked` - which is correct: sending a guess is how a card gets blocked. A
-// setting from task p3-03, and **never a default**: no PIN is ever written down here.
+// reported `sim-locked` - which is correct: sending a guess is how a card gets blocked.
+// `lte.pin` sets it, and it is **never a default**: no PIN is ever written down here.
 constexpr const char* kSimPin = "";
 
 // LTE-M only (task p3-01). NB-IoT exists in the modem and the setting can ask for it; nothing
 // in this firmware does.
 constexpr interfaces::Rat kRat = interfaces::Rat::kLteM;
 
-// Power saving: **off between wakes is the default** and PSM is a setting
+// Power saving: **off between wakes is the default** and PSM is the `lte.psm` setting
 // (spec/SYSTEM.md §10 item 5 - which of PSM, eDRX or an off modem costs least is a bench
 // question). "Off between wakes" here means the modem's radio in its minimum state and the
 // ESP32 asleep; the library's own `sleep()` would take the whole board down with it and that is
 // task p3-04's decision, not this one's (tasks/phase-3/reports/01.md).
 constexpr interfaces::PowerSavingMode kPowerSaving = interfaces::PowerSavingMode::kOff;
 
-// The timers to ask for when the setting does say PSM. An hour of sleep and a minute of being
+// The timers to ask for when `lte.psm` says on. An hour of sleep and a minute of being
 // reachable after each transmission: TO BE SET ON THE BENCH, and only once task p3-04's interval
 // table exists - a TAU shorter than the wake interval buys nothing, and one much longer makes
-// the network drop us between wakes anyway.
+// the network drop us between wakes anyway. **These two are not settings**: what the network
+// grants is its own business and a typo here buys nothing a bench measurement would not.
 constexpr std::uint32_t kPsmTauSeconds = 3600;
 constexpr std::uint32_t kPsmActiveSeconds = 60;
 
 struct Settings {
   const char* apn = kApn;
   const char* pin = kSimPin;  // empty: none is set
-  // Which PIN this is. Task p3-03 bumps it when a person provisions a different one, which is
-  // what lets a refusal be forgotten without this class ever holding a function of the PIN.
+  // Which PIN this is: a counter the settings store keeps beside the keys and bumps when a
+  // person provisions a different PIN (core/settings/settings.h), which is what lets a refusal
+  // be forgotten without this class ever holding a function of the PIN.
   std::uint32_t pin_epoch = 0;
   interfaces::Rat rat = kRat;
   interfaces::PowerSavingMode power_saving = kPowerSaving;
@@ -373,6 +382,19 @@ class UplinkPolicy {
   // Task p3-03, when a person provisions a PIN: this is a different PIN, so a refusal recorded
   // against the old one is not about it. Also takes the new settings' pointer and epoch.
   void pinChanged(const char* pin, std::uint32_t pin_epoch);
+
+  // The other two settings this class holds (task p3-03). The pointer has to stay alive as long
+  // as the policy does, which the settings store's buffers do (core/settings/settings.h). Both
+  // take effect the next time the uplink is brought up: the APN is sent when the packet context
+  // is defined and power saving when it is asked for, and neither is worth a modem reset now -
+  // a reset loses a card that had just been unlocked (policy.cpp, kRat).
+  void apnChanged(const char* apn) { settings_.apn = apn != nullptr ? apn : ""; }
+  void powerSavingChanged(interfaces::PowerSavingMode mode, std::uint32_t tau_s,
+                          std::uint32_t active_s) {
+    settings_.power_saving = mode;
+    settings_.psm_tau_s = tau_s;
+    settings_.psm_active_s = active_s;
+  }
 
   // The bench, and `lte up` from a person: the backoff forgotten, so the next wake tries.
   // Never called by anything automatic.

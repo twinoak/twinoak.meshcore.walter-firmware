@@ -8,6 +8,23 @@ Wire::Wire(board::SwdLines& lines, interfaces::Clock& clock, std::uint32_t half_
   setHalfPeriodUs(half_period_us);
 }
 
+namespace {
+// The clock in force (wire.h). A plain value, not a Wire's: the three things that make wires -
+// the console, the flasher and the tests - are never running at once, and threading a setting
+// through the flasher and the update machine to reach a half-period would put the word
+// "settings" in files that have no other reason to know the word.
+std::uint32_t g_half_us_in_force = kDefaultHalfPeriodUs;
+}  // namespace
+
+std::uint32_t halfPeriodInForceUs() { return g_half_us_in_force; }
+
+std::uint32_t setHalfPeriodInForceUs(std::uint32_t us) {
+  if (us < kMinHalfPeriodUs) us = kMinHalfPeriodUs;
+  if (us > kMaxHalfPeriodUs) us = kMaxHalfPeriodUs;
+  g_half_us_in_force = us;
+  return g_half_us_in_force;
+}
+
 std::uint32_t Wire::setHalfPeriodUs(std::uint32_t us) {
   if (us < kMinHalfPeriodUs) us = kMinHalfPeriodUs;
   if (us > kMaxHalfPeriodUs) us = kMaxHalfPeriodUs;

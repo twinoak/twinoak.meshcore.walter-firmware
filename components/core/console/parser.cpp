@@ -1,5 +1,6 @@
 #include "core/console/parser.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "core/image/store.h"
@@ -127,7 +128,6 @@ constexpr Simple kSimple[] = {
     {"reset", Verb::kRakReset},   {"hello", Verb::kRakHello},  {"ping", Verb::kRakPing},
     {"status", Verb::kRakStatus}, {"id", Verb::kRakId},        {"power", Verb::kRakPower},
     {"env", Verb::kRakEnv},       {"events", Verb::kRakEvents}, {"text", Verb::kRakText},
-    {"flash-test", Verb::kRakFlashTest},
     // The supervisor (task p2-05): the ladder, run now.
     {"ladder", Verb::kRakLadder},
 };
@@ -261,14 +261,54 @@ Parsed parseRak(char* rest) {
     if (std::strcmp(arg, "repeater") == 0) return accept(Verb::kRakRoleRepeater);
     return refuse2("rak role: not one of scanner, repeater: ", arg);
   }
+  // rak flash-test confirm (task p1-05, the word from task p3-03): the one command that writes
+  // to a radio's flash outside the update machine, so it is never one typo away.
+  if (std::strcmp(sub, "flash-test") == 0) {
+    if (!hasArg) {
+      return refuse3("rak flash-test writes two pages of the radio's flash; to do it, type: "
+                     "rak flash-test ", kConfirmWord, "");
+    }
+    for (const char* p = arg; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse2("rak flash-test takes one word: ", kConfirmWord);
+    }
+    if (std::strcmp(arg, kConfirmWord) != 0) {
+      return refuse3("rak flash-test: the word is '", kConfirmWord, "'");
+    }
+    return accept(Verb::kRakFlashTest);
+  }
   if (std::strcmp(sub, "kill") == 0) {
     if (!hasArg) return refuse("rak kill needs a duration: rak kill <seconds>");
-    for (const char* p = arg; *p != 0; ++p) {
-      if (isSpace(*p)) return refuse("rak kill takes one number: rak kill <seconds>");
+    char* number = arg;
+    char* word = number;
+    while (*word != 0 && !isSpace(*word)) ++word;
+    if (*word != 0) {
+      *word++ = 0;
+      while (*word != 0 && isSpace(*word)) ++word;
+    }
+    for (const char* p = word; *p != 0; ++p) {
+      if (isSpace(*p)) {
+        return refuse2("rak kill takes a number and at most one word: ", kConfirmWord);
+      }
     }
     Parsed p = accept(Verb::kRakKill);
-    if (!parseSeconds(arg, p.command.seconds)) {
-      return refuse2("rak kill: not a whole number of seconds: ", arg);
+    if (!parseSeconds(number, p.command.seconds)) {
+      return refuse2("rak kill: not a whole number of seconds: ", number);
+    }
+    // Over a few seconds the radio is off the air long enough for a person to mean it (task
+    // p3-03). The bounds themselves are RadioPins' and the console's.
+    const bool confirmed = *word != 0 && std::strcmp(word, kConfirmWord) == 0;
+    if (*word != 0 && !confirmed) {
+      return refuse3("rak kill: the only word after the seconds is '", kConfirmWord, "'");
+    }
+    if (p.command.seconds > kKillSecondsWithoutWord && !confirmed) {
+      Parsed refusal;
+      refusal.ok = false;
+      std::snprintf(refusal.error, sizeof refusal.error,
+                    "rak kill: over %lu s takes the radio off the air; to do it, type: "
+                    "rak kill %lu %s",
+                    static_cast<unsigned long>(kKillSecondsWithoutWord),
+                    static_cast<unsigned long>(p.command.seconds), kConfirmWord);
+      return refusal;
     }
     return p;
   }
@@ -445,7 +485,24 @@ Parsed parseHttp(char* rest) {
 // `fetch <base-url> [candidate|scanner]` (task p3-02): a release into the store. The default is
 // the candidate slot; golden is never a target (it is reached by a promotion).
 Parsed parseFetch(char* rest) {
-  if (*rest == 0) return refuse("fetch needs a base URL: fetch <base-url> [candidate|scanner]");
+  // No base URL at all: the `fetch.url` setting (task p3-03). The console is the one that knows
+  // whether there is one, so an empty url here means "use the setting" and not a refusal.
+  if (*rest == 0) {
+    Parsed p = accept(Verb::kFetch);
+    p.command.which = static_cast<std::uint8_t>(image::Which::kCandidate);
+    return p;
+  }
+  // `fetch candidate` and `fetch scanner`: the setting's URL and a slot, with no base URL typed.
+  if (std::strcmp(rest, "candidate") == 0) {
+    Parsed p = accept(Verb::kFetch);
+    p.command.which = static_cast<std::uint8_t>(image::Which::kCandidate);
+    return p;
+  }
+  if (std::strcmp(rest, "scanner") == 0) {
+    Parsed p = accept(Verb::kFetch);
+    p.command.which = static_cast<std::uint8_t>(image::Which::kScanner);
+    return p;
+  }
   char* url = rest;
   char* which = url;
   while (*which != 0 && !isSpace(*which)) ++which;
@@ -547,6 +604,65 @@ Parsed parseLine(const char* line) {
   }
   if (std::strcmp(verb, "self") == 0) return parseSelf(rest);
   if (std::strcmp(verb, "lte") == 0) return parseLte(rest);
+  // The settings (task p3-03). The keys, their types and their ranges are
+  // core/settings/keys.h's table; a refusal here is the table's own words.
+  if (std::strcmp(verb, "get") == 0) {
+    if (!hasRest) return accept(Verb::kGetAll);
+    for (const char* p = rest; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse("get takes one key: get <key>");
+    }
+    const settings::KeyDef* key = settings::findKey(rest);
+    if (key == nullptr) return refuse2("unknown key (try 'help'): ", rest);
+    Parsed p = accept(Verb::kGet);
+    p.command.key = key;
+    return p;
+  }
+  if (std::strcmp(verb, "set") == 0) {
+    if (!hasRest) return refuse("set needs a key and a value: set <key> <value>");
+    char* name = rest;
+    char* value = name;
+    while (*value != 0 && !isSpace(*value)) ++value;
+    if (*value != 0) {
+      *value++ = 0;
+      while (*value != 0 && isSpace(*value)) ++value;
+    }
+    const settings::KeyDef* key = settings::findKey(name);
+    if (key == nullptr) return refuse2("unknown key (try 'help'): ", name);
+    if (*value == 0) {
+      return refuse3("set ", key->name, " needs a value (there is no way to unset one key: "
+                     "'erase confirm' forgets them all)");
+    }
+    const std::size_t n = std::strlen(value);
+    // Validated here, so that every refusal of every key has a parser test and the console
+    // never sees a value the table would not have taken.
+    Parsed p = accept(Verb::kSet);
+    if (!settings::validate(*key, value, p.error, sizeof p.error)) {
+      p.ok = false;
+      p.command.verb = Verb::kEmpty;
+      return p;
+    }
+    p.command.key = key;
+    std::memcpy(p.command.text, value, n + 1);
+    p.command.text_size = n;
+    return p;
+  }
+  if (std::strcmp(verb, "erase") == 0) {
+    if (!hasRest) {
+      return refuse3("erase forgets every setting; to do it, type: erase ", kConfirmWord, "");
+    }
+    if (std::strcmp(rest, kConfirmWord) != 0) {
+      return refuse3("erase: the word is '", kConfirmWord, "'");
+    }
+    return accept(Verb::kErase);
+  }
+  if (std::strcmp(verb, "dump") == 0) {
+    if (hasRest) return refuse("dump takes no argument");
+    return accept(Verb::kDump);
+  }
+  if (std::strcmp(verb, "journal") == 0) {
+    if (hasRest) return refuse("journal takes no argument");
+    return accept(Verb::kJournal);
+  }
   if (std::strcmp(verb, "rak") == 0) {
     if (!hasRest) return refuse("rak needs a subcommand (try 'help')");
     // The slot (task p1-06): `rak @1 hello`. Optional, and the first word after `rak` rather

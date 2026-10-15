@@ -222,6 +222,7 @@ TEST_CASE("rak swd id and mem are refused while the rail is off, with no pin tou
 TEST_CASE("help lists the two commands") {
   Rig rig;
   const std::string text = rig.run("help");
-  CHECK(contains(text, "rak swd id          identify the radio's chip over SWD: part, variant, flash, protection, core"));
+  CHECK(contains(text, "rak swd id"));
+  CHECK(contains(text, "identify the chip: part, variant, flash, protection, the core's state"));
   CHECK(contains(text, "rak swd mem <addr> [words]"));
 }

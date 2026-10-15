@@ -115,20 +115,23 @@ of §5 last. The firmware's side is `components/core/board/radio_pins.cpp`; the 
   radio does **not** land in its UF2 bootloader (no USB drive appears on the RAK's port, Serial1
   keeps answering).
 
-- [ ] **`rak kill 5`** (task p0-03). With the LED emulator first (`BENCH-BREADBOARD.md` §5 phase
+- [ ] **`rak kill 5`** (task p0-03; five seconds needs no `confirm`, and more does - task
+  p3-03). With the LED emulator first (`BENCH-BREADBOARD.md` §5 phase
   1), then the P-FET switch: scope on TX (GPIO7), nRESET and SWDCLK against KILL (GPIO5). TX
   drops from its pulled-up high to floating (a 10 kΩ to ground on it would show it) and nRESET,
   SWDCLK, SWDIO are undriven **before** KILL rises; KILL is high for 5 s and then floats (it never
   goes low-driven: the 100 k pull-down on the A-board's Q3 gate is what takes it down); the LoRa
   rail falls and returns by itself. While it is down nothing is back-fed: the rail sits at 0 V, not
   at a diode drop (about 0.6 V would mean something of ours is pushing current into the radio).
-  After it, `status` says `radio power: on` and TX is pulled up again. `rak kill 0` and `rak kill
-  31` are refused with the bounds and touch no pin.
+  After it, `status` says `pins: power on` and TX is pulled up again. `rak kill 0` and
+  `rak kill 31 confirm` are refused with the bounds and touch no pin, and `rak kill 31` without
+  the word is refused by the parser before that (task p3-03).
 
-- [ ] **Reset the Walter while a kill is in progress** (task p0-03). `rak kill 30`, then press
+- [ ] **Reset the Walter while a kill is in progress** (task p0-03). `rak kill 30 confirm`,
+  then press
   the Walter's reset within those 30 s: the kill line floats the moment the S3 resets, the rail
-  comes back by itself, and the new boot says `boot n: reset pin reset`; `status` says `on` after
-  200 ms. Nothing of ours holds the radio off across a reset.
+  comes back by itself, and the new boot says `boot n: reset pin reset`; `status` says
+  `pins: power on` after 200 ms. Nothing of ours holds the radio off across a reset.
 
 - [ ] **The numbers that replace the placeholders** (task p0-03). With the scope on the LoRa rail
   during `rak kill 1`: how long after KILL rises the rail is below the nRF52's brown-out level
@@ -314,7 +317,8 @@ radio, and the simulator can only show the documents were followed, not that the
   ffff00ff <size>`; `ffffffff ...` means the page is erased and `000000ff` that an earlier flash was
   interrupted. Write it down.
 
-- [ ] **`rak flash-test`: passes; the RAK still boots what it had** (task p1-05). Expected: the
+- [ ] **`rak flash-test confirm`: passes; the RAK still boots what it had** (task p1-05; the
+  word is task p3-03's). Expected: the
   `swd:` session lines, then one line per page for the scan (`reading the pages the image covers:
   page 1/2`, `2/2`), the write (`erasing, writing and verifying the pages: page 1/2`, `writing
   and verifying the first page: page 2/2`), the read-back, then `rak flash-test: done in <ms> ms: 2
@@ -381,8 +385,8 @@ lines are worth typing once while the rig is up, because they cost nothing:
   UART and nothing on the seven pins. `rak @2 hello` is refused by the parser instead.
 
 - [ ] **Every other item of §§1–5 behaves as it reads.** Nothing in this task changes a pin, a
-  timing or a command's output except `rak flash-test`, whose first line now begins `flash-test:
-  slot 0, rak4630-single, …`.
+  timing or a command's output except `rak flash-test confirm`, whose first line now begins
+  `flash-test: slot 0, rak4630-single, …`.
 
 When a dual adapter is built, this is where its bring-up goes: the selector programmed with a
 scope on SWDCLK and nRESET (a window of 100–500 µs, two edges, and *no* reset at either module's
@@ -505,7 +509,7 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   the application region was never touched. `image list`: golden and candidate as they were,
   `image bad` empty.
 - [ ] **`rak update --first-install` on a module whose application was wiped** (after §5's item 6,
-  or `rak flash-test`'s region). `rak update` is refused (*there is no golden image to return
+  or `rak flash-test confirm`'s region). `rak update` is refused (*there is no golden image to return
   to*); with `--first-install` the candidate is flashed, proved and becomes golden. Do not try the
   broken candidate this way unless you mean to see *stuck: no image to return to*.
 - [ ] **The numbers.** Against the lines above, `docs/update.md`'s table: the boot window (how long
@@ -778,3 +782,66 @@ The task's own list names this section §11; that number is the modem's, so it i
   `kHandshakeDeadlineMs` (`core/update/tls_check.h`), and the socket's `kSocketConnectTimeoutS`
   and `kReceivePollMs` (`components/modem/walter_tls.h`). Each is a constant with a sentence;
   change the number and the sentence together.
+
+## 13. Provisioning and the console
+
+From task p3-03 (`docs/provisioning.md`; `docs/console.md`, *Settings*). Needs §1 walked, and
+§§11–12 for the last two items. Everything else here is a laptop, a cable and five minutes, and
+it is the one section a person walks on **every** unit before it leaves the bench.
+
+The task's own list names this section §12; that number is HTTPS's, so it is §13.
+
+- [ ] **The session of `docs/provisioning.md`, typed.** Line for line, against the document. A
+  host test replays the same session against the firmware's own console
+  (`host_test/core/console/test_provisioning_doc.cpp`), so what is being checked here is not the
+  replies - those are held by the test - but the two things a test cannot see: that **the value
+  of `set lte.pin` and `set server.token` echoes as asterisks on a real terminal**, and that the
+  session reads as a session when a person is typing it rather than a program.
+- [ ] **A power cycle, then `get`: the same answers.** Pull the cable, put it back in, and `get`.
+  Every value that was set is still set; `settings: N of 11 keys set` in the boot lines says the
+  same number as before. The settings are in the `nvs` partition, which is above the application
+  slots (`ARCHITECTURE.md` §11), so this is also the proof that a reflash of the application
+  keeps them: flash the application again with `idf.py app-flash` (not a merged image) and `get`
+  once more.
+- [ ] **`status` fits a terminal window.** Twelve or thirteen lines, each inside 100 characters,
+  on an 80-column terminal with no wrapping that hides a line. If one wraps, the line is too
+  long and `components/core/console/console.cpp`'s `status()` is where to shorten it. Read it
+  once as a stranger would: it should answer *is this unit alive, does it know its radio, has it
+  a way out, and when does it next do something*.
+- [ ] **`help` fits too, and `dump` says what the boot said.** `help` is long - it is every
+  command - but no line of it wraps. Then `dump`: the boot's own lines, then every reply since,
+  oldest first, the first line whole. Pull nothing: `dump` is the command a person runs *before*
+  asking what happened.
+- [ ] **A secret is nowhere.** With a PIN and a token set, run `get`, `status`, `lte`, `journal`
+  and `dump` and read the lot: neither value appears. Then, with the board in hand, read the
+  `nvs` partition over USB (`esptool.py read_flash 0x610000 0x10000 nvs.bin`, then
+  `strings nvs.bin`) and **find both of them**: that is what *NVS is not encrypted* means, and it
+  is the reason the boot says so in a line of its own. If a unit is going somewhere that matters,
+  turn flash encryption on - which is a decision with its own consequences, not a flag to flip
+  here.
+- [ ] **`erase confirm`, and what survives it.** With images in the store, something in the
+  journal and a day's counts in the supervisor: `erase confirm`, then `get` (every key unset),
+  `image list` (the images as they were), `image bad` (as it was), `journal` (its entries), and
+  `rak watch` (the day's counts still there - RTC memory, which a `reboot` does not clear).
+  Without the word, `erase` refuses and says what the word is.
+- [ ] **`set swd.khz`, with a scope on SWDCLK.** `set swd.khz 250`, then `rak swd id`: the half
+  period on the scope is 2 µs and the command still identifies the chip. Then `set swd.khz 25`
+  (20 µs: slower than the nRF52840 is specified for, and it should still answer through the
+  filters) and `set swd.khz 1000` (the wire's floor of 1 µs, so 500 kHz, above
+  `BENCH-BREADBOARD.md` §4's predicted ceiling - **this is where the real ceiling is found**).
+  Write down the fastest setting at which `rak swd id` is reliable over ten runs and put it in
+  `docs/bench.md` §4 beside the other SWD numbers.
+- [ ] **`set lte.pin` with the card's real PIN, and with a wrong one** (needs §11: a SIM). With
+  the right one, `lte up` attaches. With a wrong one, `lte up` says `sim-locked`, `lte` says the
+  PIN was refused, and **a second `lte up` does not send it again** - which is the one rail in
+  this firmware that protects something that cannot be undone (three refusals block a card). Then
+  `set lte.pin <the right one>`: the line says the refusal is forgotten, and `lte up` attaches.
+  Do this with a SIM you can afford to lose, or with one whose PUK you have.
+- [ ] **`set server.url` and a self-update's third condition** (needs §12). Set it to a host the
+  unit can reach over TLS, then `self status`: the trial's third condition is *a TLS handshake
+  with `<host>:443`*. Unset (after `erase confirm`), the same line says the condition does not
+  apply. That is the difference between a unit that has a server and one that has not, and it is
+  what keeps a factory image from rejecting its own first update.
+- [ ] **`set log.level error`, then reboot.** The boot says only the invitation and the prompt;
+  `get log.level` still answers, and so does every other command. Then `set log.level info` and
+  reboot again: the boot lines are back. A unit on a mast with a noisy port is why this exists.

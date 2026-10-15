@@ -113,8 +113,15 @@ TEST_CASE("the parser takes the three lines and refuses the rest") {
   CHECK(parseLine("fetch https://r.example/v1 candidate").command.which == static_cast<std::uint8_t>(core::image::Which::kCandidate));
   CHECK(parseLine("fetch https://r.example/v1 scanner").command.which == static_cast<std::uint8_t>(core::image::Which::kScanner));
   CHECK(std::string(parseLine("fetch https://r.example/v1 scanner").command.url) == "https://r.example/v1");
-  CHECK_FALSE(parseLine("fetch").ok);
-  CHECK(has(parseLine("fetch").error, "needs a base URL"));
+  // Task p3-03: no base URL means the `fetch.url` setting, so the parser takes a bare `fetch`
+  // and leaves the URL empty; the console is the one that knows whether a setting is there.
+  CHECK(parseLine("fetch").ok);
+  CHECK(parseLine("fetch").command.verb == Verb::kFetch);
+  CHECK(std::string(parseLine("fetch").command.url).empty());
+  CHECK(parseLine("fetch").command.which == static_cast<std::uint8_t>(core::image::Which::kCandidate));
+  CHECK(parseLine("fetch scanner").command.which == static_cast<std::uint8_t>(core::image::Which::kScanner));
+  CHECK(std::string(parseLine("fetch scanner").command.url).empty());
+  CHECK(parseLine("fetch candidate").command.which == static_cast<std::uint8_t>(core::image::Which::kCandidate));
   CHECK_FALSE(parseLine("fetch https://r.example/v1 golden").ok);
   CHECK(has(parseLine("fetch https://r.example/v1 golden").error, "promotion"));
   CHECK_FALSE(parseLine("fetch https://r.example/v1 bridge").ok);
@@ -253,6 +260,6 @@ TEST_CASE("help lists the three") {
   HttpConsole rig;
   const std::string text = rig.run("help");
   CHECK(has(text, "http get <url>"));
-  CHECK(has(text, "fetch <base-url> [candidate|scanner]"));
+  CHECK(has(text, "fetch [base-url] [candidate|scanner]"));
   CHECK(has(text, "trust tls"));
 }

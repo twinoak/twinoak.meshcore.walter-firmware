@@ -37,10 +37,21 @@ namespace swd {
 // of 4 us is four time constants, 98 % settled. The lower bound stops a setting from going faster
 // than the filtered lines can carry without meaning to: at a half-period of one time constant the
 // line reaches 63 % of the swing before the edge that samples it, and below that not even the
-// threshold. A bench finding the real ceiling (docs/bench.md section 4) has room up to 500 kHz.
+// threshold. A bench finding the real ceiling (docs/bench.md sections 4 and 13) has room up to
+// 500 kHz. The setting is `swd.khz` (core/settings/keys.h, task p3-03), whose fallback is this
+// default said in kHz - 125, and not the 100 the task named, because 0.125 MHz is the chip's own
+// minimum.
 constexpr std::uint32_t kDefaultHalfPeriodUs = 4;
 constexpr std::uint32_t kMinHalfPeriodUs = 1;
 constexpr std::uint32_t kMaxHalfPeriodUs = 1000;  // 500 Hz: slower than that is a mistake, not a setting
+
+// The clock **in force**: `swd.khz` at the console (task p3-03), kDefaultHalfPeriodUs until a
+// person sets one. One value, read by every Wire as it is built and by the flasher as it begins
+// a plan, so that a setting reaches the console's own three wires, the update machine's flasher
+// and the supervisor's without being threaded through three constructors that have no business
+// knowing about settings. Set by core/console/console.cpp and by nothing else.
+std::uint32_t halfPeriodInForceUs();
+std::uint32_t setHalfPeriodInForceUs(std::uint32_t us);  // bounded as setHalfPeriodUs is
 
 // A line reset is "holding the data signal HIGH for at least 50 clock cycles, followed by at
 // least two idle cycles" (B4.3.3); an idle cycle is the line LOW (B4.1.4). Exactly the minimum
@@ -90,8 +101,10 @@ struct Transfer {
 
 class Wire {
  public:
+  // The default is the clock in force, evaluated at every construction: a `rak swd id` after a
+  // `set swd.khz 250` runs at 250 kHz without the console saying so.
   Wire(board::SwdLines& lines, interfaces::Clock& clock,
-       std::uint32_t half_period_us = kDefaultHalfPeriodUs);
+       std::uint32_t half_period_us = halfPeriodInForceUs());
 
   // Bounded to [kMinHalfPeriodUs, kMaxHalfPeriodUs]; returns what is in force.
   std::uint32_t setHalfPeriodUs(std::uint32_t us);

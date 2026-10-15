@@ -32,6 +32,11 @@ class TlsHandshakeCheck final : public UplinkCheck {
   UplinkVerdict check() override;
   const char* serverHost() const override { return host_; }
   std::uint16_t serverPort() const override { return port_; }
+  // `server.url` at the console (task p3-03): the host the next trial reaches for.
+  void setServer(const char* host, std::uint16_t port) override {
+    host_ = host != nullptr ? host : "";
+    port_ = port;
+  }
 
   // The last attempt's outcome, for a console line.
   interfaces::TlsOpen lastOpen() const { return last_; }
