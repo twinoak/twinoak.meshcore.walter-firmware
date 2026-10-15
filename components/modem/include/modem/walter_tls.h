@@ -29,7 +29,7 @@
 // **A failed dial does not say why.** AT+SQNSD answers ERROR whether the name did not resolve,
 // the TCP connection was refused or the TLS handshake failed; the library's WMURCSocketConnRC
 // (TLS_ERROR and friends) is declared and never set at 1.5.0. So open() answers kDialRefused and
-// the console says so in those words; docs/bench.md §12 is where a host with a wrong root is
+// the console says so in those words; docs/bench.md §13 is where a host with a wrong root is
 // shown to be refused.
 //
 // **Received bytes are binary-safe.** `+SQNSRECV: <id>,<len>` is followed by exactly `len` raw

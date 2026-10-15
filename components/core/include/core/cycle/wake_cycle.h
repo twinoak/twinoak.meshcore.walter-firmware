@@ -149,7 +149,7 @@ char letter(Outcome outcome);
 // which is what one worst-case modem call that comes back late costs (kModemCallCeilingMs).
 // **Deliberately less than the uplink policy's own default of four minutes**: that number is what
 // the modem may have when nothing else wants the wake, and a wake has nine other steps. TO BE SET
-// ON THE BENCH against what a wake with an attach actually costs the pack (docs/bench.md §14).
+// ON THE BENCH against what a wake with an attach actually costs the pack (docs/bench.md §15).
 constexpr std::uint32_t kWakeBudgetMs = 150000;
 static_assert(kWakeBudgetMs < kWakeBoundMs, "the budget has to fit inside the bound on a wake");
 
@@ -174,7 +174,7 @@ constexpr std::uint32_t kLadderBoundMs = 360000;
 // Steps 3 and 9, an update. The flasher's whole pass over the radio's application region at the
 // debug port's clock, plus kBootWindowMs and kProvingPeriodMs (core/update/radio_update.h), plus
 // the store's read-back. Twenty minutes is a guess with the right shape and is the number
-// docs/bench.md §8 will replace.
+// docs/bench.md §9 will replace.
 constexpr std::uint32_t kUpdateBoundMs = 1200000;
 static_assert(kUpdateBoundMs <= kRaisedBoundMax, "an update's bound has to be one a wake may ask for");
 

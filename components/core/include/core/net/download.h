@@ -37,7 +37,7 @@
 namespace core {
 namespace net {
 
-// -- the numbers, each a sentence; TO BE SET ON THE BENCH (docs/bench.md §12) -------------------
+// -- the numbers, each a sentence; TO BE SET ON THE BENCH (docs/bench.md §13) -------------------
 
 // One range. 64 KB is the image store's resume step (core/image/store.h, kResumeStep): a lost
 // range and a lost progress record cost the same. Every range is a TLS handshake, seconds on

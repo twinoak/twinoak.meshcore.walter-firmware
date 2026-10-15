@@ -99,6 +99,13 @@ TEST_CASE("a flash of slot 0 after one of slot 1 goes to module A, and B keeps w
   const std::vector<std::uint8_t> sha = sim::digestOf(image);
   const MemoryImage source(image.data(), static_cast<std::uint32_t>(image.size()));
   const Image img{&source, 0x26000, sha.data()};
+  // Both modules are flashed here, so both declare the region a flasher may touch (rail R4,
+  // task p3-06: a chip flashed by a test that declared none fails that test).
+  for (sim::Nrf52Chip* chip : {&b.chip_a, &b.chip_b}) {
+    chip->onlyTouch(0x26000, 0x26000 + 3 * 4096);
+    chip->alsoTouch(core::flasher::kRak4630Single.settings_page,
+                    core::flasher::kRak4630Single.settings_page + 4096);
+  }
 
   REQUIRE(b.flasher.flash(img, core::flasher::kRak4630Single, nullptr, kSlot1).ok());
   const std::size_t b_log = b.chip_b.log().size();

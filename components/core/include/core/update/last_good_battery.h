@@ -30,7 +30,7 @@ namespace update {
 // How old a reading may be and still be used. Six hours: long enough that a radio which went
 // quiet an hour ago is still judged on what it reported, short enough that a reflash is never
 // authorised by yesterday's sunshine. A PLACEHOLDER until the pack's own curve is measured
-// (docs/bench.md §10).
+// (docs/bench.md §11).
 constexpr std::uint32_t kBatteryStaleAfterMs = 6u * 60 * 60 * 1000;
 
 class LastGoodBattery final : public BatterySource {

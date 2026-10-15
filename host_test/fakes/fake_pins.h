@@ -27,10 +27,20 @@
 //
 // Failures can be injected: `fail_when` is asked before every setMode/write and, when it says so,
 // the call returns false without changing anything - what a refused GPIO call does.
+//
+// **The rules are the suite's, not one test's** (task p3-06, rails R1 and R2). `strict` fails the
+// running test at the transition, which is the first line; but a test could turn `strict` off and
+// then do anything, and two tests do exactly that on purpose. So every instance also counts what
+// it saw into a process-wide `pinTally()`, and at its destruction an instance that recorded a
+// violation **it did not declare** fails the test whatever `strict` said. Declaring one is
+// `allow("the-rule")`, which is what a test demonstrating a rule firing writes; anything else is
+// a rail broken quietly. host_test/rails/test_rail_pins.cpp prints the tally and holds the
+// undeclared count to zero over the whole run.
 #pragma once
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -62,9 +72,27 @@ struct Violation {
   std::string detail;
 };
 
+// What the whole suite did to a set of radio-facing wires: how many fakes there were, how many
+// transitions they checked, and every violation any of them recorded - split into the ones a test
+// declared with allow() and the ones nobody did. One object for the process (task p3-06).
+struct PinTally {
+  unsigned instances = 0;
+  unsigned operations = 0;    // setMode/write/hold calls the rules were checked on
+  unsigned reset_pulses = 0;
+  unsigned kill_cycles = 0;
+  unsigned violations = 0;    // every one, declared or not
+  unsigned declared = 0;      // ... that a test asked for with allow()
+  unsigned undeclared = 0;    // ... that nobody did: a rail broken quietly
+  std::map<std::string, unsigned> by_rule;
+  std::map<std::string, unsigned> undeclared_by_rule;
+};
+
+PinTally& pinTally();
+
 class FakePins final : public interfaces::Pins {
  public:
   explicit FakePins(FakeClock& clock, const core::board::KillTiming& timing = core::board::kKillTiming);
+  ~FakePins();
 
   bool strict = true;
   bool record_log = true;  // false: the rules are still checked, the transitions not kept (a flash is millions)
@@ -115,6 +143,16 @@ class FakePins final : public interfaces::Pins {
   int countViolations(const char* rule) const;
   void clearLog() { log.clear(); }
 
+  // "This test is about seeing that rule fire." Declared violations of it are counted and do not
+  // fail anything; everything else does, at the destructor, whatever `strict` says (task p3-06).
+  void allow(const char* rule) { allowed_.push_back(rule); }
+  bool allows(const char* rule) const;
+  // Violations this instance recorded that no allow() covers.
+  int undeclaredViolations() const;
+  // The one use for this: host_test/rails/test_rail_pins.cpp, which shows the destructor's own
+  // check working and must not fail itself or dirty the tally while doing it.
+  bool report_undeclared = true;
+
   static constexpr std::size_t kGpioCount = 49;  // the ESP32-S3 has GPIO0..48
 
  private:
@@ -133,6 +171,7 @@ class FakePins final : public interfaces::Pins {
 
   FakeClock& clock_;
   core::board::KillTiming timing_;
+  std::vector<std::string> allowed_;
   Pin pins_[kGpioCount];
   bool have_last_reset_end_ = false;
   bool clk_moved_in_reset_ = false;  // this assertion of nRESET is a selector programming window

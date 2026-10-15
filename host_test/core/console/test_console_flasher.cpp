@@ -60,6 +60,10 @@ struct Rig {
     chip.attachTo(target);
     chip.on_power_loss = [this] { target.silent = true; };
     chip.installSoftDevice();
+    // The only pages `rak flash-test` may erase or write: the two at the top of the region
+    // (checkApplicationUntouched() reads the same thing off the log afterwards). Declared, so
+    // that an erase anywhere else fails the running test - rail R4, task p3-06.
+    chip.onlyTouch(kTop, 0xED000);
     pins.record_log = false;
     health.begin(ResetReason::kPowerOn, WakeCause::kNotFromSleep);
     clock.advance(kKillTiming.settle_ms);

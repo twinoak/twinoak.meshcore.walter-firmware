@@ -129,6 +129,7 @@ TEST_CASE("the link client: slot 0 is the session it keeps, and slot 1 is refuse
 TEST_CASE("the selector sequence on a single-radio unit's wires breaks swdclk-while-reset") {
   SingleRig rig;
   rig.pins.strict = false;  // see the rule fire instead of failing this test
+  rig.pins.allow("swdclk-while-reset");  // ... and declare it, or the destructor fails it anyway
   core::board::DualTarget dual(rig.board);  // never constructed by the firmware; here on purpose
   REQUIRE(dual.select(kSlot1) == SelectResult::kOk);
   CHECK(rig.pins.countViolations("swdclk-while-reset") >= 1);

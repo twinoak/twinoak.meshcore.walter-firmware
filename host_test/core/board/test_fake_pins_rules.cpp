@@ -20,7 +20,17 @@ namespace {
 struct Rig {
   fakes::FakeClock clock;
   fakes::FakePins pins{clock};
-  Rig() { pins.strict = false; }
+  // strict off so that the violation is recorded instead of failing the test - and every rule
+  // this file fires on purpose declared, because since task p3-06 an undeclared violation fails
+  // the test at the fake's destructor whatever `strict` said (fakes/fake_pins.h).
+  Rig() {
+    pins.strict = false;
+    for (const char* rule : {"reset-driven-high", "reset-spacing", "reset-pulse-length",
+                             "swdclk-while-reset", "driven-while-killed", "kill-driven-low",
+                             "kill-bounds", "selector-window"}) {
+      pins.allow(rule);
+    }
+  }
 };
 
 void pulse(Rig& rig, std::uint32_t low_ms) {

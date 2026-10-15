@@ -17,7 +17,7 @@
 // **Every number below is a PLACEHOLDER.** No cell's discharge curve has been measured, nothing
 // has drawn current from this pack, and the three figures that would settle them - the Walter's
 // draw asleep, the energy of one whole wake with an attach, and this pack's voltage against its
-// state of charge - are bench measurements (`spec/SYSTEM.md` §10 item 5, `docs/bench.md` §14).
+// state of charge - are bench measurements (`spec/SYSTEM.md` §10 item 5, `docs/bench.md` §15).
 // Change a number and its sentence together.
 //
 // -- the readings ------------------------------------------------------------------------------

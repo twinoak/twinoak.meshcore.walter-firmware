@@ -63,9 +63,30 @@ struct FlashEvent {
   std::uint64_t at_us;
 };
 
+// What the whole suite did to simulated flash (task p3-06, rail R4): how many chips there were,
+// how many of them were flashed, and how many erases and writes landed inside the window the test
+// declared. One object for the process; host_test/rails/test_rail_flash_region.cpp prints it.
+struct FlashTally {
+  unsigned chips = 0;
+  unsigned flashed = 0;        // chips that saw at least one erase or write
+  unsigned erases = 0;
+  unsigned writes = 0;
+  unsigned undeclared = 0;     // chips flashed without a declared window: rail R4 broken
+  unsigned outside = 0;        // erases or writes outside the declared window
+};
+
+FlashTally& flashTally();
+
 class Nrf52Chip {
  public:
   explicit Nrf52Chip(fakes::FakeClock& clock);
+  // Rail R4 (task p3-06): a chip that was erased or written by a test which never said which
+  // region may be touched fails that test here. `onlyTouch()` (with `alsoTouch()` for the
+  // bootloader's settings page) is the declaration, and the flasher's and the update's benches
+  // make it from the board profile - so "the flasher writes only inside the application region
+  // and the settings page" is asserted at the end of **every** test that flashes, by the
+  // simulator, and not by each test remembering to.
+  ~Nrf52Chip();
 
   // The two ports, to attach to a SwdTarget at APSEL 0 and 1 (attachTo does both).
   AccessPort& ahbAp();
@@ -95,6 +116,9 @@ class Nrf52Chip {
   std::function<void()> on_power_loss;     // what the bench does when the power goes (silence the target)
   void onlyTouch(std::uint32_t begin, std::uint32_t end);  // any erase or write outside fails the test
   void alsoTouch(std::uint32_t begin, std::uint32_t end);  // ... except inside this second range (the settings page, task p1-05)
+  // The one use for this: host_test/rails/test_rail_flash_region.cpp, which shows the window
+  // guard biting and must not dirty the suite's tally while doing it (task p3-06, rail R4).
+  bool report_outside = true;
   // A word with bits that will not take a write (task p1-05): after any erase or write of it the
   // bits of stuck_mask read 0. 0 = no such word.
   std::uint32_t stuck_addr = 0;

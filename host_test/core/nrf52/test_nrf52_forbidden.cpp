@@ -167,6 +167,11 @@ TEST_CASE("the nRF52 layer has no way to reach them: every write it can make is 
   // resetAndHalt(), run(), systemReset() - and by the test above. Here: the whole API, exercised,
   // never trips the wire.
   sim::Nrf52Bench b;
+  // This test is about the flash controller's whole reach, not about one board's region, so the
+  // region it declares is the whole array (rail R4, task p3-06: a chip flashed by a test that
+  // declared none fails that test, and "the whole array" is a declaration a test about the
+  // controller may honestly make).
+  b.chip.onlyTouch(0, b.chip.flashBytes());
   REQUIRE(b.open().ok());
   const core::nrf52::FlashRegion all{0, 0x100000};
   const std::uint32_t data[2] = {0, 0};

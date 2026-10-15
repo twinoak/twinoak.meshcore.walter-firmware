@@ -1,13 +1,17 @@
 <#
 .SYNOPSIS
-  Verifies the repository: the spec copy, the host tests, the firmware build and the partition
-  table, all inside the pinned ESP-IDF image. Green here is the bar for pushing (S-10).
+  Verifies the repository: the rails, the spec copy, the host tests, the firmware build and the
+  partition table, all inside the pinned ESP-IDF image. Green here is the bar for pushing (S-10).
 
 .DESCRIPTION
   Reads tools/idf-image.txt (tag and digest), pulls the image by digest if it is not present, and
   runs tools/verify.sh in it with the repository bind-mounted at /project, a named volume for the
   build directory (/build) and one for the caches (/ccache). Logs land in out/verify/, the images in
   out/images/. Runs from Windows PowerShell 5.1, and from pwsh on Linux - CI runs exactly this.
+
+  The host-tests step begins with tools/check_rails.py: every rail this firmware promises, one
+  entry each, the greps among them (task p3-06). `python tools/check_rails.py --list` prints the
+  table without running anything.
 
   .\tools\verify.ps1                 everything
   .\tools\verify.ps1 -Only build     one step: spec, spec-tools, host-tests, release-tests,

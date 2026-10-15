@@ -15,7 +15,7 @@ wake it belongs to). `power` on the console prints the same numbers off the boar
 > drawn current from this pack, and the three figures that would settle them are bench
 > measurements: the Walter's draw asleep, the energy of one whole wake with an attach, and this
 > pack's voltage against its state of charge. `spec/SYSTEM.md` §10 item 5 is the open question and
-> `docs/bench.md` §14 is how it is closed. Change a number and the sentence beside it in
+> `docs/bench.md` §15 is how it is closed. Change a number and the sentence beside it in
 > `interval_policy.h` together.
 
 ## The reading
@@ -117,4 +117,4 @@ thins the attempts out when there is no coverage (`core/uplink/failure.h`). `tas
 | the four intervals, `saving`'s Nth, the fault doublings | the same file |
 | the bound on a wake, `stay`'s bound, the USB grace | `components/core/include/core/cycle/wake_guard.h` |
 | the spurious-wake limit, the attention window | `components/core/include/core/cycle/wake_reason.h` |
-| what has to be measured, and how | `docs/bench.md` §14 |
+| what has to be measured, and how | `docs/bench.md` §15 |

@@ -1,8 +1,11 @@
 # How this firmware is put together
 
 The design the task piles build, written before a line of this repository compiled. Numbers that
-come from a datasheet or a specification are marked *(verify)*: the task that first uses one reads
-the document, cites it in the code, and corrects this file if it was wrong.
+came from a datasheet or a specification were marked *(verify)*: the task that first used one read
+the document, cited it in the code, and corrected this file if it was wrong. **No *(verify)* mark
+is left** — every one was settled by the task that needed it, and task p3-06 held this file against
+the code it describes (`tasks/phase-3/reports/06.md` lists the differences it found). What a
+document could not settle is in [`bench.md`](bench.md) instead, with the measurement that will.
 
 ## 1. Layout
 
@@ -74,6 +77,7 @@ components/
                         and the word `confirm` on rak flash-test and a long rak kill; task p3-04:
                         wake, power, sleep now, sleep <seconds>, stay; task p3-05: cycle now,
                         cycle dry)
+    version/            what this build is, as one string: the banner, `trust`, the descriptor
     cycle/              one wake, start to finish, against interfaces. Task p3-04: wake_reason.h
                         is what a wake *means* - the timer, §8's attention inside its repeat
                         window, a spurious wake and its rate limit, a person with a cable, a
@@ -140,13 +144,29 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         whatever the chip holds - that outlives a Walter built over it, so a
                         reset in the middle of an update is a destroyed and rebuilt Walter
                         (task p2-03)
-  fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02)
-tools/                  verify.ps1, release/ (the release tooling), walterctl.py (the laptop's end
-                        of `image receive`), bench tools
+  checks/               no_allocation.h: the check that a component's objects take no heap after
+                        start-up, applied per component by its own test
+  rails/                **the suite's own statement about the rails** (task p3-06): the assertions
+                        that are about every test rather than about one - the pin rules' tally, the
+                        simulated flash's, the verdict's tokens as types, a day of wakes searched
+                        for a secret, a month asked for both updates, the caps over a quarter, and
+                        the failure-injection sweep that runs four suites' power-loss loops
+                        together, download to commit
+  fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02);
+                        command_lines.h, every command of the console's table with something to
+                        type after it, which two rails walk
+tools/                  verify.ps1 and verify.sh (the definition of "verified"), check_rails.py
+                        (**every rail, one entry each**, run by verify.sh), check_partitions.py,
+                        the trust-table and TLS-root generators, release/ (the release tooling),
+                        walterctl.py (the laptop's end of `image receive`), cmake/ (the no-ESP-IDF-
+                        include check)
 keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02);
                         tls/: the TLS roots a server's chain must end at, each with its header (task p3-02)
 spec/                   a copy of the system specification and its fixtures - never edited here
-docs/                   this file, bench.md, release.md, console.md, provisioning.md, field.md
+docs/                   this file; bench.md (the one ordered bench walk and the numbers to bring
+                        back); field.md (what a unit on a mast does, for the person who owns it);
+                        release.md, console.md, provisioning.md, update.md, supervisor.md,
+                        power.md, cycle.md
 tasks/                  the piles
 ```
 
@@ -201,7 +221,7 @@ pins) and tested against fake pins that check them on every transition:**
    the middle of a kill left it to float back on just before — and *on* after that.
 4. **A kill is bounded**: at least long enough for the rail to collapse, at most a configured
    maximum (`kKillTiming`: 1 s, 30 s, 200 ms to settle — placeholders until the bench measures the
-   rail, `docs/bench.md` §2); the kill line is driven high or not at all, never low; the firmware
+   rail, `docs/bench.md` §6); the kill line is driven high or not at all, never low; the firmware
    cannot leave the radio off by crashing — the line floats to *on* when the Walter resets, by
    hardware. Nothing acquires SWD while the rail is believed off, and the SWD clock cannot toggle
    while nRESET is asserted (a reset is refused while SWD is held; the holder releases first).
@@ -234,8 +254,8 @@ pins) and tested against fake pins that check them on every transition:**
    is lost.
    **Where it is switched off:** `main/app_main` constructs a `core::board::SingleTarget` — slot 0
    is the one radio, selecting it moves no pin — and nothing constructs `core::board::DualTarget`.
-   `tools/verify.sh` greps that neither `DualTarget` nor `selectorProgram` is named outside the two
-   files that define them, and `host_test/core/board/test_slot_single.cpp` fails if a single-radio
+   `tools/check_rails.py` greps that neither `DualTarget` nor `selectorProgram` is named outside the
+   two files that define them, and `host_test/core/board/test_slot_single.cpp` fails if a single-radio
    unit's wires ever carry the sequence (the fake pins' `swdclk-while-reset`). The dual adapter's
    own tests declare a selector on the bench, and then the fake pins check the window's length
    instead (`selector-window`, 100–500 µs).
@@ -249,9 +269,14 @@ before anything is steered.
 The fake pins (`host_test/fakes/fake_pins`) know these rules by name — `reset-driven-high`,
 `reset-spacing`, `reset-pulse-length`, `swdclk-while-reset`, `driven-while-killed`,
 `kill-driven-low`, `kill-bounds`, `selector-window` — and fail the running test at the transition
-that breaks one. `tools/verify.sh` greps that no GPIO call exists outside
-`components/platform/`, that the seven pins are named nowhere but `core/board/`, and that the dual
-adapter's selector is named nowhere but the two files that define it (rule 6).
+that breaks one. **They are the suite's rules and not one test's**: a violation no test declared
+with `allow()` fails that test at the fake's destructor whatever `strict` said, and
+`host_test/rails/test_rail_pins.cpp` prints what the whole run did to a set of simulated wires and
+holds the undeclared count to zero (task p3-06, rails R1 and R2). `tools/check_rails.py` greps that
+no GPIO call exists outside `components/platform/`, that the seven pins are named nowhere but
+`core/board/`, that nRESET reaches the driver only through `ResetLine` — which can assert low and
+release and has no other mode — and that the dual adapter's selector is named nowhere but the two
+files that define it (rule 6).
 
 ## 3. The link, from this end
 
@@ -383,7 +408,8 @@ nRF52840 Product Specification or the Armv7-M ARM):
 - **what does not exist**: a function that writes `NVMC.ERASEALL`, `NVMC.ERASEUICR`, the control
   port's `ERASEALL` or any address in UICR. They are named constants in `regs.h`, for the simulator
   and the reader; `host_test/core/nrf52/test_nrf52_forbidden.cpp` reads every source under
-  `components/` and fails if one of the names appears anywhere else.
+  `components/` and fails if one of the names appears anywhere else, and `tools/check_rails.py`
+  greps the same list before anything is compiled.
 
 **The simulator** (`host_test/sim/`) is the other half of this section: a wire-level SWD target
 (`swd_target`, task p1-03) that stands between `RadioPins` and the fake pins as a `Pins` of its
@@ -413,7 +439,11 @@ catch at reset, and a Local reset's exact effect on each register. It records ev
 and write, every `CONFIG` write and `READY` read. It can be told to be protected, to re-engage
 protection at a reset (the Fxx module), to be another part or page size, to report `READY` late
 or never, to lose power at the Nth flash operation (leaving a page half-erased or a word
-half-written), and which region alone may be touched. **Its tripwire**: a write to `NVMC.ERASEALL`,
+half-written), and **which region alone may be touched** — and since task p3-06 a chip that was
+erased or written by a test which never declared a region fails that test at its destructor, so
+"the write log is asserted at the end of every test that flashes" is a property of the simulator
+and not of each test remembering to (rail R4; `host_test/rails/test_rail_flash_region.cpp` prints
+what the whole suite did to simulated flash). **Its tripwire**: a write to `NVMC.ERASEALL`,
 `NVMC.ERASEUICR`, the control port's `ERASEALL` or any `UICR` word fails the running test at once.
 Everything in this section and the next is developed against it.
 
@@ -476,7 +506,9 @@ is blank, invalid or valid; running the same flash again finishes it with no mor
 pages that still differ need. On a failure after the halt the flasher asks for a system reset on
 its way out, so the radio runs its bootloader rather than sitting halted. `verify()` reads back and
 compares, changing nothing; `flashTest()` is the bench's `rak flash-test` (`docs/console.md`). The
-simulated chip evaluates both bootloaders' `bootloader_app_is_valid()` after every interruption.
+simulated chip evaluates both bootloaders' `bootloader_app_is_valid()` after every interruption, and
+refuses any erase or write outside the image's own pages and the settings page — the region the
+bench declares from the board profile.
 
 ## 6. Images
 
@@ -746,7 +778,7 @@ certificate slots **once** - the loader keeps a hash of what it wrote in retaine
 rewrites only what differs - and `WalterTlsStore::configureProfile` is the **one** call to the
 library's `tlsConfigProfile`: it asks for the chain and the host name to be validated
 (`URL_AND_CA`), TLS 1.2, and takes no argument that could ask for less. A host test and
-`tools/verify.sh` hold that the library's other validation levels are named nowhere in this
+`tools/check_rails.py` hold that the library's other validation levels are named nowhere in this
 firmware and that the call is one. The modem validates against one slot per profile, so each root
 has a slot and a profile and a host is held to one root (`core/net/trust.h`: `github.com` to
 USERTrust, every other host to ISRG); a host whose chain ends elsewhere fails its handshake.
@@ -905,6 +937,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
 | HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
-| the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §15): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
-| duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §14) |
+| **the rails** | ✔ the suite's own assertions (`host_test/rails/`): the pin rules' tally over every test that drove a wire, simulated flash's over every test that flashed, the verdict's tokens as compile-time refusals, two secrets and the subscription's three numbers searched for in a day of wakes and every console command, a month asked for both updates and read off the journal, the supervisor's caps over a simulated quarter, and **the failure-injection sweep**: four suites' power-loss loops run together, a whole update from download to commit with the power lost at every flash operation of the store, the journal and the radio's chip in turn, each ending in the old image, the new one, or a journalled state the next wake resumes | `tools/check_rails.py`'s greps (one entry per rail, run before anything is compiled) and `tools/verify.sh`'s search of the built image for the test key's bytes and the map for a signing symbol | `docs/bench.md`, all of it: the rails are what a session can hold, and the walk is what a person must |
+| the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §16): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
+| duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §15) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |

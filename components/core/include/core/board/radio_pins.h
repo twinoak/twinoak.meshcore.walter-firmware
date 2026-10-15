@@ -89,7 +89,7 @@ static_assert(kSelectorWindowUs >= kSelectorWindowMinUs && kSelectorWindowUs <= 
 // capacitance and the RAK's two 100 µF on the rail discharge through whatever the radio draws, so
 // the fall is load-dependent). One second is long enough for the rail to collapse at any plausible
 // draw and short enough to be a console argument; thirty seconds bounds how long a bug can keep
-// the radio off per call; 200 ms is generous for a buck-boost soft-start. docs/bench.md §2 asks for
+// the radio off per call; 200 ms is generous for a buck-boost soft-start. docs/bench.md §6 asks for
 // the measured numbers; replace them here and nowhere else.
 struct KillTiming {
   std::uint32_t min_ms;

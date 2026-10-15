@@ -591,7 +591,7 @@ void Console::status() {
          static_cast<unsigned long>(radio_.receiver().dropped()),
          static_cast<unsigned long>(counted.events));
   // Two lines, so that neither is over a hundred characters: `status` is read in a terminal
-  // window (docs/bench.md §13), and `pins` is the command that says it pin by pin.
+  // window (docs/bench.md §14), and `pins` is the command that says it pin by pin.
   printf("pins: power %s; next reset %s\n", board::describe(pins_.power()),
          pins_.msUntilResetAllowed() == 0 ? "allowed now" : "not yet (two are a second apart)");
   printf("  uart %s, swd %s, nRESET %s, kill line %s\n",

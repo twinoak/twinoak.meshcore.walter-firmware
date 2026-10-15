@@ -17,7 +17,7 @@
 // The modem validates a connection against **one** certificate slot per TLS profile
 // (AT+SQNSPCFG takes one caCertificateID), so each root has a slot and a profile of its own and
 // a host is held to one root: rootForHost() below. A host whose chain ends elsewhere fails its
-// handshake - that is the rail, and docs/bench.md §12 tests it on the modem with a host this
+// handshake - that is the rail, and docs/bench.md §13 tests it on the modem with a host this
 // firmware does not carry a root for.
 //
 // -- the loader --------------------------------------------------------------------------------

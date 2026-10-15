@@ -33,6 +33,18 @@ class FakeRetained final : public interfaces::Retained {
   void powerCut() { records_.clear(); }
   bool has(interfaces::RetainedSlot slot) const { return records_.count(slot) != 0; }
 
+  // Every byte of every record, end to end: what task p3-06's rail R8 searches for a secret and
+  // for anything the mesh said. RTC memory is read by anybody with the board, so a record is as
+  // public as a log line.
+  std::vector<std::uint8_t> allBytes() const {
+    std::vector<std::uint8_t> all;
+    for (const auto& entry : records_) {
+      all.insert(all.end(), entry.second.begin(), entry.second.end());
+    }
+    return all;
+  }
+  std::size_t recordCount() const { return records_.size(); }
+
   // Corrupts a record's size, as a firmware with another layout would leave it.
   void truncate(interfaces::RetainedSlot slot) {
     auto it = records_.find(slot);

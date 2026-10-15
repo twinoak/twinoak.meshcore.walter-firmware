@@ -84,7 +84,7 @@ supervisor's stop is printed at every level.
 |---|---|
 | `pins` | the seven pins, one line each: net, D-sub pin, GPIO, mode as this firmware configured it, the level read from the pad, and what it is in use for (`released`, `uart`, `swd`, `reset`, `kill`); then the radio's power |
 | `rak reset` | one reset pulse: nRESET open-drain low for 100 ms, then released. If the last reset ended less than a second ago the command says how long it waits and waits; it never pulses early (two resets inside half a second put the radio into its UF2 bootloader). The first reset after a boot waits a full second, because the Walter's own power-up may have reset the radio just before |
-| `rak kill <seconds> [confirm]` | the LoRa 3.3 V rail off for that long: every other radio-facing pin released first (the UART and SWD taken back from whoever held them), the kill line driven high, held, released (never driven low), then the settle time, then the safe state. Whole seconds, 1 to 30 — the bounds are placeholders until the bench measures the rail (`bench.md` §2). **Over 5 seconds it wants the word `confirm` after the number**: a repeater off the air for half a minute is a decision, not a typo. The console is busy for the duration |
+| `rak kill <seconds> [confirm]` | the LoRa 3.3 V rail off for that long: every other radio-facing pin released first (the UART and SWD taken back from whoever held them), the kill line driven high, held, released (never driven low), then the settle time, then the safe state. Whole seconds, 1 to 30 — the bounds are placeholders until the bench measures the rail (`bench.md` §6). **Over 5 seconds it wants the word `confirm` after the number**: a repeater off the air for half a minute is a decision, not a typo. The console is busy for the duration |
 | `rak hello` | HELLO: the version, role, slot and capabilities the radio answers with |
 | `rak ping` | PING, with the round trip |
 | `rak status` | STATUS: its uptime, why it booted, its clock, its flags and counters |
@@ -552,7 +552,7 @@ https URLs are accepted*, *the uplink is down: 'lte up' first*, or - when the mo
 connect - *no response: the modem refused the connection: the host was unreachable or the TLS
 handshake failed (the library does not say which)*. That last wording is honest about the modem
 library at 1.5.0, which answers one `ERROR` for a name that does not resolve and for a chain it
-cannot verify; `docs/bench.md` §12 is where the two are told apart on a desk, by choosing hosts.
+cannot verify; `docs/bench.md` §13 is where the two are told apart on a desk, by choosing hosts.
 
 ```
 > fetch https://github.com/twinoak/twinoak.meshcore.repeater-firmware/releases/download/v0.3.0

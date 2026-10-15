@@ -51,4 +51,4 @@ order and `trust.cpp` holds each named index to its file with a `static_assert`,
 name sorts between the two existing ones is a failed build rather than a moved root.
 
 A host whose chain ends at a root this firmware does not carry **fails its handshake**. That is
-the point, and `docs/bench.md` §12 tests it on the modem with such a host.
+the point, and `docs/bench.md` §13 tests it on the modem with such a host.

@@ -217,7 +217,7 @@ no new flashing logic.
 ## The numbers - to be set on the bench
 
 Every window and threshold is a named constant in `components/core/include/core/update/radio_update.h`
-with a sentence beside it; none has been held against a real radio yet (`docs/bench.md` §8).
+with a sentence beside it; none has been held against a real radio yet (`docs/bench.md` §9).
 
 | Constant | Today | What it is |
 |---|---:|---|

@@ -1,0 +1,257 @@
+# A unit in the field
+
+What a TwinOak repeater-v2 unit on a mast does by itself, what it does when something is wrong,
+and what a person can and cannot do about it from a distance. For the person who owns the mast,
+not for the person who writes the firmware — the firmware's own map is
+[`ARCHITECTURE.md`](ARCHITECTURE.md), the wake is [`cycle.md`](cycle.md), the console is
+[`console.md`](console.md), and the first bring-up of a unit is [`bench.md`](bench.md).
+
+> **No unit has run this yet.** Every behaviour below is built and tested on a host against
+> simulators; none of it has been on a mast, or on a desk. The first unit to run it is the first
+> unit, and [`bench.md`](bench.md) is the walk that proves each of these sentences one at a time.
+
+## The two boxes
+
+A unit is two boxes on one battery.
+
+The **LoRa box** (a RAK4631) is the repeater. It is the unit's identity on the mesh and the only
+thing that talks to the air. **It does not need the other box**: it boots, repeats and answers
+mesh administration with the LTE box asleep, dead or absent. If the LTE box is removed from a
+working unit, the mesh does not notice.
+
+The **LTE box** (a Walter: an ESP32-S3 with an LTE-M modem) is the one this firmware runs on. It
+looks after the repeater and is the unit's way out: it watches the repeater, replaces the
+repeater's firmware when a new one is published, updates itself, and reports in over the mobile
+network. It is asleep almost all of the time. **It does not need the repeater's firmware**: with
+the reset line, the power-kill line and the debug port it can bring back a RAK whose application
+is gone.
+
+So: *the repeater keeps repeating* is the first thing, and everything the LTE box does is arranged
+not to get in the way of it.
+
+## What one wake does
+
+The LTE box sleeps and wakes. **One wake is one pass of ten steps, in order, and then deep
+sleep.** It is minutes at the outside and seconds in the ordinary case
+([`cycle.md`](cycle.md) has the table and the time each step may spend):
+
+1. **why am I awake** — the timer, the radio asking for attention on its line, a person with a
+   cable, a power-up, or a crash;
+2. **is the radio alive** — one `PING`. If it is not, the ladder (below);
+3. **was something in progress** — the journal says; an update that was interrupted continues here
+   and nothing else is begun;
+4. **what does the radio say** — its state, its battery and panel currents, its temperature;
+5. **what may this wake afford** — the battery decides the rest of the wake and the next interval;
+6. **the modem** — attach, and read the network's time;
+7. **set the radio's clock** — from the network's time, when the radio's is unset or wrong;
+8. **report in** — one exchange with the server. **Today there is no server**: this firmware's
+   backend does nothing, by design, until the MeshMaster agent is built;
+9. **at most one update step**, of one box, never both (and only if the battery allows);
+10. **tell the radio I am going, and sleep** — always. A wake that reached nothing else has still
+    done the one thing that matters.
+
+**How long until the next wake comes from the battery.** A full pack under a sunny panel gets a
+wake every quarter of an hour; a sinking one in December gets one a day; below a floor the modem
+is not used at all ([`power.md`](power.md) is the table). The thresholds are honest guesses until
+a pack has been measured.
+
+Nothing a wake does is retried for ever: every step has a deadline, a whole wake has a bound, and
+a wake that has not reached sleep in five minutes is **ended by a reset** — the work is in the
+journal and the next wake takes it up. The sleep after a fault is *longer*, not shorter.
+
+## When the radio is silent
+
+A repeater that does not answer `PING` is the one thing this unit exists for. The LTE box first
+works out **what the silence means** — the radio is running NoiseScope and is answering text
+instead of frames; or this Walter has only just powered up and its own power-up glitched the
+reset line, so the radio is still booting; or an update is in progress and the radio is meant to
+be quiet; or the radio really is not answering. Only the last is an incident.
+
+Then it climbs a ladder, slowly, one rung per try, each with a wait and a **daily cap**
+([`supervisor.md`](supervisor.md)):
+
+1. **ask again** — three more attempts after a pause;
+2. **a reset pulse** — 100 ms, and never two inside a second;
+3. **a power cycle** — the LoRa rail off for a few seconds;
+4. **look at what is on the chip** — read the golden image back over the debug port and compare.
+   If the flash matches, the firmware is intact and flashing would change nothing. If it differs,
+   the golden image goes back on;
+5. **stop, record it, and report it at the next check-in.**
+
+A radio that does not answer after its golden image has been put back is **a hardware fault**: the
+unit stops trying, says so, and leaves it alone until a person, the server, or a long quiet period
+(days) lets the ladder be tried once more. That is deliberate. A unit that power-cycles its radio
+every minute is worse than one that waits for somebody.
+
+**What a person sees:** `rak watch` on the console lists the incidents — when, what was seen, each
+rung and its outcome, how it ended — and the day's counts against the caps. The counts survive a
+restart and a power cut; they are forgiven only when a whole day can be shown to have passed.
+
+## When the modem has no coverage
+
+Nothing dramatic. The attach fails with a named reason, the reason has a retry rule, and the unit
+goes to sleep:
+
+| What the modem said | What the unit does |
+|---|---|
+| `modem-silent` — the module answered nothing | one reset of the modem inside the wake, then try again next wake |
+| `no-sim` — no card, or it does not answer | nothing automatic: a person has to act |
+| `sim-locked` — the card wants a PIN | **nothing is sent to the card.** Never automatically: three wrong PINs block a card for good |
+| `not-registered` — no network found | try again, with a **growing backoff counted in wakes**: next wake, then every second, then every fourth, up to a cap |
+| `no-data` — registered, no packet service | a few retries inside the wake, then the backoff |
+
+The backoff is counted in **wakes**, not in hours, because a Walter has no clock it can trust
+across a deep sleep. `lte` on the console says which failure it was and how many wakes until the
+next attempt.
+
+**A unit with no coverage is still doing its job.** The readings it takes are kept in a small ring
+and sent when there is a way out; the radio's clock is the one thing it cannot set without the
+network, and `spec/LINK-PROTOCOL.md` is explicit that a clock which goes backwards is worse than
+no clock, so it leaves it alone.
+
+## When the battery is low
+
+The battery is the repeater's as much as the Walter's, and the Walter is the one that gives way.
+Five bands ([`power.md`](power.md)), each with an interval and a rule about what a wake may do:
+
+| Band | Roughly | What a wake does |
+|---|---|---|
+| `plenty` | above three quarters, or charging steadily | everything, every quarter of an hour |
+| `normal` | between | everything, hourly |
+| `saving` | about a quarter left | every six hours, and **the modem only every fourth wake** |
+| `critical` | below the floor | once a day, and **the modem is not used at all** |
+| `no-reading` | the radio is silent, so there is no gauge | the medium interval, and the modem *is* used — a unit whose radio has died is exactly the one that must reach its uplink and say so |
+
+An update — of either box — is refused while the battery is below its own threshold or falling
+fast. A repeater that keeps repeating is worth more than a report that it is about to stop.
+
+The gauge is on the **radio's** I2C bus, so a dead radio is a dead gauge. The one flash that exists
+to unbrick a radio is allowed on the last good reading rather than refused for want of a fresh one.
+
+## Reading a unit from a cable
+
+Plug a USB-C cable into the LTE box and open the port at any baud. **A boot that finds a USB host
+stays awake** — this chip cannot be woken from deep sleep by a cable, so press the reset button
+after plugging in if the port is quiet. While a host is there, nothing sleeps by itself.
+
+Four commands answer almost every question ([`console.md`](console.md) has them all):
+
+- **`status`** — is this unit alive, does it know its radio, has it a way out, and when does it
+  next do something. Twelve or thirteen lines. Read this first.
+- **`journal`** — *what happened*, oldest first, from flash. **Not one line per wake**: a wake
+  with nothing to say is not journalled, so a week of a healthy unit is a page and not a thousand
+  lines. A line appears when a wake had news — a step failed or was refused, the band changed, the
+  ladder was climbed, the clock was set, an update step happened, the wake was a crash. Updates
+  and incidents are never pushed out of the log by ordinary wakes.
+- **`wake`** — the last ten wakes with their reasons and how long each lasted, from RTC memory
+  (so a power cut empties it, and a reset does not).
+- **`dump`** — the last four kilobytes the port printed, boot lines included. The command to run
+  *before* asking what happened.
+
+A wake's record is one line, and its `steps` field is one letter per step:
+`y` done, `-` nothing to do, `s` skipped because something it needed did not happen, `t` not begun
+for want of time in the wake's budget, `r` refused, `x` attempted and failed, `.` not reached.
+A healthy day with coverage is mostly `y` and `-`. [`cycle.md`](cycle.md) has the table.
+
+Two more worth knowing: **`rak watch`** (the supervisor's incidents and the day's counts) and
+**`cycle dry`**, which prints what a wake *would* do right now, step by step, without doing any of
+it. `cycle now` runs one for real — and it ends in deep sleep, so the port goes quiet. That is the
+command working.
+
+## "The supervisor has stopped"
+
+At every boot, a unit whose supervisor has stopped says so:
+
+```
+supervisor: STOPPED: <reason>; N s of the quiet period left
+```
+
+It means rung 5 was reached: the ladder was climbed to the top and the radio still did not answer,
+or what was found is not something a reset or a reflash can mend (a protected chip, a chip that
+cannot be read). **The unit has deliberately stopped trying.** It is not broken, and it is not
+hiding anything: `rak watch` has the whole incident, rung by rung, and the stop is in the journal.
+
+What to do:
+
+1. **Read `rak watch` and `journal`** and find which rung failed and what the reason was. The
+   difference between *the chip holds the golden image* (so the firmware is intact and something
+   else is wrong — a connector, a radio, the antenna) and *the chip differs* (so a flash was
+   tried) is the whole diagnosis.
+2. **If it is worth another try**, `rak ladder` on the console lifts the stop and climbs again from
+   rung 1, and says so in the journal. Without that, the unit waits out a quiet period of days and
+   then tries once by itself.
+3. **If the reason is `protected`**, stop: see below. Nothing remote will mend it.
+4. **If the radio answers again and nothing was done**, the day's caps may be what refused a rung
+   (`today: resets 6/6`). `rak watch reset-caps` clears them — a decision, not a formality.
+
+## How a unit is provisioned
+
+A unit is provisioned once, at a bench, over the cable, before it goes out
+([`provisioning.md`](provisioning.md) is the session, line for line):
+
+- the APN and, if the card wants one, the SIM's PIN — **typed once and printed by nothing
+  afterwards**; `get` says *set* or *unset* and never the value;
+- the server and its token, when there is a server;
+- the unit's name and where it is;
+- the check-in interval (`auto` lets the battery choose, which is what a mast wants).
+
+The settings live in the Walter's own `nvs` partition, above the application slots, so flashing a
+new application keeps them. **They are not encrypted**: a person with the board can read the PIN
+and the token out of the flash with `esptool`, and the unit says so at every boot. Treat a unit
+that has been in somebody else's hands as a unit whose secrets are theirs.
+
+**The radio's first golden image** is the one thing provisioning cannot do by itself. A new unit's
+LTE box has an empty image store and will not flash a radio it has no known-good image for. So:
+
+1. a signed release of the repeater's firmware is put into the LTE box's store — over the cable
+   with `tools/walterctl.py push --as golden`, or over the air by the unit itself once a server
+   exists;
+2. the radio is flashed from it (`rak update --first-install` when the radio has no application of
+   its own), and the image that passes its health check becomes **golden**;
+3. from then on a new release becomes the *candidate*, is flashed, must boot and prove itself, and
+   is either promoted to golden or rolled back — and a candidate that failed once is never tried
+   again ([`update.md`](update.md)).
+
+**Until a release key exists, a unit accepts nothing.** Every manifest is refused at the first of
+six checks, which is correct: the alternative is a unit that trusts whatever a server sends.
+`trust` on the console says which keys this build accepts — today, none.
+
+## What cannot be recovered remotely
+
+The honest list. Each of these needs a person with the unit in their hands.
+
+- **A protected nRF52.** If the radio module's access port is closed (some module batches ship that
+  way), the LTE box can see the chip but not its memory. It **detects this, says so, and stops**.
+  Opening the port needs a chip erase, which destroys the bootloader, the SoftDevice, the node's
+  identity and its settings — so **this firmware has no code for it at all**, and no sequence of
+  commands can make it do it. It is a bench procedure with a debug probe, once per module, by a
+  person who knows what they are giving up.
+- **A dead bootloader on the radio.** The LTE box replaces the radio's *application* and nothing
+  else: never the bootloader, never the SoftDevice, never the file system that holds the node's
+  identity. That is why a failed update cannot brick the radio — and it is also why a bootloader
+  that is itself damaged cannot be repaired from the LTE box. It needs a debug probe.
+- **A locked SIM.** Three wrong PINs block a card; only the operator's PUK opens it. The firmware
+  therefore sends a PIN **once** and remembers the refusal, and a second attach does not try again
+  until somebody sets a new PIN. Nothing automatic can unblock a card.
+- **A Walter whose own both slots are bad.** The LTE box updates itself A/B with rollback, and a
+  new image that cannot reach its main loop, the radio *and* the server inside one boot is rolled
+  back by the bootloader. The one state nothing can mend remotely is an image that was confirmed
+  and is nevertheless broken — which is what the three conditions exist to prevent. Recovery is
+  `esptool` over the module's USB-C.
+- **A radio that answers nothing after its golden image is back.** The ladder reaches rung 5 and
+  stops, which is the right answer: the fault is hardware, and no amount of resetting mends
+  hardware.
+- **The battery.** A pack below the floor gets a unit that wakes once a day and does not use its
+  modem. If the panel never recovers it, the unit goes quiet, and the last thing it will have said
+  is that its battery was sinking.
+
+## And what *is* recoverable from a distance
+
+For balance, because the list above is the short one:
+
+- the radio's firmware, as often as a release says so, with a known-good image behind it;
+- the LTE box's own firmware, with one boot's trial and automatic rollback;
+- a radio that is hung, confused, or has had its application corrupted — the ladder;
+- a radio whose clock has drifted, every wake;
+- a non-secret setting, over the server once there is one;
+- a reading of what happened: the journal survives power cuts and is what a person reads first.
