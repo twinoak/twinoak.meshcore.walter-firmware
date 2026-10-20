@@ -285,6 +285,10 @@ class SelfUpdate final : public image::TransferTarget {
   const char* endWrite() override;
   const flasher::ImageSource* staged(const char** why) override;
   const char* commit(const image::AcceptedImage& token) override;
+  // The base's door is not overridden: a radio's base has no business in the Walter's own
+  // application slot, and TransferTarget::commit(const AcceptedBase&) says so. The using
+  // declaration keeps both in this class's overload set rather than hiding one behind the other.
+  using image::TransferTarget::commit;
   void abandonWrite() override;
 
  private:

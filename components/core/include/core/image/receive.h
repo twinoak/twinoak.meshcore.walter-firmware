@@ -1,5 +1,5 @@
 // Loading an image over USB (task p2-02): the bench's stand-in for a server, until phase 3 gives
-// the Walter an uplink. `image receive <golden|candidate|scanner> [@slot]` on the console
+// the Walter an uplink. `image receive <golden|candidate|scanner|base> [@slot]` on the console
 // (docs/console.md) hands the port to this object, which takes three files - `manifest.json`,
 // then its `.sig`, then the image - and runs all six checks of spec/FIRMWARE-MANIFEST.md §5 on
 // the Walter. **The laptop is not trusted**: it delivers bytes and nothing more. tools/walterctl.py
@@ -112,8 +112,9 @@ class TransferTarget {
   virtual ~TransferTarget() = default;
 
   // What this target will accept: §5 check 3's three words and the slot, the file's use (`swd`
-  // for a radio, `ota` for the Walter's own), and the board profile for check 6 (nullptr for an
-  // `ota` file, which has no region). Valid after a successful begin() on the target's owner.
+  // for a radio's image, `provision` for its base, `ota` for the Walter's own), and the board
+  // profile for check 6 or 5p (nullptr for an `ota` file, which has no region). Valid after a
+  // successful begin() on the target's owner.
   virtual const SlotNeeds& needs() const = 0;
   virtual Use use() const = 0;
   virtual const flasher::BoardProfile* profile() const = 0;
@@ -133,22 +134,28 @@ class TransferTarget {
   virtual const flasher::ImageSource* staged(const char** why) = 0;
   // The verdict's token: only now does the target keep anything (a record, a journal entry).
   virtual const char* commit(const AcceptedImage& token) = 0;
+  // And the base's token, for a target that takes one (task p5-01). A separate method and not an
+  // overload of the one above because the two tokens are different things: a target that has no
+  // use for a base says so here, and one that has takes the AcceptedBase and nothing else.
+  virtual const char* commit(const AcceptedBase&) { return "this is not where a base goes"; }
   // Give up: nothing is kept; whether the bytes stay for a resume is the target's.
   virtual void abandonWrite() = 0;
 };
 
-// The image store as a target (task p2-02's behaviour, unchanged): a radio slot's golden,
-// candidate or scanner image.
+// The image store as a target (task p2-02's behaviour, and task p5-01's base beside it): a radio
+// slot's golden, candidate or scanner image, or its base.
 class StoreTarget final : public TransferTarget {
  public:
   explicit StoreTarget(Store& store) : store_(store) {}
 
-  // Which image of which slot. False, with reason(), when the slot has no radio in this build.
+  // Which image of which slot, or the slot's base. False, with reason(), when the slot has no
+  // radio in this build.
   bool begin(Which which, board::Slot slot);
   const char* reason() const { return reason_; }
 
   const SlotNeeds& needs() const override { return needs_; }
-  Use use() const override { return Use::kSwd; }
+  // The base is a `provision` file and the three images are `swd` files (§2).
+  Use use() const override { return which_ == Which::kBase ? Use::kProvision : Use::kSwd; }
   const flasher::BoardProfile* profile() const override { return flasher::profileForSlot(slot_); }
   const char* name() const override { return image::name(which_); }
   bool writing() const override { return store_.writing(); }
@@ -159,6 +166,7 @@ class StoreTarget final : public TransferTarget {
   const char* endWrite() override;
   const flasher::ImageSource* staged(const char** why) override;
   const char* commit(const AcceptedImage& token) override;
+  const char* commit(const AcceptedBase& token) override;
   void abandonWrite() override { store_.abandonWrite(); }
 
  private:
@@ -176,9 +184,9 @@ class Receiver {
   Receiver(Store& store, ImageVerdict& verdict, interfaces::TextOut& out, interfaces::Clock& clock)
       : store_target_(store), verdict_(verdict), out_(out), clock_(clock) {}
 
-  // Hands the port over for a radio image into the store. False, with reason(), when the slot
-  // has no radio in this build, when the store refuses the role, or when a transfer is already
-  // running.
+  // Hands the port over for a radio image - or the slot's base - into the store. False, with
+  // reason(), when the slot has no radio in this build, when the store refuses the role, or when
+  // a transfer is already running.
   bool begin(Which which, board::Slot slot);
 
   // Hands the port over for another target - the Walter's own slot (task p2-04). The target is

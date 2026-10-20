@@ -14,6 +14,7 @@ const char* describe(Check check) {
     case Check::kFile: return "check 4, the file's size and hash";
     case Check::kDescriptor: return "check 5, the descriptor inside the file";
     case Check::kRegion: return "check 6, the region";
+    case Check::kBase: return "check 5p, the base";
   }
   return "?";
 }
@@ -45,6 +46,7 @@ Outcome ImageVerdict::judgeManifest(const std::uint8_t* manifest, std::size_t ma
                                     const flasher::BoardProfile* profile) {
   manifest_ = Manifest{};
   has_accepted_ = false;
+  has_accepted_base_ = false;
   has_expected_ = false;
 
   // 1. The signature. Everything else waits for it: a manifest nobody we trust signed is not
@@ -66,17 +68,20 @@ Outcome ImageVerdict::judgeManifest(const std::uint8_t* manifest, std::size_t ma
   const ImageEntry& image = *choice.image;
   const FileEntry& entry = *choice.file;
 
-  // 6, the half that needs no file: the manifest's region against this build's profile. Done
-  //    before the file is read so that a manifest that tries to widen the region costs nothing;
-  //    reported as check 6 all the same, because that is what it is.
-  if (use == Use::kSwd) {
-    if (profile == nullptr) return refused(Check::kRegion, "no board profile for this slot in this build");
+  // 6 (and 5p's first half, which is the same thing), the part that needs no file: the manifest's
+  //    region against this build's profile. Done before the file is read so that a manifest that
+  //    tries to widen the region costs nothing; reported as check 6 for an `swd` file and as 5p
+  //    for a base, because that is what each of them is. §5: "a manifest cannot widen what may be
+  //    written" - and a base is written further outside the application than anything else is.
+  if (use == Use::kSwd || use == Use::kProvision) {
+    const Check as = use == Use::kProvision ? Check::kBase : Check::kRegion;
+    if (profile == nullptr) return refused(as, "no board profile for this slot in this build");
     if (std::strcmp(profile->name, image.board) != 0) {
-      return refused(Check::kRegion, "the board profile given is not the image's board");
+      return refused(as, "the board profile given is not the image's board");
     }
     const nrf52::FlashRegion region{image.app_region_start, image.app_region_end};
     if (!profile->accepts(region)) {
-      return refused(Check::kRegion, "the manifest's app_region is not inside this build's region for the board");
+      return refused(as, "the manifest's app_region is not inside this build's region for the board");
     }
   }
 
@@ -104,13 +109,16 @@ Outcome ImageVerdict::judgeManifest(const std::uint8_t* manifest, std::size_t ma
 
 Outcome ImageVerdict::judgeFile(const flasher::ImageSource& file) {
   has_accepted_ = false;
+  has_accepted_base_ = false;
   if (!has_expected_) return refused(Check::kFile, "no manifest has been judged");
   const ImageEntry& image = manifest_.images[chosen_image_];
   const FileEntry& entry = image.files[chosen_file_];
   const Use use = expected_.use_;
   const flasher::BoardProfile* profile = chosen_profile_;
 
-  // 4 and 5, in one pass over the file: the size is known before a byte is read.
+  // 4 and 5, in one pass over the file: the size is known before a byte is read. A base has no
+  // descriptor to find (§4a), so nothing looks for one in it: 5 and 6 are 5p instead, below.
+  const bool is_base = use == Use::kProvision;
   if (file.size() != entry.size) return refused(Check::kFile, describe(FileHasher::Result::kSizeMismatch));
   hasher_.begin(entry.size, entry.sha256);
   scanner_.reset();
@@ -119,11 +127,35 @@ Outcome ImageVerdict::judgeFile(const flasher::ImageSource& file) {
     const std::uint32_t n = left < sizeof piece_ ? left : static_cast<std::uint32_t>(sizeof piece_);
     if (!file.read(at, piece_, n)) return refused(Check::kFile, "the file could not be read");
     hasher_.update(piece_, n);
-    scanner_.update(piece_, n);
+    if (!is_base) scanner_.update(piece_, n);
     at += n;
   }
   const FileHasher::Result hashed = hasher_.finish();
   if (hashed != FileHasher::Result::kOk) return refused(Check::kFile, describe(hashed));
+
+  // 5p, the other half: §4a's seven rules over the bytes, against **this build's** region for
+  // the board and not the manifest's - the stricter of the two (§5). The region was already held
+  // to lie inside this build's by judgeManifest, so this is the narrower of the two by
+  // construction; it is the build's that is used because it is the one the radio really has.
+  if (is_base) {
+    base_result_ = base_reader_.read(file, profile->app.begin, profile->app.end);
+    if (!base_result_.ok()) return refused(Check::kBase, base_result_.why);
+    AcceptedBase& b = accepted_base_;
+    b = AcceptedBase{};
+    b.slot_ = expected_.slot_;
+    b.image_ = image;
+    b.file_ = entry;
+    b.summary_ = base_result_.summary;
+    b.runs_ = base_result_.runs;
+    b.region_start_ = profile->app.begin;
+    b.region_end_ = profile->app.end;
+    std::memcpy(b.version_, manifest_.version, kVersionSize);
+    std::memcpy(b.commit_, manifest_.commit, kCommitSize);
+    b.commit_[kCommitSize] = 0;
+    std::memcpy(b.key_id_, chosen_key_id_, kKeyIdSize);
+    has_accepted_base_ = true;
+    return Outcome{};
+  }
 
   const Found found = scanner_.result();
   if (found.count == 0) return refused(Check::kDescriptor, "the file holds no valid descriptor");

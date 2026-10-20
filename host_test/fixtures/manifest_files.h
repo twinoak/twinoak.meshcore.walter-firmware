@@ -69,6 +69,30 @@ inline core::image::TrustedKey testKey() {
   return key;
 }
 
+// The key ids keys/release-keys.txt names, in the file's order - the same lines
+// tools/gen_trust_table.py compiles into the build's table (`ed25519 <key id> <public hex>`, # a
+// comment). Read here rather than written down, so that a test says "the keys this repository
+// names" and not "this key".
+inline std::vector<std::string> releaseKeyIds() {
+  std::vector<std::string> ids;
+  std::ifstream in(std::string(TWINOAK_REPO_ROOT) + "/keys/release-keys.txt");
+  REQUIRE_MESSAGE(in.good(), "cannot read keys/release-keys.txt");
+  std::string line;
+  while (std::getline(in, line)) {
+    const std::size_t hash = line.find('#');
+    if (hash != std::string::npos) line = line.substr(0, hash);
+    std::size_t at = line.find_first_not_of(" \t\r\n");
+    if (at == std::string::npos) continue;
+    line = line.substr(at);
+    if (line.compare(0, 8, "ed25519 ") != 0) continue;
+    at = line.find_first_not_of(" \t", 8);
+    if (at == std::string::npos) continue;
+    const std::size_t end = line.find_first_of(" \t\r\n", at);
+    ids.push_back(line.substr(at, end == std::string::npos ? std::string::npos : end - at));
+  }
+  return ids;
+}
+
 // A trust table holding the test key and nothing else: what a +TESTKEY build would have.
 struct TestTrust {
   core::image::TrustedKey keys[1];

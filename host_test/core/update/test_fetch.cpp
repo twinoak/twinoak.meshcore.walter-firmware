@@ -106,12 +106,14 @@ TEST_CASE("the fixture release is fetched into the candidate slot through all si
 
 TEST_CASE("refused at check 1 with the build's own trust table, by the tampered manifest, and by the unknown-key signature - before a byte of the image is asked for") {
   const Candidate image("store-a");
-  SUBCASE("the normal build's table: no key, so no release is accepted") {
+  SUBCASE("the normal build's table: not the test key, so the fixture release is not accepted") {
     FetchRig rig;
     serveRelease(rig.net.server(), "/r", image);
     rig.net.server().serve("/r/" + swdName(image), image.file);
     core::image::ImageVerdict normal(core::image::buildTrust(), StoreBench::makeUnit());
-    REQUIRE(core::image::buildTrust().empty());
+    // The build trusts the release key and never the specification's public test key, which is
+    // what these fixtures are signed with (spec/FIRMWARE-MANIFEST.md section 3).
+    REQUIRE_FALSE(core::image::trustsTestKey());
     Fetch fetch(rig.net.client, rig.net.download, rig.store.store, normal, rig.net.clock, &rig.out);
     const FetchResult r = fetch.run("https://server.example/r/", Which::kCandidate, Slot{0}, core::net::Budget{});
     CHECK(r.verdict == FetchVerdict::kRefused);

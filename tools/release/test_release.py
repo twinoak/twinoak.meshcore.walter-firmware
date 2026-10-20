@@ -509,10 +509,17 @@ class Verifying(ReleaseCase):
         self.assertIn("manifestref.py keygen", message)
         self.assertIn("RELEASE_SIGNING_KEY", message)
 
-    def test_the_repositorys_trust_table_is_empty_today_and_parses(self):
-        """keys/release-keys.txt is the real file: it must parse, and it must name no key - which
-        is why a tag cannot publish yet (keys/README.md)."""
-        self.assertEqual(verify_release.load_keys(verify_release.KEYS_FILE), [])
+    def test_the_repositorys_trust_table_parses_and_is_not_the_test_key(self):
+        """keys/release-keys.txt is the real file: it must parse through the gate's own loader,
+        hold at most the three keys section 3 allows, and never name the specification's public
+        test key. Whether it names a key at all is the state of the project, not a rule: it named
+        none until the release key was made (2026-10-20, spec/SYSTEM.md section 10 item 1) and a
+        tag could not publish then; it names the release key now."""
+        keys = verify_release.load_keys(verify_release.KEYS_FILE)
+        self.assertLessEqual(len(keys), 3)
+        with open(os.path.join(FIXTURES, "index.json"), encoding="utf-8") as fh:
+            test_public = bytes.fromhex(json.load(fh)["test_public_key"])
+        self.assertNotIn(test_public, keys)
 
     def test_a_trust_table_line_is_held_to_its_key_id(self):
         # Not the test key: the loader refuses that one by name (task p2-01, the test below).

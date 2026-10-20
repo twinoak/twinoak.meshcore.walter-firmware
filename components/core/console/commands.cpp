@@ -96,17 +96,18 @@ const CommandDef kCommands[kCommandCount] = {
 
     // -- images, trust and this firmware's own slots --------------------------------------------
     {"image list", "image list", Group::kImages,
-     "every slot's three images: role, board, version, size, hash, when it was stored"},
+     "every slot's three images and its base: role, board, version, size, hash, when it was "
+     "stored"},
     {"image verify <which>", "image verify", Group::kImages,
      "read one back out of flash and hold it to the SHA-256 in its record: what finds flash rot "
      "before an update does"},
-    {"image erase <candidate|scanner>", "image erase", Group::kImages,
+    {"image erase <candidate|scanner|base>", "image erase", Group::kImages,
      "forget one; the golden image is never erased (S-5: a known-good image is always on hand)"},
     {"image bad", "image bad", Group::kImages,
      "the hashes of candidates that failed a health check and are never tried again"},
     {"image receive <which>", "image receive", Group::kImages,
-     "hand this port to a framed transfer and take manifest.json, its .sig and the image "
-     "(tools/walterctl.py push); the six checks run here"},
+     "hand this port to a framed transfer and take manifest.json, its .sig and the image - or, "
+     "with `base`, the board's provision file (tools/walterctl.py push); the checks run here"},
     {"trust", "trust", Group::kImages,
      "the release keys this build accepts a manifest signed with, after a self-test of the "
      "signature arithmetic on this board"},

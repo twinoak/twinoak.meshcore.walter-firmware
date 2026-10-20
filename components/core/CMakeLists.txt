@@ -41,6 +41,9 @@ idf_component_register(
        "image/manifest.cpp"
        "image/choose.cpp"
        "image/file_check.cpp"
+       # The board's base (task p5-01): FIRMWARE-MANIFEST.md section 4a over a `provision` file,
+       # which check 5p of the verdict applies.
+       "image/base.cpp"
        "image/verdict.cpp"
        # The image store (task p2-02): the records in the rakfw partition, and the framed
        # transfer that loads one over USB.

@@ -7,6 +7,11 @@
 // and `commit(AcceptedImage)`. So a caller with no signed manifest has nothing to hand them, and
 // there is no second way in.
 //
+// Task p5-01 added a third token and a third door, for the board's base: `AcceptedBase` and
+// `commitBase(AcceptedBase)`, the token of checks 1, 2, 3, 4 and 5p. The same statement holds of
+// it, and one more: **a base and an image cannot be mistaken for each other**. There is no
+// conversion either way, neither door takes the other's token, and the compiler says so below.
+//
 // This file is that statement as code: the forgeries are refused at compile time (and the
 // static_asserts below say so in their own words), the two doors are shown taking only the real
 // thing, and the one way to make a token is shown making one. The grep half - that nothing else
@@ -43,6 +48,37 @@ static_assert(!std::is_constructible<img::AcceptedImage, const img::ExpectedFile
               "AcceptedImage can be built from an ExpectedFile: a promise would become a verdict");
 static_assert(!std::is_aggregate<img::ExpectedFile>::value, "ExpectedFile is an aggregate");
 static_assert(!std::is_aggregate<img::AcceptedImage>::value, "AcceptedImage is an aggregate");
+
+// The base's token (task p5-01), the same way: no constructor of anybody else's, and - the point
+// of there being a second token at all - no road between it and an image's.
+static_assert(!std::is_default_constructible<img::AcceptedBase>::value,
+              "AcceptedBase can be default-constructed: a base could be written to a radio "
+              "without check 5p having run over it (spec/FIRMWARE-MANIFEST.md §5, §4a)");
+static_assert(!std::is_aggregate<img::AcceptedBase>::value, "AcceptedBase is an aggregate");
+static_assert(!std::is_constructible<img::AcceptedBase, const img::AcceptedImage&>::value,
+              "an AcceptedBase can be built from an AcceptedImage: an image could be stored as "
+              "the board's base, and written to a chip's MBR and UICR by `rak provision`");
+static_assert(!std::is_constructible<img::AcceptedImage, const img::AcceptedBase&>::value,
+              "an AcceptedImage can be built from an AcceptedBase: a base could be flashed into "
+              "a radio's application region by an update");
+static_assert(!std::is_convertible<img::AcceptedBase, img::AcceptedImage>::value,
+              "an AcceptedBase converts to an AcceptedImage");
+static_assert(!std::is_convertible<img::AcceptedImage, img::AcceptedBase>::value,
+              "an AcceptedImage converts to an AcceptedBase");
+static_assert(!std::is_constructible<img::AcceptedBase, const img::ExpectedFile&>::value,
+              "an AcceptedBase can be built from an ExpectedFile: a promise would become a verdict");
+static_assert(std::is_copy_constructible<img::AcceptedBase>::value,
+              "the store has to be able to keep an AcceptedBase");
+
+// Neither of the store's two commits takes the other's token: the overload set is exactly these
+// two, and `commit(AcceptedBase)` does not exist at all.
+static_assert(!std::is_invocable<decltype(static_cast<img::StoreError (img::Store::*)(
+                                     const img::AcceptedImage&)>(&img::Store::commit)),
+                                 img::Store&, const img::AcceptedBase&>::value,
+              "the store's commit() takes a base: a base could be stored as an image's record");
+static_assert(!std::is_invocable<decltype(&img::Store::commitBase), img::Store&,
+                                 const img::AcceptedImage&>::value,
+              "the store's commitBase() takes an image: an image could be stored as the base");
 // Copyable on purpose, both of them: the store keeps one (verdict.h says so in words).
 static_assert(std::is_copy_constructible<img::ExpectedFile>::value,
               "the store has to be able to keep an ExpectedFile");
@@ -60,6 +96,10 @@ static_assert(std::is_same<decltype(&img::Store::commit),
                            img::StoreError (img::Store::*)(const img::AcceptedImage&)>::value,
               "the store's commit() no longer takes exactly (AcceptedImage): a second overload is "
               "a way to make a record valid without the six checks");
+static_assert(std::is_same<decltype(&img::Store::commitBase),
+                           img::StoreError (img::Store::*)(const img::AcceptedBase&)>::value,
+              "the store's commitBase() no longer takes exactly (AcceptedBase): a second overload "
+              "is a way to make a base's record valid without check 5p");
 
 TEST_CASE("R5: the only constructor of either token is the verdict's, and it runs the six checks") {
   // The one way in: a manifest signed by a key this build trusts, judged, and the token it
@@ -88,4 +128,32 @@ TEST_CASE("R5: the only constructor of either token is the verdict's, and it run
   MESSAGE("the store's two doors took the verdict's two tokens, and there is no other way to "
           "open either: " << sizeof(img::ExpectedFile) << " bytes of promise, "
           << sizeof(img::AcceptedImage) << " bytes of verdict, each with one friend");
+}
+
+TEST_CASE("R5: the base's door is a third one of the same kind, and the two cannot be swapped") {
+  // Task p5-01. The run-time half: the base goes in through checks 1 to 4 and 5p and comes out of
+  // the verdict as an AcceptedBase, with no AcceptedImage in existence - and the other way round.
+  // The compile-time half is the static_asserts above, which are the part that matters: a base
+  // written where an image belongs would be flashed into a radio's application region, and an
+  // image written where a base belongs would be given to `rak provision` to write over an MBR.
+  bench::StoreBench b;
+  const bench::BaseFile base("base-small");
+  const bench::Candidate image("store-a");
+
+  REQUIRE(b.putBase(core::board::Slot{0}, base) == img::StoreError::kNone);
+  REQUIRE(b.verdict.acceptedBase() != nullptr);
+  CHECK(b.verdict.accepted() == nullptr);
+
+  REQUIRE(b.put(img::Which::kCandidate, core::board::Slot{0}, image) == img::StoreError::kNone);
+  REQUIRE(b.verdict.accepted() != nullptr);
+  CHECK(b.verdict.acceptedBase() == nullptr);
+  const img::AcceptedImage kept = *b.verdict.accepted();  // the store keeps one like this
+
+  // And the doors refuse each other's open write at run time as well as at compile time: an
+  // image's token offered for the base's bytes.
+  REQUIRE(b.openBase(core::board::Slot{0}, base) == img::StoreError::kNone);
+  CHECK(b.store.commit(kept) == img::StoreError::kNotAnImage);
+  b.store.abandonWrite();
+  MESSAGE("the base's door took an AcceptedBase of " << sizeof(img::AcceptedBase)
+          << " bytes, and neither door takes the other's token: the compiler holds that, above");
 }

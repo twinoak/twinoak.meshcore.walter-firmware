@@ -106,8 +106,11 @@ TEST_CASE("the fixture images are accepted against their manifests: the repeater
   for (std::size_t i = 0; i < fixtures::kFileCount; ++i) {
     const fixtures::FileCase& f = fixtures::kFiles[i];
     CAPTURE(f.manifest);
+    // The base of a release is a `provision` file and not an image: it has no descriptor, and
+    // check 5p is what judges it (host_test/core/image/test_verdict_base.cpp).
+    if (std::strcmp(f.use, "provision") == 0) continue;
     const bool walter = std::strcmp(f.manifest, "manifest-walter.json") == 0;
-    b.spec(f.manifest, walter ? "manifest-walter.json.sig" : "manifest-repeater.json.sig", f.bytes_of);
+    b.spec(f.manifest, f.sig, f.bytes_of);
     const Outcome o = walter ? b.judge(walterSelf(), Use::kOta, nullptr)
                              : b.judge(repeaterSlot(), Use::kSwd, &core::flasher::kRak4630Single);
     REQUIRE_MESSAGE(o.ok(), core::image::describe(o.failed) << ": " << o.why);
@@ -131,9 +134,13 @@ TEST_CASE("the fixture images are accepted against their manifests: the repeater
   }
 }
 
-TEST_CASE("with an empty trust table - this build's own today - everything is refused at check 1") {
-  // The host build's table is generated from keys/release-keys.txt like the firmware's: empty.
-  const core::image::TrustTable& build = core::image::buildTrust();
+TEST_CASE("with no key at all - a Walter before the release key existed - everything is refused at check 1") {
+  // spec/FIRMWARE-MANIFEST.md section 3: "A Walter with no release key compiled in accepts no
+  // update at all. That is the state before the key exists, and it is safe." The build's own
+  // table holds the release key now (keys/release-keys.txt), so the table with no key is made
+  // here; what the build's table does with these fixtures is the case below - it does not hold
+  // the specification's test key either, so they are refused there too.
+  static const core::image::TrustTable build(nullptr, 0);
   REQUIRE(build.empty());
   REQUIRE_FALSE(core::image::trustsTestKey());
   static ImageVerdict verdict(build, unit());

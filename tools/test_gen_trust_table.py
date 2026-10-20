@@ -60,14 +60,21 @@ class TheTable(unittest.TestCase):
             fh.write("\n".join(lines) + "\n")
         return path
 
-    def test_the_repositorys_table_names_no_key_today(self):
-        """keys/release-keys.txt is empty on purpose: a unit accepts no update until the release
-        key exists (keys/README.md). The generated header must say exactly that."""
+    def test_the_repositorys_table_is_the_keys_that_file_names_and_never_the_test_key(self):
+        """The header is keys/release-keys.txt and nothing else: the keys it names, with their ids
+        recomputed, the rest of the three rows unused, and - whatever that file says - never the
+        specification's public test key, which only --test-key may add (keys/README.md,
+        spec/FIRMWARE-MANIFEST.md section 3). The file named no key until the release key was made
+        (2026-10-20), and names one now; both are states of the project and neither is a rule."""
         header = gen_trust_table.generate(KEYS_FILE, None)
-        self.assertIn("kTrustedKeyCount = 0;", header)
+        named = verify_release.load_keys(KEYS_FILE)
+        self.assertIn("kTrustedKeyCount = %d;" % len(named), header)
         self.assertIn("kTrustsTestKey = false;", header)
-        self.assertEqual(bytes_in(header), [])
-        self.assertEqual(header.count("// unused"), 3)
+        rows = bytes_in(header)
+        self.assertEqual([k for _, k in rows], named)
+        for id_bytes, key in rows:
+            self.assertEqual(id_bytes.hex(), manifestref.key_id(key))
+        self.assertEqual(header.count("// unused"), 3 - len(named))
         test_key = verify_release.test_public_key()
         self.assertNotIn(test_key.hex(), header)
         self.assertNotIn(", ".join("0x%02x" % b for b in test_key), header)
@@ -90,12 +97,13 @@ class TheTable(unittest.TestCase):
         """--test-key appends the specification's test key, read from the fixture index, and
         marks the table. This is the only way the key reaches a build."""
         header = gen_trust_table.generate(KEYS_FILE, INDEX)
-        self.assertIn("kTrustedKeyCount = 1;", header)
+        named = verify_release.load_keys(KEYS_FILE)
+        self.assertIn("kTrustedKeyCount = %d;" % (len(named) + 1), header)
         self.assertIn("kTrustsTestKey = true;", header)
         rows = bytes_in(header)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][1], verify_release.test_public_key())
-        self.assertEqual(rows[0][0].hex(), "c17969deb0026955")
+        self.assertEqual(len(rows), len(named) + 1)
+        self.assertEqual(rows[-1][1], verify_release.test_public_key())
+        self.assertEqual(rows[-1][0].hex(), "c17969deb0026955")
         self.assertIn("the test key of spec/fixtures/manifest/index.json", header)
 
     def test_the_test_key_in_the_release_table_is_refused(self):

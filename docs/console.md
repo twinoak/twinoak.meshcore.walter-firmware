@@ -33,7 +33,7 @@ settings: nvs namespace 'walter', 11 keys; 'get' prints them, 'set <key> <value>
 settings: NOT encrypted - flash encryption is the owner's choice and is not assumed: a person with this board and a cable can read lte.pin and server.token out of it (docs/console.md)
 uplink: the modem on UART2 behind interfaces::Uplink; not started yet ('lte', 'lte up')
 https: 2 TLS roots (keys/tls), the modem's slots are recorded as written
-image store: rakfw at 0x630000 (6144 KB), 4923392 bytes laid out for 2 radio slots x 3 images; 'image list' says what is in it
+image store: rakfw at 0x630000 (6144 KB), 6242304 bytes laid out for 2 radio slots x 3 images and a base; 'image list' says what is in it
 journal: at 0x620000 (64 KB), 0 entries, next seq 1; 'rak update status' tells the story
 link: UART1 115200 8N1 on the radio's two pins, open
 boot 1: power-on reset
@@ -111,12 +111,12 @@ supervisor's stop is printed at every level.
 
 | Command | What it does |
 |---|---|
-| `image list` | what the image store holds, per radio slot: the layout's arithmetic on the first two lines, then each slot's **golden**, **candidate** and **scanner** image — role, board, band, version, size, load address, the first eight bytes of its SHA-256 and which physical area it is in, then when it was stored, the commit it was built from and the key that signed its manifest — or `empty`, or `empty; a transfer of sha256 … stopped at N of M bytes (it can be resumed)`. Slot 1's areas are listed too, with a line saying this adapter has no radio there |
-| `image verify <which>` | read that image back out of flash, hash it as it comes, and hold it to the SHA-256 in its record. `<which>` is `golden`, `candidate` or `scanner`, with an optional `@slot` after it. This is the command that finds flash rot before an update does |
-| `image erase <candidate\|scanner>` | invalidate that slot's record and clear its header sector, so the slot reads empty and a half-finished transfer is not resumed into the next image. **Never the golden image** (S-5: a known-good image is always on hand), and the refusal says so. Not to be confused with `erase confirm`, which is the settings |
-| `image bad` | the hashes of candidates that failed their health check (task p2-03), up to eight; an image on this list is refused before a sector is erased |
-| `image receive <which>` | hand this port over to a framed binary transfer and take `manifest.json`, then its `.sig`, then the image — see below |
-| `trust` | (task p2-01) first a self-test of the signature arithmetic on this board — `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` (TweetNaCl on the ESP32-S3: expect some hundreds of milliseconds; **write the number down**) — then the key ids this build accepts a release manifest signed with: the trust table generated from `keys/release-keys.txt` (`spec/FIRMWARE-MANIFEST.md` §3, room for three). Today it prints `trust: none: no update will be accepted (keys/release-keys.txt names no key; the release key is made once, by a person: spec/SYSTEM.md section 10 item 1)`, which is the safe state until the key exists. A build made with `-DTWINOAK_TRUST_TEST_KEY=1` (`tools/verify.ps1 -TestKey`) lists the specification's public test key `c17969deb0026955` and adds a `WARNING` that it is a test build (`+TESTKEY` in its version) that must never be released; the same warning is printed at every boot, after the descriptor line |
+| `image list` | what the image store holds, per radio slot: the layout's arithmetic on the first three lines, then each slot's **golden**, **candidate** and **scanner** image — role, board, band, version, size, load address, the first eight bytes of its SHA-256 and which physical area it is in, then when it was stored, the commit it was built from and the key that signed its manifest — or `empty`, or `empty; a transfer of sha256 … stopped at N of M bytes (it can be resumed)`. Then the slot's **base** (see below), on two lines of its own. Slot 1's areas are listed too, with a line saying this adapter has no radio there |
+| `image verify <which>` | read that image back out of flash, hash it as it comes, and hold it to the SHA-256 in its record. `<which>` is `golden`, `candidate`, `scanner` or `base`, with an optional `@slot` after it. This is the command that finds flash rot before an update does. For `base` it also re-runs **check 5p** — `spec/FIRMWARE-MANIFEST.md` §4a's seven rules — over the stored bytes, against this build's own region for the board |
+| `image erase <candidate\|scanner\|base>` | invalidate that slot's record and clear its header sector, so the slot reads empty and a half-finished transfer is not resumed into the next image. **Never the golden image** (S-5: a known-good image is always on hand), and the refusal says so. The base may be erased: nothing depends on its being there. Not to be confused with `erase confirm`, which is the settings |
+| `image bad` | the hashes of candidates that failed their health check (task p2-03), up to eight; an image on this list is refused before a sector is erased. It is about images: a base is not health-checked (S-5a reads every word back instead) and is not held to this list |
+| `image receive <which>` | hand this port over to a framed binary transfer and take `manifest.json`, then its `.sig`, then the image — or, with `base`, the release's `provision` file — see below |
+| `trust` | (task p2-01) first a self-test of the signature arithmetic on this board — `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` (TweetNaCl on the ESP32-S3: expect some hundreds of milliseconds; **write the number down**) — then the key ids this build accepts a release manifest signed with: the trust table generated from `keys/release-keys.txt` (`spec/FIRMWARE-MANIFEST.md` §3, room for three). Since the release key was made (2026-10-20, `spec/SYSTEM.md` section 10 item 1) it prints `trust: 1 key this build accepts a release signed with: 73efdd383a957596`. While `keys/release-keys.txt` names no key it prints `trust: none: no update will be accepted (keys/release-keys.txt names no key; the release key is made once, by a person: spec/SYSTEM.md section 10 item 1)`, which is the safe state until the key exists. A build made with `-DTWINOAK_TRUST_TEST_KEY=1` (`tools/verify.ps1 -TestKey`) lists the specification's public test key `c17969deb0026955` and adds a `WARNING` that it is a test build (`+TESTKEY` in its version) that must never be released; the same warning is printed at every boot, after the descriptor line |
 | `trust tls` | the TLS roots this build trusts — name, subject, SHA-256 fingerprint, expiry, source, the date they were checked — which certificate slot and TLS profile of the modem each goes to, whether the modem's slots are recorded as holding them, and which host is held to which root |
 | `self status` | (task p2-04) this Walter's two application slots — which runs, at what address, in which of the bootloader's states (*valid*, *pending-verify*, *aborted* …), which version — then the trial if one is running (how far into the window, which of the three conditions are met), the image received and waiting for `self switch` if any, and the last self-update's story from the journal. See *The Walter's own update* |
 | `self receive` | hand this port over to the same transfer as `image receive`, with the other application slot as its target: a release of **this** firmware's `ota` file, through the six checks (`tools/walterctl.py push --as self`) |
@@ -312,8 +312,8 @@ python tools/walterctl.py push --port COM7 --as candidate <release-dir>
 
 A `<release-dir>` is what `tools/release/build_release.py` writes and a GitHub Release carries:
 `manifest.json`, `manifest.json.sig` and the files the manifest names. `--as` is `golden`,
-`candidate` or `scanner`; `--image <id>` picks one of several images in a manifest; `--slot N`
-names the radio (0 today). It needs `pyserial` (`pip install pyserial==3.5`).
+`candidate`, `scanner` or `base`; `--image <id>` picks one of several images in a manifest;
+`--slot N` names the radio (0 today). It needs `pyserial` (`pip install pyserial==3.5`).
 
 What happens on the Walter, in this order:
 
@@ -333,7 +333,8 @@ What happens on the Walter, in this order:
    says the slot is empty.
 5. The final frame asks the Walter to commit, and **checks 4, 5 and the rest of 6** run over the
    bytes *as they now lie in the Walter's flash* — not over what the laptop said it sent. Only then
-   is the record written, by one small final write.
+   is the record written, by one small final write. For a base it is **checks 4 and 5p**: a base
+   carries no descriptor, so §4a's seven rules stand in place of checks 5 and 6.
 6. The console comes back with one line saying what happened — `image receive: stored`, or the
    number of the check that refused it and why — the chunk counters, and a prompt.
 
@@ -348,8 +349,44 @@ already there: it is replaced by a promotion, not by a load* (a golden image is 
 only on a unit's first provisioning); *this image failed a health check once and is never tried
 again*; *the manifest is larger than this firmware reads* (8 KB); *more of the manifest than was
 announced*; *that file does not come next*. `walterctl` adds its own, before anything is sent: a
-file whose size or SHA-256 is not the manifest's, a manifest with no `swd` file, a directory that
+file whose size or SHA-256 is not the manifest's, a manifest with no `swd` file (or no `provision` file, with `--as base`), a directory that
 is not a release.
+
+### The board's base
+
+A factory RAK4630 arrives with RAK's own firmware, not the MBR, SoftDevice S140 6.1.1 and
+bootloader a TwinOak application is linked against. Those three, and the UICR words they need, are
+the board's **base**: one Intel HEX file per board, carried by a release of the repeater firmware
+as its image's `provision` file (`spec/FIRMWARE-MANIFEST.md` §4a).
+
+The Walter keeps one base per radio slot, beside the three images, and **storing one writes
+nothing to a radio**: giving a radio its base is `rak provision <device id> confirm`, typed by a
+person (`spec/SYSTEM.md` S-5a), and nothing automatic can reach it.
+
+```
+> image list
+...
+  base       the board's base, 471028 bytes, sha256 a3f1c0d4e5b60718..., bootloader 0x000f4000
+             S140 6.1.1, 192512 bytes of flash, 2 UICR words, the MBR's parameter page at 0x000fe000
+             stored at 1792502400 (unix), from commit 1a2b3c4…, signed by 73efdd383a957596
+
+> image verify base
+base: 471028 bytes read back and hashed in 142 ms: the SHA-256 is the one in its record
+base: check 5p over the stored bytes: a base for rak4630-single (0x00026000 to 0x000ed000), bootloader 0x000f4000,
+  192512 bytes of flash in 5 runs, 2 UICR words - the same as its record says
+```
+
+What a base may hold is §4a's seven rules, and the Walter applies them against **its own** region
+for the board (`0x26000`–`0xED000` for `rak4630-single`) and not against the manifest's: a release
+cannot widen what a radio's flash is. A file that breaks a rule is refused with that rule's own
+words — the same words the specification's reference gives, so the three readers of a base (the
+release tooling, the Walter, MeshMaster's catalogue) cannot disagree:
+
+```
+> image receive base
+...
+image receive: refused: check 5p, the base: 0x00026000 lies between the SoftDevice and the bootloader: the application and the file system are not the base's
+```
 
 ## The radio's debug port, over SWD
 

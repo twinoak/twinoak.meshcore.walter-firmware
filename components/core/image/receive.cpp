@@ -13,6 +13,9 @@ namespace {
 // own profile for the slot (a manifest cannot name a board this Walter has no region for), the
 // role follows the image: golden and candidate are the radio's working firmware, the scanner
 // slot holds NoiseScope. The band is the caller's.
+//
+// The base's image is the repeater's: the base is listed under the image it goes under
+// (spec/FIRMWARE-MANIFEST.md §4a), and a release carries one per board, not one per role.
 const char* roleFor(Which which) {
   return which == Which::kScanner ? "scanner" : "repeater";
 }
@@ -86,6 +89,10 @@ const flasher::ImageSource* StoreTarget::staged(const char** why) {
 }
 
 const char* StoreTarget::commit(const AcceptedImage& token) { return said(store_.commit(token)); }
+
+const char* StoreTarget::commit(const AcceptedBase& token) {
+  return said(store_.commitBase(token));
+}
 
 // ------------------------------------------------------------------------------- the receiver
 
@@ -408,12 +415,15 @@ void Receiver::onCommit(const link::Packet& packet) {
     refuse(packet.type, packet.seq, describe(outcome.failed), outcome.why);
     return;
   }
+  // One of the two tokens, never both: a `provision` file's is an AcceptedBase and an image's an
+  // AcceptedImage, and each goes through the door that takes it.
   const AcceptedImage* token = verdict_.accepted();
-  if (token == nullptr) {
+  const AcceptedBase* base = verdict_.acceptedBase();
+  if (token == nullptr && base == nullptr) {
     refuse(packet.type, packet.seq, "the verdict gave no token");
     return;
   }
-  const char* committed = target_->commit(*token);
+  const char* committed = token != nullptr ? target_->commit(*token) : target_->commit(*base);
   if (committed != nullptr) {
     refuse(packet.type, packet.seq, committed);
     return;
