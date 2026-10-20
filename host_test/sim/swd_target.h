@@ -36,6 +36,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -122,6 +123,16 @@ class SwdTarget final : public interfaces::Pins {
   void attachAp(std::uint8_t apsel, AccessPort& ap);
   void setStickyError();  // CTRL/STAT.STICKYERR: FAULT to everything but the three exempt requests
   void startInJtag() { mode_ = Mode::kJtag; }  // an SWJ-DP in JTAG mode until the switch (B5.2.2)
+  // The debug port as a reset of the chip leaves it (task p5-02): the power-up requests and
+  // acknowledges gone, SELECT and the sticky flags cleared, and the port back in its reset state,
+  // where only a DPIDR read is answered until the host sends a line reset (B4.3.3). The
+  // simulated chip calls this at a pin reset and, when told that the part needs it, at a CTRL-AP
+  // soft reset - so that a host which does not reconnect afterwards is caught.
+  void resetDap();
+  // The chip's reset line, as the target sees it (task p5-02): called when the host releases
+  // nRESET after asserting it (output-low, then input: docs/ARCHITECTURE.md §2 rule 2). The
+  // nRF52 bench wires it to the simulated chip's pin reset.
+  std::function<void()> on_pin_reset;
 
   // ---- what the tests read ----------------------------------------------------------------
   std::uint32_t ctrlStat() const;

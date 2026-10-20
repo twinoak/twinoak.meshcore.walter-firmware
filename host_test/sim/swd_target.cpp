@@ -10,6 +10,7 @@
 
 namespace sim {
 
+using core::board::kNReset;
 using core::board::kSwdClk;
 using core::board::kSwdIo;
 namespace ack = core::swd::ack;
@@ -37,8 +38,14 @@ SwdTarget::SwdTarget(fakes::FakePins& pins) : pins_(pins) {
 
 bool SwdTarget::setMode(std::uint8_t gpio, interfaces::PinMode mode) {
   const bool clk_output_was = pins_.modeOf(kSwdClk.gpio) == interfaces::PinMode::kOutput;
+  const bool reset_driven_was = pins_.modeOf(kNReset.gpio) == interfaces::PinMode::kOpenDrain;
   const bool ok = pins_.setMode(gpio, mode);
   if (!ok) return false;
+  // nRESET released after a pulse (open-drain low, then input: RadioPins::ResetLine): the chip
+  // resets (task p5-02).
+  if (gpio == kNReset.gpio && reset_driven_was && mode == interfaces::PinMode::kInput && on_pin_reset) {
+    on_pin_reset();
+  }
   if (gpio == kSwdClk.gpio && clk_output_was && mode != interfaces::PinMode::kOutput) {
     // The clock stopped: B4.1.1 wants at least 8 idle cycles after the last transfer first.
     if (transfer_done_ && idle_since_transfer_ < core::swd::kIdleAfterTransfer) {
@@ -298,6 +305,23 @@ void SwdTarget::trackSwitch(bool bit) {
       enterResetState();
     }
   }
+}
+
+// The chip was reset under the debugger (task p5-02): the debug power domain's requests are gone
+// with it (PS "Debug Interface mode": the device is in that mode "as long as the debugger is
+// requesting power"; a reset of the part ends it), the sticky flags and SELECT are at their
+// reset values, and the port answers only a DPIDR read until the next line reset - what a host
+// sees when it forgets to reconnect after a reset it caused.
+void SwdTarget::resetDap() {
+  ctrl_stat_req_ = 0;
+  ctrl_stat_ack_ = 0;
+  ack_countdown_ = 0;
+  sticky_ = 0;
+  read_ok_ = false;
+  select_ = 0;
+  ap_result_ = kUnknownData;
+  last_sent_ = kUnknownData;
+  enterResetState();
 }
 
 void SwdTarget::enterResetState() {

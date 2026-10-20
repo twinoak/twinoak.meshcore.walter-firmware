@@ -1,9 +1,13 @@
 // What does not exist (task p1-04, S-5): no code under components/ refers to NVMC.ERASEALL,
 // NVMC.ERASEUICR, the control port's ERASEALL or UICR's registers except the header that names
 // them - a grep over the tree, shown failing on purpose on a snippet - and the simulator's
-// tripwire, shown firing once for each of the four, with nothing erased.
+// tripwire, shown firing once for each of the four, with nothing erased. Since task p5-02
+// (S-5a) one more file may name them, the door, core/nrf52/provision_door.cpp - an exact list
+// of two, as tools/check_rails.py R3 has it - and the door's header is included by
+// core/provision/ and nothing else (R3b), which the last test here reads off the tree as well.
 #include <doctest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -60,31 +64,81 @@ std::string readFile(const fs::path& p) {
 
 }  // namespace
 
-TEST_CASE("no file under components/ but regs.h names a forbidden register") {
+TEST_CASE("no file under components/ but regs.h and the door names a forbidden register") {
   const fs::path root = fs::path(TWINOAK_REPO_ROOT) / "components";
   const fs::path header = root / "core" / "include" / "core" / "nrf52" / "regs.h";
+  const fs::path door = root / "core" / "nrf52" / "provision_door.cpp";
   REQUIRE(fs::exists(header));
+  REQUIRE(fs::exists(door));
   std::vector<Hit> hits;
   unsigned files = 0;
   for (const fs::directory_entry& e : fs::recursive_directory_iterator(root)) {
     if (!e.is_regular_file()) continue;
     const std::string ext = e.path().extension().string();
     if (ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".c") continue;
-    if (fs::equivalent(e.path(), header)) continue;
+    if (fs::equivalent(e.path(), header) || fs::equivalent(e.path(), door)) continue;
     files++;
     const std::vector<Hit> found = forbiddenReferences(readFile(e.path()), e.path().generic_string());
     hits.insert(hits.end(), found.begin(), found.end());
   }
   CHECK(files > 40);
   for (const Hit& h : hits) {
-    FAIL_CHECK("a forbidden register is named outside regs.h: " << h.file << ":" << h.line << ": " << h.text);
+    FAIL_CHECK("a forbidden register is named outside regs.h and provision_door.cpp: " << h.file << ":" << h.line
+                                                                                      << ": " << h.text);
   }
   CHECK(hits.empty());
-  // And the header itself does name them - the grep is looking for the right words.
+  // And the header itself does name them - the grep is looking for the right words - and the
+  // door names the two it is for (the CTRL-AP's ERASEALL, UICR) and never the NVMC's erases.
   const std::vector<Hit> in_header = forbiddenReferences(readFile(header), "regs.h");
   CHECK(in_header.size() >= 5);
-  MESSAGE(files << " source files under components/ read; " << hits.size() << " forbidden references outside regs.h; "
-                << in_header.size() << " lines of regs.h name them");
+  const std::string door_text = readFile(door);
+  CHECK(door_text.find("ctrl_ap::kEraseAll") != std::string::npos);
+  CHECK(door_text.find("uicr::kApprotect") != std::string::npos);
+  CHECK(door_text.find("nvmc::kEraseAll") == std::string::npos);
+  CHECK(door_text.find("nvmc::kEraseUicr") == std::string::npos);
+  CHECK(door_text.find("kErasePagePartial") == std::string::npos);
+  MESSAGE(files << " source files under components/ read; " << hits.size()
+                << " forbidden references outside regs.h and provision_door.cpp; " << in_header.size()
+                << " lines of regs.h name them");
+}
+
+TEST_CASE("R3b: the door's header is included by core/provision/ and nothing else; the grant's by it and console.cpp") {
+  const fs::path root = fs::path(TWINOAK_REPO_ROOT);
+  const fs::path components = root / "components";
+  const std::string door_source = "components/core/nrf52/provision_door.cpp";
+  const std::string door_header = "components/core/include/core/nrf52/provision_door.h";
+  std::vector<std::string> door_users, grant_users;
+  for (const fs::directory_entry& e : fs::recursive_directory_iterator(components)) {
+    if (!e.is_regular_file()) continue;
+    const std::string ext = e.path().extension().string();
+    if (ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".c") continue;
+    const std::string text = readFile(e.path());
+    const std::string rel = fs::relative(e.path(), root).generic_string();
+    if (text.find("core/nrf52/provision_door.h\"") != std::string::npos) door_users.push_back(rel);
+    if (text.find("core/nrf52/provision_grant.h\"") != std::string::npos) grant_users.push_back(rel);
+  }
+  // The grep matches something: the door's own source includes both.
+  CHECK(std::find(door_users.begin(), door_users.end(), door_source) != door_users.end());
+  CHECK(std::find(grant_users.begin(), grant_users.end(), door_source) != grant_users.end());
+  for (const std::string& p : door_users) {
+    const bool allowed = p == door_source || p.rfind("components/core/provision/", 0) == 0;
+    if (!allowed) FAIL_CHECK("the door's header is included outside core/provision/: " << p);
+  }
+  for (const std::string& p : grant_users) {
+    const bool allowed = p == door_source || p == door_header || p == "components/core/console/console.cpp" ||
+                         p.rfind("components/core/provision/", 0) == 0;
+    if (!allowed) FAIL_CHECK("the grant's header is included outside core/provision/ and console.cpp: " << p);
+  }
+  // The directories S-5a names, by name - whether they exist yet or not.
+  const char* const never[] = {"supervisor", "update", "flasher", "cycle", "agent"};
+  for (const char* d : never) {
+    const std::string prefix = "components/core/" + std::string(d) + "/";
+    for (const std::string& p : door_users) CHECK(p.rfind(prefix, 0) != 0);
+    for (const std::string& p : grant_users) CHECK(p.rfind(prefix, 0) != 0);
+  }
+  MESSAGE("provision_door.h is included by " << door_users.size() << " file(s), provision_grant.h by "
+                                             << grant_users.size() << "; core/provision/ "
+                                             << (fs::is_directory(components / "core" / "provision") ? "exists" : "does not exist yet (task p5-03)"));
 }
 
 TEST_CASE("the grep fails on purpose: a snippet that writes ERASEALL, and one that touches UICR") {

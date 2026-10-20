@@ -243,41 +243,136 @@ def rail_kill_and_spacing(r):
 
 # The names core/nrf52/regs.h gives the registers nothing may write. A reference anywhere else
 # under components/ is a hit, whatever it is doing with it: there is no legitimate reader of them
-# outside the header, the simulator and the tests. The same list as
+# outside the header, the simulator and the tests - and, since task p5-02 (S-5a), the one door:
+# an exact list of two files, not a pattern. The same list as
 # host_test/core/nrf52/test_nrf52_forbidden.cpp - which reads the tree at run time; this is the
 # grep that fails before a compiler is started.
 FORBIDDEN_REGISTERS = ("kEraseAll", "kEraseUicr", "kErasePagePartial", "uicr::", "kEraseAllStatus")
 REGS_HEADER = "components/core/include/core/nrf52/regs.h"
+DOOR_SOURCE = "components/core/nrf52/provision_door.cpp"
+MAY_NAME_FORBIDDEN = (REGS_HEADER, DOOR_SOURCE)
 
 
 def rail_no_chip_erase(r):
-    """spec/SYSTEM.md S-5: no chip erase, ever, by anything automatic. Opening a protected module
-    destroys the bootloader, the SoftDevice and the node's identity; it is a bench procedure for a
-    person (hardware repository, BENCH-BREADBOARD.md caveat 6)."""
+    """spec/SYSTEM.md S-5: no chip erase, ever, by anything automatic; S-5a: a person's typed
+    `rak provision` is the one exception, through one door. The forbidden registers are named in
+    exactly two files - regs.h, for the simulator and the reader, and provision_door.cpp, the door
+    - and nowhere else under components/ and main/. Rail R3b holds the door to its one caller."""
     pattern = "|".join(re.escape(name) for name in FORBIDDEN_REGISTERS)
-    files = [p for p in sources("components", "main") if p != REGS_HEADER]
+    files = [p for p in sources("components", "main") if p not in MAY_NAME_FORBIDDEN]
     hits = grep(pattern, files, code_only=False)
     if hits:
-        r.broken("a forbidden register is named outside %s:" % REGS_HEADER, shown(hits))
+        r.broken("a forbidden register is named outside %s:" % " and ".join(MAY_NAME_FORBIDDEN), shown(hits))
     else:
         r.looked_at("%d files under components/ and main/, none naming one of %s"
                     % (len(files), ", ".join(FORBIDDEN_REGISTERS)))
 
-    # And the header does name them, so that a grep which has stopped matching cannot pass.
+    # And the header does name them, so that a grep which has stopped matching cannot pass; and
+    # the door names the two it exists for (the CTRL-AP's ERASEALL and a UICR address) and never
+    # the NVMC's erases, which S-5a does not need.
     in_header = grep(pattern, [REGS_HEADER], code_only=False)
     if len(in_header) < len(FORBIDDEN_REGISTERS):
         r.broken("%s names only %d of the %d forbidden registers: the grep is looking for the "
                  "wrong words" % (REGS_HEADER, len(in_header), len(FORBIDDEN_REGISTERS)))
     else:
         r.looked_at("%d lines of regs.h name them (the grep matches something)" % len(in_header))
+    r.problems(must_exist(DOOR_SOURCE), "the door is gone:")
+    if os.path.exists(os.path.join(ROOT, DOOR_SOURCE)):
+        door_uses = grep(r"ctrl_ap::kEraseAll\b|uicr::", [DOOR_SOURCE])
+        door_nvmc = grep(r"nvmc::kEraseAll\b|nvmc::kEraseUicr\b|kErasePagePartial", [DOOR_SOURCE])
+        if not door_uses:
+            r.broken("%s no longer writes the CTRL-AP's ERASEALL or UICR: the door is not the door" % DOOR_SOURCE)
+        else:
+            r.looked_at("%d lines of the door name the CTRL-AP's ERASEALL or a UICR address" % len(door_uses))
+        if door_nvmc:
+            r.broken("%s names an NVMC erase, which S-5a does not need:" % DOOR_SOURCE, shown(door_nvmc))
 
     r.problems(must_contain("host_test/sim/nrf52_chip.cpp", "NVMC.ERASEALL written",
-                            "NVMC.ERASEUICR written", "CTRL-AP ERASEALL written", "a write to UICR"),
-               "the simulated chip's tripwire no longer fires on all four:")
-    r.problems(must_exist("host_test/core/nrf52/test_nrf52_forbidden.cpp"),
-               "the test that shows the tripwire firing is gone:")
-    r.says("held by the simulated chip's tripwire (any of the four fails the running test) and "
-           "by host_test/core/nrf52/test_nrf52_forbidden.cpp")
+                            "NVMC.ERASEUICR written", "CTRL-AP ERASEALL written", "a write to UICR",
+                            "allowProvisioning"),
+               "the simulated chip's tripwire no longer fires on all four, or cannot be disarmed by a door test:")
+    r.problems(must_exist("host_test/core/nrf52/test_nrf52_forbidden.cpp",
+                          "host_test/core/nrf52/test_provision_door.cpp"),
+               "the test that shows the tripwire firing, or the door's, is gone:")
+    r.says("held by the simulated chip's tripwire (armed by default: any of the four fails the "
+           "running test unless it called allowProvisioning()), by "
+           "host_test/core/nrf52/test_nrf52_forbidden.cpp and by the door's own tests")
+    return r
+
+
+# ---- R3b: the door has one caller --------------------------------------------------------------
+
+# Who may include the door and the grant (task p5-02). The door's header: the sequence
+# (core/provision/, task p5-03) and the door's own source. The grant's header: the sequence, the
+# file where a parsed console verb runs (console.cpp - the parser only recognises the words), and
+# the door's two files, which declare the type the door takes. Exact lists, not patterns; the
+# directories that must include neither are named too, and one that does not exist yet is a pass,
+# said so in the output.
+DOOR_HEADER = "components/core/include/core/nrf52/provision_door.h"
+GRANT_HEADER = "components/core/include/core/nrf52/provision_grant.h"
+DOOR_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]core/nrf52/provision_door\.h[>"]')
+GRANT_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]core/nrf52/provision_grant\.h[>"]')
+SEQUENCE_DIR = "components/core/provision/"
+MAY_INCLUDE_DOOR = (DOOR_SOURCE,)
+MAY_INCLUDE_GRANT = (DOOR_HEADER, DOOR_SOURCE, "components/core/console/console.cpp")
+MUST_INCLUDE_NEITHER = ("components/core/supervisor", "components/core/update", "components/core/flasher",
+                        "components/core/cycle", "components/core/agent", "components/core/link",
+                        "components/core/net", "components/core/uplink", "components/core/image",
+                        "components/core/board", "components/platform", "components/modem", "main")
+
+
+def rail_one_door(r):
+    """spec/SYSTEM.md S-5a: nothing automatic leads to the erase - not the supervisor, not an
+    update, not the agent, not a job from the server. provision_door.h is included by
+    core/provision/ (the console command's sequence, task p5-03) and by nothing else; the grant's
+    header by core/provision/ and console.cpp (where the typed verb runs) and nothing else."""
+    r.problems(must_exist(DOOR_HEADER, GRANT_HEADER, DOOR_SOURCE), "the door or the grant is gone:")
+    if must_exist(DOOR_HEADER, GRANT_HEADER, DOOR_SOURCE):
+        return r
+    files = sources("components", "main")
+
+    def includes_of(rx):
+        return [p for p in files if any(rx.match(line) for line in read(p).splitlines())]
+
+    door_users = includes_of(DOOR_INCLUDE)
+    grant_users = includes_of(GRANT_INCLUDE)
+
+    def allowed(path, may):
+        return path in may or path.startswith(SEQUENCE_DIR)
+
+    bad_door = [p for p in door_users if not allowed(p, MAY_INCLUDE_DOOR)]
+    bad_grant = [p for p in grant_users if not allowed(p, MAY_INCLUDE_GRANT)]
+    if bad_door:
+        r.broken("the door's header is included outside %s and %s:" % (SEQUENCE_DIR, ", ".join(MAY_INCLUDE_DOOR)),
+                 bad_door)
+    else:
+        r.looked_at("provision_door.h is included by: %s" % ", ".join(door_users))
+    if bad_grant:
+        r.broken("the grant's header is included outside %s and %s:" % (SEQUENCE_DIR, ", ".join(MAY_INCLUDE_GRANT)),
+                 bad_grant)
+    else:
+        r.looked_at("provision_grant.h is included by: %s" % ", ".join(grant_users))
+
+    # The grep must still match something: the door's own source includes both.
+    if DOOR_SOURCE not in door_users or DOOR_SOURCE not in grant_users:
+        r.broken("%s does not include the door's and the grant's headers: the grep is looking for "
+                 "the wrong lines" % DOOR_SOURCE)
+
+    # The directories that must include neither, each by name, whether it exists yet or not.
+    for d in MUST_INCLUDE_NEITHER:
+        if not os.path.isdir(os.path.join(ROOT, d)):
+            r.looked_at("%s/: does not exist yet, so includes neither (pass)" % d)
+            continue
+        prefix = d + "/"
+        offenders = [p for p in door_users + grant_users if p.startswith(prefix) and not allowed(p, MAY_INCLUDE_GRANT)]
+        if offenders:
+            r.broken("%s/ reaches the door:" % d, offenders)
+        else:
+            r.looked_at("%s/: includes neither" % d)
+    sequence_exists = os.path.isdir(os.path.join(ROOT, SEQUENCE_DIR))
+    r.says("%s %s; the door's header is included by %d file(s), the grant's by %d"
+           % (SEQUENCE_DIR, "exists" if sequence_exists else "does not exist yet (task p5-03)",
+              len(door_users), len(grant_users)))
     return r
 
 
@@ -621,7 +716,8 @@ def rail_no_mesh_request(r):
 RAILS = [
     ("R1", "nRESET is never output-high", rail_reset_never_high),
     ("R2", "radio-facing pins are inputs before KILL; two resets a second apart", rail_kill_and_spacing),
-    ("R3", "no ERASEALL, no ERASEUICR, no write to UICR", rail_no_chip_erase),
+    ("R3", "no ERASEALL, no ERASEUICR, no write to UICR - outside regs.h and the one door", rail_no_chip_erase),
+    ("R3b", "the door has one caller: core/provision/, opened by a typed console command", rail_one_door),
     ("R4", "the flasher writes only inside the region and the settings page", rail_flash_region),
     ("R5", "nothing reaches the store or a radio without the six checks", rail_six_checks),
     ("R6", "a normal build trusts no test key and has no signing code", rail_no_test_key),
@@ -768,7 +864,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="the rails, in one place")
     parser.add_argument("--list", action="store_true", help="the table, nothing run")
     parser.add_argument("--verbose", "-v", action="store_true", help="what each rail looked at")
-    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R14, B)")
+    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R14, R3b, B)")
     args = parser.parse_args(argv)
 
     entries = RAILS + EXTRA

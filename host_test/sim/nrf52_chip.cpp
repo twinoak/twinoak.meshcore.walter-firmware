@@ -53,13 +53,19 @@ Nrf52Chip::~Nrf52Chip() {
   FlashTally& tally = flashTally();
   tally.erases += counters_.erases;
   tally.writes += counters_.writes;
-  const bool flashed = counters_.erases > 0 || counters_.writes > 0;
+  tally.erase_alls += counters_.erase_alls;
+  if (provisioning_allowed_) {
+    tally.provisioning_chips++;
+    tally.uicr_writes += counters_.uicr_writes;
+  }
+  // A chip erase (task p5-02) is flash erased too: a door test declares the base's windows.
+  const bool flashed = counters_.erases > 0 || counters_.writes > 0 || counters_.erase_alls > 0;
   if (!flashed) return;
   tally.flashed++;
   if (only_touch_) return;
   tally.undeclared++;
   FAIL_CHECK("no test may flash a chip without saying which region may be touched: this one did "
-             << counters_.erases << " erase(s) and " << counters_.writes
+             << counters_.erases << " erase(s), " << counters_.erase_alls << " chip erase(s) and " << counters_.writes
              << " word write(s) with no onlyTouch() (docs/ARCHITECTURE.md §5; "
                 "sim::Nrf52Chip::onlyTouch(begin, end) and alsoTouch() for the settings page)");
 }
@@ -70,6 +76,102 @@ AccessPort& Nrf52Chip::ctrlAp() { return ctrl_; }
 void Nrf52Chip::attachTo(SwdTarget& target) {
   target.attachAp(0, ahb_);
   target.attachAp(regs::ctrl_ap::kApsel, ctrl_);
+  target_ = &target;
+}
+
+// ---- the two kinds of access-port protection (task p5-02) -------------------------------------
+
+// INFO.VARIANT "encoded in ASCII", the build code's letter in bits [15:8] (regs.h; "AAF0" is
+// F). PS "Access port protection": "Build codes Dxx and earlier" are hardware-only, "Fxx and
+// later" hardware-and-software. A letter that is not text at all (an "Unspecified" 0xFFFFFFFF)
+// is taken as the newer kind, the one that ships closed - the stricter answer.
+bool Nrf52Chip::improvedApprotect() const {
+  const std::uint32_t letter = (info_variant >> 8) & 0xFFu;
+  return letter >= 'F' || letter < 'A' || letter > 'Z';
+}
+
+void Nrf52Chip::allowProvisioning() { provisioning_allowed_ = true; }
+
+// Every flash word non-blank, as a factory RUI3 image leaves it (the bench tool's simulator used
+// the same xorshift fill); RAK's bootloader address and nRESET on P0.18 in UICR; REGOUT0 at 3.3 V.
+void Nrf52Chip::fillFactory() {
+  std::uint32_t x = 0x2545F491u;
+  for (std::size_t i = 0; i < flash_.size(); ++i) {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    flash_[i] = x | 1u;
+    writes_since_erase_[i] = 1;
+  }
+  for (std::uint32_t& w : uicr_) w = 0xFFFFFFFF;
+  for (std::uint8_t& n : uicr_writes_since_erase_) n = 0;
+  setUicrWord(regs::uicr::kNrfFw0, 0x000F4000);
+  setUicrWord(regs::uicr::kPselReset0, 18);
+  setUicrWord(regs::uicr::kPselReset1, 18);
+  setUicrWord(regs::uicr::kRegOut0, 0xFFFFFFF8u | 5u);
+}
+
+// Open at the factory: legacy, UICR.APPROTECT erased ("By default, access port protection is
+// disabled"); improved, HwDisabled written and firmware that opens the port (the only way an Fxx
+// part is open after a reset).
+void Nrf52Chip::factoryOpen() {
+  fillFactory();
+  if (improvedApprotect()) {
+    setUicrWord(regs::uicr::kApprotect, 0xFFFFFF00u | regs::uicr::kApprotectHwDisabled);
+    bootloader_opens_port = true;
+  }
+  approtect = false;
+}
+
+// Locked: legacy, by its firmware - UICR.APPROTECT.PALL written Enabled (0x00), "Enabled by
+// writing UICR.APPROTECT to Enabled and performing a reset"; improved, by default - the word
+// erased, "By default, access port protection is enabled".
+void Nrf52Chip::factoryLocked() {
+  fillFactory();
+  if (!improvedApprotect()) setUicrWord(regs::uicr::kApprotect, 0xFFFFFF00u | regs::uicr::kApprotectEnabled);
+  approtect = true;
+}
+
+// What a pin reset and a power-on read (PS "Access port protection"). Legacy: UICR.APPROTECT,
+// Disabled (0xFF) or anything else. Improved: the protection "remains disabled until" a pin,
+// power or brownout reset; after one it is enabled unless UICR.APPROTECT is HwDisabled and the
+// firmware writes APPROTECT.DISABLE at start-up - which needs firmware in flash at all (the
+// MBR's vector table at word 0) that was built to do it (bootloader_opens_port).
+void Nrf52Chip::readProtectionAtReset() {
+  const std::uint32_t pall = uicrWord(regs::uicr::kApprotect) & 0xFFu;
+  if (!improvedApprotect()) {
+    approtect = pall != regs::uicr::kApprotectDisabled;
+    return;
+  }
+  const bool firmware = flash_[0] != regs::flash::kErased;
+  approtect = !(pall == regs::uicr::kApprotectHwDisabled && firmware && bootloader_opens_port);
+}
+
+// The part of a pin reset and a power-on that is the same (ARM B1.5.1: "resets the processor,
+// System Control Space and debug logic"; PS "Reset behavior"): the core running, halting debug
+// off, DEMCR clear, the NVMC read-only and idle, the access port's registers at their reset
+// values, the protection read again, and the debug port's power-up gone with the rest.
+void Nrf52Chip::hardReset() {
+  halted_ = false;
+  debug_en_ = false;
+  held_in_reset_ = false;
+  reset_sticky_ = true;
+  demcr_ = 0;
+  config_ = regs::nvmc::kConfigRen;
+  busy_until_us_ = 0;
+  busy_for_ever_ = false;
+  erase_all_busy_left_ = 0;
+  erase_all_busy_for_ever_ = false;
+  tar_ = 0;
+  csw_ = map::kCswMasterTypeDebug | map::kCswHprot1 | map::kCswBit24;
+  counters_.resets++;
+  readProtectionAtReset();
+  if (target_ != nullptr) target_->resetDap();
+}
+
+void Nrf52Chip::pinReset() {
+  resets_.pin++;
+  hardReset();
 }
 
 void Nrf52Chip::onlyTouch(std::uint32_t begin, std::uint32_t end) {
@@ -96,19 +198,10 @@ bool Nrf52Chip::allowed(std::uint32_t addr, std::uint32_t bytes) const {
 // left in it.
 void Nrf52Chip::powerOn() {
   powered_ = true;
-  halted_ = false;
-  debug_en_ = false;
-  held_in_reset_ = false;
-  reset_sticky_ = true;
-  demcr_ = 0;
-  config_ = regs::nvmc::kConfigRen;
-  busy_until_us_ = 0;
-  busy_for_ever_ = false;
-  tar_ = 0;
-  csw_ = map::kCswMasterTypeDebug | map::kCswHprot1 | map::kCswBit24;
   flash_ops_ = 0;
   lose_power_at_op = 0;
-  counters_.resets++;
+  resets_.power_on++;
+  hardReset();
 }
 
 // nrf_sdm.h: the structure's size in its first byte (0x18 for S140 6.x), SD_MAGIC_NUMBER at
@@ -387,7 +480,19 @@ ApAccess Nrf52Chip::CtrlAp::read(std::uint8_t addr, std::uint32_t* out) {
   switch (addr) {
     case regs::ctrl_ap::kReset: *out = chip_.held_in_reset_ ? 1 : 0; return ApAccess::kOk;
     case regs::ctrl_ap::kEraseAll: return ApAccess::kOk;  // write-only: reads as zero
-    case regs::ctrl_ap::kEraseAllStatus: *out = 0; return ApAccess::kOk;  // "Ready"
+    case regs::ctrl_ap::kEraseAllStatus:
+      // "Status register for the ERASEALL operation": Ready (0) or Busy (1). Busy for the set
+      // number of reads after an erase (task p5-02), or for ever when told to.
+      chip_.counters_.erase_all_status_reads++;
+      if (chip_.erase_all_busy_for_ever_) {
+        *out = 1;
+      } else if (chip_.erase_all_busy_left_ > 0) {
+        chip_.erase_all_busy_left_--;
+        *out = 1;
+      } else {
+        *out = 0;
+      }
+      return ApAccess::kOk;
     case regs::ctrl_ap::kApprotectStatus:
       // "Enabled (0): Access port protection enabled. Disabled (1): Access port protection not enabled."
       *out = chip_.approtect ? 0 : regs::ctrl_ap::kApprotectStatusOpen;
@@ -406,12 +511,24 @@ ApAccess Nrf52Chip::CtrlAp::write(std::uint8_t addr, std::uint32_t value) {
         chip_.held_in_reset_ = true;
         chip_.halted_ = false;
       } else if (chip_.held_in_reset_) {
+        // "Soft reset triggered through CTRL-AP" (task p5-02): a soft reset, counted as such.
+        // Legacy: the protection is UICR.APPROTECT as read at any reset (localReset). Improved:
+        // the port stays as it is - the protection "remains disabled until" a pin, power or
+        // brownout reset, and a soft reset is none of those. The debug port itself survives
+        // unless the knob says this part drops it.
         chip_.held_in_reset_ = false;
+        chip_.resets_.ctrl_ap_soft++;
         chip_.localReset();
+        if (chip_.soft_reset_drops_dap && chip_.target_ != nullptr) chip_.target_->resetDap();
       }
       return ApAccess::kOk;
     case regs::ctrl_ap::kEraseAll:
       if ((value & 1u) != 0) {
+        if (chip_.provisioning_allowed_) {
+          // S-5a's one door (task p5-02): a test about it armed the chip, and the erase happens.
+          chip_.eraseAll();
+          return ApAccess::kOk;
+        }
         // THE TRIPWIRE. "Erase all flash and RAM" - and UICR with them: the bootloader, the
         // SoftDevice, the node's identity, REGOUT0. S-5: never, by anything automatic.
         chip_.counters_.tripwire++;
@@ -470,6 +587,11 @@ ApAccess Nrf52Chip::writeMem(std::uint32_t addr, std::uint32_t value) {
     return ApAccess::kError;
   }
   if (addr >= regs::uicr::kBase && addr < regs::uicr::kEnd) {
+    if (provisioning_allowed_) {
+      // S-5a's one door (task p5-02): the base's UICR words and APPROTECT, through the NVMC.
+      writeUicr(addr, value);
+      return ApAccess::kOk;
+    }
     // THE TRIPWIRE. UICR is read-only to this firmware (regs.h): REGOUT0, APPROTECT, the
     // bootloader's address live here. Nothing is changed, and the test fails.
     counters_.tripwire++;
@@ -615,6 +737,52 @@ void Nrf52Chip::writeFlash(std::uint32_t addr, std::uint32_t value) {
   startBusy(write_time_us);
 }
 
+// PS NVMC "Writing to user information configuration registers (UICR)": UICR "is written in the
+// same way as flash" - CONFIG.WEN = Wen, a word-aligned 32-bit word, bits only cleared, nWRITE
+// (2) times between erases; "After UICR has been written, the new UICR configuration will only
+// take effect after a reset" (which is why the protection is read at a reset, above). Only
+// behind allowProvisioning() (task p5-02); the tripwire has the word otherwise.
+void Nrf52Chip::writeUicr(std::uint32_t addr, std::uint32_t value) {
+  const std::size_t i = (addr - regs::uicr::kBase) / 4;
+  const std::uint32_t old = uicr_[i];
+  if (config_ != regs::nvmc::kConfigWen) {
+    counters_.rejected_writes++;
+    record(FlashEvent::Kind::kRejectedWrite, addr, value, old, old);
+    fail("a UICR write at " + hex(addr) + " with NVMC.CONFIG.WEN = " + std::to_string(config_) +
+         ", not Wen (1): nothing written (PS NVMC \"Writing to user information configuration registers\")");
+    return;
+  }
+  const std::uint32_t result = old & value;
+  uicr_[i] = result;
+  if (uicr_writes_since_erase_[i] < 255) uicr_writes_since_erase_[i]++;
+  if (uicr_writes_since_erase_[i] > regs::nvmc::kWritesPerEraseMax) counters_.uicr_overwrites++;
+  counters_.uicr_writes++;
+  record(FlashEvent::Kind::kUicrWrite, addr, value, old, result);
+  startBusy(write_time_us);
+}
+
+// CTRL-AP ERASEALL (PS "CTRL-AP > ERASEALL": "Erase all flash and RAM"; "Access port
+// protection": "will erase the flash, UICR, and RAM"; NVMC "Erase all": "This operation will not
+// erase the factory information configuration registers (FICR)"). Every word to 0xFF, the write
+// counts cleared; ERASEALLSTATUS busy for the set number of reads. Then the kinds part: improved,
+// "Disabled via ERASEALL" and so "until" a pin, power or brownout reset - the port opens now;
+// legacy, the erased UICR is what the next reset reads (the conservative model, the bench
+// tool's too, so that the soft-reset path is the one exercised). Only behind allowProvisioning().
+void Nrf52Chip::eraseAll() {
+  for (std::size_t i = 0; i < flash_.size(); ++i) {
+    flash_[i] = regs::flash::kErased;
+    writes_since_erase_[i] = 0;
+  }
+  for (std::uint32_t& w : uicr_) w = 0xFFFFFFFF;
+  for (std::uint8_t& n : uicr_writes_since_erase_) n = 0;
+  for (std::uint32_t& w : ram_) w = 0xFFFFFFFF;
+  counters_.erase_alls++;
+  record(FlashEvent::Kind::kEraseAll, 0, 0, 0, 0);
+  erase_all_busy_left_ = erase_all_busy_reads;
+  erase_all_busy_for_ever_ = erase_all_never_finishes;
+  if (improvedApprotect()) approtect = false;
+}
+
 // "After erasing a flash page, all bits in the page are set to 1."
 void Nrf52Chip::erasePage(std::uint32_t addr) {
   if (!allowed(addr, kPageBytes)) {
@@ -714,6 +882,7 @@ ApAccess Nrf52Chip::writeScs(std::uint32_t addr, std::uint32_t value) {
       if ((value & regs::scs::kSysResetReq) != 0) {
         // "Writing 1 to this bit asserts a signal to the external system to request a Local reset."
         counters_.aircr_resets++;
+        resets_.sysresetreq++;
         localReset();
       }
       return ApAccess::kOk;
@@ -731,9 +900,13 @@ ApAccess Nrf52Chip::writeScs(std::uint32_t addr, std::uint32_t value) {
 // DebugMonitor"); C_DEBUGEN survives (B1.5.1: "A power-on reset resets the processor, System
 // Control Space and debug logic. A Local reset resets the processor and System Control Space,
 // except for some fault and debug related resources"). The
-// NVMC comes up read-only, nothing busy. And on a module whose firmware opens the port at run
-// time, the port is closed again until that firmware runs (PS "Access port protection"; Nordic's
-// APPROTECT note).
+// NVMC comes up read-only, nothing busy. The protection (task p5-02, PS "Access port
+// protection"): a legacy part reads UICR.APPROTECT at every reset, this one included; an
+// improved part keeps the port as it is - "disabled until" a pin, power or brownout reset, and
+// a soft reset is none of those. And on a module whose firmware opens the port at run time, the
+// knob closes it again until that firmware runs (Nordic's APPROTECT note: a soft reset
+// re-enables the protection when the firmware's own start-up is what disables it), which is
+// what resetAndHalt() reports.
 void Nrf52Chip::localReset() {
   counters_.resets++;
   reset_sticky_ = true;
@@ -742,6 +915,7 @@ void Nrf52Chip::localReset() {
   config_ = regs::nvmc::kConfigRen;
   busy_until_us_ = 0;
   busy_for_ever_ = false;
+  if (!improvedApprotect()) readProtectionAtReset();
   if (protects_after_reset) approtect = true;
 }
 

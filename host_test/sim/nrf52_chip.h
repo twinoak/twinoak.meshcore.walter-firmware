@@ -28,10 +28,27 @@
 // any UICR address is the tripwire, and it fires at once (FAIL_CHECK while `strict`; recorded in
 // `errors` either way, for the test that shows it firing on purpose).
 //
+// Since task p5-02 (S-5a, one door) the chip also knows what the door does, from the Product
+// Specification's "Debug and trace > Access port protection" and "CTRL-AP" and from NVMC
+// "Writing to user information configuration registers": the two kinds of protection by
+// INFO.VARIANT's build code - hardware-only on Dxx and earlier ("legacy": open while
+// UICR.APPROTECT reads 0xFF, read at every reset), hardware-and-software on Fxx and later
+// ("improved": enabled by default, open after ERASEALL until a pin, power or brownout reset,
+// and after such a reset only when UICR.APPROTECT is HwDisabled *and* the firmware in flash
+// writes APPROTECT.DISABLE); the CTRL-AP's ERASEALL (flash, UICR and RAM to 0xFF,
+// ERASEALLSTATUS busy for a set number of reads); its RESET (a soft reset); a pin reset and a
+// power-on, each counted by kind; and UICR written like flash, through the NVMC with CONFIG =
+// Wen, each word at most nWRITE times between erases. **The tripwire stays armed by default**:
+// only a test that calls allowProvisioning() - a test about the door - gets the erase and the
+// UICR writes performed instead of a failed test. NVMC.ERASEALL and NVMC.ERASEUICR trip always;
+// the door does not use them.
+//
 // Knobs: protection on; protection re-engaged by a reset (a build code Fxx module whose firmware
 // opens the port at run time); another part, page size or page count; READY late or never;
 // power lost at the Nth flash operation, leaving a page half-erased or a word half-written;
-// the auto-increment wrap; a region outside which any erase or write fails the test.
+// the auto-increment wrap; a region outside which any erase or write fails the test; the three
+// factory states; whether the bootloader in flash opens the port; how many ERASEALLSTATUS reads
+// stay busy, or for ever; whether a CTRL-AP soft reset leaves the debug port needing a reconnect.
 #pragma once
 
 #include <cstdint>
@@ -53,6 +70,8 @@ struct FlashEvent {
     kRejectedErase,  // ERASEPAGE with CONFIG != Een: nothing happened
     kReadyRead,      // NVMC.READY read: value = what it read
     kPowerLost,      // the power went at this operation: addr of the half-done page or word
+    kEraseAll,       // the CTRL-AP's ERASEALL performed (allowProvisioning(), task p5-02): flash, UICR, RAM
+    kUicrWrite,      // a UICR word written (allowProvisioning()): addr, value, old_value, result
   };
   Kind kind;
   std::uint32_t addr;
@@ -73,6 +92,9 @@ struct FlashTally {
   unsigned writes = 0;
   unsigned undeclared = 0;     // chips flashed without a declared window: rail R4 broken
   unsigned outside = 0;        // erases or writes outside the declared window
+  unsigned erase_alls = 0;     // CTRL-AP chip erases performed (only ever behind allowProvisioning(), task p5-02)
+  unsigned uicr_writes = 0;    // UICR words written (the same)
+  unsigned provisioning_chips = 0;  // chips a test armed with allowProvisioning()
 };
 
 FlashTally& flashTally();
@@ -124,8 +146,55 @@ class Nrf52Chip {
   std::uint32_t stuck_addr = 0;
   std::uint32_t stuck_mask = 0;
   // The power back after losePower(): the chip as a power-on reset leaves it, the flash as it was
-  // when the power went. The countdown starts over (lose_power_at_op is cleared).
+  // when the power went. The countdown starts over (lose_power_at_op is cleared). Since task
+  // p5-02 a power-on also re-reads the protection as the kind says (below) and resets the debug
+  // port (SwdTarget::resetDap).
   void powerOn();
+
+  // ---- the two kinds of access-port protection (task p5-02; PS "Access port protection") ----
+  // By INFO.VARIANT's build code, the third character: "Dxx and earlier" hardware-only (A-D),
+  // "Fxx and later" hardware-and-software (F and after; IN-141 calls Fx0 revision 3). The
+  // firmware's own variant table (task p5-03) is stricter and refuses what it does not know; this
+  // is what the silicon does.
+  bool improvedApprotect() const;
+  // Improved only: the firmware in flash writes APPROTECT.DISABLE at start-up (the MDK does since
+  // 8.40.2; whether the RAK's bootloader was built with it is the first board's to say -
+  // spec/SYSTEM.md 10.2). Read at a pin reset and a power-on, together with UICR.APPROTECT and
+  // whether flash holds anything at all.
+  bool bootloader_opens_port = true;
+  // The ERASEALLSTATUS reads that still say busy after an ERASEALL (the bench tool's simulator
+  // used 3), or busy for ever - the door's timeout.
+  unsigned erase_all_busy_reads = 3;
+  bool erase_all_never_finishes = false;
+  // A CTRL-AP soft reset that leaves the debug port needing a line reset and a power-up again
+  // (resetDap): the part the door must reconnect to. False: the port survives the soft reset.
+  bool soft_reset_drops_dap = false;
+  // THE DOOR'S TESTS ONLY. Arms the chip for what S-5a allows a person's command to do: the
+  // CTRL-AP's ERASEALL is performed and UICR takes writes through the NVMC. Every other test of
+  // the tree leaves this alone, and the tripwire fails it at the first of either.
+  void allowProvisioning();
+  bool provisioningAllowed() const { return provisioning_allowed_; }
+  // The factory states (PS "Access port protection"; the bench tool's simulator): a radio as RAK
+  // ships it, every flash word holding RUI3 (a pseudo-random, non-blank fill), NRFFW[0] and
+  // PSELRESET set. Open: legacy UICR.APPROTECT erased (0xFFFFFFFF); improved HwDisabled (0x5A),
+  // the port open. Locked: legacy "locked by firmware" (UICR.APPROTECT.PALL = 0x00, the word
+  // 0xFFFFFF00); improved "locked by default" (UICR.APPROTECT erased, which on Fxx is enabled).
+  void factoryOpen();
+  void factoryLocked();
+  // nRESET pulsed by the host (the bench wires SwdTarget::on_pin_reset to it): a pin reset.
+  // Legacy: UICR.APPROTECT read again. Improved: the port is open only when UICR.APPROTECT is
+  // HwDisabled and the flash holds firmware (word 0 not erased) and bootloader_opens_port. The
+  // core running, halting debug off, the debug port reset.
+  void pinReset();
+  // Resets counted by kind, so that a test can hold S-5a's rule: no pin, power-on or brownout
+  // reset between the erase and the last UICR write; the one CTRL-AP soft reset is allowed.
+  struct Resets {
+    unsigned ctrl_ap_soft = 0;   // CTRL-AP RESET released
+    unsigned sysresetreq = 0;    // AIRCR.SYSRESETREQ
+    unsigned pin = 0;            // nRESET
+    unsigned power_on = 0;       // powerOn()
+  };
+  const Resets& resets() const { return resets_; }
   // The SoftDevice information structure a provisioned chip carries at MBR_SIZE + 0x2000 (the
   // bootloader's nrf_sdm.h:99-138): the magic, the SoftDevice's size (where the application
   // starts) and its firmware id - S140 6.1.1's 0x26000 and 0x00B6 by default (MeshCore's
@@ -176,7 +245,10 @@ class Nrf52Chip {
     unsigned dhcsr_writes = 0;
     unsigned aircr_resets = 0;
     unsigned tripwire = 0;            // ERASEALL, ERASEUICR, CTRL-AP ERASEALL or a UICR write attempted
-    unsigned uicr_writes = 0;
+    unsigned uicr_writes = 0;         // UICR words written - attempted (tripped) or, behind allowProvisioning(), done
+    unsigned uicr_overwrites = 0;     // a UICR word written more than nWRITE (2) times since the last erase
+    unsigned erase_alls = 0;          // CTRL-AP ERASEALL performed (allowProvisioning() only)
+    unsigned erase_all_status_reads = 0;
     unsigned tar_wraps = 0;           // auto-increment wrapped inside its block
   };
   const Counters& counters() const { return counters_; }
@@ -219,7 +291,12 @@ class Nrf52Chip {
   ApAccess writeScs(std::uint32_t addr, std::uint32_t value);
   void writeFlash(std::uint32_t addr, std::uint32_t value);
   void erasePage(std::uint32_t addr);
+  void writeUicr(std::uint32_t addr, std::uint32_t value);
+  void eraseAll();
   void localReset();
+  void hardReset();                // what a pin reset and a power-on share
+  void readProtectionAtReset();    // UICR.APPROTECT (and the firmware) read, as the kind says
+  void fillFactory();              // RUI3-like contents
   void startBusy(std::uint64_t us);
   bool flashOpCountsDown();  // the power-loss countdown: true when this operation is the one
   void losePower(std::uint32_t addr);
@@ -233,11 +310,19 @@ class Nrf52Chip {
   fakes::FakeClock& clock_;
   AhbAp ahb_;
   CtrlAp ctrl_;
+  SwdTarget* target_ = nullptr;  // attachTo(): the port to reset at a pin reset
 
   std::vector<std::uint32_t> flash_;
   std::vector<std::uint8_t> writes_since_erase_;
   std::vector<std::uint32_t> ram_;
   std::uint32_t uicr_[0x308 / 4];
+  std::uint8_t uicr_writes_since_erase_[0x308 / 4] = {};
+
+  // the CTRL-AP's erase (task p5-02)
+  bool provisioning_allowed_ = false;
+  unsigned erase_all_busy_left_ = 0;
+  bool erase_all_busy_for_ever_ = false;
+  Resets resets_;
 
   // the AHB-AP
   std::uint32_t csw_;
