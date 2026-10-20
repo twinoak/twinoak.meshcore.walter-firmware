@@ -120,13 +120,17 @@ TEST_CASE("R3b: the door's header is included by core/provision/ and nothing els
   // The grep matches something: the door's own source includes both.
   CHECK(std::find(door_users.begin(), door_users.end(), door_source) != door_users.end());
   CHECK(std::find(grant_users.begin(), grant_users.end(), door_source) != grant_users.end());
+  // The sequence's sources, and its headers where every header of core/ lives.
+  const auto in_sequence = [](const std::string& p) {
+    return p.rfind("components/core/provision/", 0) == 0 || p.rfind("components/core/include/core/provision/", 0) == 0;
+  };
   for (const std::string& p : door_users) {
-    const bool allowed = p == door_source || p.rfind("components/core/provision/", 0) == 0;
+    const bool allowed = p == door_source || in_sequence(p);
     if (!allowed) FAIL_CHECK("the door's header is included outside core/provision/: " << p);
   }
   for (const std::string& p : grant_users) {
     const bool allowed = p == door_source || p == door_header || p == "components/core/console/console.cpp" ||
-                         p.rfind("components/core/provision/", 0) == 0;
+                         in_sequence(p);
     if (!allowed) FAIL_CHECK("the grant's header is included outside core/provision/ and console.cpp: " << p);
   }
   // The directories S-5a names, by name - whether they exist yet or not.

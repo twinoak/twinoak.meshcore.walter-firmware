@@ -67,6 +67,16 @@
 //                         It writes to a radio's flash outside the update machine, so it wants
 //                         the word (task p3-03)
 //
+// and the radio's base (task p5-03; spec/SYSTEM.md S-5a, docs/provisioning.md):
+//
+//   rak provision check   no write: the radio's port, its DEVICEID or the `locked` form, what the
+//                         variant table would do, the base in the store, the line to type next
+//   rak provision <DEVICEID>|locked|locked:<key16> confirm
+//                         S-5a's sequence: erase the radio through the CTRL-AP, write the base,
+//                         read every word back, one pin reset. Without the word it says what it
+//                         would do; the radio's grammar is the console's to check, not this
+//                         parser's
+//
 // and the trust table (task p2-01):
 //
 //   trust                 the key ids this build accepts a release signed with, or none
@@ -195,6 +205,10 @@ enum class Verb : std::uint8_t {
   kRakSwdMem,
   // The flasher (task p1-05).
   kRakFlashTest,
+  // The radio's base (task p5-03, S-5a): `rak provision check` and `rak provision <radio>
+  // [confirm]` - the radio in `text`, the word in `on`.
+  kRakProvisionCheck,
+  kRakProvision,
   // The trust table (task p2-01).
   kTrust,
   // The image store (task p2-02).

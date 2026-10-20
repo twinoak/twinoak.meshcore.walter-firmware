@@ -150,6 +150,10 @@ class Nrf52Chip {
   // p5-02 a power-on also re-reads the protection as the kind says (below) and resets the debug
   // port (SwdTarget::resetDap).
   void powerOn();
+  // The power goes now, from outside (task p5-03: a power cut at a transfer of `rak provision`
+  // between its writes, where no flash operation counts it down): the chip is unpowered, the
+  // bench is told (on_power_loss), and powerOn() is the way back.
+  void losePower(std::uint32_t addr = 0);
 
   // ---- the two kinds of access-port protection (task p5-02; PS "Access port protection") ----
   // By INFO.VARIANT's build code, the third character: "Dxx and earlier" hardware-only (A-D),
@@ -299,7 +303,6 @@ class Nrf52Chip {
   void fillFactory();              // RUI3-like contents
   void startBusy(std::uint64_t us);
   bool flashOpCountsDown();  // the power-loss countdown: true when this operation is the one
-  void losePower(std::uint32_t addr);
   void autoIncrement();
   bool inFlash(std::uint32_t addr) const { return addr < flashBytes(); }
   void fail(const std::string& what);

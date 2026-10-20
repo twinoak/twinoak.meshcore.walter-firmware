@@ -526,6 +526,15 @@ ApAccess Nrf52Chip::CtrlAp::write(std::uint8_t addr, std::uint32_t value) {
       if ((value & 1u) != 0) {
         if (chip_.provisioning_allowed_) {
           // S-5a's one door (task p5-02): a test about it armed the chip, and the erase happens.
+          // The power-loss countdown counts it as an operation too (task p5-03: a power cut at
+          // every step of `rak provision`): the power goes with the erase begun, which leaves
+          // the flash as a chip erase that was interrupted does - erased, as far as this
+          // simulator can tell, since it cannot half-erase a whole array.
+          if (chip_.flashOpCountsDown()) {
+            chip_.eraseAll();
+            chip_.losePower(0);
+            return ApAccess::kError;
+          }
           chip_.eraseAll();
           return ApAccess::kOk;
         }
@@ -750,6 +759,14 @@ void Nrf52Chip::writeUicr(std::uint32_t addr, std::uint32_t value) {
     record(FlashEvent::Kind::kRejectedWrite, addr, value, old, old);
     fail("a UICR write at " + hex(addr) + " with NVMC.CONFIG.WEN = " + std::to_string(config_) +
          ", not Wen (1): nothing written (PS NVMC \"Writing to user information configuration registers\")");
+    return;
+  }
+  if (flashOpCountsDown()) {
+    // Half-written, as a flash word is (task p5-03's power cut at every step).
+    const std::uint32_t half = old & (value | 0x0000FFFFu);
+    uicr_[i] = half;
+    record(FlashEvent::Kind::kUicrWrite, addr, value, old, half);
+    losePower(addr);
     return;
   }
   const std::uint32_t result = old & value;

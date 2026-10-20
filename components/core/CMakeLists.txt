@@ -31,6 +31,10 @@ idf_component_register(
        # regs.h that may name the forbidden registers (rail R3); included by core/provision/
        # alone (rail R3b).
        "nrf52/provision_door.cpp"
+       # The sequence (task p5-03, S-5a): `rak provision`, the door's one caller (rail R3b),
+       # and the variant table it acts on.
+       "provision/variant.cpp"
+       "provision/provision.cpp"
        "image/crypto/sha256.cpp"
        "flasher/board_profile.cpp"
        "flasher/bootloader_settings.cpp"

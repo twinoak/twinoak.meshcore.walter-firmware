@@ -261,6 +261,39 @@ Parsed parseRak(char* rest) {
     if (std::strcmp(arg, "repeater") == 0) return accept(Verb::kRakRoleRepeater);
     return refuse2("rak role: not one of scanner, repeater: ", arg);
   }
+  // rak provision check | <radio> [confirm] (task p5-03; spec/SYSTEM.md S-5a). The radio is
+  // one word - a DEVICEID, `locked` or `locked:<key16>` - and its grammar is the console's to
+  // judge (core/nrf52/provision_grant.h makes the grant from it); this only separates the
+  // words. Without the word the console says what the command would do; it never runs.
+  if (std::strcmp(sub, "provision") == 0) {
+    if (!hasArg) {
+      return refuse("rak provision needs a radio: rak provision check | <DEVICEID>|locked|locked:<key16> confirm");
+    }
+    char* word = arg;
+    char* rest = word;
+    while (*rest != 0 && !isSpace(*rest)) ++rest;
+    if (*rest != 0) {
+      *rest++ = 0;
+      while (*rest != 0 && isSpace(*rest)) ++rest;
+    }
+    if (std::strcmp(word, "check") == 0) {
+      if (*rest != 0) return refuse("rak provision check takes no argument");
+      return accept(Verb::kRakProvisionCheck);
+    }
+    for (const char* p = rest; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse2("rak provision takes a radio and at most one word: ", kConfirmWord);
+    }
+    if (*rest != 0 && std::strcmp(rest, kConfirmWord) != 0) {
+      return refuse3("rak provision: the only word after the radio is '", kConfirmWord, "'");
+    }
+    const std::size_t n = std::strlen(word);
+    if (n > kMaxCliLine) return refuse("rak provision: the radio is at most 160 characters");
+    Parsed p = accept(Verb::kRakProvision);
+    std::memcpy(p.command.text, word, n + 1);
+    p.command.text_size = n;
+    p.command.on = *rest != 0;
+    return p;
+  }
   // rak flash-test confirm (task p1-05, the word from task p3-03): the one command that writes
   // to a radio's flash outside the update machine, so it is never one typo away.
   if (std::strcmp(sub, "flash-test") == 0) {

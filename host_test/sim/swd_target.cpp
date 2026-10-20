@@ -182,7 +182,7 @@ void SwdTarget::onRisingEdge() {
         bit_index_ = 0;
         wdata_ = 0;
       } else {
-        counters_.transfers++;
+        noteTransfer();
         transfer_done_ = true;
         idle_since_transfer_ = 0;
         phase_ = Phase::kHost;
@@ -215,7 +215,7 @@ void SwdTarget::onRisingEdge() {
       } else {
         writeDpRegister(req_a_, wdata_);
       }
-      counters_.transfers++;
+      noteTransfer();
       transfer_done_ = true;
       idle_since_transfer_ = 0;
       phase_ = Phase::kHost;
