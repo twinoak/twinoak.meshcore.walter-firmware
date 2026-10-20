@@ -22,6 +22,9 @@ struct Nrf52Bench : SwdBench {
     chip.attachTo(target);
     // When the chip loses power the target behind the lines goes with it: nothing answers.
     chip.on_power_loss = [this] { target.silent = true; };
+    // And the reset line reaches the chip (task p5-02): a pulse through RadioPins is a pin reset
+    // there, which re-reads the protection as the part's kind says and resets the debug port.
+    target.on_pin_reset = [this] { chip.pinReset(); };
   }
 
   // The usual start of a test: the lines acquired, the session open, the chip identified.

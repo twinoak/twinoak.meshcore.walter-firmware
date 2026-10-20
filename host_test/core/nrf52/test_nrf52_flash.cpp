@@ -36,6 +36,8 @@ std::string shape(const std::vector<FlashEvent>& log) {
       case FlashEvent::Kind::kRejectedErase: s += "REJECTED-ERASE"; break;
       case FlashEvent::Kind::kReadyRead: s += e.value ? "READY" : "busy"; break;
       case FlashEvent::Kind::kPowerLost: s += "POWER-LOST"; break;
+      case FlashEvent::Kind::kEraseAll: s += "ERASEALL"; break;      // task p5-02, the door only
+      case FlashEvent::Kind::kUicrWrite: s += "UICR-WRITE"; break;  // the same
     }
   }
   return s;

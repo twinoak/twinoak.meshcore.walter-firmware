@@ -43,13 +43,19 @@ TEST_CASE("R4: over the whole suite, nothing was erased or written outside a dec
   // std::string, not the const char*: doctest streams a char pointer as a pointer, and a message
   // that cannot name the board is no use (host_test/fakes/fake_pins.cpp says the same).
   const core::flasher::BoardProfile& p = core::flasher::kRak4630Single;
+  // And the door (task p5-02, S-5a): every chip erase and UICR write the suite did happened on a
+  // chip a door test armed with allowProvisioning() - the tripwire holds the rest, by failing
+  // the test where it fires, so here the counts are simply reported with the chips they came
+  // from.
   MESSAGE("simulated flash over the whole suite: " << tally.chips << " chips, " << tally.flashed
           << " of them erased or written (" << tally.erases << " page erases, " << tally.writes
           << " word writes); " << tally.outside
           << " operations outside the declared region, " << tally.undeclared
           << " chips flashed by a test that declared none. The region a unit's flasher may touch "
           << "is the board profile's: " << std::string(p.name) << " " << hex(p.app.begin) << "-"
-          << hex(p.app.end) << " and the settings page at " << hex(p.settings_page));
+          << hex(p.app.end) << " and the settings page at " << hex(p.settings_page) << ". The door (S-5a): "
+          << tally.erase_alls << " chip erase(s) and " << tally.uicr_writes << " UICR word write(s), all on the "
+          << tally.provisioning_chips << " chip(s) a door test armed with allowProvisioning()");
 }
 
 TEST_CASE("R4: the guard bites - an erase outside the declared window is counted and reported") {

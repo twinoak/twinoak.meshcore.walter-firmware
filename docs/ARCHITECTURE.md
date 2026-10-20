@@ -22,7 +22,11 @@ components/
     swd/                the debug port: wire protocol and DP (task p1-03), MEM-AP (task p1-04)
     nrf52/              identification, access-port protection, the flash controller, core control,
                         the region guard; regs.h names every register, the forbidden ones included
-                        (task p1-04)
+                        (task p1-04). provision_door.{h,cpp} and provision_grant.h (task p5-02,
+                        S-5a): the one door - the CTRL-AP's erase and soft reset, the UICR and the
+                        base's flash - behind a grant that only a typed console line can make;
+                        the only file but regs.h that may name the forbidden registers (rail R3),
+                        included by core/provision/ alone (rail R3b)
     flasher/            an image and a region in; erases, writes, verify out: the board profiles,
                         the bootloader's settings page, the flasher (task p1-05)
     image/              the descriptor (task p0-02); the manifest, the signature line, the trust
@@ -405,11 +409,48 @@ nRF52840 Product Specification or the Armv7-M ARM):
   50 ms after a block of writes (typical 41 µs a word; the bus stalls the access port while the
   controller is busy, which the debug port sees as WAIT and retries). A write only clears bits:
   erasing first and verifying after is the flasher's;
-- **what does not exist**: a function that writes `NVMC.ERASEALL`, `NVMC.ERASEUICR`, the control
-  port's `ERASEALL` or any address in UICR. They are named constants in `regs.h`, for the simulator
-  and the reader; `host_test/core/nrf52/test_nrf52_forbidden.cpp` reads every source under
-  `components/` and fails if one of the names appears anywhere else, and `tools/check_rails.py`
-  greps the same list before anything is compiled.
+- **what does not exist in this layer**: a function that writes `NVMC.ERASEALL`, `NVMC.ERASEUICR`,
+  the control port's `ERASEALL` or any address in UICR. They are named constants in `regs.h`, for
+  the simulator and the reader; `host_test/core/nrf52/test_nrf52_forbidden.cpp` reads every source
+  under `components/` and fails if one of the names appears anywhere but `regs.h` and the one door
+  below, and `tools/check_rails.py` R3 greps the same exact list of two files before anything is
+  compiled;
+- **what a closed chip allows, and through whom** (task p5-02). `open()` on a chip whose
+  `APPROTECTSTATUS` reads closed stops at *protected* with the debug port connected and powered up
+  and the control access port's `IDR` checked: nothing of AP 0 has been touched and nothing will be
+  (`identify()`, the core, the flash controller and `read()` all answer *protected*). The control
+  access port — AP 1 — is readable and writable on such a chip, and the only code that speaks to
+  it beyond `IDR` and `APPROTECTSTATUS` is the door: it writes `ERASEALL`, polls `ERASEALLSTATUS`,
+  writes `RESET`, and then calls `open()` again — connect, power-up, `IDR`, `APPROTECTSTATUS`, and
+  the memory port and `identify()` if the port now reads open — so that the layer's view of the
+  chip is read from the chip, never assumed. `open()` is re-entrant for that: a second call on a
+  held slot keeps the hold;
+- **the one door** (`core/nrf52/provision_door`, task p5-02; `spec/SYSTEM.md` S-5a). What S-5
+  forbids to everything automatic, S-5a allows to a person's typed `rak provision <radio> confirm`,
+  and this is the only path: a `ProvisionDoor` over an open session, made with a `ProvisionGrant`
+  that has no public constructor and is made by exactly one function from the typed text, in
+  S-5a's grammar — the radio's `DEVICEID` (16 hex digits, case-free), `locked`, or
+  `locked:<key16>`. **The door checks the grant against the chip itself** when it opens: it reads
+  `APPROTECTSTATUS`; an open port needs a `DEVICEID` grant equal to FICR's, a closed port a
+  `locked` grant; any other pairing, a malformed or an already-used grant refuses before a register
+  is written, and the grant is consumed either way — one grant, one opening — so that a later
+  caller (S-5a's MeshMaster job) cannot skip what the console checks. On it only: `eraseAll()`
+  (CTRL-AP `ERASEALL = 1`, `ERASEALLSTATUS` polled every 10 ms until *Ready* or 5 s — tERASEALL is
+  169 ms typical — then the session opened again), `softReset()` (CTRL-AP `RESET` 1 then 0, 10 ms
+  each, then the debug port reconnected and the session opened again: S-5a's one allowed reset),
+  `writeUicr()` (inside `0x10001000`–`0x10001307` only, never `UICR.APPROTECT`; NVMC `CONFIG = Wen`,
+  each word, `READY` after each, `CONFIG = Ren` whatever happened), `writeApprotect(kind)`
+  (`0x0000005A` for the improved kind, nothing for the legacy kind — the kind is the variant
+  table's, the door never takes a value), `writeFlash()` (the base's runs through this layer's
+  guarded `writeWords`, refusing any address inside the board profile's application region or the
+  file system above it — the table's numbers, never a caller's) and `blankCheck()` (flash word 0,
+  `NRFFW[0]`, `UICR.APPROTECT`). **The three writes refuse unless `eraseAll()` succeeded in the
+  same opening.** Nothing else: no NVMC `ERASEALL`, no `ERASEUICR`, no partial erase — the
+  control port's erase is the one S-5a needs and the one that works on a locked part. Who may
+  open it: `core/provision/` (the sequence, task p5-03) is the only directory that may include
+  `provision_door.h`, and the grant's header may be included by it and by `console.cpp`, where a
+  parsed verb runs; rail R3b holds both lists by name and names the directories that must include
+  neither — supervisor, update, flasher, cycle, a future agent.
 
 **The simulator** (`host_test/sim/`) is the other half of this section: a wire-level SWD target
 (`swd_target`, task p1-03) that stands between `RadioPins` and the fake pins as a `Pins` of its
@@ -445,6 +486,24 @@ erased or written by a test which never declared a region fails that test at its
 and not of each test remembering to (rail R4; `host_test/rails/test_rail_flash_region.cpp` prints
 what the whole suite did to simulated flash). **Its tripwire**: a write to `NVMC.ERASEALL`,
 `NVMC.ERASEUICR`, the control port's `ERASEALL` or any `UICR` word fails the running test at once.
+**Since task p5-02 it also knows what the door does, and the tripwire stays armed by default.**
+From the Product Specification's *Access port protection* and *CTRL-AP*: the two kinds of
+protection by `INFO.VARIANT`'s build code — hardware-only on Dxx and earlier (*legacy*: open while
+`UICR.APPROTECT` reads `0xFF`, read at every reset) and hardware-and-software on Fxx and later
+(*improved*: enabled by default, open after `ERASEALL` until a pin, power or brownout reset, and
+after such a reset only when `UICR.APPROTECT` is `0x5A` *and* the flash holds firmware built to
+write `APPROTECT.DISABLE` — a knob, because whether the RAK's bootloader was is the first board's
+to say); three factory states (open with RUI3-like contents; locked by firmware, legacy; locked by
+default, improved); the control port's `ERASEALL` (flash, UICR and RAM to `0xFF`, `ERASEALLSTATUS`
+busy for a set number of reads or for ever) and `RESET` (a soft reset: legacy re-reads UICR,
+improved keeps the port; a knob makes the part drop its debug port with it); a pin reset — the
+reset line through `RadioPins` now reaches the chip — and a power-on, each re-reading the
+protection as the kind says and resetting the debug port; **resets counted by kind** (CTRL-AP
+soft, `SYSRESETREQ`, pin, power-on) so that S-5a's rule — no pin, power-on or brownout reset
+between the erase and the last UICR write — is a test's to hold; and UICR written like flash,
+with `CONFIG = Wen`, each word at most twice between erases. Only a test that calls
+`allowProvisioning()` — a test about the door — gets the erase and the UICR writes performed; every
+other test of the tree still fails at the first of either, with the four sentences unchanged.
 Everything in this section and the next is developed against it.
 
 ## 5. The flasher
@@ -500,7 +559,10 @@ and every stock release before 0.11.0 refuse an erased page for ever.
 It **never** erases a page the image does not cover — the region handed to the nRF52 layer is the
 image's own pages, and the settings page is reached only through one function whose region is that
 page alone — never touches the file system (the node's identity and settings), the SoftDevice, the
-bootloader's code, the MBR parameter page or UICR. A power loss at any flash operation leaves a
+bootloader's code, the MBR parameter page or UICR. Nor can it reach the door of §4: `flasher/` is
+one of the directories rail R3b names as including neither the door nor its grant, and the base —
+the MBR, the SoftDevice, the bootloader and the UICR words, everything the flasher's region is not
+— is written by the sequence of task p5-03 through that door and by nothing here (S-5a). A power loss at any flash operation leaves a
 radio with no startable application, an intact bootloader and identity, and a settings page that
 is blank, invalid or valid; running the same flash again finishes it with no more erases than the
 pages that still differ need. On a failure after the halt the flasher asks for a system reset on
@@ -950,6 +1012,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | link | ✔ fixtures, scripted radio | UART driver | through the bulkheads |
 | SWD wire, DP, AP | ✔ wire-level simulator | bit-bang timing | IDCODE, the AHB-AP's IDR, the speed ceiling |
 | nRF52, flasher | ✔ simulated chip, power loss | — | `rak swd id`: part, variant, protection; a real flash, the bootloader starts it |
+| the one door (S-5a) | ✔ the simulated chip with both kinds of APPROTECT and every factory state: every grant against every port state, every write without an erase, every address the door refuses, an erase that never finishes, a soft reset on a part that drops its debug port and one that does not, a grant used twice, the tripwire firing in a test that did not arm it; and each factory state provisioned through the door — the base word for word, `UICR.APPROTECT` as the kind says, one pin reset, the port after it | — | task p5-03's command on a factory radio (`docs/bench.md` §4a, phase 6) |
 | manifest, signature, descriptor | ✔ spec fixtures, RFC vectors | — | — |
 | image store, journal | ✔ simulated flash, power loss | partition access | — |
 | updates | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
@@ -957,7 +1020,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
 | HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
-| **the rails** | ✔ the suite's own assertions (`host_test/rails/`): the pin rules' tally over every test that drove a wire, simulated flash's over every test that flashed, the verdict's tokens as compile-time refusals, two secrets and the subscription's three numbers searched for in a day of wakes and every console command, a month asked for both updates and read off the journal, the supervisor's caps over a simulated quarter, and **the failure-injection sweep**: four suites' power-loss loops run together, a whole update from download to commit with the power lost at every flash operation of the store, the journal and the radio's chip in turn, each ending in the old image, the new one, or a journalled state the next wake resumes | `tools/check_rails.py`'s greps (one entry per rail, run before anything is compiled) and `tools/verify.sh`'s search of the built image for the test key's bytes and the map for a signing symbol | `docs/bench.md`, all of it: the rails are what a session can hold, and the walk is what a person must |
+| **the rails** | ✔ the suite's own assertions (`host_test/rails/`): the pin rules' tally over every test that drove a wire, simulated flash's over every test that flashed (and, since task p5-02, every chip erase and UICR write counted against the chips a door test armed — the tripwire fails any other test at the first), the verdict's tokens as compile-time refusals, two secrets and the subscription's three numbers searched for in a day of wakes and every console command, a month asked for both updates and read off the journal, the supervisor's caps over a simulated quarter, and **the failure-injection sweep**: four suites' power-loss loops run together, a whole update from download to commit with the power lost at every flash operation of the store, the journal and the radio's chip in turn, each ending in the old image, the new one, or a journalled state the next wake resumes | `tools/check_rails.py`'s greps (one entry per rail, run before anything is compiled) and `tools/verify.sh`'s search of the built image for the test key's bytes and the map for a signing symbol | `docs/bench.md`, all of it: the rails are what a session can hold, and the walk is what a person must |
 | the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §16): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
 | duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §15) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |

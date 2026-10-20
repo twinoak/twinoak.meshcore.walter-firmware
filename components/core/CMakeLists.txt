@@ -26,6 +26,11 @@ idf_component_register(
        "swd/dp.cpp"
        "swd/mem_ap.cpp"
        "nrf52/nrf52.cpp"
+       # The one door (task p5-02, S-5a): the CTRL-AP's erase and soft reset, the UICR and the
+       # base's flash behind a grant only a typed console command can make. The only file but
+       # regs.h that may name the forbidden registers (rail R3); included by core/provision/
+       # alone (rail R3b).
+       "nrf52/provision_door.cpp"
        "image/crypto/sha256.cpp"
        "flasher/board_profile.cpp"
        "flasher/bootloader_settings.cpp"
