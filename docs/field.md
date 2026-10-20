@@ -200,15 +200,22 @@ new application keeps them. **They are not encrypted**: a person with the board 
 and the token out of the flash with `esptool`, and the unit says so at every boot. Treat a unit
 that has been in somebody else's hands as a unit whose secrets are theirs.
 
-**The radio's first golden image** is the one thing provisioning cannot do by itself. A new unit's
-LTE box has an empty image store and will not flash a radio it has no known-good image for. So:
+**The radio's base and its first golden image** are the two things provisioning cannot do by
+itself. A radio as RAK ships it runs RAK's own firmware, not the bootloader and SoftDevice our
+images are linked against; and a new unit's LTE box has an empty image store and will not flash a
+radio it has no known-good image for. So, at the bench, with the radio on the cable:
 
-1. a signed release of the repeater's firmware is put into the LTE box's store — over the cable
-   with `tools/walterctl.py push --as golden`, or over the air by the unit itself once a server
-   exists;
-2. the radio is flashed from it (`rak update --first-install` when the radio has no application of
-   its own), and the image that passes its health check becomes **golden**;
-3. from then on a new release becomes the *candidate*, is flashed, must boot and prove itself, and
+1. the repeater release's base is put into the LTE box's store (`tools/walterctl.py push --as
+   base`), and a person types `rak provision <device id> confirm` — the one command in this
+   firmware that erases a chip, which is why it is typed, naming the radio, and never automatic
+   (`spec/SYSTEM.md` S-5a; [`provisioning.md`](provisioning.md), *A factory radio*);
+2. a signed release of the repeater's firmware is put into the store as the **candidate** — over
+   the cable with `tools/walterctl.py push --as candidate`, or over the air by the unit itself
+   once a server exists;
+3. the radio is flashed from it with `rak update --first-install` (the radio has no application of
+   its own, and until this commits the LTE box leaves the silent radio alone), and the image that
+   passes its health check becomes **golden**;
+4. from then on a new release becomes the *candidate*, is flashed, must boot and prove itself, and
    is either promoted to golden or rolled back — and a candidate that failed once is never tried
    again ([`update.md`](update.md)).
 
@@ -221,15 +228,20 @@ six checks, which is correct: the alternative is a unit that trusts whatever a s
 The honest list. Each of these needs a person with the unit in their hands.
 
 - **A protected nRF52.** If the radio module's access port is closed (some module batches ship that
-  way), the LTE box can see the chip but not its memory. It **detects this, says so, and stops**.
-  Opening the port needs a chip erase, which destroys the bootloader, the SoftDevice, the node's
-  identity and its settings — so **this firmware has no code for it at all**, and no sequence of
-  commands can make it do it. It is a bench procedure with a debug probe, once per module, by a
-  person who knows what they are giving up.
-- **A dead bootloader on the radio.** The LTE box replaces the radio's *application* and nothing
-  else: never the bootloader, never the SoftDevice, never the file system that holds the node's
-  identity. That is why a failed update cannot brick the radio — and it is also why a bootloader
-  that is itself damaged cannot be repaired from the LTE box. It needs a debug probe.
+  way), the LTE box can see the chip but not its memory. By itself it **detects this, says so, and
+  stops**. Opening the port needs a chip erase, which destroys the bootloader, the SoftDevice, the
+  node's identity and its settings — so nothing automatic in this firmware can do it: not the
+  supervisor, not an update, not a job from the server. A person with the unit in their hands can:
+  `rak provision locked confirm` on the console (`spec/SYSTEM.md` S-5a), which erases the radio
+  whole and gives it its base, after which it is a factory radio again and gets its first
+  application as above. A radio whose application still answers must be named by its key
+  (`rak provision check` says how), so that nothing with an identity is erased by a slip.
+- **A dead bootloader on the radio.** The LTE box's *updates* replace the radio's application and
+  nothing else: never the bootloader, never the SoftDevice, never the file system that holds the
+  node's identity. That is why a failed update cannot brick the radio — and why a bootloader that
+  is itself damaged is not repaired by any update. The same typed `rak provision` is the repair:
+  with a cable, at the unit, never from a distance. The command as a MeshMaster job, audited and
+  behind a second factor, is S-5a's *later*.
 - **A locked SIM.** Three wrong PINs block a card; only the operator's PUK opens it. The firmware
   therefore sends a PIN **once** and remembers the refusal, and a second attach does not try again
   until somebody sets a new PIN. Nothing automatic can unblock a card.

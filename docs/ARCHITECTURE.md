@@ -27,6 +27,12 @@ components/
                         base's flash - behind a grant that only a typed console line can make;
                         the only file but regs.h that may name the forbidden registers (rail R3),
                         included by core/provision/ alone (rail R3b)
+    provision/          `rak provision` (task p5-03, S-5a): the door's one caller - the sequence
+                        that gives a factory radio its base, step for step, refusing before the
+                        first write and starting from erased after it - and the variant table it
+                        acts on (variant.h: INFO.VARIANT's build code -> legacy or improved
+                        APPROTECT, with its sources). The only directory that may include the
+                        door's header (rail R3b)
     flasher/            an image and a region in; erases, writes, verify out: the board profiles,
                         the bootloader's settings page, the flasher (task p1-05)
     image/              the descriptor (task p0-02); the manifest, the signature line, the trust
@@ -80,7 +86,8 @@ components/
                         fetch, trust tls; task p3-03: get, set, erase confirm, dump, journal,
                         and the word `confirm` on rak flash-test and a long rak kill; task p3-04:
                         wake, power, sleep now, sleep <seconds>, stay; task p3-05: cycle now,
-                        cycle dry)
+                        cycle dry; task p5-03: rak provision check, rak provision <radio>
+                        confirm)
     version/            what this build is, as one string: the banner, `trust`, the descriptor
     cycle/              one wake, start to finish, against interfaces. Task p3-04: wake_reason.h
                         is what a wake *means* - the timer, §8's attention inside its repeat
@@ -450,7 +457,36 @@ nRF52840 Product Specification or the Armv7-M ARM):
   open it: `core/provision/` (the sequence, task p5-03) is the only directory that may include
   `provision_door.h`, and the grant's header may be included by it and by `console.cpp`, where a
   parsed verb runs; rail R3b holds both lists by name and names the directories that must include
-  neither — supervisor, update, flasher, cycle, a future agent.
+  neither — supervisor, update, flasher, cycle, a future agent;
+- **the sequence** (`core/provision/provision.h`, task p5-03): S-5a step for step on the layers
+  above, and the door's one caller. The console makes a grant from the typed word and calls
+  `run()`; a later MeshMaster job (S-5a, *later*) would call the same with a grant of its own and
+  get the same checks. Seven steps, each a name in the result: (1) *check* — the base in the
+  store for the slot, **judged again** by §4a against the board's region (the store is flash) and
+  its bytes held to its record's hash; the radio not held by an update with a run in hand or by
+  the supervisor's ladder; the kill line not driven; HELLO on the link (and IDENTITY when it
+  answers); the battery by the radio update's rule, an unknown reading accepted as
+  `--first-install` accepts it, because a factory RUI3 radio answers no `POWER_GET`; the slot
+  taken and held for the whole command; (2) *attach* — `DPIDR`, the control port's `IDR`,
+  `APPROTECTSTATUS`; open: `FICR`, and the typed word must be this radio's `DEVICEID`; closed:
+  `locked` when nothing answered HELLO, `locked:<key16>` with the first 16 hex digits of
+  IDENTITY's key when something did — a radio with an identity is named before it loses it;
+  then the door is opened with the grant and checks the port half again against the chip;
+  (3) *variant* — the table (`variant.h`): A–D legacy, F improved, anything else refused — before
+  the erase on an open radio, after it on a closed one (the identity is readable only then), in
+  which case the command stops with the radio erased and says so; (4) *erase* — the door's
+  `eraseAll`, the port read back, closed → the one soft reset, attach again, still closed → stop;
+  blank check; the core halted; (5) *write* — the base's words (`core/image/base.h` `BaseWords`,
+  one 4 KB window a pass over the stored file) through the door in runs of up to 256 words, flash
+  first, then UICR, then `writeApprotect` with the table's kind; (6) *verify* — every word read
+  back and compared, `UICR.APPROTECT` through the door's blank check against the table's value, a
+  difference naming the first address; (7) *reset* — the halt released, the session closed, one
+  pin reset through `RadioPins` (open drain, the spacing waited out), `kBootloaderSettleMs`, attach
+  again, the port open or closed after it, which is reported and is §10.2's question, not a
+  failure. **No journal**: a failure after step 4 leaves the radio erased, which is what the
+  command starts from, so it is run again; before step 4 nothing was touched. Before the erase the
+  sequence tells the supervisor the slot *awaits its first install* (§8), so that a Walter that
+  restarts in the middle, and one that finishes, leaves the silent radio alone.
 
 **The simulator** (`host_test/sim/`) is the other half of this section: a wire-level SWD target
 (`swd_target`, task p1-03) that stands between `RadioPins` and the fake pins as a `Pins` of its
@@ -790,6 +826,19 @@ only when a whole day can be shown to have passed**; a clock that cannot be held
 record — a deep sleep that restarted it at zero — re-anchors the window and keeps the counts. A cap
 reached is a refusal that is itself journalled and reported.
 
+**A radio that awaits its first install** (task p5-03, S-5a) is a fifth kind of silence and not a
+fault: `rak provision` erased it and gave it its base, so it has a bootloader and no application
+and answers nothing on the link — exactly what rungs 2 to 4 would answer with a reset, a power
+cycle or a golden image. The sequence marks the slot in the supervisor's retained record and in
+the journal (every entry carries the flag, as the counts are carried, so a power cut does not lose
+it) before the erase; while it is set a silence is classified *awaiting first install* and left
+alone, `Health::kAwaitingFirstInstall` is what the wake cycle sees (not *silent*, which it reads as
+"the link is known down" for an update), and `rak watch` and `status` say why. **Only a committed
+`rak update --first-install` newer than the mark clears it** — the supervisor reads the journal for
+that at every `begin()` and `step()`, and the console asks it to the moment the command ends — and
+a new `rak provision` sets it again. Marking also lifts a stop in force: the radio under it is a
+new radio.
+
 A radio that restarts by itself over and over (`kBootLoopBoots` `EV_BOOT`s inside
 `kBootLoopWindowMs`, or an uptime that never gets past `kBootLoopUptimeS`) is a boot loop and takes
 the ladder from rung 3 — a reset will not cure what a reset is already doing. A radio whose restart
@@ -1013,6 +1062,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | SWD wire, DP, AP | ✔ wire-level simulator | bit-bang timing | IDCODE, the AHB-AP's IDR, the speed ceiling |
 | nRF52, flasher | ✔ simulated chip, power loss | — | `rak swd id`: part, variant, protection; a real flash, the bootloader starts it |
 | the one door (S-5a) | ✔ the simulated chip with both kinds of APPROTECT and every factory state: every grant against every port state, every write without an erase, every address the door refuses, an erase that never finishes, a soft reset on a part that drops its debug port and one that does not, a grant used twice, the tripwire firing in a test that did not arm it; and each factory state provisioned through the door — the base word for word, `UICR.APPROTECT` as the kind says, one pin reset, the port after it | — | task p5-03's command on a factory radio (`docs/bench.md` §4a, phase 6) |
+| `rak provision` (S-5a) | ✔ the sequence over the door, against each factory state: provisioned word for word with one pin reset and the port after it; every refusal before the first write with the chip's counters at zero (the wrong id, `locked` for an open radio, an id for a closed one, a radio with an identity named by its key, no base, a base that fails 5p again, the radio held, the battery low, the kill line); an unknown variant refused with nothing erased on an open radio and, on a locked one, erased, refused, the table extended, finished; a verify difference named and the radio provisioned again; a power cut at every flash and UICR operation, at the chip erase and at the transfers between the writes, each followed by `rak provision check` and the line it says; the reset spacing waited out; the timing from the simulator's clock; a provisioned radio left alone across a simulated week of wakes, the first install clearing the mark over an erased settings page, a restart and a power cut keeping it; and the supervisor, an update and a week of wakes against a factory radio with the tripwire armed | — | a factory RUI3 radio through the D-subs at 125 kHz (`docs/bench.md` §4a, phase 6) |
 | manifest, signature, descriptor | ✔ spec fixtures, RFC vectors | — | — |
 | image store, journal | ✔ simulated flash, power loss | partition access | — |
 | updates | ✔ scripted radio and flash | — | a deliberate bad image rolls back |

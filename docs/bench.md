@@ -42,6 +42,7 @@ Two marks:
 | [2](#2-the-pins-and-the-reset-line) | The pins and the reset line | §1, a meter, then a scope, then the RAK wired |
 | [3](#3-the-link) | The link (the UART) | §2, the RAK with the repeater firmware |
 | [4](#4-swd) | SWD | §2, the SWD lines wired, a scope |
+| [4a](#4a-the-radios-base) ⚠ | The radio's base | §4, a factory RAK4630 (RUI3), a release with a `provision` file, the RAK's USB-C |
 | [5](#5-flashing) ★⚠ | Flashing | §4, a repeater image, time |
 | [6](#6-the-kill-line) ⚠ | The kill line | §§2–5, the kill emulator |
 | [7](#7-the-slot) | The slot | §§1–6 |
@@ -321,6 +322,71 @@ every number; the nRF52840 Product Specification ("Debug and trace") gives the c
   bit 24 (`S_RETIRE_ST`) set on a running core: `0x0100000x`. **`rak swd mem 0x50000000`** says
   `FAULT ... at 0x50000000`: nothing lives there, and the access port's error response is read
   and cleared, after which the next command works.
+
+## 4a. The radio's base
+
+**⚠ erases the radio whole: RUI3, any identity it had, UICR. A person's command, once per
+radio, naming the radio (`spec/SYSTEM.md` S-5a).** Phase 6, task 03 walks this with the rig; this
+is the walk.
+
+Needs: §4 walked (`rak swd id` answers through the filters); a **factory RAK4630 with RUI3** on the
+production chain — the LTE box's D-sub to the LoRa box's, through the bulkheads, as in the field
+(the hardware repository's `walter-swd-bench/README.md`, *What you need*); a repeater release
+that carries the board's `provision` file, pushed with `walterctl.py push --as base` (§8), and its
+`swd` image pushed `--as candidate`; the RAK's USB-C and a laptop for the end. The firmware's side
+is `components/core/provision/` over the door of `core/nrf52/provision_door` (task p5-02); the
+session, line for line, is `provisioning.md` *A factory radio*, and what the host tests proved —
+every factory state, every refusal with nothing written, a power cut at every operation — is
+`tasks/phase-5/reports/03.md`.
+
+- [ ] **`rak provision check` on the factory radio.** Expected: the base's line (`bootloader
+  0x000f4000, S140 6.1.1`, with the real base's byte count and *check 5p again … ok* — **write
+  down the milliseconds**, which is 5p over ~450 KB of HEX out of the Walter's flash); `battery:
+  unknown … accepted` (RUI3 answers no POWER_GET); `swd: DPIDR 0x2ba01477; control access port IDR
+  0x02880000; protection: open` or `CLOSED`; on an open radio `chip: nRF52840, variant AAF0:
+  improved APPROTECT …` and `device id <16 hex digits>`; on a closed one `link: no application
+  answers HELLO`; and `next: rak provision <that> confirm`. **Write down the variant and whether
+  the port was open or closed: ______ / ______.** This is `spec/SYSTEM.md` §10.2's first half,
+  and `PROJECT-KNOWLEDGE.md` wants it. A variant the table does not know is said here (*the
+  command would be refused at step 3*), with nothing erased: stop, and extend
+  `core/provision/variant.h` with its source before anything else.
+- [ ] **The typed line, and the seven steps.** Type exactly what `check` said. Expected, one line
+  per step as each ends, then `rak provision: PROVISIONED slot 0: device id …, variant …, base
+  sha256 …, port after the reset open; N s in all`. **Write down the time of each step** — the
+  simulator predicts, at 125 kHz with a real ~180 KB base, about 21 s for the write (447 µs a
+  word) and 40 s for the verify (866 µs a word), under a second for the erase (tERASEALL 169 ms
+  typical, polled every 10 ms), 1.6 s for the reset and the bootloader's `kBootloaderSettleMs`,
+  and the base's 98 passes over its ~450 KB of HEX out of the Walter's flash on top (invisible on
+  the host; `image verify base`'s milliseconds ×98 is the estimate): **about a minute and a
+  half, and a stop after step 4 is a sentence, not a hang.** On a locked radio step 3 comes after
+  step 4 (the identity is readable only then). If the port was closed and reads *still closed
+  after the erase and one soft reset*, note it: that is a part the Product Specification's
+  model does not cover.
+- [ ] **The port after the reset — §10.2's second half.** The `[7/7]` line says `the port after
+  it open, NRFFW[0] 0x000f4000` or `CLOSED`. **Write it down: ______.** Closed on an `AAF0` part
+  means the RAK bootloader in the release does not copy `UICR.APPROTECT` into `APPROTECT.DISABLE`
+  at start-up (it was built with an MDK older than 8.45.0): the radio works, the flasher cannot
+  reach it, and `rak update --first-install` will refuse the chip as *protected* until the
+  repeater firmware's release carries a bootloader that does. That is a finding for the repeater
+  repository, not a failure of this command.
+- [ ] **The RAK's USB-C on a laptop: a UF2 drive appears.** The bootloader waits in DFU mode with
+  no application. (Unplug it again before the next item: the Walter's debug port and a DFU over
+  USB are two masters.)
+- [ ] **`rak watch` says the slot awaits its first install**, and `status` says `radio health:
+  awaiting its first install`. Leave the unit for a few heartbeats (`rak ladder` asks now): no
+  rung is climbed, no reset pulse, no kill — the radio is silent by design.
+- [ ] **`rak update --first-install`** with the candidate pushed: the flasher accepts the chip
+  (`SoftDevice` where the profile says, the settings page erased and written), the radio boots the
+  application, the health check passes, *done*. `rak watch` no longer says *awaits*. **Write down
+  how long the first install took: ______.**
+- [ ] **The same command again, on a radio that now has an identity.** `rak provision check`
+  names it by its device id (the port is open); typing that line erases the application and its
+  identity with the radio, which is what naming an open radio consents to. Only if the radio is
+  disposable (`bench.local.json`, phase 6).
+- [ ] **A power cut in the middle, if a radio can be spared:** pull the Walter's USB during step 5.
+  Expected afterwards: `rak provision check` says *protection: CLOSED* on an `AAF0` part (something
+  is in flash, `UICR.APPROTECT` is not `0x5A` yet) and `next: rak provision locked confirm`; that
+  line finishes it. On a legacy part the port reads open and the line is the device id again.
 
 ## 5. Flashing
 
@@ -1066,8 +1132,8 @@ been simulated into one that has actually spent a day looking after a radio.
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
-reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 107 of
-them, in 17 files. Each has a sentence beside it where it is declared; **change the number and the
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 108 of
+them, in 18 files. Each has a sentence beside it where it is declared; **change the number and the
 sentence together**, and nowhere else - the host tests, the console's help and the documents all
 follow the constant.
 
@@ -1084,6 +1150,13 @@ a scope.
 | Constant | Now | Measured |
 |---|---:|---|
 | `kKillTiming` | `1000, 30000, 200` | |
+
+**`provision/provision.h`** (1) - **§4a** measures how long the Adafruit bootloader takes to come
+up after the pin reset before the debug port answers again.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kBootloaderSettleMs` | `1500` | |
 
 **`update/radio_update.h`** (9) - **§9** measures a real repeater from reset to HELLO, and how
 long a bad build takes to show itself.

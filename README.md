@@ -29,6 +29,7 @@ the two protocols the boxes share are in [`spec/`](spec/README.md) — start wit
 | 2 | images and updates: signatures, the image store, the radio's update, the Walter's own, the supervisor | built |
 | 3 | the uplink and staying alive: the modem, verified HTTPS, settings and the console, the duty cycle, the wake cycle | built |
 | 4 | **the agent**: the exit-node firmware's job logic at a seam, the mesh over the link, the uplink over the modem | waits for two piles elsewhere (`spec/SYSTEM.md` §8) |
+| 5 | the radio's base (S-5a): the `provision` file in the store, the CTRL-AP and UICR behind one door, `rak provision` | built |
 | later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
 
 Also not done, and not hidden: **no release key exists yet**, so a unit accepts no update at all
@@ -63,10 +64,12 @@ Also not done, and not hidden: **no release key exists yet**, so a unit accepts 
 - **It sends no mesh traffic.** The box link has a call for every mesh request the protocol
   defines; this firmware uses none of them, and a grep and a simulated month of wakes hold it to
   that.
-- **It never erases a chip.** There is no code path in this repository that writes the nRF52's
-  `ERASEALL` or `ERASEUICR`, or any word of its UICR. A module whose access port is protected is
-  detected, reported and refused; opening one destroys the bootloader, the SoftDevice and the
-  node's identity, and is a bench procedure for a person.
+- **Nothing automatic erases a chip or writes UICR.** No supervisor rung, no update, no wake and
+  no job from a server leads to the nRF52's `ERASEALL` or to a word of its UICR; a module whose
+  access port is protected is detected, reported and refused by everything that runs by itself.
+  The one path is `spec/SYSTEM.md` S-5a: a person's typed `rak provision <radio> confirm`, which
+  erases a factory radio whole and gives it its base through one door, and rails R3 and R3b hold
+  that door to its one caller ([`docs/provisioning.md`](docs/provisioning.md), *A factory radio*).
 - **It does not update two things in one wake**, and it does not update anything while its own
   image is unconfirmed (`spec/SYSTEM.md` S-7).
 
