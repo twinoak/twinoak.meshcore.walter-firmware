@@ -12,6 +12,7 @@
 // application region and from the bootloader up (rail R4).
 #include <doctest.h>
 
+#include <cstdio>
 #include <string>
 
 #include "core/flasher/board_profile.h"
@@ -39,6 +40,13 @@ constexpr std::uint32_t kVariantImproved = 0x41414630;  // "AAF0": build code F,
 constexpr const char* kThisDeviceId = "0BADF00DDEADBEEF";  // the simulated chip's: %08X%08X of DEVICEID[1], [0]
 constexpr const char* kOtherDeviceId = "0BADF00DDEADBEEE";
 const core::flasher::BoardProfile& kProfile = core::flasher::kRak4630Single;
+
+// A word as a person reads it; std::string, because doctest streams a char pointer as a pointer.
+std::string hex(std::uint32_t v) {
+  char buf[16];
+  std::snprintf(buf, sizeof buf, "0x%08lx", static_cast<unsigned long>(v));
+  return std::string(buf);
+}
 
 // The base's addresses, as FIRMWARE-MANIFEST.md §4a has them: the MBR at 0, the SoftDevice's
 // information structure at 0x3000, the bootloader at 0xF4000, NRFFW[0] and [1] in UICR.
@@ -397,8 +405,8 @@ TEST_CASE("eraseAll on each factory state: flash, UICR and RAM to 0xFF, the stat
     CHECK(b.chip.resets().pin == 0);
     CHECK(b.chip.resets().power_on == 0);
     CHECK(b.chip.resets().ctrl_ap_soft == 0);
-    MESSAGE(std::string(f.name) << ": UICR.APPROTECT " << approtect_before << " -> erased; port after the erase "
-                                << (r.port_open ? "open" : "closed"));
+    MESSAGE(std::string(f.name) << ": UICR.APPROTECT " << hex(approtect_before) << " -> erased; port after the erase "
+                                << std::string(r.port_open ? "open" : "closed"));
     b.close();
   }
 }
@@ -528,9 +536,10 @@ TEST_CASE("each factory state, provisioned through the door: the base word for w
       CHECK(b.chip.errors().empty());
       CHECK(b.target.errors().empty());
       CHECK(b.pins.violations.empty());
-      MESSAGE(std::string(f.name) << (f.improved ? (bootloader_opens_port ? ", a bootloader that opens the port" : ", a bootloader that does not") : "")
-                                  << ": provisioned, UICR.APPROTECT " << want_approtect << ", port after the pin reset "
-                                  << (open_after ? "open" : "closed"));
+      MESSAGE(std::string(f.name)
+              << std::string(f.improved ? (bootloader_opens_port ? ", a bootloader that opens the port" : ", a bootloader that does not") : "")
+              << ": provisioned, UICR.APPROTECT " << hex(want_approtect) << ", port after the pin reset "
+              << std::string(open_after ? "open" : "closed"));
       b.close();
     }
   }

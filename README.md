@@ -172,7 +172,7 @@ every test in the suite rather than one).
 
 | | |
 |---|---|
-| never a chip erase | no `ERASEALL`, no `ERASEUICR`, no write to UICR — a grep over every source, and a tripwire in the simulated chip |
+| never a chip erase by anything automatic | no `ERASEALL`, no `ERASEUICR`, no write to UICR anywhere but one door — a grep over every source that allows exactly two files, `regs.h` and `provision_door.cpp` (R3), and a tripwire in the simulated chip that only a test about the door may disarm. Since `spec/SYSTEM.md` S-5a (2026-10-20) a person's typed `rak provision <radio> confirm` is the one exception: it goes through that door, which checks the typed grant against the chip itself, and R3b holds the door to its one caller — `core/provision/`, and never the supervisor, an update, the flasher, the wake cycle or an agent |
 | the pins have rules | reset is open-drain and **never driven high**; everything radio-facing is an input before the kill line goes high; two resets at least a second apart — checked by the fake pins at every transition of every test |
 | an image goes into its region and nowhere else | the flasher's region is this firmware's own table per board; a manifest cannot widen it, and the simulated chip fails any test that writes outside the window it declared |
 | nothing is flashed that is not signed | the store's two doors take only the verdict's tokens, which have no public constructor: no signed manifest, no erased sector |
