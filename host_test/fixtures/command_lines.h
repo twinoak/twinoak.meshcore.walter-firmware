@@ -44,6 +44,8 @@ const CommandLine kCommandLines[] = {
     {"rak swd id", "rak swd id"},
     {"rak swd mem", "rak swd mem 0x10000100 4"},
     {"rak flash-test", "rak flash-test confirm"},
+    {"rak provision check", "rak provision check"},
+    {"rak provision", "rak provision 0badf00ddeadbeef confirm"},
     {"rak update", "rak update"},
     {"rak update --first-install", "rak update --first-install"},
     {"rak update status", "rak update status"},

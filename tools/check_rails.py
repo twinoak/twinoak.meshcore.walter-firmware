@@ -313,6 +313,9 @@ GRANT_HEADER = "components/core/include/core/nrf52/provision_grant.h"
 DOOR_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]core/nrf52/provision_door\.h[>"]')
 GRANT_INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]core/nrf52/provision_grant\.h[>"]')
 SEQUENCE_DIR = "components/core/provision/"
+# The sequence's two homes: its sources, and its headers where every header of core/ lives
+# (tasks/phase-5/reports/02.md, deviation 2).
+SEQUENCE_DIRS = (SEQUENCE_DIR, "components/core/include/core/provision/")
 MAY_INCLUDE_DOOR = (DOOR_SOURCE,)
 MAY_INCLUDE_GRANT = (DOOR_HEADER, DOOR_SOURCE, "components/core/console/console.cpp")
 MUST_INCLUDE_NEITHER = ("components/core/supervisor", "components/core/update", "components/core/flasher",
@@ -324,8 +327,9 @@ MUST_INCLUDE_NEITHER = ("components/core/supervisor", "components/core/update", 
 def rail_one_door(r):
     """spec/SYSTEM.md S-5a: nothing automatic leads to the erase - not the supervisor, not an
     update, not the agent, not a job from the server. provision_door.h is included by
-    core/provision/ (the console command's sequence, task p5-03) and by nothing else; the grant's
-    header by core/provision/ and console.cpp (where the typed verb runs) and nothing else."""
+    core/provision/ (the console command's sequence, task p5-03: its sources there, its headers
+    under include/core/provision/) and by nothing else; the grant's header by core/provision/ and
+    console.cpp (where the typed verb runs) and nothing else."""
     r.problems(must_exist(DOOR_HEADER, GRANT_HEADER, DOOR_SOURCE), "the door or the grant is gone:")
     if must_exist(DOOR_HEADER, GRANT_HEADER, DOOR_SOURCE):
         return r
@@ -338,7 +342,7 @@ def rail_one_door(r):
     grant_users = includes_of(GRANT_INCLUDE)
 
     def allowed(path, may):
-        return path in may or path.startswith(SEQUENCE_DIR)
+        return path in may or any(path.startswith(d) for d in SEQUENCE_DIRS)
 
     bad_door = [p for p in door_users if not allowed(p, MAY_INCLUDE_DOOR)]
     bad_grant = [p for p in grant_users if not allowed(p, MAY_INCLUDE_GRANT)]

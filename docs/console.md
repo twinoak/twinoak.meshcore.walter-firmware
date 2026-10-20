@@ -99,8 +99,10 @@ supervisor's stop is printed at every level.
 | `rak swd id` | connect, identify the nRF52840 (FICR), its protection and its core's state, release |
 | `rak swd mem <addr> [words]` | read 1 to 32 words at a word-aligned address (hex `0x…` or decimal), read-only |
 | `rak flash-test confirm` | a two-page pattern at the top of the application region, only if those pages are blank: written, verified, erased again; the radio restarted. **It wants the word**: it is the one command that writes to a radio's flash outside the update machine |
+| `rak provision check` | no write, ever: attach to the radio and say whether its access port is open (and its device id) or closed (and whether an application answers on the link), what the variant table would do, the base in the store, and the exact line to type next |
+| `rak provision <DEVICEID>\|locked\|locked:<key16> confirm` | give a factory radio its base (`spec/SYSTEM.md` S-5a): a chip erase through the CTRL-AP, the base's flash and UICR words through the one door, every word read back, one pin reset. **It erases the radio whole** — RUI3, any identity, UICR — so it wants the radio named as `rak provision check` says and the word; the slot then awaits its first install (minutes; *The radio's base* below, `provisioning.md`) |
 | `rak update` | flash the candidate, prove it, make it golden — or roll back to the golden image and never try that candidate again (minutes; `docs/update.md`) |
-| `rak update --first-install` | the same with no golden image to return to: a person's command only |
+| `rak update --first-install` | the same with no golden image to return to: a person's command only. A committed first install is also what ends a slot's *awaiting its first install* after `rak provision` |
 | `rak update status` | the journal's story of the last update of the radio |
 | `rak role scanner\|repeater` | flash the stored scanner image and prove a scanner is there; or the golden image back, proved as an update would be |
 | `rak watch` | the supervisor's view: whether the radio is healthy, when it was last so, today's counts against the daily caps, the last good battery reading, the radio's restarts, a stop in force, and the last three incidents with every rung they tried. It only reads |
@@ -446,6 +448,79 @@ application region are not blank: refused* with the address of the first word th
 failure after the halt — a page that will not verify after a retry, a target that stops answering —
 is reported with its step and address; where the debug port still answers, the radio is reset on
 the way out so that it runs its bootloader rather than sitting halted.
+
+## The radio's base: `rak provision`
+
+From task p5-03 (`spec/SYSTEM.md` S-5a; `provisioning.md`, *A factory radio*, is the session,
+replayed by a host test; `ARCHITECTURE.md` §4 is where the sequence sits). A factory RAK4630 runs
+RUI3 and has none of the MBR, SoftDevice and bootloader our images are linked against. The base
+(§4a) is in the store (`image receive base`, *The board's base* above); this command puts it on
+the radio, and it is **the only thing in this firmware that erases a chip or writes UICR** —
+through one door that nothing automatic can reach (`README.md`, the rails).
+
+| Command | What it does |
+|---|---|
+| `rak provision check` | *(`rak @0 provision check`)* the base in the store, with check 5p run again over the stored bytes; the battery as the radio reports it, or *unknown* (accepted, as a first install accepts it: a factory radio answers nothing); HELLO on the link; then the debug port: `DPIDR`, the control port's `IDR`, and the access port **open** — `FICR`: part, variant and what the table makes of it, the device id — or **CLOSED**, with whether an application answers on the link. The last line is the exact line to type. Anything the command would refuse is said: *the command would be refused at step 1: no base in the store*, *… at step 3: INFO.VARIANT is not in the table*. **Nothing is written** |
+| `rak provision <radio> confirm` | `<radio>` is the device id as `rak swd id` prints it (16 hex digits, read without regard to case) for a radio whose port is open; `locked` for a closed one that runs no application; `locked:<key16>` — the first 16 hex digits of the public key `rak id` prints — for a closed one whose application answers, so that a radio with an identity is named before it loses it. Then the seven steps below, each printed as it ends, and one outcome line. Without the word it prints what it would do and the line to type; a word that is none of the three is refused before a register is read |
+
+The seven steps, each a name in the outcome so that a refusal says where it ended:
+
+1. **check** — the base: in the store for this slot, passing check 5p again (the store is flash),
+   its bytes its record's; the radio not held by an update with a run in hand or by the
+   supervisor's ladder; the kill line not driven; HELLO on the link; the battery above the
+   update's threshold and not falling (an unknown reading is accepted). The slot is taken and
+   held for the whole command. **Refused here: nothing touched.**
+2. **attach** — `DPIDR`, the control port's `IDR`, `APPROTECTSTATUS`. Open: `FICR` — refused if the
+   part is not an nRF52840, the typed id is not this radio's, or `locked` was typed. Closed: no
+   answer on the link → only `locked`; an answer → only `locked:<key16>` with that key. The door
+   then checks the port half of this again against the chip itself. **Refused here: nothing
+   touched.**
+3. **variant** — the table (`components/core/provision/variant.h`, with its sources): build code
+   A–D legacy (`UICR.APPROTECT` left erased), F improved (revision 3; `UICR.APPROTECT = 0x5A`),
+   anything else refused. On an open radio this comes before the erase, with nothing touched;
+   on a closed one the identity is readable only after the erase, and a variant outside the table
+   then **stops the command with the radio erased** — it has lost nothing it had not lost
+   already; extend the table, run the same command again.
+4. **erase** — CTRL-AP `ERASEALL`; the port read back; closed → **one** CTRL-AP soft reset (the
+   only reset until step 7), attach again; still closed → stop. Blank check: flash word 0,
+   `NRFFW[0]` and `UICR.APPROTECT` read `0xffffffff`. The core halted.
+5. **write** — the base's words through the door, in runs: flash first, then UICR, then
+   `UICR.APPROTECT` with the table's kind. No pin, power-on or brownout reset between the erase
+   and this last write: on a revision 3 part the port stays open only until one.
+6. **verify** — every word read back and compared; `UICR.APPROTECT` against the table's value. A
+   difference stops the command and names the first address, the base's word and the radio's;
+   the radio is then safe to provision again.
+7. **reset** — the halt released, one pin reset through the pins' own rules (open drain; at least
+   a second since the last pulse, waited for, never skipped — `rak reset` just before it delays
+   it), the bootloader given 1500 ms, attach again: the port **open** (with `NRFFW[0]`) or
+   **CLOSED** after it. Closed on a revision 3 part is `spec/SYSTEM.md` §10.2 — the bootloader
+   does not copy `UICR.APPROTECT` into `APPROTECT.DISABLE` — reported, not a failure.
+
+The outcome: `rak provision: PROVISIONED slot 0: device id …, variant …, base sha256 …, port
+after the reset open; N s in all`, then that the slot awaits its first install, then the two
+lines to type next — `python tools/walterctl.py push --port <port> --as candidate <release-dir>`
+and `rak update --first-install`: a first install flashes the **candidate**, and the image that
+passes its health check becomes golden. A refusal is one line, `error: rak provision: refused at
+step N (<name>): <why>`, followed by *nothing was erased* or *the radio is erased: run the command
+again from the top*. There is no journal: a failure after step 4 leaves the radio erased, which
+is what the command starts from, so the same command (as `rak provision check` says it — after a
+power cut a revision 3 part with something in flash reads closed again, and the line becomes
+`locked`) finishes it. The whole of it goes to the log ring `dump` prints.
+
+**Awaiting its first install.** From the moment before the erase until a `rak update
+--first-install` commits, the slot is marked so in the supervisor's retained record and in the
+journal (a Walter restart and a power cut keep it): a radio with a bootloader and no application
+is silent on the link by design, and the ladder — a reset, a power cycle, a golden image — is not
+climbed for it. `rak watch` and `status` say *awaiting its first install*. Nothing else clears
+the mark; a new `rak provision` sets it again.
+
+What the host tests proved — every factory state (legacy open and locked, revision 3 open and
+locked, with a bootloader that opens the port and one that does not) provisioned word for word
+with one pin reset; every refusal with the chip's write and erase counters at zero; a power cut
+at every flash and UICR operation and at the transfers between them, each followed by the line
+`rak provision check` says and a finished radio; and the supervisor, an update and a simulated
+week of wakes against a factory radio with the simulated chip's tripwire armed — is in
+`tasks/phase-5/reports/03.md`.
 
 ## The radio's update
 

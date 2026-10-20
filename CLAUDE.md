@@ -23,7 +23,9 @@ procedure and it wins over this file.
   repository). The pin rules are in `docs/ARCHITECTURE.md` §2 and are not
   optional: reset open-drain only, tristate before kill, resets a second
   apart.
-- Never add an automatic path to a chip erase or a UICR write on the nRF52,
-  never skip TLS verification, never print a token or a password, never flash
+- Never add an automatic path to a chip erase or a UICR write on the nRF52:
+  S-5a's typed `rak provision` is the one path, through `core/provision/` and
+  the door in `core/nrf52/provision_door`, and rails R3 and R3b hold it there.
+  Never skip TLS verification, never print a token or a password, never flash
   an image that has not passed all six checks of `spec/FIRMWARE-MANIFEST.md`
   §5.

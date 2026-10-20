@@ -32,6 +32,7 @@ Worked out before anything is done, in this order:
 | **the scanner is running** | the link client is in text mode (§9: NDJSON lines, no frames) | not a fault. Reported (`rak watch` says so) and left alone |
 | **this Walter has just powered up** | the boot's reason is a power-up or a brown-out and the asking began inside `kWalterPowerUpGraceMs` of it — or the rail is still settling | wait. A power-up of the ESP32-S3 glitches GPIO1–14 low for about 60 µs and that reaches nRESET (§2 rule 5): **our own** power-up reset the radio, and it is still booting |
 | **an update is in progress** | the radio-update machine is active, or the journal says a run of it is unfinished, or the Walter's own update is unconfirmed (S-7) | not ours to disturb |
+| **it awaits its first install** (task p5-03) | `rak provision` erased the radio and gave it its base, and no `rak update --first-install` has committed since: the mark is in the retained record and in every journal entry | not a fault. The radio has a bootloader and no application and is silent by design; left alone, and `rak watch` says so. Only a committed first install newer than the mark clears it (the console asks the supervisor the moment the command ends; `begin()` and every `step()` read the journal for it); a new `rak provision` sets it again, and lifts a stop in force |
 | **it really is not answering** | none of the above | the incident, and the ladder |
 
 A session decides the first of these, not a moment: §9 says a Walter that has decided it is talking

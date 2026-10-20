@@ -53,6 +53,8 @@ const char* describe(Silence silence) {
     case Silence::kWalterPoweredUp: return "this Walter has just powered up: the radio is still booting";
     case Silence::kUpdateRunning: return "an update is in progress: not ours to disturb";
     case Silence::kNotAnswering: return "the radio is not answering";
+    case Silence::kAwaitingFirstInstall:
+      return "the radio awaits its first install after rak provision: silent by design, left alone";
   }
   return "?";
 }
@@ -125,6 +127,8 @@ const char* describe(Health health) {
     case Health::kHealthy: return "healthy";
     case Health::kScanner: return "the scanner (NoiseScope) is running";
     case Health::kSilent: return "silent";
+    case Health::kAwaitingFirstInstall:
+      return "awaiting its first install (provisioned; 'rak update --first-install' is next)";
   }
   return "?";
 }
@@ -140,6 +144,8 @@ const char* describe(Wrote what) {
     case Wrote::kAttention: return "an attention from the radio";
     case Wrote::kCapsReset: return "the day's counts emptied by hand";
     case Wrote::kQuietOver: return "the quiet period passed";
+    case Wrote::kAwaitingFirstInstall: return "rak provision: the slot awaits its first install";
+    case Wrote::kFirstInstallDone: return "the first install committed: the slot no longer awaits it";
   }
   return "?";
 }
@@ -173,7 +179,7 @@ void encode(const Payload& p, std::uint8_t out[kPayloadBytes]) {
 
 bool decode(const update::Entry& e, Payload* out) {
   if (e.kind != update::kind::kSupervisor || e.size < kPayloadBytes || out == nullptr) return false;
-  if (e.payload[0] > static_cast<std::uint8_t>(Wrote::kQuietOver)) return false;
+  if (e.payload[0] > static_cast<std::uint8_t>(Wrote::kFirstInstallDone)) return false;
   if (e.payload[1] > static_cast<std::uint8_t>(Rung::kStop)) return false;
   if (e.payload[2] > static_cast<std::uint8_t>(Cause::kBootLoop)) return false;
   out->what = static_cast<Wrote>(e.payload[0]);
@@ -193,10 +199,10 @@ bool decode(const update::Entry& e, Payload* out) {
   out->restarts = e.payload[27];
   out->uptime_s = get32(e.payload + 28);
   out->rungs_tried = e.payload[32];
-  out->silence = e.payload[33] <= static_cast<std::uint8_t>(Silence::kNotAnswering)
+  out->silence = e.payload[33] <= static_cast<std::uint8_t>(Silence::kAwaitingFirstInstall)
                      ? static_cast<Silence>(e.payload[33])
                      : Silence::kNone;
-  out->health = e.payload[34] <= static_cast<std::uint8_t>(Health::kSilent)
+  out->health = e.payload[34] <= static_cast<std::uint8_t>(Health::kAwaitingFirstInstall)
                     ? static_cast<Health>(e.payload[34])
                     : Health::kUnknown;
   out->detail = get32(e.payload + 36);
@@ -256,12 +262,20 @@ void Supervisor::loadRecord() {
     restarts_ = r.restarts;
     restarts_total_ = r.restarts_total;
     restart_window_ms_ = r.restart_window_ms;
+    awaiting_first_install_ = r.awaiting_first_install != 0;
+    awaiting_since_seq_ = r.awaiting_since_seq;
     return;
   }
   // No retained record: a power cut, or the first boot. Flash is what is left (the journal's
   // entries each carry the counts after them), and a cap is never forgiven by a power cut.
   Payload p;
   if (!lastEntry(&p)) return;
+  // The mark too (task p5-03): every entry carries it, and the entry that made it has the seq
+  // a first install must be newer than.
+  if ((p.flags & kFlagAwaitingFirstInstall) != 0) {
+    awaiting_first_install_ = true;
+    awaiting_since_seq_ = lastMarkSeq();
+  }
   counts_.resets = p.counts.resets;
   counts_.power_cycles = p.counts.power_cycles;
   counts_.flashes = p.counts.flashes;
@@ -293,7 +307,67 @@ void Supervisor::storeRecord() {
   r.stopped_ms = stopped_ms_;
   r.restart_window_ms = restart_window_ms_;
   r.restarts_total = restarts_total_;
+  r.awaiting_first_install = awaiting_first_install_ ? 1 : 0;
+  r.awaiting_since_seq = awaiting_since_seq_;
   (void)retained_.store(interfaces::RetainedSlot::kSupervisor, &r, sizeof r);
+}
+
+// The newest entry that marked the slot as awaiting its first install, for its seq; 0 when the
+// ring no longer holds one (the mark is then held to the newest entry's flag alone, and any
+// committed first install the ring still holds is older than that entry and does not clear it,
+// which is the conservative reading).
+std::uint32_t Supervisor::lastMarkSeq() const {
+  if (journal_ == nullptr) return 0;
+  update::Cursor cursor;
+  update::Entry e;
+  bool more = journal_->first(&cursor, &e);
+  while (more) {
+    Payload p;
+    if (decode(e, &p) && p.what == Wrote::kAwaitingFirstInstall) return e.seq;
+    more = journal_->previous(&cursor, &e);
+  }
+  return 0;
+}
+
+// `rak update --first-install` committed, after the mark: the journal's newest radio-update entry
+// is a first install that ended `done`, and it is newer than the entry that made the mark. Only
+// that clears it (and a new `rak provision` sets it again).
+void Supervisor::reconcileFirstInstall() {
+  if (!awaiting_first_install_ || journal_ == nullptr) return;
+  update::Entry e;
+  update::Payload up;
+  if (!journal_->lastOf(update::kind::kRadioUpdate, &e) || !update::decode(e, &up)) return;
+  if (up.kind != update::Kind::kFirstInstall || up.state != update::State::kDone) return;
+  if (e.seq <= awaiting_since_seq_) return;
+  awaiting_first_install_ = false;
+  awaiting_since_seq_ = 0;
+  if (status_.health == Health::kAwaitingFirstInstall) status_.health = Health::kUnknown;
+  storeRecord();
+  Payload p = payloadNow(Wrote::kFirstInstallDone);
+  p.detail = e.seq;
+  (void)journalEntry(Wrote::kFirstInstallDone, p);
+}
+
+void Supervisor::markAwaitingFirstInstall() {
+  awaiting_first_install_ = true;
+  awaiting_since_seq_ = 0;
+  // A stop in force was about the radio that is being erased: lifted, as reset-caps lifts it.
+  // The counts stay - the day's caps are about the battery, which is the same battery.
+  if (stopped_) {
+    stopped_ = false;
+    stop_reason_ = StopReason::kNone;
+    stopped_after_ = 0;
+    stopped_ms_ = 0;
+    if (state_ == State::kStopped) state_ = State::kIdle;
+  }
+  by_hand_ = true;
+  std::uint32_t seq = 0;
+  if (journalEntry(Wrote::kAwaitingFirstInstall, payloadNow(Wrote::kAwaitingFirstInstall), &seq)) {
+    awaiting_since_seq_ = seq;
+  }
+  by_hand_ = false;
+  storeRecord();
+  refreshStatus();
 }
 
 void Supervisor::loadIncidents() {
@@ -337,13 +411,14 @@ Payload Supervisor::payloadNow(Wrote what) {
   if (by_hand_) p.flags |= kFlagByHand;
   if (status_.window_reanchored) p.flags |= kFlagReanchored;
   if (cause_ == Cause::kBootLoop) p.flags |= kFlagBootLoop;
+  if (awaiting_first_install_) p.flags |= kFlagAwaitingFirstInstall;
   const Incident* in = nullptr;
   if (incident_count_ > 0 && incidents_[0].outcome == Outcome::kRunning) in = &incidents_[0];
   if (in != nullptr) p.rungs_tried = in->rungs_tried;
   return p;
 }
 
-bool Supervisor::journalEntry(Wrote what, const Payload& about) {
+bool Supervisor::journalEntry(Wrote what, const Payload& about, std::uint32_t* out_seq) {
   if (journal_ == nullptr) return false;
   std::uint8_t bytes[kPayloadBytes];
   encode(about, bytes);
@@ -352,6 +427,7 @@ bool Supervisor::journalEntry(Wrote what, const Payload& about) {
       update::JournalError::kNone) {
     return false;
   }
+  if (out_seq != nullptr) *out_seq = seq;
   ++entries_;
   status_.entries = entries_;
   if (first_seq_ == 0 && what == Wrote::kIncident) {
@@ -773,6 +849,8 @@ void Supervisor::refreshStatus() {
   status_.rung = rung_;
   status_.entries = entries_;
   status_.attentions = static_cast<std::uint32_t>(attention_count_);
+  status_.awaiting_first_install = awaiting_first_install_;
+  status_.awaiting_since_seq = awaiting_since_seq_;
   status_.quiet_left_ms = 0;
   if (stopped_) {
     if (now < stopped_ms_) {
@@ -808,11 +886,15 @@ void Supervisor::begin() {
   }
   state_ = stopped_ ? State::kStopped : State::kIdle;
   storeRecord();
+  // A first install that committed while this Walter was down, or just before it restarted,
+  // clears the mark here (task p5-03).
+  reconcileFirstInstall();
   refreshStatus();
 }
 
 Step Supervisor::step() {
   Step s;
+  reconcileFirstInstall();
   switch (state_) {
     case State::kIdle: s = stepIdle(); break;
     case State::kClassify: s = stepClassify(); break;
@@ -875,6 +957,9 @@ Silence Supervisor::classify() {
       return Silence::kUpdateRunning;
     }
   }
+  // Task p5-03: a radio that `rak provision` gave its base and nothing to run is silent on
+  // purpose, until `rak update --first-install` commits.
+  if (awaiting_first_install_) return Silence::kAwaitingFirstInstall;
   return Silence::kNotAnswering;
 }
 
@@ -915,6 +1000,9 @@ Step Supervisor::stepClassify() {
     }
     case Silence::kUpdateRunning:
       return enter(State::kIdle, describe(Silence::kUpdateRunning));
+    case Silence::kAwaitingFirstInstall:
+      status_.health = Health::kAwaitingFirstInstall;
+      return enter(State::kIdle, describe(Silence::kAwaitingFirstInstall));
     case Silence::kNone:
     case Silence::kNotAnswering:
       break;

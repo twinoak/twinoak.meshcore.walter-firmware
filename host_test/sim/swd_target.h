@@ -111,6 +111,11 @@ class SwdTarget final : public interfaces::Pins {
   bool strict = true;                 // a host protocol error fails the running test at once
   bool present = true;                // false: no target and no pull-up; the line keeps what was last driven
   bool silent = false;                // powered and there, answering nothing
+  // The power goes after this many answered transfers (task p5-03: a power cut at every step of
+  // `rak provision`, where the steps between the writes are reads): the target falls silent and
+  // on_silenced runs, which a bench uses to take the chip's power with it. 0: never.
+  unsigned silent_after_transfers = 0;
+  std::function<void()> on_silenced;
   bool requires_line_reset = true;    // a request before any line reset is a host error (B4.3.3)
   unsigned min_line_reset_clocks = 50;  // B4.3.3
   unsigned wait_next = 0;             // WAIT to the next N requests that may WAIT (B4.2.3)
@@ -173,6 +178,14 @@ class SwdTarget final : public interfaces::Pins {
   void clearErrors() { errors_.clear(); }
 
  private:
+  // One transfer answered: counted, and the silent_after_transfers knob applied.
+  void noteTransfer() {
+    counters_.transfers++;
+    if (silent_after_transfers != 0 && counters_.transfers >= silent_after_transfers && !silent) {
+      silent = true;
+      if (on_silenced) on_silenced();
+    }
+  }
   enum class Mode : std::uint8_t { kJtag, kSwd };
   // Where the target is in a transfer, in rising edges (see core/swd/wire.cpp, Wire::transfer).
   enum class Phase : std::uint8_t {

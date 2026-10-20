@@ -195,7 +195,11 @@ rak update: done: 0.3.1+abc1234 (sha256 1f2e3d4c5b6a7988...) is the golden image
 
 `rak update --first-install` is the same run with no golden image to return to - a person's
 command only: a unit's first repeater image, loaded as a candidate over USB. If it fails, the
-unit is *stuck* with *no image to return to*, and the candidate is on the bad list.
+unit is *stuck* with *no image to return to*, and the candidate is on the bad list. On a radio
+that `rak provision` has just given its base (task p5-03) the bootloader's settings page is
+erased, which the flasher takes as it takes any page: the record it writes before the first erase
+and the valid one after the read-back are what the bootloader starts from. A committed first
+install is also what ends the slot's *awaiting its first install* (`docs/supervisor.md`).
 
 `rak update status` prints one line about the journal (entries, sectors, the next sequence number,
 the head), then the last run's story oldest first - `1. seq 12: check - update, slot 0, image

@@ -75,6 +75,15 @@ const CommandDef kCommands[kCommandCount] = {
      "write, verify and erase a two-page pattern at the top of the radio's application region, "
      "only if those pages are blank; the radio restarts. It writes to the radio's flash outside "
      "the update machine, so it wants the word"},
+    {"rak provision check", "rak provision check", Group::kRadio,
+     "no write, ever: attach to the radio and say whether its access port is open (and its "
+     "DEVICEID) or closed (and whether an application answers on the link), what the variant "
+     "table would do, the base in the store, and the exact line to type next"},
+    {"rak provision <DEVICEID>|locked|locked:<key16> confirm", "rak provision", Group::kRadio,
+     "give a factory radio its base (S-5a): a chip erase through the CTRL-AP, the base's flash "
+     "and UICR words through the one door, every word read back, one pin reset. It erases the "
+     "radio whole - RUI3, any identity, UICR - so it wants the radio named and the word; the "
+     "slot then awaits its first install (minutes; docs/provisioning.md)"},
     {"rak update", "rak update", Group::kRadio,
      "flash the candidate, prove it, make it golden - or roll back to the golden image and never "
      "try that candidate again (minutes; docs/update.md)"},
