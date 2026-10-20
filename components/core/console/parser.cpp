@@ -315,9 +315,10 @@ Parsed parseRak(char* rest) {
   return refuse2("unknown rak subcommand (try 'help'): ", sub);
 }
 
-// `image <subcommand> ...` (task p2-02). The optional slot comes after the image's role -
-// `image verify golden @1` - which is the shape the task gives the commands; `image list` and
-// `image bad` are about the whole store and take nothing.
+// `image <subcommand> ...` (task p2-02; task p5-01 added `base`, which is the slot's base and
+// not an image - the words below say so where a refusal has to name them). The optional slot
+// comes after the image's role - `image verify golden @1` - which is the shape the task gives the
+// commands; `image list` and `image bad` are about the whole store and take nothing.
 Parsed parseImage(char* rest, std::uint8_t* slot) {
   if (*rest == 0) {
     return refuse("image needs a subcommand: image list | verify <which> | erase <which> | bad | receive <which>");
@@ -352,7 +353,7 @@ Parsed parseImage(char* rest, std::uint8_t* slot) {
   }
 
   if (!hasArg) {
-    return refuse3("image ", sub, " needs an image: golden, candidate or scanner");
+    return refuse3("image ", sub, " needs one of golden, candidate, scanner or base");
   }
   // The role, then an optional @slot and nothing else.
   char* word = arg;
@@ -364,12 +365,13 @@ Parsed parseImage(char* rest, std::uint8_t* slot) {
   }
   core::image::Which which = core::image::Which::kGolden;
   if (!core::image::whichFromName(word, &which)) {
-    return refuse2("image: not one of golden, candidate or scanner: ", word);
+    return refuse2("image: not one of golden, candidate, scanner or base: ", word);
   }
   // The golden image is never erased by a command (S-5: a known-good image is always on hand);
   // said here so that the refusal names the command and not the store.
   if (verb == Verb::kImageErase && which == core::image::Which::kGolden) {
-    return refuse("image erase: the golden image is not erased (image erase candidate | scanner)");
+    return refuse("image erase: the golden image is not erased (image erase candidate | scanner "
+                  "| base)");
   }
   if (*after != 0) {
     char* slot_word = after;
@@ -379,7 +381,7 @@ Parsed parseImage(char* rest, std::uint8_t* slot) {
       *tail++ = 0;
       while (*tail != 0 && isSpace(*tail)) ++tail;
     }
-    if (*tail != 0) return refuse3("image ", sub, " takes an image and an optional @slot");
+    if (*tail != 0) return refuse3("image ", sub, " takes one of them and an optional @slot");
     std::uint32_t number = 0;
     if (slot_word[0] != '@' || !parseSeconds(slot_word + 1, number) || !board::isSlot(number)) {
       return refuse2("image: not a slot (@0 or @1): ", slot_word);

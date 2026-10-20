@@ -164,6 +164,10 @@ class Console {
   bool imagesOk();  // false, with one error line, when this build has no store
   void imageList();
   void imageOneLine(const image::Record& record);
+  // The base's two lines of `image list`, and `image verify base`, which re-runs check 5p over
+  // the bytes in the Walter's flash (spec/FIRMWARE-MANIFEST.md §5, §4a).
+  void baseLines(const image::Record& record);
+  void verifyBase(const image::Record& record);
   void imageVerify(image::Which which);
   void imageErase(image::Which which);
   void imageBad();
@@ -283,6 +287,8 @@ class Console {
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.
   flasher::Flasher flasher_;
+  // §4a's reader, for `image verify base`. A member for the same reason: ~2 KB.
+  image::BaseReader base_reader_;
   // The last few kilobytes this port printed, for `dump`. A member for the same reason the
   // flasher is one: 4 KB does not belong on the main task's 3584-byte stack.
   LogRing log_;

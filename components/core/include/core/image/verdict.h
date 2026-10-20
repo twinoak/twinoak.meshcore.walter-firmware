@@ -12,6 +12,17 @@
 //      build's own profile of the board (core/flasher/board_profile.h) - a manifest cannot widen
 //      what may be written.
 //
+// And §5's one variation, for the board's base - a `provision` file (§4a; task p5-01):
+//
+//   5p. instead of 5 and 6, which a base cannot pass (it carries no descriptor and no load
+//       address): the image's app_region lies inside this build's region for the board, and the
+//       file passes §4a's seven rules (core/image/base.h) against **this build's** region - the
+//       stricter of the two, the one the radio really has.
+//
+// A base that passes 1, 2, 3, 4 and 5p yields an **AcceptedBase** and never an AcceptedImage:
+// the two have no conversion between them, so a base cannot be passed where an image is wanted
+// or the other way round, and a mistake does not compile.
+//
 // A file that fails any of them is refused with the number of the check and a sentence. A file
 // that passes all six yields an AcceptedImage - the only way to make one - which the image store
 // (task p2-02) demands before it stores anything: a type, not a convention.
@@ -20,11 +31,12 @@
 // anywhere (task p2-02): judgeManifest() is checks 1, 2, 3 and the half of 6 that needs no file,
 // and answers with an **ExpectedFile** - what an accepted manifest promises about the one file
 // wanted, which is what the store demands before it will erase a sector; judgeFile() is checks 4,
-// 5 and the other half of 6 over the bytes, and answers with the AcceptedImage. judge() is the
-// two in order and is what a caller that has the whole file already uses.
+// 5 and the other half of 6 over the bytes - or 4 and 5p for a base - and answers with the
+// AcceptedImage, or the AcceptedBase. judge() is the two in order and is what a caller that has
+// the whole file already uses.
 //
-// One ImageVerdict is ~30 KB (the parser's tokens and the parsed manifest) and belongs in static
-// storage, never on a task's stack.
+// One ImageVerdict is ~33 KB (the parser's tokens, the parsed manifest, and §4a's reader) and
+// belongs in static storage, never on a task's stack.
 #pragma once
 
 #include <cstddef>
@@ -33,6 +45,7 @@
 #include "core/board/slot.h"
 #include "core/flasher/board_profile.h"
 #include "core/flasher/image_source.h"
+#include "core/image/base.h"
 #include "core/image/choose.h"
 #include "core/image/descriptor.h"
 #include "core/image/file_check.h"
@@ -52,13 +65,20 @@ enum class Check : std::uint8_t {
   kFile = 4,
   kDescriptor = 5,
   kRegion = 6,
+  // §5's **5p**, which replaces 5 and 6 for a `provision` file. It is not a seventh number of
+  // §5's list, so it is not one here either: describe() says "check 5p".
+  kBase = 50,
 };
 
 const char* describe(Check check);
 
 struct Outcome {
   Check failed = Check::kNone;
-  const char* why = "";  // one sentence, static text
+  // One sentence. Static text, except for a kBase refusal: §4a's words carry a line number or an
+  // address the file gave, so that sentence is the verdict's own buffer (ImageVerdict::base()),
+  // which lives as long as the verdict and until its next judge(). Both callers - the transfer's
+  // response and the console's line - print it at once.
+  const char* why = "";
   bool ok() const { return failed == Check::kNone; }
 };
 
@@ -140,6 +160,50 @@ class AcceptedImage {
   std::uint8_t key_id_[kKeyIdSize] = {};
 };
 
+// What passed for a base: this `provision` file, for this slot, judged against this build's own
+// region for the board. Constructed by ImageVerdict and by nothing else, like the two tokens
+// above; copyable, so that the store may keep one.
+//
+// **It is not an AcceptedImage and cannot become one.** A base is not an image: it carries no
+// descriptor, it has no load address, it is written once by a person's command (spec/SYSTEM.md
+// S-5a) and never by an update. The store's two doors say which they take, so handing one where
+// the other belongs is a compile error and not a bug.
+class AcceptedBase {
+ public:
+  board::Slot slot() const { return slot_; }
+  Use use() const { return Use::kProvision; }  // the only use a base has
+  const ImageEntry& image() const { return image_; }  // a copy: valid after the verdict moves on
+  const FileEntry& file() const { return file_; }
+  const std::uint8_t* sha256() const { return file_.sha256; }
+  // What §4a's rules found in it: the bootloader's address, the flash byte count, the UICR
+  // registers it gives, NRFFW[1] if it has one, and which SoftDevice it carries.
+  const BaseSummary& summary() const { return summary_; }
+  // The addresses it covers, so that task p5-03 can walk its words (core/image/base.h's
+  // BaseWords) without parsing the file a second time to find them.
+  const BaseRuns& runs() const { return runs_; }
+  // The region §4a's rules were applied against: this build's, for the board in the slot.
+  std::uint32_t regionStart() const { return region_start_; }
+  std::uint32_t regionEnd() const { return region_end_; }
+  const char* version() const { return version_; }
+  const char* commit() const { return commit_; }
+  const std::uint8_t* keyId() const { return key_id_; }
+
+ private:
+  friend class ImageVerdict;
+  AcceptedBase() = default;
+
+  board::Slot slot_;
+  ImageEntry image_;
+  FileEntry file_;
+  BaseSummary summary_;
+  BaseRuns runs_;
+  std::uint32_t region_start_ = 0;
+  std::uint32_t region_end_ = 0;
+  char version_[kVersionSize] = {};
+  char commit_[kCommitSize + 1] = {};
+  std::uint8_t key_id_[kKeyIdSize] = {};
+};
+
 class ImageVerdict {
  public:
   ImageVerdict(const TrustTable& trust, const ThisUnit& unit) : trust_(trust), unit_(unit) {}
@@ -168,9 +232,18 @@ class ImageVerdict {
   // when there was no accepting judgeManifest().
   Outcome judgeFile(const flasher::ImageSource& file);
 
-  // The token of the last judge() or judgeFile(), or nullptr. Valid until the next judge(); copy
-  // it to keep it.
+  // The token of the last judge() or judgeFile(), or nullptr - and nullptr for a `provision`
+  // file, whose token is acceptedBase(). Valid until the next judge(); copy it to keep it.
   const AcceptedImage* accepted() const { return has_accepted_ ? &accepted_ : nullptr; }
+
+  // The same for a base: the token of the last accepting judge() of a `provision` file, or
+  // nullptr. Exactly one of accepted() and acceptedBase() is ever not null.
+  const AcceptedBase* acceptedBase() const { return has_accepted_base_ ? &accepted_base_ : nullptr; }
+
+  // What §4a made of the last `provision` file judged, whatever the outcome: the rule that
+  // refused it and its sentence, or the summary. Where an Outcome's `why` points after a kBase
+  // refusal.
+  const BaseResult& base() const { return base_result_; }
 
   // The manifest as last parsed (whatever the outcome), for a console line.
   const Manifest& manifest() const { return manifest_; }
@@ -185,6 +258,12 @@ class ImageVerdict {
   std::uint8_t piece_[256];
   AcceptedImage accepted_;
   bool has_accepted_ = false;
+  // The base's reader and what it last found. ~2.5 KB, which is why an ImageVerdict belongs in
+  // static storage (as it did before: the parser's tokens are 20 KB of it).
+  BaseReader base_reader_;
+  BaseResult base_result_;
+  AcceptedBase accepted_base_;
+  bool has_accepted_base_ = false;
   // What the manifest phase left for the file phase: the promise, which image and file of the
   // manifest were chosen, and the three things the file's checks still need.
   ExpectedFile expected_;

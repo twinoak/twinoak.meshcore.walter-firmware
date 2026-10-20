@@ -42,9 +42,9 @@ def check(condition, what):
 
 def make_release(directory, manifest_name="manifest-repeater.json",
                  sig_name="manifest-repeater.json.sig", image="image-repeater.bin",
-                 mangle=None):
-    """A release directory out of the spec's fixtures: manifest.json, its .sig, and the image
-    under the name the manifest gives. `mangle` may change the image's bytes."""
+                 mangle=None, use="swd"):
+    """A release directory out of the spec's fixtures: manifest.json, its .sig, and the file of
+    `use` under the name the manifest gives. `mangle` may change the file's bytes."""
     os.makedirs(directory, exist_ok=True)
     with open(os.path.join(FIXTURES, manifest_name), "rb") as fh:
         manifest_bytes = fh.read()
@@ -56,9 +56,9 @@ def make_release(directory, manifest_name="manifest-repeater.json",
     entry = None
     for img in manifest["images"]:
         for f in img["files"]:
-            if f["use"] == "swd":
+            if f["use"] == use:
                 entry = f
-    assert entry is not None, "the fixture manifest has an swd file"
+    assert entry is not None, "the fixture manifest has a %s file" % use
     with open(os.path.join(FIXTURES, image), "rb") as fh:
         data = fh.read()
     if mangle is not None:
@@ -154,7 +154,41 @@ def main(argv):
         check(done.returncode == 1, "a repeater release --as self: exit 1")
         check("no image in this manifest has an `ota` file" in done.stderr, "and it says why")
 
-        # 8. A Walter image that fits: the generated fixture self-a, loading at ota_0's offset.
+        # 8. The board's base (task p5-01): `--as base` takes the manifest's `provision` file -
+        #    the specification's own stand-in base - and says `image receive base`. The Walter runs
+        #    checks 1 to 4 and 5p over the bytes in its own flash and stores it as the slot's base;
+        #    nothing is written to a radio by this.
+        base = os.path.join(work, "base")
+        manifest, entry = make_release(base, manifest_name="manifest-repeater-base.json",
+                                       sig_name="manifest-repeater-base.json.sig",
+                                       image="base-rak4630.hex", use="provision")
+        done = run_push(args.console, base, which="base")
+        print(done.stdout)
+        if done.returncode != 0:
+            print(done.stderr)
+        check(done.returncode == 0, "walterctl push --as base against the console: exit 0")
+        check("stored as the base" in done.stdout, "it says the base was stored")
+        check(entry["name"] in done.stdout, "it names the provision file it sent")
+        check("that is `rak provision`, typed by a person" in done.stdout,
+              "and that storing one writes nothing to a radio")
+
+        # 8a. A release with no `provision` file at all: this tool's own refusal, before anything
+        #     is sent.
+        done = run_push(args.console, release, which="base")
+        check(done.returncode == 1, "a release with no provision file --as base: exit 1")
+        check("no image in this manifest has a `provision` file" in done.stderr, "and it says why")
+
+        # 8b. A base whose bytes are not the manifest's: refused by this tool, as an image is.
+        bad_base = os.path.join(work, "bad-base")
+        make_release(bad_base, manifest_name="manifest-repeater-base.json",
+                     sig_name="manifest-repeater-base.json.sig", image="base-rak4630.hex",
+                     use="provision",
+                     mangle=lambda data: data.replace(b":10", b":1O", 1))
+        done = run_push(args.console, bad_base, which="base")
+        check(done.returncode == 1, "a provision file that is not the manifest's hash: exit 1")
+        check("does not have the SHA-256 the manifest gives" in done.stderr, "and it says which")
+
+        # 9. A Walter image that fits: the generated fixture self-a, loading at ota_0's offset.
         if args.generated:
             own = os.path.join(work, "self")
             os.makedirs(own)

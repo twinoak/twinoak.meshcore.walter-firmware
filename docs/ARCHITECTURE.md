@@ -514,10 +514,10 @@ bench declares from the board profile.
 
 **The store** (task p2-02, `core/image/store.h`): the `rakfw` partition of §11, holding per radio
 slot a **golden** image (the last one that passed its health check), a **candidate** (verified, not
-yet proven) and one **scanner** image. Each is a header — what it is, its size and SHA-256, a copy
-of its descriptor, where it came from — and the bytes. A record becomes valid by a final small
-write after everything else is in place, so a power loss leaves the previous valid record or none,
-never half of one.
+yet proven), one **scanner** image, and — since task p5-01 — the board's **base**, which is not an
+image at all (below). Each is a header — what it is, its size and SHA-256, a copy of its descriptor,
+where it came from — and the bytes. A record becomes valid by a final small write after everything
+else is in place, so a power loss leaves the previous valid record or none, never half of one.
 
 ```
 rakfw (0x630000, 6 MB), sectors of 4 KB
@@ -527,8 +527,15 @@ rakfw (0x630000, 6 MB), sectors of 4 KB
     + 0           the header sector: the record (512 B) and a transfer's progress records (64 B)
     + 4 KB        the image's bytes, 199 sectors - 815 104 B, the largest application region of
                   any board profile this build knows, rounded up to a sector
-  4 923 392 B of 6 291 456 used; 1 368 064 left for a board whose region is larger
+  two base areas  slot 0's and slot 1's, 161 sectors each
+    + 0           the same header sector
+    + 4 KB        the base's bytes, 160 sectors - 655 360 B of Intel HEX text, which is ~2.75
+                  times the flash bytes it describes: a RAK4630's base is 192 KB of flash, so
+                  ~528 KB of text
+  6 242 304 B of 6 291 456 used; 49 152 left
 ```
+
+The base areas come after the six, so that the six are where they were before a base existed.
 
 Laid out for **two** radio slots from the start (§2 rule 6, task p1-06), so a dual unit needs no
 new partition table. The arithmetic is a `static_assert` against the partition's size and a host
@@ -548,7 +555,18 @@ test that reads the `rakfw` line of `partitions.csv`.
   short continues from the last of them rather than starting over; a resume whose hash is another
   file's starts at zero.
 - **The bad list**: up to eight hashes of candidates that failed a health check (task p2-03), in
-  the index record; an image on it is refused at the door, before a sector is erased.
+  the index record; an image on it is refused at the door, before a sector is erased. It is about
+  images: a base is not health-checked, so it is not held to the list.
+- **The base is in the store and is not an image** (task p5-01, `spec/FIRMWARE-MANIFEST.md` §4a,
+  `spec/SYSTEM.md` S-5a): the MBR, SoftDevice S140 6.1.1 and bootloader a factory radio has to be
+  given before any image of ours can run on it, as one Intel HEX file per board. It arrives the way
+  an image does — the same transfer, the same signed manifest — and differs in every other way,
+  all in one direction: **its door takes an `AcceptedBase`** and nothing else, it is never promoted
+  (its area is not in the index at all, so there is no pointer to move), never health-checked,
+  never flashed by an update, and the one thing that writes it to a radio is a person's
+  `rak provision` (task p5-03). Its record carries what §4a found in the file — the bootloader's
+  address, the flash byte count, the UICR registers, which SoftDevice — where an image's carries
+  its 96-byte descriptor, because a base has none.
 - **Wear**: every store erases the sectors its image covers and the area's header sector, once
   each; a promotion alternates the two areas a candidate and a golden image take turns in, so each
   sees half. A thousand images of 20 KB cost 500 erases per sector (measured), which at a NOR
@@ -587,7 +605,7 @@ both. The whole of it is logic with no allocation, held to RFC 8032's vectors, t
 fixtures and manifests signed by the spec's own reference code in `host_test/core/image/`.
 
 **Loading one over USB** (task p2-02, `core/image/receive.h`), until phase 3 gives the Walter an
-uplink: `image receive <golden|candidate|scanner> [@slot]` hands the console's port to a framed
+uplink: `image receive <golden|candidate|scanner|base> [@slot]` hands the console's port to a framed
 binary transfer and takes three files — `manifest.json`, then its `.sig`, then the image. The
 framing is **the box link's own** (`spec/LINK-PROTOCOL.md` §2: COBS, CRC-16, a type, a sequence
 number, one `0x00` ending a frame) with this transfer's own six type numbers and §3's convention
@@ -600,9 +618,10 @@ tested through a pipe against the console itself (`host_test/console_host/`) so 
 before a board exists.
 
 **The console**: `image list` (per slot: role, board, version, size, hash, where it came from,
-which area), `image verify <which>` (read it back out of flash and hold it to its record's hash),
-`image erase <candidate|scanner>` (never golden), `image bad`, `image receive <which>`.
-`docs/console.md` has them.
+which area; and the base, with its bootloader's address and its SoftDevice), `image verify <which>`
+(read it back out of flash and hold it to its record's hash - and, for the base, check 5p again
+over the same bytes), `image erase <candidate|scanner|base>` (never golden), `image bad`,
+`image receive <which>`. `docs/console.md` has them.
 
 **The trust table** is `trust_keys.h`, generated at build time by `tools/gen_trust_table.py`
 from `keys/release-keys.txt` through the release gate's own loader, so the firmware and the
@@ -896,8 +915,9 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
   which ends where the application ends, cannot reach them — the agent firmware learned this the
   expensive way;
 - the image store sized for two radios (golden + candidate + scanner each, a radio image being at
-  most the size of its application region — bounded here by the nRF52840's whole flash, 1 MB).
-  Task p2-02's layout uses 4 923 392 of the 6 MB (§6) and leaves 1 368 064 bytes;
+  most the size of its application region — bounded here by the nRF52840's whole flash, 1 MB — and
+  a base, which is Intel HEX text and so ~2.75 times the flash it describes). Task p2-02's layout
+  and task p5-01's base use 6 242 304 of the 6 MB (§6) and leave 49 152 bytes;
 - a journal that is not the settings store (its own wear, its own failure modes);
 - a core-dump partition;
 - ~~whatever the modem library needs for a modem-firmware update~~ — read in task p0-01: the

@@ -19,9 +19,10 @@ static_assert(alignof(jsmntok_t) <= 4, "a jsmn token needs more alignment than t
 // Where kMaxJsonTokens comes from: a manifest filled to the bounds. Top level: the object, seven
 // scalar fields (two tokens each), `link` (1 + 1 + 4), `upstream` (1 + 1 + 6), `images` (2) = 29.
 // Each image: the object, five strings (10), `app_region` (1 + 1 + 4), `requires` (1 + 1 + 4),
-// `files` (2) = 25, plus per file the object and six fields (13) * kMaxFilesPerImage = 78, so
-// 103 an image, 824 for kMaxImages, 853 in all. Fields §2 does not know are ignored but still
-// tokenized, so the bound has room over that.
+// `files` (2) = 25, plus per file the object and six fields (13) * kMaxFilesPerImage = 91, so
+// 116 an image, 928 for kMaxImages, 957 in all (task p5-01 made kMaxFilesPerImage seven: §2's
+// seventh `use` is the base). Fields §2 does not know are ignored but still tokenized, so the
+// bound has room over that.
 static_assert(29 + kMaxImages * (25 + kMaxFilesPerImage * 13) <= kMaxJsonTokens,
               "kMaxJsonTokens cannot hold a manifest filled to kMaxImages and kMaxFilesPerImage");
 
@@ -39,7 +40,8 @@ bool sameText(const char* a, std::size_t a_size, const char* b) {
 }
 
 constexpr const char* kProductNames[] = {"?", "twinoak-repeater-firmware", "twinoak-walter-firmware"};
-constexpr const char* kUseNames[] = {"?", "swd", "usb-dfu", "usb-uf2", "ota", "factory", "debug"};
+constexpr const char* kUseNames[] = {"?",   "swd",     "usb-dfu", "usb-uf2",
+                                     "ota", "factory", "debug",   "provision"};
 
 // -- the token walk ---------------------------------------------------------------------------
 
@@ -517,6 +519,14 @@ const char* describe(ValidateReason reason) {
     case ValidateReason::kNeedsAppRegion: return "an swd image needs app_region";
     case ValidateReason::kAppRegionNotHex: return "app_region is not hex";
     case ValidateReason::kDoesNotFitRegion: return "the image does not fit its app_region";
+    case ValidateReason::kHexIsForProvision: return "format hex is for a provision file only";
+    case ValidateReason::kProvisionNotHex: return "a provision file is Intel HEX (format hex)";
+    case ValidateReason::kProvisionLoadAddress:
+      return "a provision file has no load_address: its records say where";
+    case ValidateReason::kProvisionNotNrf52840: return "a provision file is for an nRF52840 board";
+    case ValidateReason::kProvisionNeedsRegion:
+      return "a provision file needs its image's app_region";
+    case ValidateReason::kTwoProvisionFiles: return "more than one provision file in the image";
   }
   return "?";
 }
@@ -572,7 +582,35 @@ ValidateResult validate(const Manifest& m) {
           return fail(ValidateReason::kDoesNotFitRegion, i, f);
         }
       }
+      // §2, the base (§4a): `hex` belongs to a `provision` file and to nothing else, and such a
+      // file says where its bytes go in its own records - never in a load_address.
+      if (std::strcmp(file.format, "hex") == 0 && file.use != Use::kProvision) {
+        return fail(ValidateReason::kHexIsForProvision, i, f);
+      }
+      if (file.use == Use::kProvision) {
+        if (std::strcmp(file.format, "hex") != 0) return fail(ValidateReason::kProvisionNotHex, i, f);
+        if (file.load_address_state != HexField::kAbsent) {
+          return fail(ValidateReason::kProvisionLoadAddress, i, f);
+        }
+        if (std::strcmp(image.mcu, "nrf52840") != 0) {
+          return fail(ValidateReason::kProvisionNotNrf52840, i, f);
+        }
+        if (image.app_region_state == HexField::kAbsent) {
+          return fail(ValidateReason::kProvisionNeedsRegion, i, f);
+        }
+        if (image.app_region_state == HexField::kNotHex) {
+          return fail(ValidateReason::kAppRegionNotHex, i, f);
+        }
+      }
     }
+    // At most one base per image (§2): the same file may be listed under several images of one
+    // board - the hash makes it one file - but an image with two is not an image this firmware
+    // can choose between.
+    std::uint8_t provisions = 0;
+    for (std::uint8_t f = 0; f < image.file_count; ++f) {
+      if (image.files[f].use == Use::kProvision) ++provisions;
+    }
+    if (provisions > 1) return fail(ValidateReason::kTwoProvisionFiles, i);
   }
   r.ok = true;
   return r;

@@ -477,16 +477,16 @@ firmware (`tools/verify.ps1 -TestKey`, flashed as §1's first item) together wit
 signed with the specification's public test key — the dry run `tools/verify.ps1` leaves in
 `out/release/` is one, for the *Walter's* own image; a repeater release has to come from the
 repeater repository's own dry run, or be made by hand with
-`python spec/tools/manifestref.py` over a repeater image. Until the release key exists
-(`spec/SYSTEM.md` §10 item 1) a normal build accepts nothing, which is the point of the second
-item below.
+`python spec/tools/manifestref.py` over a repeater image. A normal build accepts only a release
+signed with the release key (`keys/release-keys.txt`), which is the point of the fourth item
+below.
 
 - [ ] **The store says what it is, on a board.** `image list` on a fresh unit prints the layout —
-  `2 slots x 3 images of 815104 bytes (199 sectors)`, `4923392 bytes of a 6291456-byte partition,
-  1368064 left` — then `slot 0, rak4630-single` with three `empty` lines, then `slot 1: no radio in
-  this adapter`. The boot lines have gained `image store: rakfw at 0x630000 (6144 KB), …`. If
-  either says something else, the partition table and the firmware disagree and nothing below is
-  worth doing.
+  `2 slots x 3 images of 815104 bytes (199 sectors)`, `plus one base of 655360 bytes (160 sectors)
+  a slot`, `6242304 bytes of a 6291456-byte partition, 49152 left` — then `slot 0, rak4630-single`
+  with three `empty` lines and `base       empty`, then `slot 1: no radio in this adapter`. The
+  boot lines have gained `image store: rakfw at 0x630000 (6144 KB), …`. If either says something
+  else, the partition table and the firmware disagree and nothing below is worth doing.
 
 - [ ] **`walterctl.py push --as golden` on a test-key build, and `image list` shows it.** With the
   release directory on the laptop:
@@ -509,10 +509,11 @@ item below.
   succeeds, and `image list` then shows the same image twice in different areas.
 
 - [ ] **A normal build refuses the same push at check 1, and `trust` says why.** Flash a build made
-  without `-DTWINOAK_TRUST_TEST_KEY=1`; `trust` prints `trust: none: no update will be accepted
-  (keys/release-keys.txt names no key; …)`, and the push ends with *check 1, the signature: the key
-  id names no key this build trusts* — with nothing stored and no sector erased. This is the state
-  every unit is in until the release key exists, and it is the right one.
+  without `-DTWINOAK_TRUST_TEST_KEY=1`; `trust` prints the release key's id (`trust: 1 key this
+  build accepts a release signed with: 73efdd383a957596`, since 2026-10-20) and **not** the
+  specification's test key, and the push ends with *check 1, the signature: the key id names no key
+  this build trusts* — with nothing stored and no sector erased. A unit in service accepts a
+  release signed by the release key and nothing else, which is the point.
 
 - [ ] **Pull the Walter's power during a push.** Mid-transfer (a release of a few hundred KB gives
   a comfortable window), unplug the USB. Afterwards: the console comes up, and `image list` shows
@@ -536,7 +537,39 @@ item below.
   radio, so slot 0 is the only one*, and nothing on the port changes. The areas for slot 1 are in
   the partition all the same, which is what `image list`'s last lines say.
 
-Nothing here flashes a radio: putting a stored image on the RAK is §9's.
+- [ ] **`walterctl.py push --as base` of a real release, over the cable** (task p5-01;
+  `spec/FIRMWARE-MANIFEST.md` §4a, `spec/SYSTEM.md` S-5a). With a repeater release that carries a
+  `provision` file — the real base: the MBR, SoftDevice S140 6.1.1 and the bootloader, ~450 KB of
+  Intel HEX:
+
+  ```
+  python tools/walterctl.py push --port COM7 --as base <release-dir>
+  ```
+
+  It prints the file it is sending, then `stored as the base`, and then *nothing is written to a
+  radio by this: that is `rak provision`, typed by a person*. **Write down how long the push took**:
+  it is three times the bytes of a radio image and the first measurement of one.
+
+- [ ] **`image list` shows the base with the right bootloader and SoftDevice.** The `base` lines
+  say `the board's base, <n> bytes, sha256 …, bootloader 0x000f4000` and `S140 6.1.1, <n> bytes of
+  flash, <n> UICR words, the MBR's parameter page at 0x000fe000`. If the bootloader's address is
+  not `0x000F4000` or the SoftDevice is not S140 6.1.1, that release's base is not the one this
+  firmware's board profile was written for and `rak provision` (§17) must not be run with it.
+
+- [ ] **`image verify base` passes after a power cycle.** Unplug and replug the Walter, then
+  `image verify base`: the SHA-256 is the one in its record, **and** `check 5p over the stored
+  bytes: a base for rak4630-single (0x00026000 to 0x000ed000), bootloader 0x000f4000` with the same
+  flash byte count and UICR word count as the record's. **Write down the milliseconds**: §4a's
+  rules are read over ~450 KB out of flash, twice, and task p5-03 pays that before it writes
+  anything to a radio.
+
+- [ ] **`image erase base`, and the base again.** `image erase base` answers *base: forgotten in
+  slot 0*; `image list` shows `base       empty`; `image verify base` says *there is no image in
+  that slot*. Push it again and it is back. (The base is the one thing in the store a command may
+  erase besides a candidate and a scanner image: nothing depends on its being there.)
+
+Nothing here flashes a radio or writes a chip's UICR: putting a stored image on the RAK is §9's,
+and giving a factory radio its base is `rak provision` — task p5-03's, and a person's.
 
 ## 9. Updating the radio
 

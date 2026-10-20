@@ -609,6 +609,9 @@ void Console::status() {
       const image::StoreError e = images_->read(which, board::Slot{0}, &record);
       if (e != image::StoreError::kNone) {
         printf(" %s=%s", image::name(which), image::describe(e));
+      } else if (record.present && which == image::Which::kBase) {
+        // A base has no version of ours to print (§4a): the bootloader's address says which it is.
+        printf(" base=0x%08lx", static_cast<unsigned long>(record.base.bootloader));
       } else if (record.present) {
         printf(" %s=%s", image::name(which), record.descriptor.version);
       } else {
@@ -1397,6 +1400,27 @@ bool Console::imagesOk() {
   return false;
 }
 
+// The base's lines: what §4a found in the file, out of the record (spec/FIRMWARE-MANIFEST.md
+// §4a; the record keeps the summary where an image keeps its descriptor).
+void Console::baseLines(const image::Record& record) {
+  char hash[17];
+  hashHex(record.sha256, 8, hash);
+  const unsigned long v = static_cast<unsigned long>(record.base.softdevice_version);
+  printf("the board's base, %lu bytes, sha256 %s..., bootloader 0x%08lx\n",
+         static_cast<unsigned long>(record.size), hash,
+         static_cast<unsigned long>(record.base.bootloader));
+  printf("             S%lu %lu.%lu.%lu, %lu bytes of flash, %u UICR words",
+         static_cast<unsigned long>(record.base.softdevice_id), v / 1000000, (v / 1000) % 1000,
+         v % 1000, static_cast<unsigned long>(record.base.flash_bytes),
+         static_cast<unsigned>(record.base.uicr_word_count));
+  if (record.base.has_mbr_params) {
+    printf(", the MBR's parameter page at 0x%08lx\n",
+           static_cast<unsigned long>(record.base.mbr_params));
+  } else {
+    print("\n");
+  }
+}
+
 void Console::imageOneLine(const image::Record& record) {
   printf("  %-9s  ", image::name(record.which));
   if (!record.present) {
@@ -1411,14 +1435,18 @@ void Console::imageOneLine(const image::Record& record) {
     print("empty\n");
     return;
   }
-  const char* role = image::role_name(record.descriptor.role);
-  char hash[17];
-  hashHex(record.sha256, 8, hash);
-  printf("%s %s %s %s, %lu bytes at 0x%08lx, sha256 %s..., area %u\n",
-         role != nullptr ? role : "?", record.descriptor.board, record.descriptor.band,
-         record.descriptor.version, static_cast<unsigned long>(record.size),
-         static_cast<unsigned long>(record.load_address), hash,
-         static_cast<unsigned>(images_->areaOf(record.which, record.slot)));
+  if (record.use == image::Use::kProvision) {
+    baseLines(record);
+  } else {
+    const char* role = image::role_name(record.descriptor.role);
+    char hash[17];
+    hashHex(record.sha256, 8, hash);
+    printf("%s %s %s %s, %lu bytes at 0x%08lx, sha256 %s..., area %u\n",
+           role != nullptr ? role : "?", record.descriptor.board, record.descriptor.band,
+           record.descriptor.version, static_cast<unsigned long>(record.size),
+           static_cast<unsigned long>(record.load_address), hash,
+           static_cast<unsigned>(images_->areaOf(record.which, record.slot)));
+  }
   char key[image::kKeyIdHexSize + 1];
   image::keyIdHex(record.key_id, key);
   if (record.stored_at != 0) {
@@ -1432,12 +1460,16 @@ void Console::imageOneLine(const image::Record& record) {
 
 void Console::imageList() {
   if (!imagesOk()) return;
-  printf("image store: %u slots x %u images of %lu bytes (%lu sectors) and a header sector each,\n"
-         "  and %lu index sectors: %lu bytes of a %lu-byte partition, %lu left; index sequence %lu\n",
-         static_cast<unsigned>(image::kRadioSlots), static_cast<unsigned>(image::kWhichCount),
+  printf("image store: %u slots x %u images of %lu bytes (%lu sectors) and a header sector each,\n",
+         static_cast<unsigned>(image::kRadioSlots),
+         static_cast<unsigned>(image::kPromotableCount),
          static_cast<unsigned long>(image::kImageBytesMax),
-         static_cast<unsigned long>(image::kDataSectors),
-         static_cast<unsigned long>(image::kIndexCopies),
+         static_cast<unsigned long>(image::kDataSectors));
+  printf("  plus one base of %lu bytes (%lu sectors) a slot, and %lu index sectors:\n",
+         static_cast<unsigned long>(image::kBaseBytesMax),
+         static_cast<unsigned long>(image::kBaseSectors),
+         static_cast<unsigned long>(image::kIndexCopies));
+  printf("  %lu bytes of a %lu-byte partition, %lu left; index sequence %lu\n",
          static_cast<unsigned long>(image::kStoreBytes),
          static_cast<unsigned long>(image::kPartitionBytes),
          static_cast<unsigned long>(image::kPartitionBytes - image::kStoreBytes),
@@ -1464,6 +1496,43 @@ void Console::imageList() {
   }
 }
 
+// `image verify base`: the hash out of flash, and then §4a's seven rules over the same bytes
+// against **this build's** region for the board - check 5p again, on the bytes as they lie in the
+// Walter's own flash, because that is what task p5-03 will write to a radio.
+void Console::verifyBase(const image::Record& record) {
+  const flasher::BoardProfile* profile = flasher::profileForSlot(slot_);
+  if (profile == nullptr) {
+    print("base: this adapter has no radio in that slot, so there is no region to judge it "
+          "against\n");
+    return;
+  }
+  image::StoredImage stored;
+  const image::StoreError opened = images_->open(image::Which::kBase, slot_, &stored);
+  if (opened != image::StoreError::kNone) {
+    printf("error: %s\n", image::describe(opened));
+    return;
+  }
+  const image::BaseResult result = base_reader_.read(stored, profile->app.begin, profile->app.end);
+  if (!result.ok()) {
+    printf("base: check 5p over the stored bytes: %s: %s\n", image::describe(result.reason),
+           result.why);
+    return;
+  }
+  printf("base: check 5p over the stored bytes: a base for %s (0x%08lx to 0x%08lx), bootloader "
+         "0x%08lx,\n", profile->name, static_cast<unsigned long>(profile->app.begin),
+         static_cast<unsigned long>(profile->app.end),
+         static_cast<unsigned long>(result.summary.bootloader));
+  printf("  %lu bytes of flash in %u runs, %u UICR words - the same as its record says\n",
+         static_cast<unsigned long>(result.summary.flash_bytes),
+         static_cast<unsigned>(result.runs.count),
+         static_cast<unsigned>(result.summary.uicr_word_count));
+  if (result.summary.bootloader != record.base.bootloader ||
+      result.summary.flash_bytes != record.base.flash_bytes ||
+      result.summary.uicr_word_count != record.base.uicr_word_count) {
+    print("  WRONG: the record and the bytes disagree about what this base is\n");
+  }
+}
+
 void Console::imageVerify(image::Which which) {
   if (!imagesOk() || !slotOk(slot_)) return;
   image::Record record;
@@ -1481,12 +1550,13 @@ void Console::imageVerify(image::Which which) {
   const image::StoreError e = images_->verify(which, slot_);
   const unsigned long ms = static_cast<unsigned long>(clock_.nowMs() - t0);
   if (e != image::StoreError::kNone) {
-    printf("error: %s %s: %s\n", image::name(which), record.descriptor.version,
-           image::describe(e));
+    printf("error: %s %s: %s\n", image::name(which),
+           which == image::Which::kBase ? "" : record.descriptor.version, image::describe(e));
     return;
   }
   printf("%s: %lu bytes read back and hashed in %lu ms: the SHA-256 is the one in its record\n",
          image::name(which), static_cast<unsigned long>(record.size), ms);
+  if (which == image::Which::kBase) verifyBase(record);
 }
 
 void Console::imageErase(image::Which which) {
@@ -1523,13 +1593,18 @@ void Console::imageReceive(image::Which which) {
   }
   const image::SlotNeeds& needs = receiver_->needs();
   // One printf a line: Console::printf writes into a 200-byte buffer and cuts what does not fit.
-  printf("image receive: slot %u's %s image; this port is now a framed binary transfer\n",
-         static_cast<unsigned>(slot_.index), image::name(which));
+  const bool base = which == image::Which::kBase;
+  printf("image receive: slot %u's %s; this port is now a framed binary transfer\n",
+         static_cast<unsigned>(slot_.index), base ? "base" : image::name(which));
   print("  (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,\n");
   printf("  then the file: tools/walterctl.py push --as %s\n", image::name(which));
-  printf("  what will be accepted: role %s, board %s, band %s, and all six checks of\n",
-         needs.role, needs.board, needs.band);
+  printf("  what will be accepted: role %s, board %s, band %s, and %s of\n", needs.role,
+         needs.board, needs.band, base ? "checks 1 to 4 and 5p" : "all six checks");
   print("  FIRMWARE-MANIFEST section 5 run here - the laptop is not trusted\n");
+  if (base) {
+    print("  (a base is the board's MBR, SoftDevice and bootloader as Intel HEX, section 4a: it\n"
+          "  is written to a radio only by `rak provision`, and by nothing automatic)\n");
+  }
 }
 
 void Console::transferEnded() {
