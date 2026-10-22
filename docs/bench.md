@@ -55,6 +55,7 @@ Two marks:
 | [14](#14-provisioning-and-the-console) | Provisioning and the console | §1 (and §§12–13 for two items) |
 | [15](#15-sleep) ★ | Sleep | §1, §3, a scope, an integrating meter |
 | [16](#16-a-day) | A day | §15, §12, §14 |
+| [17](#17-the-agent) | The agent | §3, a second repeater on the bench |
 | [—](#what-to-bring-back) | **What to bring back** | the numbers, in one table |
 
 The numbers above are this walk's, in walking order; the task files' own section numbers are not
@@ -1128,6 +1129,34 @@ been simulated into one that has actually spent a day looking after a radio.
       integrating meter in series: zero it, leave the unit for a day, and read the milliamp-hours.
       That number against §15's "the energy of one whole wake" is what finally says whether the
       interval table is right.
+
+## 17. The agent
+
+From task p4-02 (`components/agent/`; `docs/ARCHITECTURE.md` §13; `docs/console.md`, *The radio,
+over the box link*). Needs §3 walked and a **second repeater** on the bench — any MeshCore repeater
+on the air, with this unit's key granted on its console (`setperm <this unit's key> 1`), because
+a bare status request is answered only to a key the repeater's ACL holds; a login is the agent's
+business (task p4-05), not this command's. Phase 4's task 06 orders the rest of this section.
+
+- [ ] **`rak mesh status <key>`** (task p4-02), `<key>` the neighbour's public key as its own
+      `rak id`-equivalent prints it. **One packet on the air, one reply, `client_tx` up by one**:
+      the console prints *sent as a flood* with a tag, then *reply after N ms (via a returned
+      path, snr …, rssi …)* and the repeater's battery, uptime, noise floor and packet counts,
+      then `client_tx A -> A+1 (+1)`. Hold the three against the neighbour's own console
+      (`stats-core` on it: its packets received up by one) and against a sniffer if one is up:
+      exactly one packet from this unit, flooded, two-byte path hashes. The second run goes
+      *direct*: the first reply taught the route (§6.3), and `client_tx` is up by one again.
+- [ ] **Silence** (task p4-02). The same command with a key nobody on the air has: sixteen
+      seconds, then *no reply: the record says timeout after 16000 ms* — the RAK's own record,
+      read with `REPLY_GET` after the Walter's timer ran out — and `client_tx` still up by one:
+      the packet went, nothing answered. `rak events` afterwards shows nothing of it: the
+      mesh client takes its own events. A third run must not be refused *busy*: the wait was
+      ended with `JOB_BEGIN` again.
+- [ ] **A password crosses once** (task p4-02; a laptop on the RAK's console or a logic
+      analyser on D-sub 8). Not this command's — task p4-05's first `password.set` job is where
+      a password first crosses this link. What to hold then: the `SEND_LOGIN` and the
+      `SEND_CLI` frames carry it, the RAK's `password now:` reply comes back, and `dump` on the
+      Walter afterwards holds neither; the host test of the same reads every buffer back.
 
 ## What to bring back
 

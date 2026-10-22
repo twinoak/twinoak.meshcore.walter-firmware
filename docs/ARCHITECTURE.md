@@ -129,6 +129,17 @@ components/
                         for what a sleep keeps (§13, docs/upstream.md,
                         task p4-01). Its own CMakeLists.txt registers it as the component
                         `agent-core`; ArduinoJson is its one dependency, from the registry
+  agent/                **ours**: this firmware's half of the library's seams (§13). Task p4-02:
+                        link_mesh.h, the library's mm::IMesh as one request of
+                        spec/LINK-PROTOCOL.md §6 per call over core/link/'s client - the reply
+                        awaited as EV_MESH_REPLY with REPLY_GET as the fallback, the path cached
+                        and read back with PATH_GET after a flood's reply, a password copied into
+                        one buffer and wiped, and the *local door*: a job for the unit's own
+                        repeater served over §5.7's CLI and §5.8's LPP_GET with nothing on the
+                        mesh; mesh_probe.h, `rak mesh status` behind the console's seam
+                        (core/console/mesh_probe.h). Logic, like core/: no ESP-IDF include (the
+                        same build step), no heap (the same check), tested on the host against
+                        a simulated RAK. Tasks 03 and 04 add the uplink and the platform here
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
@@ -149,7 +160,12 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         trial, confirmation and rollback run through a simulated reset (task p2-04)
   console_host/         the console on stdin and stdout over a simulated flash, so that
                         tools/walterctl.py is tested before a board exists (task p2-02)
-  sim/                  the scripted RAK on a fake UART (task p1-02); a scripted HTTPS server
+  sim/                  the scripted RAK on a fake UART (task p1-02), and over it the RAK's side
+                        of §6 as a simulator - sim_rak.h: one peer, one exchange, the five
+                        sends, the reply record and its event, the counters, the 120 s job
+                        timeout, with any mm::IMesh behind it as the peer's repeater - and
+                        mesh_world.h, the whole road from LinkMesh to that repeater (task
+                        p4-02); a scripted HTTPS server
                         behind a fake TLS socket that refuses a chain not ending at the root
                         asked for, drops after N bytes and stalls, and the firmware's own
                         HTTP/1.1 over it (task p3-02); the simulated SWD target at
@@ -177,7 +193,18 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         that outlives a sleep), both contract fixture sets and **the library's own
                         two suites**, copied at the same commit as the component and at upstream's
                         own paths, so that all 93 of its cases run here unmodified (§13, task
-                        p4-01). GoogleTest, pinned, for these two binaries and nothing else
+                        p4-01). GoogleTest, pinned, for these binaries and nothing else
+  agent-link/           the runner's scenarios, again, through the framing (task p4-02): shim/
+                        holds a `support/FakeMesh.h` and a `support/FakePlatform.h` that shadow
+                        the library's - the same simulated stock repeater and the same clock,
+                        with sim_rak.h and LinkMesh put between the runner and the repeater, and
+                        the two clocks tied - so that test_runner.cpp compiles a second time,
+                        unchanged, with every send a frame and every reply an event
+                        (`agent_core_runner_link_tests`); and test_link_mesh.cpp, what the
+                        scenarios do not say (`agent_link_tests`). GoogleTest, because the
+                        repeater behind the RAK is the library's fake
+  agent/                the tests of components/agent/ that need no simulated repeater: `rak mesh
+                        status` against the scripted radio, and the no-allocation check (p4-02)
 tools/                  verify.ps1 and verify.sh (the definition of "verified"), check_rails.py
                         (**every rail, one entry each**, run by verify.sh), check_partitions.py,
                         the trust-table and TLS-root generators, release/ (the release tooling),
@@ -352,6 +379,15 @@ does every time round.
 If `HELLO` gets no answer three times and lines beginning with `{` arrive — or one answers an
 `info\n` probe — the radio is running NoiseScope: the client says *scanner (text)*, sends no more
 frames, and offers the lines to whoever subscribed until the radio is reset. It never mixes the two.
+
+Two things the mesh client asked of it (task p4-02): a `CLI` request may be flagged *sensitive*,
+and is then wiped from the request and frame buffers after the exchange exactly as `SEND_LOGIN`
+is; and an event can be taken out of the queue *by type* — the mesh client takes its
+`EV_MESH_REPLY` and leaves `EV_BOOT` and `EV_ATTENTION` for the console and the supervisor. And one
+thing S-12 asked of it once replies started to carry what a repeater echoes: the receive side is
+wiped too — the receiver's buffers once a packet has been copied out, the read chunk once it has
+been fed, the last response at the start of the next exchange, a vacated queue slot — so that
+nothing the radio sent outlives its use in a buffer nobody reads.
 
 ## 4. SWD
 
@@ -1088,6 +1124,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §16): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
 | duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §15) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |
+| **the mesh over the link** | ✔ the library's 46 runner scenarios a second time, unchanged, with `LinkMesh` and a simulated RAK between the runner and the simulated stock repeater — every send a frame, every reply an event, `client_tx` held equal to the repeater's sends at the end of every job; and 21 cases of the link's own: the lost event (one `REPLY_GET`, never a lost reply), the lost request (the link's retry, still one packet), the RAK's 120 s job timeout, a password read back as zeros from the mesh client, the link client and the RAK and found on the wire once, the sensitive CLI line's flag bit, a `password.set` leaving no value anywhere, the send's ceiling and the Walter's own timer with the wait ended by `JOB_BEGIN`, a late reply dropped and counted, a `boot_id` change under a job and under a wait, the path cached and read back, every core type carried with a session and none without, `client_tx` exact across a mix of jobs, and the local door for each of the thirteen types; the console's `rak mesh status` against the fixtures; the no-allocation check (task p4-02) | `components/agent/` in the board's link, reached by the console's probe; the no-ESP-IDF build step | `docs/bench.md` §17: a `status` on a neighbour over the air — one packet, one reply, `client_tx` up by one |
 | **the agent core** | ✔ the library's own two suites, here, against the copied fakes and both fixture sets: `agent_core_runner` (46 cases — all thirteen job types, one send per command, the credential wiped, the lease, the offline buffer, and the fake's own citations) and `agent_core_loop` (47 — the loop, the heartbeat's bytes, the backoff, the reboot guard, every wake case, and what a sleep keeps: the image's bytes, a torn one refused whole, the uplink's ledger, nothing secret in the store), compiled from the same sources the board gets under the same sanitizers and `-Werror`; and the pin's two places held equal (`host_test/rails/test_rail_agent_core.cpp`) | the component in the board's link, all twenty-three objects of it, kept by `main/agent_anchor.cpp` until task p4-05 calls `wake()`; `tools/sync-agent-core.ps1 -Verify` (every file of both copied trees against its manifest, before the container starts) and `tools/check_rails.py`'s entry A (the library's boundary as an allow list, ten ways of skipping certificate verification, no store and no file system) | nothing: the library is linked and unused until p4-05, and what it then does is `docs/bench.md` §§17–18 and phase 4's own bench lines |
 
 ## 13. The agent
@@ -1140,7 +1177,7 @@ registry.
 
 | Seam | Ours | What it is made of |
 |---|---|---|
-| `IMesh` | `LinkMesh` (task p4-02) | one request of `spec/LINK-PROTOCOL.md` §6 per call — the link was designed against this list (`SYSTEM.md` S-4) — and §7's `OBS_PULL` for the advert ring. `awaitReply` is the `EV_MESH_REPLY`, with `REPLY_GET` as the fallback |
+| `IMesh` | `LinkMesh` (task p4-02, **built**: `components/agent/link_mesh.h`) | one request of `spec/LINK-PROTOCOL.md` §6 per call — the link was designed against this list (`SYSTEM.md` S-4): `JOB_BEGIN`/`JOB_END`, `PATH_SET`, the five `SEND_*`, `MESH_COUNTERS` — and §7's `OBS_PULL` for the advert ring (task p4-04 fills the hook). `awaitReply` is the `EV_MESH_REPLY`, waited for over the runner's own timeout plus a margin, with `REPLY_GET` as the fallback; the send carries a ceiling (§6.2 takes the timeout at the send, the library gives it at the await), and when this end gives up first the wait is ended with `JOB_BEGIN` again so the RAK is never busy for the next send. The path is cached and read back with `PATH_GET` after a flood's reply (a returned path is learned, §6.3). `counters().tx` is `client_tx`, never the radio's `tx`. `overheard()` is 0 and `rxByType` empty: §6.4 carries neither (a specification gap). `supports()` is *MESH_CLIENT in the session* for every core type, trace included — §6.2 has `SEND_TRACE` and §6.3 a trace record |
 | `IUplink` | `ModemUplink` (task p4-03) | the seven calls of the agent API over phase 3's HTTPS client (§9): `Authorization: Bearer` and `X-Agent-Version` on every one, the chain verified against a root the image ships, and a `Call` record per call for the library's `ServerPolicy` to read |
 | `IPlatform` / `IClock` | `WalterPlatform` (task p4-04) | mostly interfaces this firmware already has: `Clock::nowMs()`, `Clock::delayMs()`, `esp_random()`, `WallClock`, the heap figures, `Restart`, and the health record in retained storage for the self-reboot count |
 
@@ -1156,6 +1193,29 @@ written — and the store is bytes and a capacity, nothing more. No task of this
 for it (it did not exist when they were); `capacity`/`write`/`read` over a flash region or an NVS
 blob belongs beside `WalterPlatform` in task p4-04, and what it is worth — a week of results and
 adverts surviving the sleeps that would otherwise drop them — is task p4-05's simulated month.
+
+**The local door** (task p4-02). A job begun for the unit's *own* repeater — the key `IDENTITY`
+answers, which task p4-04 gives `LinkMesh::setOwnKey()` — sends nothing on the mesh: the link has
+console privileges (§5.7), so a login is answered by this end with a synthetic admin reply (the
+bytes of the companion fixture `login-success.hex`, held to it by a test), a CLI line is §5.7's
+`CLI` request (a sensitive one wiped like a login), a telemetry request is §5.8's `LPP_GET` at an
+admin's permissions, and the access list is answered with silence, which the library reads as *no
+ACL in this snapshot, no evidence either way*. Nothing of §5 yields the bytes of a status reply
+(`RepeaterStats`), a neighbours page or an owner-info reply — `stats-*` and `neighbors` print
+text — so those sends are `Failed`, which the library reports as `failed` with *the packet could
+not be built*; a discovery and a trace of oneself the same. `client_tx` does not move for a local
+job. Per core type:
+
+| type | the unit's own repeater, over the UART | outcome |
+|---|---|---|
+| `telemetry` | `LPP_GET` at `0x07` | served |
+| `cli`, `config.apply`, `advert.request`, `clock.sync`, `acl.set` | `CLI` lines | served |
+| `password.set` | `CLI`, the password line sensitive, the restore after it | served; no value anywhere |
+| `reboot` | `CLI reboot`: no answer, the expected silence (§5.7) | served, *ok as sent* |
+| `config.read` | `CLI` lines; the access list silent | served, without the ACL |
+| `discover` | the UART is the direct path: the synthetic login teaches it | served, zero hops |
+| `status`, `neighbours` | no request of §5 yields the bytes the job parses | `failed` — link 1.1 |
+| `trace` | a radio cannot trace a round trip to itself | `failed` |
 
 The job types this unit advertises, the heartbeat's identity taken from the radio, and the
 observations pulled out of the RAK's ring are task p4-04's; `AgentBackend : Backend` — the
