@@ -170,6 +170,7 @@ void Client::wipeBuffers() {
   request_size_ = 0;
 }
 
+
 Client::Exchange Client::exchange(std::uint8_t type, Bytes payload, bool sensitive) {
   Exchange out;
   // The slot first, for the whole exchange: the wires are steered to this radio before a frame
@@ -190,6 +191,7 @@ Client::Exchange Client::exchange(std::uint8_t type, Bytes payload, bool sensiti
   }
   const std::uint8_t seq = nextSeq();
   const std::uint8_t wire_type = responseTypeOf(type);
+  zeroBytes(response_, sizeof response_);  // the last answer is nobody's any more
   response_size_ = 0;
   counters_.requests = saturate(counters_.requests);
 
@@ -319,8 +321,15 @@ bool Client::pump(bool expecting, std::uint8_t wire_type, std::uint8_t seq) {
       }
       if (here().mode != Mode::kText && receiver_.push(byte) == FrameReceiver::Fed::kPacket) {
         onPacket(receiver_.packet(), expecting, wire_type, seq, &found);
+        // The receive side (task p4-02): a reply the radio relayed can echo what was sent - a
+        // repeater's `password now: ...` - and S-12 says a password is in RAM for the length of
+        // the exchange and nowhere else. The packet is copied out (response_, or the queue), so
+        // the receiver's buffers are zeroed; the chunk below the same once it has been fed; and
+        // an event taken out of the queue leaves a zeroed slot behind.
+        receiver_.wipe();
       }
     }
+    zeroBytes(chunk_, sizeof chunk_);
     if (found) {
       break;  // the rest of what the port holds is read by the next pump
     }
@@ -429,7 +438,27 @@ bool Client::takeEvent(QueuedEvent* out) {
     events_[i - 1] = events_[i];
   }
   --queued_;
+  events_[queued_] = QueuedEvent{};  // the vacated slot holds nothing
   return true;
+}
+
+bool Client::takeEvent(std::uint8_t type, QueuedEvent* out) {
+  if (out == nullptr) {
+    return false;
+  }
+  for (std::size_t at = 0; at < queued_; ++at) {
+    if (events_[at].type != type) {
+      continue;
+    }
+    *out = events_[at];
+    for (std::size_t i = at + 1; i < queued_; ++i) {
+      events_[i - 1] = events_[i];
+    }
+    --queued_;
+    events_[queued_] = QueuedEvent{};  // the vacated slot holds nothing
+    return true;
+  }
+  return false;
 }
 
 bool Client::lastEventSeq(std::uint8_t* out) const {
@@ -653,10 +682,12 @@ Answer<StatusOnly> Client::sleepNotice(std::uint32_t expect_back_s) {
   return call<SleepNoticeRequest, SleepNoticeResponse>(request);
 }
 
-Answer<CliResponse> Client::cli(Text line) {
+Answer<CliResponse> Client::cli(Text line, bool sensitive) {
   CliRequest request;
   request.text = line;
-  return call<CliRequest, CliResponse>(request);
+  // A line made from a password (task p4-02): wiped from the request and frame buffers after the
+  // exchange, exactly as SEND_LOGIN is. The line is never printed by this class either way.
+  return call<CliRequest, CliResponse>(request, sensitive);
 }
 
 Answer<PowerGetResponse> Client::powerGet() {

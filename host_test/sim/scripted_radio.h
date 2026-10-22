@@ -54,6 +54,13 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // with the clock here - a reset the flasher issued has taken effect, a boot that was due has
   // happened - so that the Walter never hears a firmware the chip no longer holds answer it.
   std::function<void()> on_access;
+  // A request this radio does not answer from the fixtures but from whoever asked to (task
+  // p4-02's SimRak, the RAK's side of §6): consulted for every request that is executed - after
+  // the refusal knobs below and §3's remembered response, so both still apply - and when it
+  // returns true, `payload` is the response - or, left empty, *no response at all* (a line that
+  // restarts the node, §5.7), executed and neither remembered nor answered. False leaves the
+  // fixtures to answer.
+  std::function<bool(const core::link::Packet&, std::vector<std::uint8_t>* payload)> on_request;
   int silence = 0;                    // ignore this many more requests, whole
   bool deaf = false;                  // ignore every request (a radio whose firmware is gone)
   std::uint32_t answer_delay_ms = 0;  // how long after a request its answer appears
@@ -132,6 +139,10 @@ class ScriptedRadio final : public interfaces::ByteStream {
 
   // Any event case of the fixtures, by name, with this radio's event seq, after a delay.
   void sendEvent(const std::string& case_name, std::uint32_t after_ms = 0);
+  // An event of this type with this payload, with this radio's event seq, after a delay: what a
+  // simulator of the RAK's own events (§6.3's EV_MESH_REPLY, task p4-02) sends.
+  void sendEventPayload(std::uint8_t type, const std::vector<std::uint8_t>& payload,
+                        std::uint32_t after_ms = 0);
 
   // One line of text, as the scanner speaks (§9).
   void sendLine(const std::string& line, std::uint32_t after_ms = 0);
@@ -156,6 +167,7 @@ class ScriptedRadio final : public interfaces::ByteStream {
     std::vector<std::uint8_t> payload;
     std::vector<std::uint8_t> frame;  // the frame's own bytes, without the sender's idle 0x00
     bool executed = false;            // false: the remembered response was sent again (§3)
+    std::vector<std::uint8_t> response;  // the response payload it got; empty when it got none
   };
 
   std::vector<std::vector<std::uint8_t>> writes;  // every write() the Walter made, verbatim

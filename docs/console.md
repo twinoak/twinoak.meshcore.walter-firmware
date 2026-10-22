@@ -108,6 +108,7 @@ supervisor's stop is printed at every level.
 | `rak watch` | the supervisor's view: whether the radio is healthy, when it was last so, today's counts against the daily caps, the last good battery reading, the radio's restarts, a stop in force, and the last three incidents with every rung they tried. It only reads |
 | `rak watch reset-caps` | the day's counts to zero and a stop lifted, journalled (the bench) |
 | `rak ladder` | climb the supervisor's ladder now — ask, reset, power-cycle, look at the chip, stop — each rung printed as it is tried. Minutes: the waits are the real ones |
+| `rak mesh status <key>` | one status request to a neighbouring repeater over the mesh client (task p4-02): begin a job with its key, send, print the reply's numbers, and the radio's `client_tx` before and after — the bench's *one packet, one reply, up by one*. Up to sixteen seconds on silence |
 
 ### Images, trust and this firmware's own slots
 
@@ -297,6 +298,8 @@ are sent* (§9), or *the UART is not ours* (the rail is off, or a `rak kill` too
 | `rak cli <line>` | `CLI`: the rest of the line, 1 to 160 bytes, run by the radio's own console interpreter as if typed on its serial port, and its reply. A line that restarts the radio (`reboot`) never answers, and the console says that is expected |
 | `rak events` | the events the radio has sent and the client has queued — `EV_BOOT`, `EV_MESH_REPLY`, `EV_ATTENTION` — decoded, newest last, and how many have been seen, dropped for want of room, or lost to a gap in their sequence numbers. Printing them takes them out of the queue |
 | `rak text` | the lines a scanner has sent instead of frames (§9), and how many were seen, dropped or truncated. Printing them clears them |
+
+| `rak mesh status <key>` | the mesh client (§6), through `components/agent/`'s `LinkMesh` (task p4-02): `JOB_BEGIN` with the neighbour's key and no path (the send floods, and the reply teaches the route), `SEND_REQUEST` of a status, the wait for `EV_MESH_REPLY` with `REPLY_GET` when it does not come, `JOB_END`, and `MESH_COUNTERS` before and after. Prints how the packet went and its tag; the reply's own fields (§6.3: after how long, via a returned path or direct, SNR and RSSI); the repeater's stats as the agent's codec reads them — battery, uptime, noise floor, last RSSI and SNR, packets, airtime — or that the reply was not a status reply it reads; and `client_tx` before and after. The neighbour answers a bare status request only if it holds this unit's key in its ACL (`setperm` on its console): a login is the agent's business (task p4-05), not this command's. On silence the console is busy for the runner's flood wait, sixteen seconds, and `rak events` afterwards shows nothing of it: the reply events are the mesh client's and are taken out of the queue |
 
 `rak reset` and `rak kill` also tell the link client that the radio is starting over: the session,
 the `boot_id` and — §9 — whatever firmware it was running are forgotten, and the next `rak hello`

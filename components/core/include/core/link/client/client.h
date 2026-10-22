@@ -250,7 +250,10 @@ class Client {
   Answer<StatusOnly> reboot(std::uint8_t mode, std::uint16_t delay_ms);
   Answer<IdentityResponse> identity();
   Answer<StatusOnly> sleepNotice(std::uint32_t expect_back_s);
-  Answer<CliResponse> cli(Text line);
+  // `sensitive` is a line made from a password (task p4-02, the agent's local door): the request
+  // and frame buffers are wiped after the exchange, as SEND_LOGIN's and a sensitive SEND_CLI's
+  // are (§6). §5.7's request has no flag for it; the wiping is this end's own.
+  Answer<CliResponse> cli(Text line, bool sensitive = false);
   Answer<PowerGetResponse> powerGet();
   Answer<EnvGetResponse> envGet();
   Answer<LppGetResponse> lppGet(std::uint8_t perm_mask);
@@ -278,6 +281,10 @@ class Client {
   std::size_t eventsQueued() const { return queued_; }
   // The oldest queued event, removed from the queue. False when there is none.
   bool takeEvent(QueuedEvent* out);
+  // The oldest queued event *of this type*, removed, the others left where they are: what the
+  // mesh client (task p4-02) does for EV_MESH_REPLY while the console and the supervisor still
+  // get their EV_BOOT and EV_ATTENTION. False when there is none of that type.
+  bool takeEvent(std::uint8_t type, QueuedEvent* out);
   void clearEvents() { queued_ = 0; }
   // The last event seq the radio sent, when one has been seen (§3: counted from 0, wrapping).
   bool lastEventSeq(std::uint8_t* out) const;

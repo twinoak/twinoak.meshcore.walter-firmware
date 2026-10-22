@@ -76,6 +76,10 @@ class FrameReceiver {
   // Forget a half-collected frame, keeping the counters: what a client does when it has decided
   // the radio restarted, or that the UART carries text and not frames (§9).
   void discardPartial();
+  // Zero both buffers (task p4-02): what the client does once it has copied a packet out, so
+  // that nothing the radio sent - a reply that echoes a password, say - outlives its use in a
+  // buffer nobody reads (spec/SYSTEM.md S-12). The packet() is gone with it; the counters stay.
+  void wipe();
 
  private:
   void count(Drop reason);
