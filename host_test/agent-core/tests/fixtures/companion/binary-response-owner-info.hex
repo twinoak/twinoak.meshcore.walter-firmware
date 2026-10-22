@@ -1,0 +1,8 @@
+# PUSH_CODE_BINARY_RESPONSE (0x8C) to REQ_TYPE_GET_OWNER_INFO: reserved, tag[4],
+# "FIRMWARE_VERSION\nnode_name\nowner_info". No NUL and no length: the string runs to the end of
+# the frame. REQ_TYPE_GET_OWNER_INFO needs FIRMWARE_VER_LEVEL >= 2.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:372-375 MyMesh::handleRequest -- REQ_TYPE_GET_OWNER_INFO: one sprintf of three lines after the tag
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:740-746 MyMesh::onContactResponse -- binary branch
+# 39 bytes
+8c0099aabbcc76312e31372e310a4772656e6161204368696d6e65792023310a
+5477696e4f616b

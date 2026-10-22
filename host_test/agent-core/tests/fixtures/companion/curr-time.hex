@@ -1,0 +1,4 @@
+# RESP_CODE_CURR_TIME (9): the companion's clock as Unix seconds.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1234-1239 MyMesh::handleCmdFrame -- CMD_GET_DEVICE_TIME branch
+# 5 bytes
+09b48dd268

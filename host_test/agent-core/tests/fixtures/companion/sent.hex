@@ -1,0 +1,7 @@
+# RESP_CODE_SENT (6): an over-the-air send went out. flood flag (1 = flooded), tag[4]
+# (= expected ack / request tag the reply is matched by), est_timeout u32 ms. Six commands write
+# this frame and all six write the same ten bytes; the cited one is CMD_SEND_TXT_MSG's.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1117-1124 MyMesh::handleCmdFrame -- RESP_CODE_SENT of CMD_SEND_TXT_MSG
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1541-1548 MyMesh::handleCmdFrame -- the same ten bytes for CMD_SEND_LOGIN
+# 10 bytes
+06001122334468100000

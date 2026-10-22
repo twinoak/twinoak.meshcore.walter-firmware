@@ -1,0 +1,9 @@
+# RESP_CODE_DEVICE_INFO (13) from a ver 9 companion: repeat is there, path_hash_mode is not, so
+# the frame stops one byte early and DeviceInfo.PathHashMode is unknown rather than zero (a
+# companion whose paths might be 2- or 3-byte hashes must not be read as mode 0).
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1023-1042 MyMesh::handleCmdFrame -- CMD_DEVICE_QUERY branch; path_hash_mode is the v10+ field
+# fw companion-v1.17.0 727fc051 examples/companion_radio/MyMesh.h:10-16 FIRMWARE_BUILD_DATE -- the build date and version string of the tag the field companion runs
+# 81 bytes
+0d0d64080000000039204175672032303236000048656c746563205633000000
+0000000000000000000000000000000000000000000000000000000076312e31
+372e300000000000000000000000000000

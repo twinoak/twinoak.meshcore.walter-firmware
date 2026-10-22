@@ -1,0 +1,262 @@
+# Keeping up with the agent core, tier one: automatic.
+#
+# The agent's job logic is twinoak/twinoak.meshmaster.exitnode-firmware's `lib/agent-core/`, copied
+# here at one commit (docs/upstream.md, docs/ARCHITECTURE.md §13). A tag `vX.Y.Z` of that
+# repository is the library's version, and this looks weekly - and on demand - for one newer than
+# the copy's. When there is one it re-runs the copy, pushes a branch `upstream/<tag>` and opens a
+# pull request "agent-core <tag>" whose body is the upstream changelog section and the commits
+# between the two pins. CI (ci.yml - tools/verify.ps1, nothing else) runs on that pull request like
+# any other; green means the new release compiled for the board and for the host, the library's own
+# two suites still pass against the copied fakes, every rail still holds, and a person merges it.
+# Nobody spends a session on a green bump.
+#
+# Red is tier two, and the one command for it is tools/new-sync-task.ps1 (docs/upstream.md).
+#
+# The comparison itself is tools/upstream-check.ps1 and the copy is tools/sync-agent-core.ps1, so
+# that both can be run by hand and this workflow is only the git and the gh around them.
+#
+# ---------------------------------------------------------------------------------------------
+# THE CREDENTIAL. **The exit-node repository is private**, and a workflow's own GITHUB_TOKEN is
+# scoped to this repository alone: it cannot read another private repository's tags, let alone
+# clone it. So this workflow needs one secret, `AGENT_CORE_READ_TOKEN` - a fine-grained personal
+# access token with *Contents: read* on twinoak/twinoak.meshmaster.exitnode-firmware, and nothing
+# else - and **without it every run stops at the first step and says so**, green, having changed
+# nothing. That is deliberate: a watch that failed red every Monday would be noise, and a watch
+# that pretended to have looked would be worse.
+#
+#     gh secret set AGENT_CORE_READ_TOKEN --repo twinoak/twinoak.meshcore.walter-firmware
+#
+# Nothing else in this repository needs a secret, and nothing else here reads this one. Until it
+# is set, the watch is `tools/upstream-check.ps1 -Upstream ..\twinoak.meshmaster.exitnode-firmware`
+# run by a person or a session on a machine that has the clone (docs/upstream.md says so too).
+# ---------------------------------------------------------------------------------------------
+
+name: upstream
+
+on:
+  schedule:
+    # Monday morning, off the hour and off the minute the other repositories watch on (06:17 in
+    # the exit-node firmware, 06:29 in the repeater firmware, 06:41 in meshmaster.dk): nothing
+    # else here runs then.
+    - cron: "53 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Rehearsal only: pretend the copy is at this version, e.g. 0.1.4. Leave empty for a real check."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: is there a newer agent-core?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      PRETEND_VERSION: ${{ inputs.version }}
+      UPSTREAM_TOKEN: ${{ secrets.AGENT_CORE_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Without the token there is nothing this job can do. It says that and stops, green.
+      - name: Is there a credential for the upstream repository?
+        id: credential
+        run: |
+          set -euo pipefail
+          if [ -n "${UPSTREAM_TOKEN:-}" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+            echo "AGENT_CORE_READ_TOKEN is set." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### The watch has no credential"
+              echo
+              echo "\`twinoak/twinoak.meshmaster.exitnode-firmware\` is private and this workflow's"
+              echo "own \`GITHUB_TOKEN\` cannot read it, so nothing was looked at and nothing was"
+              echo "changed. One secret turns this on:"
+              echo
+              echo '```'
+              echo "gh secret set AGENT_CORE_READ_TOKEN --repo ${{ github.repository }}"
+              echo '```'
+              echo
+              echo "a fine-grained token with **Contents: read** on that repository and nothing else."
+              echo "Until then the check is run by hand on a machine that has the clone:"
+              echo
+              echo '```powershell'
+              echo '.\tools\upstream-check.ps1 -Upstream ..\twinoak.meshmaster.exitnode-firmware'
+              echo '```'
+              echo
+              echo "See \`docs/upstream.md\`, *What the watch cannot do without a credential*."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Where upstream is: components/agent-core/MANIFEST.txt's header is the one place this
+      # repository names it, and upstream-check.ps1 reads it from there by itself. This step reads
+      # it the same way rather than carrying a second copy.
+      - name: Where upstream is
+        if: steps.credential.outputs.have == 'true'
+        id: upstream
+        run: |
+          set -euo pipefail
+          repo=$(sed -n 's|^# source: \([^/]*/[^/ ]*\)/.* at commit [0-9a-f]\{40\}$|\1|p' \
+                 components/agent-core/MANIFEST.txt | head -1)
+          test -n "$repo"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "agent-core comes from $repo"
+
+      # A full clone, because the copy is `git archive` of a commit and of six paths - a blobless
+      # clone would fetch them one by one anyway. Into /tmp: nothing of this repository's tree.
+      - name: Clone upstream (read only)
+        if: steps.credential.outputs.have == 'true'
+        env:
+          REPO: ${{ steps.upstream.outputs.repo }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${UPSTREAM_TOKEN}@github.com/${REPO}.git" /tmp/upstream
+          git -C /tmp/upstream --no-pager log --oneline -1
+          # The remote keeps the token in its URL; this job's steps below do not need it again.
+          git -C /tmp/upstream remote set-url origin "https://github.com/${REPO}.git"
+
+      - name: Is there a newer tag?
+        if: steps.credential.outputs.have == 'true'
+        id: check
+        shell: pwsh
+        run: |
+          # Not $args: that is PowerShell's own automatic variable for a script's arguments.
+          $options = @('-Upstream', '/tmp/upstream', '-GitHubOutput')
+          if ($env:PRETEND_VERSION) { $options += @('-Version', $env:PRETEND_VERSION) }
+          ./tools/upstream-check.ps1 @options
+
+      - name: Nothing newer
+        if: steps.credential.outputs.have == 'true' && steps.check.outputs.newer != 'true'
+        run: |
+          {
+            echo "The copy is at the newest \`v*\` tag upstream has"
+            echo "(\`${{ steps.check.outputs.previous_version }}\`, \`${{ steps.check.outputs.previous_sha }}\`)."
+            echo "Nothing to do."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # One open bump at a time: last week's unmerged pull request is not reopened.
+      - name: Is the branch already there?
+        id: branch
+        if: steps.credential.outputs.have == 'true' && steps.check.outputs.newer == 'true'
+        run: |
+          set -euo pipefail
+          name="upstream/${{ steps.check.outputs.tag }}"
+          if git ls-remote --exit-code --heads origin "$name" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$name is already on origin - its pull request is the open bump." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Who commits
+        if: steps.credential.outputs.have == 'true' && steps.check.outputs.newer == 'true' && steps.branch.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # The bump itself: the same script a session runs, over the clone above. It rewrites both
+      # trees and both manifests, so the diff *is* what moved upstream.
+      - name: Re-copy at the new tag
+        if: steps.credential.outputs.have == 'true' && steps.check.outputs.newer == 'true' && steps.branch.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          ./tools/sync-agent-core.ps1 -Ref '${{ steps.check.outputs.tag }}' -Repo /tmp/upstream -Quiet
+          ./tools/sync-agent-core.ps1 -Verify
+
+      - name: What upstream changed
+        if: steps.credential.outputs.have == 'true' && steps.check.outputs.newer == 'true' && steps.branch.outputs.exists == 'false'
+        env:
+          PREVIOUS: ${{ steps.check.outputs.previous_sha }}
+          NEW: ${{ steps.check.outputs.sha }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## agent-core ${{ steps.check.outputs.previous_version }} -> ${TAG}"
+            echo
+            echo "\`${PREVIOUS:0:8}\` -> \`${NEW:0:8}\`. The library's changelog is written for this"
+            echo "reader - the three interfaces, the \`MeshReply\` constants, the fixtures' manifest"
+            echo "commit and the version - so it comes first:"
+            echo
+            echo '```'
+            git -C /tmp/upstream show "${NEW}:CHANGELOG.md" 2>/dev/null | sed -n "/^## /,/^## /p" | head -60 \
+              || echo "(no CHANGELOG.md at ${TAG})"
+            echo '```'
+            echo
+            echo "And the commits between the two pins, in their words:"
+            echo
+            echo '```'
+            git -C /tmp/upstream log --oneline --no-decorate "${PREVIOUS}..${NEW}" \
+              || echo "(the two pins are not on one line of history; see the tags)"
+            echo '```'
+            echo
+            echo "CI on this pull request is the test - \`tools/verify.ps1\`, which holds both copied"
+            echo "trees against their manifests, builds the library for the board, compiles it on the"
+            echo "host under the sanitizers, runs **the library's own runner and loop suites** against"
+            echo "the copied fakes, and walks every rail. **Green** means the bump cost nothing: merge"
+            echo "it. **Red** means a session, and the one command for that is in \`docs/upstream.md\`:"
+            echo
+            echo '```powershell'
+            printf '.\\tools\\new-sync-task.ps1 -Tag %s -Pr <this one>\n' "${TAG}"
+            printf '.\\tasks\\run-all.ps1 -Phase sync\n'
+            echo '```'
+            echo
+            echo "Whichever it is, a bump re-reads four things that depend on upstream in a way a"
+            echo "compiler may not catch - the three interfaces, the \`MeshReply\` constants,"
+            echo "\`library.json\`'s ArduinoJson version and \`tests/fixtures/contracts/MANIFEST.txt\`'s"
+            echo "commit (the dangerous one: a moved envelope stops nothing compiling) - and the six"
+            echo "rails have to survive it. \`tasks/sync/TEMPLATE.md\` is the list."
+            echo
+            echo "_(If no CI run appears below, it is waiting for **Approve and run** on the Actions"
+            echo "tab: GitHub holds workflows on a pull request that a workflow opened."
+            echo "\`docs/upstream.md\` says why.)_"
+          } > /tmp/body.md
+          cat /tmp/body.md
+
+      - name: Push the bump and open the pull request
+        if: steps.credential.outputs.have == 'true' && steps.check.outputs.newer == 'true' && steps.branch.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git checkout -B "${{ steps.branch.outputs.name }}"
+          # And the row of docs/upstream.md's history table, so that a green bump merged by a
+          # person - with no session anywhere near it - still leaves the history true.
+          marker='<!-- upstream.yml inserts the newest row directly under this line -->'
+          test "$(grep -cF "$marker" docs/upstream.md)" = "1"
+          row="| \`$TAG\` | \`${{ steps.check.outputs.sha }}\` | $(LC_ALL=C date -u '+%-d %B %Y') | the weekly bump (\`upstream.yml\`), pull request below |"
+          awk -v m="$marker" -v r="$row" '{ print } index($0, m) { print r }' docs/upstream.md > /tmp/upstream.md
+          mv /tmp/upstream.md docs/upstream.md
+          git add components/agent-core host_test/agent-core docs/upstream.md
+          git diff --cached --stat
+          git commit -m "agent-core $TAG"
+          # Not --force: the step above established that this branch is not on origin, so a push
+          # that is not a fast-forward means something else is there and this job should stop.
+          git push origin "${{ steps.branch.outputs.name }}"
+          # The label is how `gh pr list --label agent-core` finds these, and how auto-merge could
+          # be turned on for them one day. Creating it twice is not an error worth stopping for.
+          gh label create agent-core --color 1d76db --description "An agent-core pin bump" 2>/dev/null || true
+          gh pr create \
+            --title "agent-core $TAG" \
+            --body-file /tmp/body.md \
+            --label agent-core \
+            --head "${{ steps.branch.outputs.name }}" \
+            --base main
+          {
+            echo "Opened **agent-core $TAG** from \`${{ steps.branch.outputs.name }}\`."
+            echo "CI on it is the test; \`docs/upstream.md\` says what green and red mean."
+          } >> "$GITHUB_STEP_SUMMARY"

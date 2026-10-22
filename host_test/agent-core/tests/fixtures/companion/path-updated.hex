@@ -1,0 +1,6 @@
+# PUSH_CODE_PATH_UPDATED (0x81): the companion learned a new path to this contact. The key alone -
+# the path itself is read back with CMD_GET_CONTACT_BY_KEY.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:406-411 MyMesh::onContactPathUpdated
+# 33 bytes
+81c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2

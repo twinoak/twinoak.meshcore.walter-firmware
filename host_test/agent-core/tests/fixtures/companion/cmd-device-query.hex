@@ -1,0 +1,5 @@
+# CMD_DEVICE_QUERY (22): app-proto-ver 3. This is the byte the companion keeps as app_target_ver,
+# and it is what makes messages arrive as RESP_CODE_CONTACT_MSG_RECV_V3 rather than the ver-2 code.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1023-1025 MyMesh::handleCmdFrame -- app_target_ver = cmd_frame[1]
+# 2 bytes
+1603

@@ -1,0 +1,11 @@
+# RESP_CODE_SELF_INFO (5), the answer to CMD_APP_START: adv_type, tx_power i8, max_tx_power i8,
+# pubkey[32], lat i32 (1e-6 deg), lon i32, multi_acks, adv_loc_policy, telemetry_modes,
+# manual_add_contacts, freq u32 (kHz), bw u32 (Hz), sf, cr, name (rest, no NUL).
+# tx_power is _prefs.tx_power_dbm, which is int8_t (NodePrefs.h): an SX126x set below 0 dBm sends
+# a negative byte here, and this port read it unsigned until tasks/phase-3.5/42.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1043-1084 MyMesh::handleCmdFrame -- CMD_APP_START branch
+# fw companion-v1.17.1 d9296435 examples/companion_radio/NodePrefs.h:22-22 NodePrefs::tx_power_dbm -- int8_t
+# 72 bytes
+05011616c0ffee0011223344556677889900aabbccddeeff0011223344556677
+8899aabbc4f8580308b19b0000001100f2440d0024f400000808526973736b6f
+762077696e646f77

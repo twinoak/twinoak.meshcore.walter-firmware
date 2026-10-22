@@ -1,0 +1,12 @@
+# PUSH_CODE_STATUS_RESPONSE (0x87): reserved, pubkey_prefix[6], then RepeaterStats
+# (simple_repeater/MyMesh.h, 56 bytes): batt_milli_volts u16, curr_tx_queue_len u16,
+# noise_floor i16, last_rssi i16, n_packets_recv u32, n_packets_sent u32,
+# total_air_time_secs u32, total_up_time_secs u32, n_sent_flood u32, n_sent_direct u32,
+# n_recv_flood u32, n_recv_direct u32, err_events u16, last_snr i16 (x4), n_direct_dups u16,
+# n_flood_dups u16, total_rx_air_time_secs u32, n_recv_errors u32.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:216-239 MyMesh::handleRequest -- REQ_TYPE_GET_STATUS fills RepeaterStats and memcpy's it after the 4-byte tag
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.h:44-60 RepeaterStats -- every field naturally aligned, so 56 bytes with no padding
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:718-724 MyMesh::onContactResponse -- status branch: reserved, prefix[6], then data[4..] verbatim
+# 64 bytes
+8700c3d4e5f60718ac0f000090ff9fff39300000851a0000d2040000002f0d00
+a00f0000e50a000028230000110d000000001900000003002e16000002000000

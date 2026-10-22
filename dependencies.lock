@@ -1,4 +1,11 @@
 dependencies:
+  bblanchon/arduinojson:
+    component_hash: 5e6aff2bc5bc988b36c8e90c01e637495ee895ad3af93911860c21ec6da79b6a
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 7.4.3
   dptechnics/walter-modem:
     component_hash: 72a074b3764a8533a6b2e6895e051e700b4a852aee6c9f71da4e3563bad8ae7f
     dependencies: []
@@ -13,8 +20,9 @@ dependencies:
       type: idf
     version: 5.5.5
 direct_dependencies:
+- bblanchon/arduinojson
 - dptechnics/walter-modem
 - idf
-manifest_hash: e891859ab986509b44094e90683b3c97c1a5444ba44a2b5bb15595e3c17a2134
+manifest_hash: 8764f064f076c21d4e81a66575bf2b32c9e1cdb769d8bf34c4e83d1144db2e29
 target: esp32s3
 version: 2.0.0

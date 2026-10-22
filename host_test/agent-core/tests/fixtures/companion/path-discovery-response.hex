@@ -1,0 +1,8 @@
+# PUSH_CODE_PATH_DISCOVERY_RESPONSE (0x8D): reserved, pubkey_prefix[6], out_path_len (0x02),
+# out_path (a1 7f), in_path_len (0x02), in_path (7f a1). Each length byte packs
+# count | ((hash_size - 1) << 6) and the firmware refuses to send one that is not valid, so
+# 0xFF never appears here.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:750-773 MyMesh::onContactPathRecv -- pending_discovery branch
+# fw companion-v1.17.1 d9296435 src/Packet.cpp:13-30 Packet::writePath -- the length byte's count and hash-size bits, and isValidPathLen
+# 14 bytes
+8d00c3d4e5f6071802a17f027fa1

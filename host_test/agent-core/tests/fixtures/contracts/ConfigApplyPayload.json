@@ -1,0 +1,1 @@
+{"commands":[{"key":"advert.interval","command":"set advert.interval 240","from":"0","to":"240"},{"key":"repeat","command":"set repeat on","from":"false","to":"true"}],"planHash":"3f2a9c0d1e4b5a6f7c8d9e0f1a2b3c4d","reason":"align with the Danish standard","desiredVersion":4}

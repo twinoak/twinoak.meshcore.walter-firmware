@@ -1,0 +1,10 @@
+# PUSH_CODE_NEW_ADVERT (0x8A): a contact frame for a node the companion had not seen before.
+# Same layout as RESP_CODE_CONTACT, same writer, a different code byte.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:353-357 MyMesh::onDiscoveredContact -- is_new branch
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:166-187 MyMesh::writeContactRespFrame
+# 148 bytes
+8ac3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2020002a17f0000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+000000004772656e6161204368696d6e65792023310000000000000000000000
+00000000c08bd26880985c032052a600888cd268

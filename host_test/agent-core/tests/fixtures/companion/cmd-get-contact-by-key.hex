@@ -1,0 +1,6 @@
+# CMD_GET_CONTACT_BY_KEY (30): pubkey[32]. Answered with RESP_CODE_CONTACT, or
+# RESP_CODE_ERR / ERR_CODE_NOT_FOUND. Local, no airtime.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1324-1331 MyMesh::handleCmdFrame -- CMD_GET_CONTACT_BY_KEY branch
+# 33 bytes
+1ec3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2

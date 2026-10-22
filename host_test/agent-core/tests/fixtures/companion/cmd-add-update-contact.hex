@@ -1,0 +1,11 @@
+# CMD_ADD_UPDATE_CONTACT (9): the contact frame's 143 bytes after the code, no lastmod
+# (pubkey, type, flags, out_path_len, out_path[64], name[32], last_advert, lat, lon). lat, lon
+# and lastmod are optional on the way in; without lastmod the companion stamps its own clock.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1281-1301 MyMesh::handleCmdFrame -- CMD_ADD_UPDATE_CONTACT branch
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:189-209 MyMesh::updateContactFromFrame -- the reader: lat/lon then lastmod are the optional tail
+# 144 bytes
+09c3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2020002a17f0000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+000000004772656e6161204368696d6e65792023310000000000000000000000
+00000000c08bd26880985c032052a600

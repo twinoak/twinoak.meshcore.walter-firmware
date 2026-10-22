@@ -123,6 +123,12 @@ components/
                         goes behind (task p3-05, docs/cycle.md; spec/SYSTEM.md §8).
                         ("hal/" when this file was written; ESP-IDF owns a component of
                         that name - task p0-01)
+  agent-core/           **not ours**: twinoak.meshmaster.exitnode-firmware's lib/agent-core/ at
+                        one commit, a checked copy with a MANIFEST.txt, never edited here - the
+                        MeshMaster agent's job logic on three interfaces and an optional fourth
+                        for what a sleep keeps (§13, docs/upstream.md,
+                        task p4-01). Its own CMakeLists.txt registers it as the component
+                        `agent-core`; ArduinoJson is its one dependency, from the registry
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
@@ -166,19 +172,27 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02);
                         command_lines.h, every command of the console's table with something to
                         type after it, which two rails walk
+  agent-core/           **not ours either**: the agent library's four fakes (a stock repeater, a
+                        scripted meshmaster.dk, a clock that only moves when a test says, a store
+                        that outlives a sleep), both contract fixture sets and **the library's own
+                        two suites**, copied at the same commit as the component and at upstream's
+                        own paths, so that all 93 of its cases run here unmodified (§13, task
+                        p4-01). GoogleTest, pinned, for these two binaries and nothing else
 tools/                  verify.ps1 and verify.sh (the definition of "verified"), check_rails.py
                         (**every rail, one entry each**, run by verify.sh), check_partitions.py,
                         the trust-table and TLS-root generators, release/ (the release tooling),
                         walterctl.py (the laptop's end of `image receive`), cmake/ (the no-ESP-IDF-
-                        include check)
+                        include check); sync-agent-core.ps1 (the agent library's copy and the
+                        -Verify of it), upstream-check.ps1 and new-sync-task.ps1 (the watch and
+                        the one command for a red bump - docs/upstream.md, task p4-01)
 keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02);
                         tls/: the TLS roots a server's chain must end at, each with its header (task p3-02)
 spec/                   a copy of the system specification and its fixtures - never edited here
 docs/                   this file; bench.md (the one ordered bench walk and the numbers to bring
                         back); field.md (what a unit on a mast does, for the person who owns it);
                         release.md, console.md, provisioning.md, update.md, supervisor.md,
-                        power.md, cycle.md
-tasks/                  the piles
+                        power.md, cycle.md, upstream.md (keeping up with the agent core)
+tasks/                  the piles; sync/ is the one kind of task a bump of the agent core makes
 ```
 
 The rule the layout enforces: **if it can go wrong in the field, it is in `core/` and has a host
@@ -1074,3 +1088,110 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §16): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
 | duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §15) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |
+| **the agent core** | ✔ the library's own two suites, here, against the copied fakes and both fixture sets: `agent_core_runner` (46 cases — all thirteen job types, one send per command, the credential wiped, the lease, the offline buffer, and the fake's own citations) and `agent_core_loop` (47 — the loop, the heartbeat's bytes, the backoff, the reboot guard, every wake case, and what a sleep keeps: the image's bytes, a torn one refused whole, the uplink's ledger, nothing secret in the store), compiled from the same sources the board gets under the same sanitizers and `-Werror`; and the pin's two places held equal (`host_test/rails/test_rail_agent_core.cpp`) | the component in the board's link, all twenty-three objects of it, kept by `main/agent_anchor.cpp` until task p4-05 calls `wake()`; `tools/sync-agent-core.ps1 -Verify` (every file of both copied trees against its manifest, before the container starts) and `tools/check_rails.py`'s entry A (the library's boundary as an allow list, ten ways of skipping certificate verification, no store and no file system) | nothing: the library is linked and unused until p4-05, and what it then does is `docs/bench.md` §§17–18 and phase 4's own bench lines |
+
+## 13. The agent
+
+Everything above this section is a unit that looks after itself and its radio. This section is
+what makes it a unit somebody can *ask* for something — a MeshMaster agent on meshmaster.dk,
+registered by its key, heartbeating, answering the jobs the server hands out, and serving them
+over the UART to the repeater it is bolted to and over the air to that repeater's neighbours
+(`spec/SYSTEM.md` §8, `spec/proposals/01` and `03`).
+
+None of that logic is written here. It is written, tested and proven on the air in
+`twinoak/twinoak.meshmaster.exitnode-firmware`, whose portable half is the library
+`lib/agent-core/` — and this firmware is its first consumer. The library arrives as a **checked
+copy at one commit** (`components/agent-core/`, [`upstream.md`](upstream.md)): never edited here,
+held byte for byte against a manifest, and bumped by a re-copy.
+
+### What the library is
+
+Thirteen job types and their rules; the login sequence and its four classes; the ACL restore that
+ends an admin session; the config read and the config apply engines; the session cache; the
+airtime budget and the uplink's own ledger of seconds and bytes; the agent API's envelopes and
+result shapes; the reply codec that reads what a stock MeshCore repeater answers; the observation
+ring; the offline result buffer and the image a sleep keeps it in; the rate limiter; the backoff
+and the policy that reads the server's status codes; the log's formatting; and the loop that
+drives all of it — for ever (`loop()`) or **one wake at a time** (`wake()`), which is the one this
+firmware uses.
+
+It is not our hardware. It has no uplink, no mesh, no storage, no clock, no console and no main,
+and it includes nothing of Arduino, the ESP-IDF, WiFi, NVS, lwIP, FreeRTOS or MeshCore — an allow
+list over every `#include` in it, which `tools/check_rails.py`'s entry A holds here as upstream's
+own `test_library` holds it there. Its one dependency is ArduinoJson 7.4.3, from the component
+registry.
+
+### The three seams, and who fills them
+
+```
+                     ┌──────────────────────────────────────────┐
+  core/cycle/        │  mm::AgentLoop::wake(intent, budget)     │   components/agent-core/
+  wake_cycle.h  ───► │  mm::JobRunner  — thirteen job types     │   (copied, never edited)
+  step 8             └───┬──────────────┬───────────────┬───────┘
+                         │ IMesh        │ IUplink       │ IPlatform
+                    ┌────▼────┐   ┌─────▼──────┐   ┌────▼──────────┐
+                    │LinkMesh │   │ModemUplink │   │WalterPlatform │   components/agent/
+                    └────┬────┘   └─────┬──────┘   └────┬──────────┘   (tasks 02, 03, 04)
+                         │              │               │
+              core/link/ │   core/net/  │   interfaces/ │
+              the RAK on │   HTTPS over │   Clock, WallClock,
+              UART1      │   the modem  │   Retained, Restart
+```
+
+| Seam | Ours | What it is made of |
+|---|---|---|
+| `IMesh` | `LinkMesh` (task p4-02) | one request of `spec/LINK-PROTOCOL.md` §6 per call — the link was designed against this list (`SYSTEM.md` S-4) — and §7's `OBS_PULL` for the advert ring. `awaitReply` is the `EV_MESH_REPLY`, with `REPLY_GET` as the fallback |
+| `IUplink` | `ModemUplink` (task p4-03) | the seven calls of the agent API over phase 3's HTTPS client (§9): `Authorization: Bearer` and `X-Agent-Version` on every one, the chain verified against a root the image ships, and a `Call` record per call for the library's `ServerPolicy` to read |
+| `IPlatform` / `IClock` | `WalterPlatform` (task p4-04) | mostly interfaces this firmware already has: `Clock::nowMs()`, `Clock::delayMs()`, `esp_random()`, `WallClock`, the heap figures, `Restart`, and the health record in retained storage for the self-reboot count |
+
+And a fourth, **optional** and ours to fill because this unit sleeps (`agent/IRetained.h`,
+`agent/KeptImage.h`, new in `v0.3.0`): a store that outlives a deep sleep. A result the server did
+not take and an advert a wake could not post live in RAM, which the sleep takes with it — so the
+promise *no job left leased and silent* held only within one boot. `AgentLoop::setRetained(store,
+scratch, len)` hands the loop somewhere to put them and `restoreKept()` reads them back once a
+boot: **one image a wake**, at most about 19.5 kB, written only when it differs from the one the
+store already holds, refused whole when it is torn or foreign and counted when it is. The image
+may hold nothing a result may not — the runner wipes every credential before a result is
+written — and the store is bytes and a capacity, nothing more. No task of this phase was written
+for it (it did not exist when they were); `capacity`/`write`/`read` over a flash region or an NVS
+blob belongs beside `WalterPlatform` in task p4-04, and what it is worth — a week of results and
+adverts surviving the sleeps that would otherwise drop them — is task p4-05's simulated month.
+
+The job types this unit advertises, the heartbeat's identity taken from the radio, and the
+observations pulled out of the RAK's ring are task p4-04's; `AgentBackend : Backend` — the
+implementation of §10's seam, which is **one call to `AgentLoop::wake()`** — and the firmware jobs
+mapped onto phase 2's image store and update machines are task p4-05's.
+
+### Where it sits in one wake
+
+§10's step 8 is *talk to the backend*, and `core/cycle/null_backend.h` is what is behind it in
+phases 0–3. Task p4-05 puts `AgentBackend` there and nothing else about the wake changes: the
+step keeps its precondition, its bound and its outcome, and every rail of §10 — one update step a
+wake, every wake ends in sleep, never awake indefinitely — still belongs to the wake cycle and not
+to the agent. What crosses the seam stays a plain structure and a closed set of requests this
+firmware already knows how to carry out.
+
+`WakeIntent` comes from the interval policy of step 5 and the band; `Budget` from what is left of
+the wake's seconds and the LTE plan. `WakeState` — 76 bytes, a trivially copyable POD carrying the
+backoff, the accepted interval, the airtime budget, a 401 and the heartbeat's counters — goes into
+a retained slot of its own before the sleep and is restored before the next wake: every duration in
+it is a *duration* and not a deadline, because `millis()` restarts at zero after a deep sleep.
+
+### What it costs, and what it is linked by
+
+`mm::JobRunner` is tens of kilobytes of buffers — one scratch area every job shares rather than a
+stack frame — and `mm::AgentLoop` is mostly its 64-entry observation ring. Both must be
+namespace-scope objects, never locals, and task p4-05 is where they are constructed. Until then
+nothing in this firmware calls a line of the library, so `main/agent_anchor.cpp` takes the address
+of five of its functions through a volatile and `app_main` keeps the result: `--gc-sections` would
+otherwise drop every object of it, and the board build would prove the library compiles without
+proving it links. The anchor constructs nothing. Task p4-01's report has the size it adds.
+
+### The rails the agent inherits
+
+Six, all of them the library's own, and this firmware owns half of each: nothing the mesh says is
+logged as text; a password is in RAM for the job and gone; **one send per command** — which across
+the link is `client_tx` and the runner's transaction count being equal, exactly; TLS is verified;
+a flood's path hashes are two bytes or more, never one; and the contract is the .NET agent's, one
+dialect, posted byte for byte as the library wrote it. [`upstream.md`](upstream.md) says what a
+bump may do to each.

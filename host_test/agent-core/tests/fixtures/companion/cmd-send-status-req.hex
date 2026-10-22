@@ -1,0 +1,7 @@
+# CMD_SEND_STATUS_REQ (27): pubkey[32]. One transaction; the reply is
+# PUSH_CODE_STATUS_RESPONSE, matched by pubkey prefix rather than by tag.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1581-1601 MyMesh::handleCmdFrame -- CMD_SEND_STATUS_REQ branch; pending_status is the key's first 4 bytes
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:216-239 MyMesh::handleRequest -- REQ_TYPE_GET_STATUS - a guest may ask
+# 33 bytes
+1bc3d4e5f60718293a4b5c6d7e8f9001122334455667788990aabbccddeeffa1
+b2

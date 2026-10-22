@@ -1,0 +1,5 @@
+# RESP_CODE_ADVERT_PATH (22): recv_timestamp u32, path_len (0x02), path (a1 7f). The inbound path
+# the companion cached when it last heard this node's advert - local, no airtime.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1844-1864 MyMesh::handleCmdFrame -- CMD_GET_ADVERT_PATH branch
+# 8 bytes
+16c08bd26802a17f

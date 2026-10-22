@@ -1,0 +1,51 @@
+# The transcribed companion frames, copied - never edited here.
+# source: twinoak/meshmaster.dk/tests/fixtures/companion at commit f518ebd10883a41703f56de80addf1d21210eb8c
+# written by tools/sync-fixtures.ps1; see README.md in this directory
+#
+# sha256                                                           bytes  name
+0708a3b026116c1ac387d09d2c6b1fb7c9a20db09ac68fd8822e30d8c6d98bf5    1451  access-list-response.hex
+ebfa67bcdf0617c577c093010f475fdd7e949886e3cc3745ddd665d990f844d8    2221  access-list-response-full.hex
+e9044d5ff237821c677aebad7e818659ead316c601d4398a847b9827c75a15a3     288  advert.hex
+39b879a378f21c8fc678ee7922a231a053ba18bf379750750e24ce7c7d745e71     338  advert-path.hex
+226cddb1814ece2da15727e56b79b3f07573851a5ba805576eba2151dac3a386     858  binary-response-neighbours.hex
+83200bd6098376fadbe5f5533b8c3fdd34c80bd385577736b7716f323bb9fe75     622  binary-response-owner-info.hex
+4ea1d1b308e9d37dbeeeb949d732410cacec9a014bfd8079cc78f77914f27e14     998  binary-response-telemetry.hex
+21147e213ac9a90f710851dfa13f0b456f997b7c26ae05130341614c408ef5e6    1755  binary-response-telemetry-padded.hex
+12e927190106627b20e74d847fa37f465f2d3b9ee1171d37599d2c7597748f2b     880  cmd-add-update-contact.hex
+6ca3429229813b08888d76ec9cebe6affc6b3d77ef3c6cc902166bf12d23be37     441  cmd-app-start.hex
+a8e1eb4a3c48f508b52b896d254386415118b9134c5a7114de468ba546f93fc8     347  cmd-device-query.hex
+e0d9bea9e955f1e424fa6ecb25fd6409215e99b9245c40732550f3dac6d83395     379  cmd-get-advert-path.hex
+8842e7103ffa1dca310e7c840973896658c5f7a390bdab536ece7e5b7db53e6c     349  cmd-get-contact-by-key.hex
+ae9c88ff0da39e1d20c896f3a069e5045e1c49980952466ad8434759fe0a1ee8     402  cmd-logout.hex
+b9b881f98d52df4c06b33c0b2c4d6161adc90d071ab26892e0c0d26f50f2b16b     680  cmd-send-binary-req-neighbours.hex
+b9a319202e435735f930db3cab676905cbcc4007a6cf1ee1bbfd40f096204043     691  cmd-send-binary-req-telemetry.hex
+3a7b70d1e79519269e218147465c9af3f2869688ac4587b870c3fd04b0586c03     802  cmd-send-login.hex
+4c89505c3b751699291575eb91d740134cef56b3522061ee38f52ae4270bc911     671  cmd-send-path-discovery-req.hex
+ab5bb23649764ab2353279fe945177e2db75a53953704bdcea9d3531f9151fbd     535  cmd-send-status-req.hex
+45717d8a7a358d367dec7028a3b670a0edf2022943b9a1b38252438f16cd5010     604  cmd-send-trace-path.hex
+1cb55d648f419dacb70f0bdcf98d20b167fd5bcc2551f68b0b15209bbae04f61     679  cmd-send-trace-path-2byte.hex
+20d3ec4340ed85db3bc0aabec600863bb0c3b31666c3d96ec01078150e62c0b6     528  cmd-send-txt-msg-cli.hex
+8c829ac31bf0c18bb16aa5d9adeec2f3720ed61c5e44397da515742aade78684     305  cmd-sync-next-message.hex
+e2554b65060a85ad854d513dad0f78fd095fc28794011fc1b50f0c751b608942     813  contact.hex
+5d37d354b4924bbeb99ee917587a6ab4241e90699f1444a51865da7cf6a8ae69     703  contact-msg-recv-v3.hex
+3c77ebbeb78798719b477e60f9118dd8055ad7263df6ad7b71f24bae51a34213     843  contact-msg-recv-v3-signed.hex
+037ad3f0ef77f4c0099c9546d826920e8198ea7cddd097766f6d1b2f37308492     218  curr-time.hex
+bb5ecff6f91bf741822db474d495ae9567ab7935a724d8423fcab78f2711f2a0    1038  device-info.hex
+58295a8a9d7e6a048aa49a2de45b5f63c4483da327a34b060d7b140283f1d678     631  device-info-legacy.hex
+37dcb8bb82e59fda36ae758f43ef12e7b0f992633b432148ad4580ce0d79aea1     773  device-info-ver9.hex
+164f00b588aac662f02ac2cb83b872cbce49555d71853afecb1e3a19783c0975     318  error.hex
+66637955fd5b1038d13336c93e2ad2a2adb5ef8f1e3d1b021c580bae663f90b7     560  login-failed.hex
+de614d14bdd63c77b6c9308ddbee19eaf8cb6164e97518bfdb1fa0f8bc06b38f    1129  login-success.hex
+f776a0e32c6556416c49c366712a5f56a599209d3c2989b845563ca2d79315f7     366  login-success-legacy.hex
+fde1b237dd119cc9c0c079354d64cc925de001a5d6b20f7687e18b16fc1ce405     350  login-success-legacy-admin.hex
+b4923e926dae38dd966c6e4897d7fc38840da41e2677a82c55e215c0e233aba9     586  login-success-readonly.hex
+dcc3ae05a35cab0071eb7ce0ffca4427af623a50d3266523f51f5db0eff5a6a6     705  new-advert.hex
+72b6d1515d1e5f35ed9cffa1997373174cfe6563ea7b1b29647896882e7b9b4d     599  path-discovery-response.hex
+d14230925b3d2b78e4d92308d34af43aca90bae04630fcb38ab34cff2ae0b5df     343  path-updated.hex
+59c558c6bbaafdfc8aa30c2e7afc0e554d968f57ba5c523d44673b0fb9b1b8b8     836  self-info.hex
+ce644bdbbc43c2722de4891cc9a751c69a1a6a935432e8a1ff7ee0131a47caec     584  sent.hex
+6ba295647b7eda94fc3cabf7071f82fb714449097c85a83ff962c9c3d2b27587    1120  status-response.hex
+a1e370463081b1e10ede6d7f2b0e6df73d0d1b4c3e59897c2f9380afa8174ee7    1003  status-response-48.hex
+389745ef2c9a63e7b670a5831aee17eabdd2fa7d8a34bfe02b1a551b7bf03aac    1245  telemetry-response.hex
+f8bd77ec8f7ee343a997921072df8ad890110f710b51fb714e38d099772314f7     755  trace-data.hex
+7ed0286ea17ce45ed0f91941006d3abac43ecea59371345b3a23226985cab1f3     898  trace-data-2byte.hex

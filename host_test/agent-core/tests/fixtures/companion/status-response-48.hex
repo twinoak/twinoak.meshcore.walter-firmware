@@ -1,0 +1,10 @@
+# PUSH_CODE_STATUS_RESPONSE (0x87) from a repeater whose RepeaterStats stops at n_flood_dups:
+# 48 bytes of struct, so total_rx_air_time_secs and n_recv_errors are unknown rather than zero.
+# The struct grew at the end, which is why a short one still parses field for field.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:216-239 MyMesh::handleRequest -- REQ_TYPE_GET_STATUS fills RepeaterStats and memcpy's it after the 4-byte tag
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.h:44-60 RepeaterStats -- every field naturally aligned, so 56 bytes with no padding
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:718-724 MyMesh::onContactResponse -- status branch: reserved, prefix[6], then data[4..] verbatim
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.h:58-59 RepeaterStats -- the two fields added last
+# 56 bytes
+8700c3d4e5f60718ac0f000090ff9fff39300000851a0000d2040000002f0d00
+a00f0000e50a000028230000110d00000000190000000300

@@ -1,0 +1,6 @@
+# CMD_SEND_TXT_MSG (2): txt_type 1 (CLI data), attempt 0, timestamp u32, pubkey_prefix[6],
+# the command text. For TXT_TYPE_CLI_DATA the companion replaces our timestamp with its own RTC
+# so the repeater's replay protection is not tripped, so nothing may be matched on it.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1085-1099 MyMesh::handleCmdFrame -- CMD_SEND_TXT_MSG: wants len >= 14; CLI data gets the node's own timestamp
+# 32 bytes
+0201001e8dd268c3d4e5f60718676574206164766572742e696e74657276616c

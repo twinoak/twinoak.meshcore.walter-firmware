@@ -1,0 +1,64 @@
+# The MeshMaster agent core, copied - never edited here.
+# source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit cc5a34366b316ead6248f651e8263c294bb6feea
+# written by tools/sync-agent-core.ps1; docs/upstream.md says how and when
+#
+# sha256                                                           bytes  name
+f706c61e9d012679ff6fd29771f0059ec5408bb8ea2b9b447500006ed1a9dfac     3073  CMakeLists.txt
+9a8a54f35e0d51069226bf01ab4cf26254dfbd1642c12e569fdced918d9ff814     1523  idf_component.yml
+e75ce371b6ea90e0239d503d7b552e80dacaea1a1df5dc14720eb5fc88a82575    31104  include/agent/AgentLoop.h
+54a1b82b6d81ab950911fb65f443be9b17601b9a35bbac4b67b1b3b9c817858a     3791  include/agent/Airtime.h
+caceeef2dd5744813f41eff3c8196ca31372b3dea7a3d5df7fe9121746fe56be     1805  include/agent/Backoff.h
+760f2c17bc353d5c5ae714cf9cdd394fb6bcb22508596a34461a063ee1a9e1c3     1886  include/agent/CliReplies.h
+cb3a4138a2c8c7acb7f23995ebfb1891d074dd32ccfcf31b5ea0a8cd488f56ee     9915  include/agent/ConfigApply.h
+a65ad33f82353eaf0a9b119bb980faa15800e4117b64e1563cc48acd6598dbeb     9099  include/agent/ConfigRead.h
+c2109f5576f50e38e4db8504efa0ea011bd5f0051d79407ebec9badb89a2706b     2546  include/agent/ConfigReply.h
+0840669486c1d3c56a541abab3a9f7d1303cc17f61439b69258f0c617dc0a84e     4602  include/agent/Credentials.h
+a039076b2ac7f8ecefd9783504b9086d2a4e94e14c9620ce3af437e9b28b2c89     5931  include/agent/Envelopes.h
+969e794df1ce82eb8242b5fc62287cdb1da62c5d1914c16b27a1d1f7d00ef2e8     2800  include/agent/IJobExtension.h
+b8df3575cf2c938a4409e0f6a94a4fcb3ffb4024bd1d50ea55555796189b11f7    11476  include/agent/IMesh.h
+7f03c8525ebc668ab00d70400b333a1214175c95a39f9882b790451bb4f47e13     3124  include/agent/IPlatform.h
+242cd49a1bf5d681b57069601c05705e6e61bfa25661688252d0cd168601f54e     4436  include/agent/IRetained.h
+ba57873ab1fba4c1a428b0f89ed8d8ae0256a6e948452fb6b810a5189ec2e8b9      934  include/agent/Iso8601.h
+26726a5148ea97e3e34a1b1fc44eb31c9ac0686d4388d79579049f2ac6337ada     4451  include/agent/IUplink.h
+519ee2f3b346d0232f27c51ef54ccad04d20b4c8b214c7f1cac3c70ad45a51af    11830  include/agent/JobEnvelopes.h
+12c037646e7c12d1144c5a92fd52b2cdef361e96577d629351e1a44e170b8238     6388  include/agent/JobResults.h
+a201217078e198b9defa619e3d64ca11b113d327f03f97cfa350b5f673c66c75    26467  include/agent/JobRunner.h
+eef72dfcc0bdfd7e1303fde132ca1173046b0db45ed94248e5ee673d81bd1eef     2539  include/agent/Json.h
+8a9140bf922d06d344c785d82a88a6a45a7b17e14c1d48f458b7b6361b2e0a9b     9709  include/agent/JsonWriter.h
+4e602d5402d406db3788946da1625c2fc58732d87bd42546fc0df2bcb80bdf98     6552  include/agent/KeptImage.h
+e2929d87308de992b602423a7ae18dc44d63070dd3322fe4231710db3643c3f9     2934  include/agent/Log.h
+03ce7a329bdea160e781465199290370617d34517681108d902e27b2b5813f70     7192  include/agent/LoginSequence.h
+82e6a064672f291e81e439a29438432868e450db97f4fedd405c87645021541e     2849  include/agent/LogRing.h
+ca4ffc93f774eb4c520a6c86c404a54757aacb1b4125b74b0dd6d534e42b03a6     5206  include/agent/Observations.h
+2031d29ed3063c62c9cf4e18928436dbef04e85cc17c3fc42feb5ee5787a1a47     1498  include/agent/RateLimit.h
+e3f6eac47ae13f6c82465d1f858f4d470992d8e06b554619f0510d0f18a1ce70    11902  include/agent/ReplyCodec.h
+a514bbbe20f1a8d8a0d2323b41a00c41ecb843f20346e013b3f989e48ffa623b     4345  include/agent/ResultBuffer.h
+119a1c0e2e6481ae1e6049588f9a427cb4573cff0a1740302881a645f75267a4     3785  include/agent/ServerPolicy.h
+af88ccd7d758b15d201a369166021e25a0a2f4b3c26721836ce9d2a1afdd3470     3263  include/agent/Sessions.h
+314e088b78b30870616ff2f0087d22c5cd12a55b86a5709e46a03da55b7f992f     1397  include/agent/TextOut.h
+3cf6f1d3dd4c91bf568afdd6f9f2f3ac49c56ec642a2fa2988e49cf71f4a5118     5379  include/agent/UplinkMeter.h
+81a94838db6c6e72bcdf7df5af5af71dd08675df9f1f27de9acf5a56e8c47cc1      819  include/agent/Version.h
+9e213491af487fb9fe450590395cdfa6b4b552478cf2558045e8cfda79bceb7e      926  library.json
+f885874f8ecd4d91699d3ca5cdabecd5de881855f4cd108bbf83f0f13e7cb2ba    52351  src/AgentLoop.cpp
+7b6d7a7fd83564d261a3bb3308e3d4506dcf0015b77ceb7064cab4d3c897b185     3546  src/Airtime.cpp
+37c1cfd6e7a9afdac14caa13d6cb329f0392cf9e4cdc1e8f81c9060681721f7e      995  src/Backoff.cpp
+7581c2966c738b0f2e059089652b8fc77a9b0f5f5769949d39761d1edb069580     1092  src/CliReplies.cpp
+1ee2f72686e0284d4dd3fc23c8aced692d8134825c8336d3a95d3c4eff4dc9e4    17955  src/ConfigApply.cpp
+6f48aeb1593803b7cbd8f7719ab96f5df40908b3dce8b0ed8e6c764e4034d719     8934  src/ConfigRead.cpp
+4b7af217f81fe607aabaaec3e4ba38988ec21c29bfee8f9532e316b3c77a574f     4762  src/ConfigReply.cpp
+207d928b51618632940f5afe479d26a700195d9a9524a930ffd8dcd9efae3ab1     2714  src/Credentials.cpp
+c699f048e2af94887e816d9b5a7878ede6032a0ffe7d99e54073ff8abf3950f2     6394  src/Envelopes.cpp
+213015c0a4e1f6b07d1cbd678dab870539e9db9d7fbef1cb3781ef045829872b     3361  src/Iso8601.cpp
+b4150683a57dfa34905fde5689e3bd7aa77d91dd9afc5512ed191c389e22b99d    19202  src/JobEnvelopes.cpp
+88a076aa1bf3898858fcf8f7fb12d7ebf99d5ad27b7c77a28fb35f5594f567ea     7690  src/JobResults.cpp
+fb4d4fa7f93eb82494f91034d392fac2bcca2c935cf987d10b0cfa95ef484959    83403  src/JobRunner.cpp
+010704690e5e3fe89aac6e6bd332fb5e7bfc1900010a16e80366893038af4cda     8163  src/KeptImage.cpp
+41bd34a24f0112b44ba630e7c11c226c6cb124c85aaaafc0bd89e9cfcf0683e0     3026  src/Log.cpp
+05a013e95b64f37108f25a4cac95e4cf5cf706ce132cd5ee981ff4bfff107f63     4161  src/LoginSequence.cpp
+e00942d310b31350ecdf3c7c47aeed8e0bd61550d55752e08b263d804798ce0a     2232  src/LogRing.cpp
+ebfe15fbb716d03c98881e1f32bf3503096df2bf5b94b94194fc1dcf60ca523b     1420  src/Observations.cpp
+ebaade3b8d9dfe3bebc2a4c016f4390fcb55ee6419a77f4ada052ed359679705     1436  src/RateLimit.cpp
+db8719c59b205c378efaf2bb07fe03a9121084fca36188aefb02a494bf492e3b    13461  src/ReplyCodec.cpp
+a988296d7828eecede18ae3a1a6e793f46cd5d3f95ac23d32aaafa219f8a8c42     1790  src/ResultBuffer.cpp
+fe61ead83810aee954d376d045df8d1b869909579126507b4363056d11bfe8f6     2762  src/ServerPolicy.cpp
+aad56efc3efc27422dfd52eb786053f10cf8f712c77c4964afb2e5d303a50557     2652  src/Sessions.cpp

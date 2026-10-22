@@ -1,0 +1,14 @@
+# PUSH_CODE_BINARY_RESPONSE (0x8C) to REQ_TYPE_GET_ACCESS_LIST: reserved, tag[4], then
+# {pub_key[6], permissions} per entry, then the cipher block's zero padding (7 bytes here).
+# Three entries, at the three levels setperm knows: c0ffee001122 read-only (1), 7f8e9dacbbca
+# read-write (2), and 5e5e5e5e5e5e admin with a sensor bit above the role mask set (0x83), so a
+# reader that forgets PERM_ACL_ROLE_MASK reads 131 instead of 3.
+# Six bytes of key is all there is: the firmware sends no more, whatever the ACL holds.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:262-275 MyMesh::handleRequest -- REQ_TYPE_GET_ACCESS_LIST && sender->isAdmin(): ofs starts at 4, then pub_key[6] and permissions per entry, permissions == 0 skipped
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:211-213 MyMesh::handleRequest -- reply_data[0..3] is the sender_timestamp reflected back as the tag
+# fw companion-v1.17.1 d9296435 src/Utils.cpp:116-121 Utils::encrypt -- a partial last block is zero-padded to CIPHER_BLOCK_SIZE, and the padding travels
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:165-172 Mesh::onRecvPacket -- "remainder of packet (may be padded with zeroes!)"
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:740-746 MyMesh::onContactResponse -- binary branch: reserved, tag[4], then data[4..], padding and all
+# 34 bytes
+8c00aabbccddc0ffee001122017f8e9dacbbca025e5e5e5e5e5e830000000000
+0000

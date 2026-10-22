@@ -1,0 +1,7 @@
+# CMD_SEND_TRACE_PATH (36): tag[4], auth_code[4], flags (0: 1-byte hashes), the round-trip
+# path's hash bytes (a1 b2 a1). The firmware takes path_len from the frame length (len - 10) and
+# requires it to be a whole number of hashes.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1764-1789 MyMesh::handleCmdFrame -- CMD_SEND_TRACE_PATH: flags = cmd_frame[9], path from cmd_frame[10]
+# fw companion-v1.17.1 d9296435 src/Mesh.cpp:41-67 Mesh::onRecvPacket -- each hop matches its own hash over 1 << (flags & 3) bytes at offset path_len << path_sz
+# 13 bytes
+2411223344deadbeef00a1b2a1

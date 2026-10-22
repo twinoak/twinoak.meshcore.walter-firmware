@@ -1,0 +1,9 @@
+# PUSH_CODE_BINARY_RESPONSE (0x8C) to a REQ_TYPE_GET_TELEMETRY_DATA: reserved, tag[4], LPP. The
+# same LPP bytes as telemetry-response; what differs is that this frame is matched by tag rather
+# than by pubkey prefix, which is why the prefix is not in it.
+# fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:240-262 MyMesh::handleRequest -- REQ_TYPE_GET_TELEMETRY_DATA: addVoltage(ch 1), querySensors(), addTemperature(ch 1) last
+# fw companion-v1.17.1 d9296435 src/helpers/sensors/EnvironmentSensorManager.cpp:667-672 EnvironmentSensorManager::querySensors -- external sensors start at TELEM_CHANNEL_SELF + 1 = channel 2
+# fw companion-v1.17.1 d9296435 src/helpers/sensors/LPPDataHelpers.h:5-31 LPP_VOLTAGE -- type codes, sizes and multipliers; channel then type, big-endian
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:740-746 MyMesh::onContactResponse -- binary branch: reserved, tag[4], then data[4..]
+# 21 bytes
+8c00112233440174019102686f02732794016700d7

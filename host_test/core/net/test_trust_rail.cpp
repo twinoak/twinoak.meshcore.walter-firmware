@@ -23,7 +23,11 @@ struct Hit {
 };
 
 // The source files under components/ and main/ (not managed_components/, which is the vendored
-// library and names everything).
+// library and names everything). components/agent-core/ **is** walked, deliberately: the copied
+// agent library makes no socket of its own (docs/library.md §8: "the library cannot check this and
+// does not try"), so every one of the greps below must find nothing in it, and a bump that brings
+// a TLS setting into it fails here (task p4-01; tools/check_rails.py's rail A scans it for the
+// wider list of ways to skip verification).
 std::vector<fs::path> firmwareSources() {
   std::vector<fs::path> files;
   for (const char* dir : {"components", "main"}) {

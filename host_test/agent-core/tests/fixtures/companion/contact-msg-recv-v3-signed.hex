@@ -1,0 +1,9 @@
+# RESP_CODE_CONTACT_MSG_RECV_V3 (16) for a TXT_TYPE_SIGNED_PLAIN message: the same header, and
+# then *four extra bytes* between the timestamp and the text - the original sender's key prefix,
+# queueMessage's `extra`. Only txt_type 2 has them; a reader that does not know that reads four
+# bytes of a public key as the first four characters of the message (tasks/phase-3.5/42).
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:432-460 MyMesh::queueMessage -- extra_len > 0 is copied in before the text
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:537-543 MyMesh::onSignedMessageRecv -- the only caller that passes extra: sender_prefix, 4 bytes
+# fw companion-v1.17.1 d9296435 src/helpers/TxtDataHelpers.h:6-8 TXT_TYPE_SIGNED_PLAIN
+# 29 bytes
+101a0000c3d4e5f60718ff02828dd2687f8e9dac6f6e206d7920776179

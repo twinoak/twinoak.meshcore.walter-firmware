@@ -1,0 +1,8 @@
+# RESP_CODE_DEVICE_INFO (13) from a companion before ver 9: the frame ends with the version
+# string, and both trailing flags are unknown.
+# fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1023-1042 MyMesh::handleCmdFrame -- CMD_DEVICE_QUERY branch; repeat is the v9+ field
+# fw companion-v1.17.0 727fc051 examples/companion_radio/MyMesh.h:10-16 FIRMWARE_BUILD_DATE -- the build date and version string of the tag the field companion runs
+# 80 bytes
+0d0d64080000000039204175672032303236000048656c746563205633000000
+0000000000000000000000000000000000000000000000000000000076312e31
+372e3000000000000000000000000000
