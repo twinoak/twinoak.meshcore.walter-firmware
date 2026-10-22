@@ -305,12 +305,15 @@ foreach(suite runner loop)
   twinoak_ours(${target})
 endforeach()
 
-# -- components/agent/, on the host (task p4-02) ------------------------------------------------
+# -- components/agent/, on the host (tasks p4-02, p4-03) ----------------------------------------
 # This firmware's own half of the library's seams: LinkMesh (mm::IMesh as one request of
-# spec/LINK-PROTOCOL.md §6 per call, over core/'s link client) and the probe behind the console's
-# `rak mesh status`. Logic, like core/: the same flags, the same no-ESP-IDF build step, the host
-# suite's no-allocation check (host_test/agent/test_agent_no_allocation.cpp). core_tests links it
-# for the console's test; the two GoogleTest binaries below drive it with the library's runner.
+# spec/LINK-PROTOCOL.md §6 per call, over core/'s link client), ModemUplink (mm::IUplink as the
+# seven calls of the agent API over core/net/'s HTTPS client) and the probes behind the console's
+# `rak mesh status`, `agent url` and `agent probe`. Logic, like core/: the same flags, the same
+# no-ESP-IDF build step, the host suite's no-allocation check
+# (host_test/agent/test_agent_no_allocation.cpp). core_tests links it for the console's tests and
+# the uplink's own (host_test/agent/); the GoogleTest binaries below drive it with the library's
+# runner and loop.
 set(AGENT ${REPO}/components/agent)
 file(GLOB_RECURSE AGENT_SOURCES CONFIGURE_DEPENDS ${AGENT}/*.cpp)
 add_library(agent STATIC ${AGENT_SOURCES})
@@ -341,21 +344,43 @@ target_link_libraries(core_tests PRIVATE agent)
 #                                 password read back as zeros, the local door per core type,
 #                                 client_tx exact, the radio restarting under a job.
 #
-# Both carry the fakes and the simulators of core_tests (the scripted radio asserts with
+# And a third (task p4-03), the same way round for the uplink:
+#
+#   agent_core_loop_uplink_tests  test_loop.cpp - the library's own 47 cases, **unchanged** -
+#                                 compiled with host_test/agent-uplink/shim/ first on its include
+#                                 path, where `support/FakeUplink.h` shadows the library's
+#                                 scripted meshmaster.dk with the same knobs and records behind
+#                                 the agent's ModemUplink, core/net/'s client and the scripted
+#                                 server (sim/fake_http.h): every call a request over the
+#                                 firmware's own HTTP/1.1, every fault a real status, and the
+#                                 loop does not know which uplink it has.
+#
+# All three carry the fakes and the simulators of core_tests (the scripted radio asserts with
 # doctest's REQUIRE inside its own code, so doctest's runtime without its main is linked too:
-# third_party/doctest_runtime.cpp).
+# third_party/doctest_runtime.cpp), and all three carry host_test/shim/, whose
+# `support/FakePlatform.h` ties the library's platform clock to the link's fake clock - what
+# the runner's scenarios needed through the framing (p4-02) and the loop's through the socket
+# (p4-03: a connect's cost is a wait on the clock the platform's budget is measured on).
 set(AGENT_LINK ${CMAKE_CURRENT_LIST_DIR}/agent-link)
-foreach(binary agent_core_runner_link_tests agent_link_tests)
+set(AGENT_UPLINK ${CMAKE_CURRENT_LIST_DIR}/agent-uplink)
+set(SHIM ${CMAKE_CURRENT_LIST_DIR}/shim)
+foreach(binary agent_core_runner_link_tests agent_link_tests agent_core_loop_uplink_tests)
   if(binary STREQUAL agent_core_runner_link_tests)
     set(source ${AGENT_CORE_HOST}/test/test_runner/test_runner.cpp)
+    set(shim ${AGENT_LINK}/shim)
+  elseif(binary STREQUAL agent_core_loop_uplink_tests)
+    set(source ${AGENT_CORE_HOST}/test/test_loop/test_loop.cpp)
+    set(shim ${AGENT_UPLINK}/shim)
   else()
     set(source ${AGENT_LINK}/test_link_mesh.cpp)
+    set(shim ${AGENT_LINK}/shim)
   endif()
   add_executable(${binary} ${source} ${FAKE_SOURCES} ${SIM_SOURCES}
                  ${CMAKE_CURRENT_LIST_DIR}/third_party/doctest_runtime.cpp)
   target_link_libraries(${binary} PRIVATE agent GTest::gtest doctest)
-  # The shim first, then the library's own test support it shadows, then this project.
-  target_include_directories(${binary} PRIVATE ${AGENT_LINK}/shim ${AGENT_CORE_HOST}/test
+  # The binary's own shim first, the shared one next, then the library's own test support they
+  # shadow, then this project.
+  target_include_directories(${binary} PRIVATE ${shim} ${SHIM} ${AGENT_CORE_HOST}/test
                              ${CMAKE_CURRENT_LIST_DIR})
   target_compile_definitions(${binary} PRIVATE
     PROJECT_DIR="${AGENT_CORE_PROJECT}"
@@ -390,8 +415,9 @@ foreach(suite runner loop)
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")
 endforeach()
 
-# The runner's scenarios through the link, and the link's own cases (task p4-02).
-foreach(binary agent_core_runner_link_tests agent_link_tests)
+# The runner's scenarios through the link, and the link's own cases (task p4-02); the loop's
+# scenarios through the modem's uplink (task p4-03).
+foreach(binary agent_core_runner_link_tests agent_link_tests agent_core_loop_uplink_tests)
   add_test(NAME ${binary} COMMAND ${binary})
   set_tests_properties(${binary} PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")

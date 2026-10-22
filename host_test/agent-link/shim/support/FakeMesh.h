@@ -4,7 +4,7 @@
 // The agent library's test_runner suite drives `fake::FakeMesh` - its simulated stock repeater,
 // which answers a login, a request, a CLI line, a discovery and a trace the way MyMesh.cpp and
 // CommonCLI.cpp at the MeshCore pin do - and asserts on what it recorded. This header shadows
-// that class, the way shim/support/FakePlatform.h shadows the platform, with one that keeps every
+// that class, the way host_test/shim/support/FakePlatform.h shadows the platform, with one that keeps every
 // knob and every record of the original (`grant`, `answerLine`, `beSilent`, `sends()`,
 // `timesSent()`, ...) and puts a simulated RAK (sim/sim_rak.h) and the agent's LinkMesh
 // (components/agent/) between the runner and the repeater:
@@ -27,7 +27,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include <support/FakePlatform.h>  // the shim's: fake::FakePlatform carries the link's clock
+#include <support/FakePlatform.h>  // host_test/shim's: fake::FakePlatform carries the link's clock
 
 #define FakeMesh FakeMeshRepeater
 #include_next <support/FakeMesh.h>

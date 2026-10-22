@@ -48,6 +48,11 @@ struct HttpRequest {
   std::size_t body_size = 0;
   std::uint32_t total_ms = 0;  // the whole request, connect to last byte
   std::uint32_t piece_ms = 0;  // between two pieces of the body
+  // A header of this request is a credential (the agent's bearer token, task p4-03): the
+  // transport wipes its own copy of the request head the moment the head is on the wire, and
+  // again on every way out, so that the credential outlives the send in no buffer of its own.
+  // The caller's own copy is the caller's to wipe (core/net/client.h, Options::sensitive).
+  bool sensitive = false;
 };
 
 // A response header the caller wants: its name, and the caller's own buffer for the value. The

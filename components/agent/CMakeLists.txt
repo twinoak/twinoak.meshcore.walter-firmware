@@ -1,14 +1,19 @@
 # components/agent/ - the three seams of docs/ARCHITECTURE.md §13 as this firmware fills them, over
 # components/core/ and the copied library in components/agent-core/. Task p4-02: `LinkMesh`, the
 # library's `mm::IMesh` as one request of spec/LINK-PROTOCOL.md §6 per call, and the probe behind
-# the console's `rak mesh status`. Tasks 03 and 04 add the uplink and the platform beside it.
+# the console's `rak mesh status`. Task p4-03: `ModemUplink`, the library's `mm::IUplink` as the
+# seven calls of the agent API over phase 3's HTTPS client, and the probe behind `agent url` and
+# `agent probe`. Task 04 adds the platform beside them.
 #
 # Logic, like core/: no ESP-IDF include (the same build step holds it), no heap (the host suite's
 # no-allocation check reads every file of it), tested on the host against a simulated RAK
-# (host_test/sim/sim_rak.h) and the library's own simulated repeater.
+# (host_test/sim/sim_rak.h), a scripted server behind the firmware's own HTTP/1.1
+# (host_test/sim/fake_http.h) and the library's own simulated repeater.
 idf_component_register(
   SRCS "link_mesh.cpp"
        "mesh_probe.cpp"
+       "modem_uplink.cpp"
+       "uplink_probe.cpp"
   INCLUDE_DIRS "include"
   REQUIRES core agent-core)
 

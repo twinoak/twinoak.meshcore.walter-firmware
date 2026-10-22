@@ -168,6 +168,7 @@ Result Client::run(interfaces::HttpMethod method, const char* url, const std::ui
     request.root = rootForHost(url_.host);
     request.total_ms = options.total_ms;
     request.piece_ms = options.piece_ms;
+    request.sensitive = options.sensitive;
     request.header_count = 0;
     if (options.headers != nullptr) {
       for (std::size_t i = 0; i < options.header_count; ++i) {

@@ -40,6 +40,7 @@
 #include "core/update/radio_update.h"
 #include "core/update/fetch.h"
 #include "core/update/self_update.h"
+#include "core/console/uplink_probe.h"
 #include "core/uplink/policy.h"
 #include "interfaces/clock.h"
 #include "interfaces/restart.h"
@@ -89,7 +90,11 @@ class Console {
           // The mesh client behind `rak mesh status` (task p4-02): the probe is
           // components/agent/'s, over LinkMesh and the link; core/ sees only the seam
           // (core/console/mesh_probe.h). A build without one answers in one line.
-          MeshProbe* mesh = nullptr);
+          MeshProbe* mesh = nullptr,
+          // The agent's uplink behind `agent url` and `agent probe` (task p4-03): the probe is
+          // components/agent/'s, over ModemUplink and the HTTPS client; core/ sees only the
+          // seam (core/console/uplink_probe.h). A build without one answers in one line.
+          UplinkProbe* agent = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -244,6 +249,12 @@ class Console {
   void fetch(const char* base_url, image::Which which);
   void trustTls();
 
+  // The agent's uplink (task p4-03). Neither prints the token: the probe's result has no field
+  // for it, and `agent url` says *set* or *unset* as `get server.token` does.
+  bool agentOk();  // false, with one error line, when this build has no agent uplink
+  void agentUrl();
+  void agentProbe();
+
   // One whole wake (task p3-05).
   bool cycleOk();  // false, with one error line, when this build has no wake cycle
   void cycleNow();
@@ -303,6 +314,7 @@ class Console {
   cycle::DutyCycle* duty_ = nullptr;
   cycle::WakeCycle* cycle_ = nullptr;
   MeshProbe* mesh_ = nullptr;
+  UplinkProbe* agent_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about

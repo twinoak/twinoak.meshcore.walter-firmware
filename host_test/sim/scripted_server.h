@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -56,6 +57,14 @@ struct SeenRequest {
   std::string header(const char* name) const;
 };
 
+// What a request hook answers with (task p4-03): a status, headers of its own, a body. Sent
+// with a Content-Length and `Connection: close`, as the scripted answers are.
+struct ScriptedReply {
+  int status = 200;
+  std::vector<std::string> headers;
+  std::string body;
+};
+
 class ScriptedServer {
  public:
   ScriptedServer();
@@ -71,6 +80,11 @@ class ScriptedServer {
   bool honour_if_range = true;      // false: If-Range is ignored
   std::string raw_response;         // when set, sent verbatim to any request
   bool no_response = false;         // the server takes the request and says nothing (a stall)
+  // A server that decides per request (task p4-03: a scripted meshmaster.dk whose claim answer
+  // depends on what was claimed before). Consulted after the request is recorded and after the
+  // two knobs above, before the files, the redirects and the statuses; `true` sends `reply`,
+  // `false` falls through to the script.
+  std::function<bool(const SeenRequest& request, ScriptedReply* reply)> on_request;
 
   // -- what happened -----------------------------------------------------------------------
   std::vector<SeenRequest> requests;

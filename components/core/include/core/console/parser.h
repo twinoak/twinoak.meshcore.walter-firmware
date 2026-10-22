@@ -150,6 +150,13 @@
 //   trust tls             the roots this firmware trusts - subject, fingerprint, expiry - and
 //                         whether the modem's certificate slots hold them
 //
+// and the agent's uplink (task p4-03; docs/ARCHITECTURE.md §13). No slot: a server is not a radio:
+//
+//   agent url             the server the uplink is configured for, whether a token is set, and
+//                         the X-Agent-Version header every call carries
+//   agent probe           one GET /agent/v1/config now, with the token: the status and the
+//                         config the server answered. The bench's first look at a server
+//
 // and sleep (task p3-04; docs/ARCHITECTURE.md §10, docs/power.md). No slot either: a sleep is
 // the whole unit's:
 //
@@ -229,6 +236,10 @@ enum class Verb : std::uint8_t {
   kRakLadder,
   // The mesh client (task p4-02): `rak mesh status <key>`, the key in `text`.
   kRakMeshStatus,
+  // The agent's uplink (task p4-03): the configured server and the version header; one
+  // GET /agent/v1/config now. Not `rak` lines: a server is not a radio and takes no slot.
+  kAgentUrl,
+  kAgentProbe,
   // The Walter's own update (task p2-04).
   kSelfStatus,
   kSelfReceive,

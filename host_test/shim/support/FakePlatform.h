@@ -1,4 +1,4 @@
-// The library's FakePlatform with the link's clock tied to it (task p4-02).
+// The library's FakePlatform with the link's clock tied to it (task p4-02; shared since p4-03).
 //
 // The agent library's suites move time by calling `IPlatform::delayMs` (host_test/agent-core/
 // test/support/FakePlatform.h: "that call *is* the passage of time"), and the link client, the
@@ -10,11 +10,16 @@
 // `fakes::FakeClock` and moves both whichever is asked - the platform's delay advances the link's
 // clock, and the link's delay (through the clock's hook) advances the platform's.
 //
-// How the shadowing works: this directory comes first on the include path of the two binaries
-// that run the library's scenarios through the link (host_test/CMakeLists.txt), so
-// `<support/FakePlatform.h>` resolves here; `#include_next` then reads the library's own file
-// with its class renamed to `FakePlatformUpstream`, and the subclass below takes the name every
-// test and every other support header uses. Nothing under host_test/agent-core/ is edited.
+// How the shadowing works: this directory (host_test/shim/) comes before the library's own test
+// support on the include path of every binary that runs one of the library's suites over this
+// firmware's code - the runner through the link (host_test/agent-link/, task p4-02) and the loop
+// through the modem's uplink (host_test/agent-uplink/, task p4-03) - so `<support/FakePlatform.h>`
+// resolves here; `#include_next` then reads the library's own file with its class renamed to
+// `FakePlatformUpstream`, and the subclass below takes the name every test and every other
+// support header uses. Nothing under host_test/agent-core/ is edited. The uplink's binary needs
+// the tie for the same reason the link's did: the fake TLS socket spends a connect's cost on the
+// link's clock (through delayMs, so this hook sees it), and that cost has to be the platform's
+// seconds too, or the wake's uplink budget would measure nothing.
 #pragma once
 
 #define FakePlatform FakePlatformUpstream
