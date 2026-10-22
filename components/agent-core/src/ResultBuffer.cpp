@@ -37,6 +37,27 @@ const char* ResultBuffer::oldest(long long& jobId, size_t& len) const {
   return arena_ + items_[0].offset;
 }
 
+const char* ResultBuffer::at(size_t index, long long& jobId, size_t& len) const {
+  if (index >= count_) {
+    jobId = 0;
+    len = 0;
+    return nullptr;
+  }
+  jobId = items_[index].jobId;
+  len = items_[index].len;
+  return arena_ + items_[index].offset;
+}
+
+void ResultBuffer::dropNewest(size_t count) {
+  if (count > count_) count = count_;
+  for (size_t i = 0; i < count; i++) {
+    // The newest is last in the arena, so forgetting it is the length and nothing moves.
+    used_ -= items_[count_ - 1].len;
+    count_--;
+    dropped_++;
+  }
+}
+
 void ResultBuffer::popOldest() {
   if (count_ == 0) return;
   const size_t gone = items_[0].len;

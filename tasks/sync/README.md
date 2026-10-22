@@ -37,5 +37,6 @@ order.
 | # | Task | Tag | Why it needed a session |
 |---|---|---|---|
 
-Empty: the agent core has had one release a consumer may pin (`v0.2.0`, the one
-task p4-01 took), so there has not been a bump at all yet — let alone a red one.
+Empty: the agent core has had two releases a consumer may pin (`v0.2.0` and
+`v0.3.0`, and task p4-01 took them both — the second before it landed), so there
+has not been a bump through the watch at all yet, let alone a red one.

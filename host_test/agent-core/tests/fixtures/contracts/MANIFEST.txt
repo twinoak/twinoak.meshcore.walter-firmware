@@ -1,5 +1,5 @@
 # The contract fixtures of the .NET agent, copied - never edited here.
-# source: twinoak/meshmaster.dk/tests/fixtures/contracts at commit 0595dc2ed3c5d08a0dfada50b8b9e56503b085da
+# source: twinoak/meshmaster.dk/tests/fixtures/contracts at commit 79b1e9cbaf97ea2dc7b58f69ac06d5a116efb9b9
 # written by tools/sync-fixtures.ps1; see README.md in this directory
 #
 # sha256                                                           bytes  name
@@ -10,9 +10,10 @@
 486664f1a504c8df318c3385f693b8944142ce1fc19856d739e41addd5abc10b      50  AgentBudget.json
 26c224b258135d329aecd0df24994acc0a238466b0ede9d5365100e48eb0edc3     186  AgentConfig.json
 7536f7d030b008d05c6b3c253bd0d6581d22f9d2309933842b90edf5c036a68f     544  AgentHeartbeat.json
-790e2e60323f5ddab3ff51ef437bf9293329cfeb9fc5137367206d5642282c6d     428  ClaimedJob.json
+2991fa2724df8d42187922d9cd8a56a768cfe1fcd9d999009366c52ad02657c5     495  AgentHeartbeatNoWake.json
+3fa33377dffa8e89994ce866cd3174e1574dbf0583167e0f8aeb417000366dea     422  ClaimedJob.json
 c4014a3c623935dc4451d33152df277780772059953fca9bf5ada01723797db5      10  ClaimRequest.json
-8da5fb70b79c7be2f67364f874bca9d8eebba3a09e51f6ec6e53911e4b726c8a     475  ClaimResponse.json
+af48c3e6a7efc745168c8665305d4eb9c32316281b866cc60e177b7f5a20d770     469  ClaimResponse.json
 eca3b6d765c6e2c265dadd65640df25b8781a37fff3559b2f3389064312ae450      49  CliPayload.json
 44685f101c0b49962165fe3d31c5d44bc8efe62b08381e0541e15ba510943186      81  CliResult.json
 ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  ClockSyncPayload.json
@@ -20,16 +21,35 @@ b9c76747fb826f8ae03d22517cc489f97d564f4b0ac4bbc36ebfd205d397fcfa     110  ClockS
 7ca8babf155b312f49b4a7a532d1876256840e788ac95c4cd49599139657ff42     276  ConfigApplyPayload.json
 90b2f4a9190809300912b2f67aaa14251ac6066efd33545e54b0ef742acff26c     513  ConfigApplyResult.json
 6c945415c21aaab1e736be14d617eb5fe16f668f333ac4c8467fdb81e1782eb2      48  ConfigReadPayload.json
-5e009150b10210158b148ab73cc0b3cb78b4d7743b9dbd9b15bf2b60ed6c3ea8     161  ConfigReadResult.json
+4a6693c1ded4ef8d142cf62ed8e0986357e6feb6319958d2af9c7e8401e0c910     156  ConfigReadResult.json
 ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  DiscoverPayload.json
 75f1964f28c0d18db7a99330703a85274af9463ca0bea44c3c16428cd7f0379c     103  DiscoverResult.json
 f3fcee1023093881ad66669f4a6c27f2523456176f44850dc492c80e83b5a906      52  ExtendReply.json
 ddf7b377e511fa2097ceb4e8e0f9f6b0d9f2b37dabeba5307768c8d06a2d95d7      16  ExtendRequest.json
+4fc6e2d98984493e5e338be9214982f33f0901dc487167ea0d7a37361c98f106     167  FirmwareApplyPayload.json
+e0e2bff2de84c5f7e529e51513a9016803ba90da737a4f4e964b8c5ccfc7c83c     662  FirmwareApplyResult.json
+e353fd1baffb5c2639095efdf5ff959b7ee80a255d60fcb26048b37225f4c57a     138  FirmwareCatalogueImage.json
+63bcd1cebbb2475f40a6effdb121f644ab82968e484da275edb212c909090461     321  FirmwareCatalogueRelease.json
+2a5a4eb68d7c1dd62121b964d0169e3d011953dc723e5f150500be85836f4a80     336  FirmwareCatalogueReply.json
+ab6a0f383a7bae63355624298fb74628bc70622af7d6d03e12bb8d875ef497d9     104  FirmwareHeldImage.json
+40b427cb939d2dcc745e403283e3ec38541af694c45a34c1e829b78ccb0bbef9     100  FirmwareJournalEntry.json
+20c84db332365ee5e2e31676bd9b25507f7c5687fa4c477b659e604f811b6e5d      80  FirmwareLastUpdate.json
+ff5780907c71741273e1815d72e6108b43b1f790622b31e742dd086c8bef2c8c     215  FirmwareOfferPayload.json
+3b5340d024329627b91862657e3c724330b369c07bb747ecc0d02efaf4f92395      30  FirmwareOfferProgress.json
+43dbd7fd1166573695da3b896281438a60c6d696537efb77eb0b5da2d3cf2117     230  FirmwareOfferResult.json
+84105329de795c561bf9bfa9a2479f7b078121b7b46a2376b9f2fda06e2e7b63      94  FirmwareRunningImage.json
+91fbf78cc4d0f055a79e856d8221d13cbf573374ddf8c88110252a12364b2dff     607  FirmwareSlotState.json
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  FirmwareStatePayload.json
+982db1b7d8f741d5807e799737382bb5cded338d9b08a1214af473d93723557b     804  FirmwareStateResult.json
+b9cc3aeedd7fdd50136313ede885f3c09d7e18f6fb352226b4bb3989bb03865d      56  FirmwareSupervisorState.json
+0dd4d818548bf5bb067dcfba73e7bb4f82f40900a11ffc6a945e8a1ae890fd5e      28  FirmwareWalterSlot.json
+be45b910f4b0557c96dc4f532e00b23606bc938d7f82c4ee455de357e270c46e     107  FirmwareWalterState.json
 dc7ff0a2038bb700cea361ce1766f3dda059896ecf25e77518ce6efae5fc81f0     135  HeartbeatReply.json
-e8c9f9cf26126ea31d80e15a1f1969d491043ba7fba1b678fcdf67d52125fac0     144  JobCredential.json
+6ee498fbe9c18e1db7baec435f5d0e72fc13b0ce8681327666dd45de1c286a0d     126  JobCredential.json
 f39804cbd8b263563ddf42a595076e1102ed76a4dcbcc0baeeb70b009ea35865      65  JobResultReply.json
 34cd010a95cad09aedd255f885380001052975cf9ddb7ae90befd956e865f80e     545  JobResultReport.json
 35e98e9b2f5470ade07dfca24441c5f7a3fc420bda6df6c56fdcb7dea2c00933      33  JobTimeouts.json
+196a5c5249aad26ce839d5a5a525b18989a89f6273da54edad373d0a473643df     147  JsonEscaping.json
 ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  NeighboursPayload.json
 a4137b88462e1f7ef8786145e5549ec97b2d9844eb18a0a4df08a099bd87ea22     105  NeighboursResult.json
 a4902440aff8b2eba4e06d4e448cef8afbdbbf496b764d19e35c34d4ea85e6dd     265  Observation.json
@@ -38,6 +58,8 @@ d5d0fd8678164c830e7189dd93fbd855c1d2beeb68435fb2f49088d36eb00571     295  Observ
 a07539c272af34d11b6b761815b1706b0e56212104bf02151e19f7de777104eb      32  ObservationsReply.json
 6ef84cb584a787f2a275f42bdaccd3c3fe979ae235bd787571ab5cef14ffbbac      26  PasswordSetPayload.json
 da3e30ea5439ee56fe40d84a9495ea1b1ed0364541e12a52c62f977e6cca69c6      68  PasswordSetResult.json
+e5cc9f7f5b7979d2db01acd3264961096012e9040b2f0bf2b223fde6064ce370      17  PowerCyclePayload.json
+4a4cf269eca5180bcb7a30ae38e742d5d2ad797a6c4e54f61f87b47effb14bd1      46  PowerCycleResult.json
 3633fc10e9021b496cd2693160d174a36ee1c8331c265536501cb478444fcdb3      52  ProgressReply.json
 66a1cdede83562a28e73b476f7304578d136dc847803e4af95b4af308328706f      91  ProgressReport.json
 1c1afb3657f79985ab0ac8dae75972a706e1d4b8a17d98f1894f127c73000377      47  RadioParameters.json

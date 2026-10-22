@@ -16,7 +16,8 @@
                              included and unedited
 
     host_test/agent-core/    is upstream's own paths, unstripped:
-                               test/support/              the three fakes and the fixture reader
+                               test/support/              the four fakes, the fixture reader and
+                                                          the job builders
                                test/test_runner/, test/test_loop/   the library's own two suites
                                tests/fixtures/contracts/  the agent API's envelopes
                                tests/fixtures/companion/  the transcribed MeshCore frames
@@ -36,7 +37,7 @@
   is not (spec/tools/specsync.py's LOCAL); a README.md *inside* the copy - the fixtures each have
   one - is upstream's and is.
 
-    .\tools\sync-agent-core.ps1 -Ref v0.2.0      copy at that tag (or commit), write both manifests
+    .\tools\sync-agent-core.ps1 -Ref v0.3.0      copy at that tag (or commit), write both manifests
     .\tools\sync-agent-core.ps1 -Verify          re-hash both trees against their manifests
 
   -Verify is run by tools/verify.ps1 before anything is built, and so by CI; it needs no network

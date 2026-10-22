@@ -17,7 +17,10 @@
 // Two things the in-process mesh did not need and the link does, made here so that the in-process
 // end loses nothing: sendCli() *returns* the sender timestamp it drew rather than taking one (on
 // the link the RAK draws it at the moment it builds the packet, §6.2), and the reply's buffers
-// are the protocol's sizes rather than a header's.
+// are the protocol's sizes rather than a header's. And one thing the link needed and the
+// in-process mesh never will (task p1.6-23): supports(), the mesh's own answer to *can you carry
+// a job of this type at all* - a UART link that cannot carry a trace says so once, here, and the
+// unit neither advertises `trace` nor is sent one.
 
 #pragma once
 
@@ -46,12 +49,19 @@ struct MeshCounters {
 
 // What came back from a repeater during a job. One instance, reused: a board runs one
 // transaction at a time, by the budget of EXIT-NODES §8.
+//
+// Two fields that were here until task p1.6-23 are gone, because every implementation filled
+// them and nothing read them: `viaPath` (the reply came back as a returned path) is what
+// `hasPath()` answers after a flooded send, which is how the discover job reads it; and `snr`
+// (what this board measured on the reply) had no field of any result to go into - a status's
+// `lastSnr` and a neighbour's `snr` are the repeater's own figures out of its reply bytes, and
+// the one SNR of ours a result carries is a trace's, which is `traceFinalSnr` below. A reply's
+// SNR is yours to print; the library has nowhere to send it.
 struct MeshReply {
   enum class Kind : uint8_t { None, Response, Trace, Text };
 
   Kind kind = Kind::None;
   uint32_t tag = 0;
-  bool viaPath = false;  // it came back as a returned path, which also taught us the way out
 
   // A RESPONSE, after the four-byte tag: the repeater's own reply bytes (mesh/ReplyCodec.h).
   uint8_t data[kMeshReplyDataCap] = {};
@@ -60,9 +70,8 @@ struct MeshReply {
   // A TXT_MSG: the CLI reply's text, as CommonCLI wrote it (at most 160 characters), untrimmed.
   char text[kMaxCliReplyLen + 1] = {0};
 
-  float snr = 0;  // what this board measured on the reply
-
-  // A TRACE, as Mesh::onTraceRecv delivers it.
+  // A TRACE, as Mesh::onTraceRecv delivers it. `traceFinalSnr` is what this board measured on
+  // the trace coming home, and is the SNR of the result's last hop - this board's own.
   uint8_t traceFlags = 0;
   uint8_t traceHashes[kMeshPathCap] = {};
   uint8_t traceHashBytes = 0;
@@ -98,6 +107,23 @@ class IMesh {
   // taken in while a job waits. The in-process mesh runs MeshCore's loop; a link client reads
   // its link.
   virtual void loop() = 0;
+
+  // What this mesh cannot do (task p1.6-23). Asked for each of the thirteen core job types
+  // (JobEnvelopes.h's kJobTypes) when the heartbeat is built, and once more before a job of one
+  // of them is run: a type answered false is **not advertised**, so the server routes none of it
+  // here (EXIT-NODES §9 - routing requires the type advertised), and a job of it that arrives all
+  // the same is reported `unsupported` at no transaction with nothing sent, before `beginJob`.
+  // The extension's types (IJobExtension.h) are not asked: those are the consumer's own.
+  //
+  // The default is *everything*, which is what every mesh was until now and what the in-process
+  // mesh is: MeshCore on this board can send every packet the thirteen need. A link client
+  // answers from what its link carries - the Walter's UART link cannot carry a trace, so it
+  // answers false for "trace" and the unit never advertises it. Cheap, const, never blocks, and
+  // `jobType` is one of the static strings of kJobTypes, so a `strcmp` is the whole of it.
+  virtual bool supports(const char* jobType) const {
+    (void)jobType;
+    return true;
+  }
 
   // ------------------------------------------------------------------ a job's exchanges
 

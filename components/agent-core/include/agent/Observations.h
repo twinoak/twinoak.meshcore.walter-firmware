@@ -42,6 +42,13 @@ constexpr uint8_t kAdvTypeUnknown = 0xFF;
 struct HeardAdvert {
   uint8_t publicKey[kPublicKeyLen] = {};
   uint32_t heardAtMillis = 0;  // the board's uptime clock, turned into a timestamp when the batch is built
+  // UNIX seconds the advert was heard, when that is known **instead** of the uptime clock: 0 for
+  // an advert the mesh pushed (the batch stamps it from `heardAtMillis` and the clock, as ever),
+  // and the moment it was heard for one restored from retained storage after a deep sleep (task
+  // p1.6-22), where the uptime clock it was heard on is gone with the sleep. The batch prefers
+  // this when it is set, so a late advert is stamped with when it was heard and not with when
+  // the unit woke. The mesh never sets it.
+  uint32_t heardAtEpoch = 0;
 
   uint8_t pathBytes[kMaxObservationPathBytes] = {};
   uint8_t pathByteLen = 0;   // how much of pathBytes is real
@@ -78,6 +85,15 @@ class ObservationRing {
 
   // Forget the `count` oldest: what a batch the server accepted (or definitively refused) costs.
   void consume(size_t count);
+
+  // Forget the `count` **newest**, counted as dropped: what a kept image too small for the whole
+  // ring costs at the end of a wake (task p1.6-22) - the oldest are kept, because they were
+  // heard first and the image is written oldest first, and the ring is made to agree with the
+  // image so that `dropped()` means what the heartbeat says it means.
+  void dropNewest(size_t count);
+  // Drops that happened before this object existed - the count a kept image carried across a
+  // sleep - so the heartbeat's figure is the unit's and not this boot's.
+  void addDropped(uint32_t count) { dropped_ += count; }
 
   uint32_t dropped() const { return dropped_; }
   uint32_t heard() const { return heard_; }

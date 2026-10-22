@@ -1131,6 +1131,36 @@ TEST_F(RunnerTest, ATypeNobodyHandlesIsStillUnsupportedWithAnExtensionSet) {
       << body;
 }
 
+// One of the thirteen the mesh cannot carry (IMesh::supports, task p1.6-23) is `unsupported` the
+// same way a type nobody handles is: at no transaction, with nothing sent, the job never begun
+// on the mesh. The trace is the one that would otherwise go (the test above sends it along a1,
+// 7f); the status read is the one that would otherwise log in first - neither does.
+TEST_F(RunnerTest, AJobOfATypeTheMeshCannotCarryIsUnsupportedAtNoTransactionWithNothingSent) {
+  mesh.cannotServe("trace");
+  mesh.cannotServe("status");
+  mesh.grant(self(), mm::kPermReadOnly);
+
+  const std::string trace = run(fake::Job(12423, "trace").atClass("none").leasedUntil(kLease));
+  EXPECT_EQ(outcomeOf(trace), "unsupported") << trace;
+  EXPECT_EQ(transactionsOf(trace), 0);
+  EXPECT_EQ(dataOf(trace), "");
+  EXPECT_NE(logOf(trace).find("this mesh cannot carry a 'trace' job, so it is not advertised and nothing was sent"),
+            std::string::npos)
+      << trace;
+  EXPECT_EQ(mesh.sendCount(), 0) << "no trace packet";
+
+  const std::string status = run(fake::Job(12424, "status").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+  EXPECT_EQ(outcomeOf(status), "unsupported") << status;
+  EXPECT_EQ(transactionsOf(status), 0);
+  EXPECT_EQ(mesh.sendCount(), 0) << "no login either: the job was never begun on the mesh";
+  EXPECT_EQ(mesh.logins(), 0);
+
+  // And the one the mesh still carries runs as before, on the same runner.
+  const std::string telemetry = run(fake::Job(12425, "telemetry").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+  EXPECT_EQ(outcomeOf(telemetry), "ok") << telemetry;
+  EXPECT_EQ(mesh.logins(), 1);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The two calls the protocol has and the reference agent never makes (API §3)
 

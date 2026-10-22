@@ -297,6 +297,12 @@ class FakeMesh : public mm::IMesh {
   uint32_t overheard() const override { return overheard_; }
   void setOverheard(uint32_t n) { overheard_ = n; }
   void setAdvertsDropped(uint32_t n) { counters_.advertsDropped = n; }
+  // What this mesh cannot do (IMesh::supports, task p1.6-23): a type named here is answered
+  // false, so the loop does not advertise it and the runner answers a job of it `unsupported`
+  // with nothing sent. The Walter's UART link cannot carry a trace; this is that, on the host.
+  // Nothing named is the default, which is the mesh every existing test runs against.
+  void cannotServe(const std::string& jobType) { unserved_.insert(jobType); }
+  bool supports(const char* jobType) const override { return unserved_.count(jobType) == 0; }
   // Nothing to pump: a host has no radio queue. The count is how a test says the library pumped.
   void loop() override { pumps_++; }
   uint32_t pumps() const { return pumps_; }
@@ -506,7 +512,6 @@ class FakeMesh : public mm::IMesh {
       p.reply.traceSnrs[i] = static_cast<uint8_t>(traceSnrsQ4_[i % traceSnrsQ4_.size()]);
     }
     p.reply.traceFinalSnr = traceFinalSnr_;
-    p.reply.snr = traceFinalSnr_;
     p.has = true;
     arm(std::move(p));
     return mm::SendResult::Direct;
@@ -526,7 +531,7 @@ class FakeMesh : public mm::IMesh {
     bool has = false;
     uint32_t deliverAtMs = 0;
     bool neverArrives = false;
-    bool viaPath = false;
+    bool teachesPath = false;  // it comes home as a returned path, which teaches the way out
   };
 
   // ---------------------------------------------------------------- the clocks and the record
@@ -611,7 +616,6 @@ class FakeMesh : public mm::IMesh {
     if (n > mm::kMeshReplyDataCap) n = mm::kMeshReplyDataCap;
     std::memcpy(p.reply.data, plaintext.data() + 4, n);
     p.reply.len = static_cast<uint8_t>(n);
-    p.reply.snr = replySnr_;
     p.has = true;
     return p;
   }
@@ -632,7 +636,6 @@ class FakeMesh : public mm::IMesh {
     if (!mm::parseCliReply(plaintext.data(), plaintext.size(), parsed, sizeof parsed)) return p;
     p.reply.kind = mm::MeshReply::Kind::Text;
     std::memcpy(p.reply.text, parsed, std::strlen(parsed) + 1);
-    p.reply.snr = replySnr_;
     p.has = true;
     return p;
   }
@@ -655,7 +658,7 @@ class FakeMesh : public mm::IMesh {
       p.neverArrives = true;  // past every wait, which from here is a silence
     }
     // A flooded request is answered with a path return, which teaches the way home.
-    p.viaPath = flood && !returnPath_.empty();
+    p.teachesPath = flood && !returnPath_.empty();
     pending_ = p;
   }
 
@@ -895,8 +898,7 @@ class FakeMesh : public mm::IMesh {
       return false;
     }
     reply_ = p;
-    reply_.viaPath = pending_.viaPath;
-    if (pending_.viaPath && returnPathSize_ > 0) {
+    if (pending_.teachesPath && returnPathSize_ > 0) {
       // answer: path-return
       outPath_ = returnPath_;
       outPathLen_ =
@@ -973,9 +975,9 @@ class FakeMesh : public mm::IMesh {
   int floodAdverts_ = 0;
   std::map<std::string, std::string> scripted_;
   std::set<std::string> silentLines_;
+  std::set<std::string> unserved_;
   std::vector<int8_t> traceSnrsQ4_ = {29, -10, 26};  // trace-data.hex: 7.25, -2.5, 6.5
   float traceFinalSnr_ = 7.5f;                       // trace-data.hex's final SNR
-  float replySnr_ = 6.25f;                           // status-response.hex's last_snr
 
   // the faults
   int silentSends_ = 0;

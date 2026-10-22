@@ -45,9 +45,22 @@ class ResultBuffer {
 
   // The oldest result, which is the next to be posted. `len` is its length; nullptr when empty.
   const char* oldest(long long& jobId, size_t& len) const;
+  // The result at `index`, 0 being the oldest; nullptr past `count()`. What a kept image is
+  // written from (task p1.6-22), oldest first.
+  const char* at(size_t index, long long& jobId, size_t& len) const;
 
   // Forget the oldest: what a result the server took costs.
   void popOldest();
+
+  // Forget the `count` **newest**, counted as dropped: what a kept image too small for the whole
+  // buffer costs at the end of a wake (task p1.6-22). The oldest are kept because the image is
+  // written oldest first, whole results only, and stops at the first that does not fit; the
+  // buffer is made to agree with the image, so that `dropped()` is the figure the heartbeat says
+  // it is and a result lost to a small store is counted once, when it is lost.
+  void dropNewest(size_t count);
+  // Drops that happened before this object existed - the count a kept image carried across a
+  // sleep - so `resultsDropped` is the unit's figure and not this boot's.
+  void addDropped(uint32_t count) { dropped_ += count; }
 
   // How many results this buffer had to drop because it was full, and how many it has held in
   // all. `dropped` is what the heartbeat reports as `resultsDropped`.

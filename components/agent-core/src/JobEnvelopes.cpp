@@ -1,6 +1,6 @@
 #include <agent/JobEnvelopes.h>
 
-#include <ArduinoJson.h>
+#include <agent/Json.h>
 
 #include <cstdio>
 #include <cstring>

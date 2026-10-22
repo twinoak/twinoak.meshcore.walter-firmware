@@ -1,0 +1,1 @@
+{"releases":[{"id":7,"product":"twinoak-repeater-firmware","version":"0.3.0+abc1234","commit":"abc1234000000000000000000000000000000000","linkMajor":1,"linkMinor":0,"state":"released","images":[{"id":"repeater.rak4630-single.868","role":"repeater","board":"rak4630-single","band":"868","requires":{"walter":"0.3.0","link_major":1}}]}]}

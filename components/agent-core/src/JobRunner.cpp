@@ -1297,6 +1297,15 @@ Outcome JobRunner::runJob(const ClaimedJob& job, Context& ctx, size_t& dataLen) 
     g_log.add("%s", why);
     return Outcome::Unsupported;
   }
+  // The mesh's own answer for one of the thirteen (IMesh::supports, task p1.6-23). A type it
+  // cannot carry is not advertised, so the server routes none of it here - but a job claimed
+  // before a heartbeat said so, or one bound to this agent, can still arrive, and it is
+  // `unsupported` at no transaction with nothing sent, as a type nobody handles is. Asked
+  // before beginJob(), so the mesh is never given a job it has already declined.
+  if (!offered && !mesh_->supports(job.type)) {
+    g_log.add("this mesh cannot carry a '%s' job, so it is not advertised and nothing was sent", job.type);
+    return Outcome::Unsupported;
+  }
 
   uint8_t hashSize = 0;
   const uint8_t hops = pathToBytes(job, g_pathBytes, sizeof g_pathBytes, hashSize);
@@ -1373,11 +1382,22 @@ Outcome JobRunner::runExtension(const ClaimedJob& job, Context& ctx, size_t& dat
 
 bool JobRunner::post(long long jobId, const char* body, size_t len) {
   // Anything already waiting goes first, so the server sees the results in the order they were
-  // made; a failure there leaves this one behind the queue rather than in front of it.
+  // made; a failure there - or a wake's byte cap - leaves this one behind the queue rather than
+  // in front of it. The flush is the bounded one and there is no other (task p1.6-21): a wake's
+  // budget covers the job step's posts as it covers the rest.
+  const uint32_t failuresBefore = postFailures_;
   flushResults();
-  if (results_.empty()) {
-    if (server_->postJobResult(jobId, body, len)) return true;
+  if (results_.empty() && mayPost(len)) {
+    if (spend(len, [&] { return server_->postJobResult(jobId, body, len); })) return true;
     postFailures_++;
+  } else if (postFailures_ == failuresBefore) {
+    // Not the server: what stopped this was the wake's own bytes or its uplink seconds, here or
+    // in the queue ahead of it. The result is **kept: budget** - behind the queue, in the order
+    // it was made - and that is a bound of ours and not a failure of the server's, so nothing
+    // backs off for it and the next wake posts it with the timestamps it was made with.
+    resultsKeptForBudget_++;
+    LOG_I("jobs: the result of job %lld is kept: budget (%u byte(s), %u left this wake)", jobId,
+          static_cast<unsigned>(len), static_cast<unsigned>(meter_ == nullptr ? 0 : meter_->bytesLeft()));
   }
   // Kept with its client id and retried: the server de-duplicates on that id, and a late result
   // is still taken (API §3). The buffer is RAM and bounded, so a long outage drops the oldest
@@ -1402,36 +1422,36 @@ void JobRunner::markPosted(long long jobId) {
   }
 }
 
-void JobRunner::flushResults() {
-  size_t unbounded = static_cast<size_t>(-1);
+int JobRunner::flushResults() {
   int posted = 0;
-  flushResults(unbounded, posted);
-}
-
-void JobRunner::flushResults(size_t& bytesLeft, int& posted) {
-  posted = 0;
   while (!results_.empty()) {
     long long jobId = 0;
     size_t len = 0;
     const char* body = results_.oldest(jobId, len);
-    if (body == nullptr) return;
-    // A wake on a metered uplink says how many bytes it may send; what does not fit stays in the
-    // buffer with the timestamps and the client id it was made with (task p1.5-18).
-    if (len > bytesLeft) {
-      LOG_I("jobs: the kept result of job %lld is %u bytes and this wake has %u left; it waits", jobId,
-            static_cast<unsigned>(len), static_cast<unsigned>(bytesLeft));
-      return;
+    if (body == nullptr) return posted;
+    // A wake on a metered uplink says how many bytes it may send and how long its calls together
+    // may take; what does not fit either stays in the buffer with the timestamps and the client
+    // id it was made with, oldest first, and the next wake posts it (task p1.5-18, p1.6-21).
+    if (!mayPost(len)) {
+      if (meter_ != nullptr && !meter_->timeLeft()) {
+        LOG_I("jobs: the kept result of job %lld waits: this wake's seconds at the server are spent", jobId);
+      } else {
+        LOG_I("jobs: the kept result of job %lld is %u bytes and this wake has %u left; it waits", jobId,
+              static_cast<unsigned>(len),
+              static_cast<unsigned>(meter_ == nullptr ? 0 : meter_->bytesLeft()));
+      }
+      return posted;
     }
-    if (!server_->postJobResult(jobId, body, len)) {
+    if (!spend(len, [&] { return server_->postJobResult(jobId, body, len); })) {
       postFailures_++;
-      return;
+      return posted;
     }
-    bytesLeft -= len;
     posted++;
     LOG_I("jobs: the kept result of job %lld went through", jobId);
     results_.popOldest();
     markPosted(jobId);
   }
+  return posted;
 }
 
 void JobRunner::remember(const ClaimedJob& job, Outcome outcome, int transactions, bool posted) {
@@ -1466,7 +1486,7 @@ int JobRunner::claim(int max) {
   claimed_ = 0;
 
   int count = 0;
-  if (!server_->claimJobs(g_jobs, max, count)) {
+  if (!spend(0, [&] { return server_->claimJobs(g_jobs, max, count); })) {
     for (int i = 0; i < kClaimMax; i++) g_jobs[i].credential.wipe();
     return -1;
   }

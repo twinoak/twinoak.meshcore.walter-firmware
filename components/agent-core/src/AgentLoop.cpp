@@ -6,6 +6,7 @@
 
 #include <agent/Backoff.h>
 #include <agent/Iso8601.h>
+#include <agent/KeptImage.h>
 #include <agent/Log.h>
 
 namespace mm {
@@ -84,6 +85,11 @@ void AgentLoop::begin(IUplink& server, IPlatform& platform, IMesh& mesh, JobRunn
   jobs_ = &jobs;
   identity_ = &identity;
   mesh_->setRing(&ring_);
+  // One ledger for the whole library's calls to the server: this object's and the runner's
+  // (agent/UplinkMeter.h, task p1.6-21). It has no bounds until a wake sets them, so `loop()`
+  // is what it always was and the Heltec posts the bytes it always posted.
+  meter_.begin(platform);
+  jobs.setMeter(&meter_);
   budget_.maxTransactionsPerMinute = kDefaultMaxTransactionsPerMinute;
   budget_.minGapSeconds = kDefaultMinGapSeconds;
   jobs_->setBudget(budget_);
@@ -146,14 +152,13 @@ void AgentLoop::loop() {
   // a fact about the ring and needs no timer of its own.
   const uint32_t waited = ring_.empty() ? 0 : now - ring_.at(0).heardAtMillis;
   if (observationBatchDue(ring_.size(), waited)) {
-    size_t unbounded = kNoByteCap;
-    doObservations(unbounded);
+    doObservations();
   }
 }
 
 bool AgentLoop::doConfig() {
   configDue_ = false;
-  if (server_->fetchConfig()) {
+  if (meter_.spend(0, [&] { return server_->fetchConfig(); })) {
     budget_ = server_->config().budget;
     pollIntervalS_ = server_->config().pollIntervalS > 0 ? server_->config().pollIntervalS : 30;
   } else {
@@ -174,18 +179,22 @@ bool AgentLoop::doConfig() {
 
 void AgentLoop::buildHeartbeat(Heartbeat& hb) {
   hb.agentVersion = identity_->agentVersion;
-  hb.transport = "onboard";
+  hb.transport = identity_->transport;  // the identity's word: onboard by default (task p1.6-23)
   hb.at = clock_->now();
   hb.companionPublicKey = publicKey_;              // nullptr while the radio has made no identity
   hb.companionFirmware = publicKey_ == nullptr ? nullptr : identity_->companionFirmware;
   hb.hasRadio = publicKey_ != nullptr;
   if (hb.hasRadio) hb.radio = identity_->radio;
-  // The thirteen this firmware has a handler for - every type of API §3 since task 05 - and
-  // after them the types of the extension the board compiled in, if any (IJobExtension.h):
-  // routing requires the type advertised, so this list is what the server may send and nothing
-  // else (task p3-53). The Heltec sets no extension, and sends the thirteen.
+  // The thirteen this firmware has a handler for - every type of API §3 since task 05 - less
+  // any the mesh says it cannot carry (IMesh::supports, task p1.6-23: a link that cannot carry a
+  // trace), and after them the types of the extension the board compiled in, if any
+  // (IJobExtension.h): routing requires the type advertised, so this list is what the server may
+  // send and nothing else (task p3-53). The Heltec's mesh carries all thirteen and it sets no
+  // extension, so it sends the thirteen.
   int count = 0;
-  for (int i = 0; i < kJobTypeCount; i++) jobTypes_[count++] = kJobTypes[i];
+  for (int i = 0; i < kJobTypeCount; i++) {
+    if (mesh_->supports(kJobTypes[i])) jobTypes_[count++] = kJobTypes[i];
+  }
   if (const IJobExtension* extension = jobs_->extension()) {
     const int extra = extension->typeCount() < kMaxExtensionTypes ? extension->typeCount() : kMaxExtensionTypes;
     for (int i = 0; i < extra; i++) jobTypes_[count++] = extension->type(i);
@@ -325,7 +334,7 @@ bool AgentLoop::doHeartbeat() {
   hb.errorCount = static_cast<int>(sizeof errors / sizeof errors[0]);
 
   HeartbeatReply reply;
-  const bool ok = server_->postHeartbeat(hb, reply);
+  const bool ok = meter_.spend(0, [&] { return server_->postHeartbeat(hb, reply); });
   inHeartbeat_ = false;
   // Whatever happened, the next one is due an interval from now: a failure backs off on top.
   nextHeartbeatAt_ = millis() + static_cast<uint32_t>(pollIntervalS_) * 1000u;
@@ -364,12 +373,11 @@ bool AgentLoop::doHeartbeat() {
 }
 
 void AgentLoop::doPendingResults() {
-  const int before = jobs_->queueDepth();
-  jobs_->flushResults();
+  const int posted = jobs_->flushResults();
   const int after = jobs_->queueDepth();
-  if (after < before) {
-    counters_.resultsPosted += static_cast<uint32_t>(before - after);
-    LOG_I("jobs: %d result(s) that waited went through; %d still waiting", before - after, after);
+  if (posted > 0) {
+    counters_.resultsPosted += static_cast<uint32_t>(posted);
+    LOG_I("jobs: %d result(s) that waited went through; %d still waiting", posted, after);
   }
   if (after == 0) {
     succeeded();
@@ -397,7 +405,9 @@ size_t AgentLoop::buildBatch(uint32_t nowMs, char* out, size_t cap, size_t maxIt
     const HeardAdvert& a = ring_.at(i);
     ObservationItem& item = g_items[i];
     item = ObservationItem();
-    item.at = epochOf(a.heardAtMillis, nowMs);
+    // An advert restored from a kept image after a deep sleep carries the moment it was heard
+    // (task p1.6-22); every other one is stamped from the uptime clock, as ever.
+    item.at = a.heardAtEpoch != 0 ? a.heardAtEpoch : epochOf(a.heardAtMillis, nowMs);
     item.kind = "advert";
     toHex(a.publicKey, kPublicKeyLen, g_keys[i]);
     item.publicKey = g_keys[i];
@@ -446,7 +456,7 @@ size_t AgentLoop::buildBatch(uint32_t nowMs, char* out, size_t cap, size_t maxIt
   return writeObservationBatch(batchId_, g_items, static_cast<int>(count), out, cap);
 }
 
-bool AgentLoop::doObservations(size_t& bytesAllowed, bool* capped) {
+bool AgentLoop::doObservations(bool* capped) {
   const uint32_t now = millis();
   // A batch already built and not yet accepted is pending: it must go out again exactly as it
   // was, under the client id it was built with, or the server would de-duplicate on that id and
@@ -458,15 +468,15 @@ bool AgentLoop::doObservations(size_t& bytesAllowed, bool* capped) {
   // half until the body fits. What is left stays in the ring with the moment each entry was
   // heard, which is what the next wake posts (the ring's own rule, Observations.h).
   if (!retrying) {
-    while (len > bytesAllowed && batchCount_ > 1) {
+    while (len > meter_.bytesLeft() && batchCount_ > 1) {
       const size_t fewer = batchCount_ / 2;
       batchCount_ = 0;
       len = buildBatch(now, g_batchJson, sizeof g_batchJson, fewer);
     }
   }
-  if (len > bytesAllowed) {
+  if (len > meter_.bytesLeft()) {
     LOG_I("observations: the shortest batch is %u bytes and this wake has %u left; the ring keeps them",
-          static_cast<unsigned>(len), static_cast<unsigned>(bytesAllowed));
+          static_cast<unsigned>(len), static_cast<unsigned>(meter_.bytesLeft()));
     // Nothing went out under this id, so a batch that was built here is forgotten whole: the next
     // wake builds a full one again rather than inheriting a count a byte cap shortened.
     if (!retrying) {
@@ -489,7 +499,8 @@ bool AgentLoop::doObservations(size_t& bytesAllowed, bool* capped) {
 
   int accepted = 0;
   bool duplicate = false;
-  const bool ok = server_->postObservations(g_batchJson, len, accepted, duplicate);
+  const bool ok =
+      meter_.spend(len, [&] { return server_->postObservations(g_batchJson, len, accepted, duplicate); });
   if (ok) {
     counters_.batches++;
     counters_.observationsPosted += static_cast<uint32_t>(batchCount_);
@@ -498,7 +509,6 @@ bool AgentLoop::doObservations(size_t& bytesAllowed, bool* capped) {
     LOG_I("observations: %u posted, %d accepted%s", static_cast<unsigned>(batchCount_), accepted,
           duplicate ? " (the server had this batch already)" : "");
     ring_.consume(batchCount_);
-    bytesAllowed -= len;
     batchCount_ = 0;
     batchId_[0] = '\0';
     succeeded();
@@ -542,18 +552,9 @@ void AgentLoop::doJobs() {
 // much as it can - and every one of them is measured on the platform's millisecond clock, which
 // in a test is the clock the test moves (support/FakePlatform.h).
 
-uint32_t AgentLoop::wakeMsLeft() const {
-  if (wakeBudget_.wakeSeconds == 0) return 0xFFFFFFFFu;
-  const uint32_t whole = wakeBudget_.wakeSeconds * 1000u;
-  const uint32_t spent = millis() - wakeStartedAtMs_;
-  return spent >= whole ? 0 : whole - spent;
-}
+uint32_t AgentLoop::wakeMsLeft() const { return meter_.wakeMsLeft(); }
 
-bool AgentLoop::uplinkTimeLeft() const {
-  if (wakeMsLeft() == 0) return false;
-  if (wakeBudget_.uplinkSeconds == 0) return true;
-  return uplinkSpentMs_ < wakeBudget_.uplinkSeconds * 1000u;
-}
+bool AgentLoop::uplinkTimeLeft() const { return meter_.timeLeft(); }
 
 int AgentLoop::transactionsLeft() const {
   if (intent_.maxTransactionsThisWake <= 0) return 0x7FFFFFFF;
@@ -583,10 +584,7 @@ void AgentLoop::wakeConfig(WakeReport& report) {
     report.config = StepOutcome::NoTime;
     return;
   }
-  const uint32_t at = millis();
-  const bool ok = doConfig();
-  uplinkSpentMs_ += millis() - at;
-  report.config = ok ? StepOutcome::Done : StepOutcome::Failed;
+  report.config = doConfig() ? StepOutcome::Done : StepOutcome::Failed;
 }
 
 void AgentLoop::wakeHeartbeat(WakeReport& report) {
@@ -598,9 +596,7 @@ void AgentLoop::wakeHeartbeat(WakeReport& report) {
   // heartbeat that fell due from inside its own wait (heartbeatIfOverdue), exactly as on the
   // board. At an interval of an hour that never happens, which is the point of proposing one.
   heartbeatScheduled_ = true;
-  const uint32_t at = millis();
   const bool ok = doHeartbeat();
-  uplinkSpentMs_ += millis() - at;
   report.heartbeat = ok ? StepOutcome::Done : StepOutcome::Failed;
   if (ok) report.serverTime = lastServerTimeUnix_;
 }
@@ -611,18 +607,9 @@ void AgentLoop::wakeResults(WakeReport& report) {
     report.results = StepOutcome::NoTime;
     return;
   }
-  if (wakeBytesLeft_ == 0) {
-    report.results = StepOutcome::NoBudget;
-    return;
-  }
   const uint32_t failuresBefore = jobs_->postFailures();
-  const size_t bytesBefore = wakeBytesLeft_;
-  int posted = 0;
-  const uint32_t at = millis();
-  jobs_->flushResults(wakeBytesLeft_, posted);
-  uplinkSpentMs_ += millis() - at;
+  const int posted = jobs_->flushResults();
   report.resultsFlushed = posted;
-  report.bytesPosted += bytesBefore - wakeBytesLeft_;
   counters_.resultsPosted += static_cast<uint32_t>(posted);
   if (posted > 0) LOG_I("jobs: %d result(s) that waited went through", posted);
   if (jobs_->postFailures() > failuresBefore) {
@@ -652,9 +639,7 @@ void AgentLoop::wakeJobs(WakeReport& report) {
           transactionsLeft(), intent_.maxTransactionsThisWake);
     return;
   }
-  const uint32_t at = millis();
   const int count = jobs_->claim(max);
-  uplinkSpentMs_ += millis() - at;
   if (count < 0) {
     counters_.claimFailures++;
     report.claim = StepOutcome::Failed;
@@ -679,8 +664,11 @@ void AgentLoop::wakeJobs(WakeReport& report) {
     // A job this wake cannot finish is reported `failed` with *wake budget* and nothing is sent
     // for it: what must never happen is a job claimed, leased, and silent (EXIT-NODES §6 as
     // built in meshmaster.dk's task 121 - what is left behind is queued and bound to nothing,
-    // and a job the server did hand over is this agent's to answer). Its own result's bytes are
-    // not counted against the byte cap: answering the lease comes first.
+    // and a job the server did hand over is this agent's to answer). Its result goes through the
+    // same budget as every other post (task p1.6-21), and when that has run out the result is
+    // **kept** in the offline buffer rather than posted past the cap: "offline is normal" and a
+    // late result is still taken (EXIT-NODES §5), which is the way of answering a lease that
+    // costs no byte this wake has not got.
     if (price > left) {
       std::snprintf(why, sizeof why, "wake budget: %d transaction(s) left of this wake's %d and %s needs about %d",
                     left, intent_.maxTransactionsThisWake, job.type, price);
@@ -714,17 +702,9 @@ void AgentLoop::wakeObservations(WakeReport& report) {
       report.observations = StepOutcome::NoTime;
       break;
     }
-    if (wakeBytesLeft_ == 0) {
-      report.observations = StepOutcome::NoBudget;
-      break;
-    }
     const size_t before = ring_.size();
-    const size_t bytesBefore = wakeBytesLeft_;
     bool capped = false;
-    const uint32_t at = millis();
-    const bool ok = doObservations(wakeBytesLeft_, &capped);
-    uplinkSpentMs_ += millis() - at;
-    report.bytesPosted += bytesBefore - wakeBytesLeft_;
+    const bool ok = doObservations(&capped);
     if (!ok) {
       report.observations = capped ? StepOutcome::NoBudget : StepOutcome::Failed;
       break;
@@ -743,13 +723,14 @@ WakeReport AgentLoop::wake(const WakeIntent& intent, const Budget& budget) {
   }
 
   intent_ = intent;
-  wakeBudget_ = budget;
   inWake_ = true;
   wakeReport_ = &report;
   wakeStartedAtMs_ = millis();
-  uplinkSpentMs_ = 0;
   transactionsAtWakeStart_ = jobs_->gate().transmissions();
-  wakeBytesLeft_ = budget.postBytes == 0 ? kNoByteCap : budget.postBytes;
+  // The three bounds every call of this wake is measured against, the runner's with the loop's:
+  // one ledger, one byte cap, one set of uplink seconds (task p1.6-21).
+  meter_.beginWake(budget.wakeSeconds, budget.uplinkSeconds, budget.postBytes);
+  const uint32_t keptBefore = jobs_->resultsKeptForBudget();
 
   if (halted_) {
     // A 401 is still a 401 after a sleep: nothing is sent until a person fixes the token.
@@ -778,20 +759,33 @@ WakeReport AgentLoop::wake(const WakeIntent& intent, const Budget& budget) {
   report.halted = halted_;
   report.acceptedIntervalS = pollIntervalS_;
   report.sleepAtLeastS = retrySeconds();
+  // Every byte and every millisecond this wake spent at the server, whichever step spent it.
+  report.bytesPosted = meter_.bytesPosted();
+  report.uplinkMs = meter_.uplinkSpentMs();
+  report.resultsKept = static_cast<int>(jobs_->resultsKeptForBudget() - keptBefore);
   report.transactionsSpent = static_cast<int>(jobs_->gate().transmissions() - transactionsAtWakeStart_);
+  // What the sleep after this wake keeps: one image into the store, if there is one and it would
+  // change what the store holds (task p1.6-22). Before `observationsLeft` is read, because what
+  // the store cannot hold is dropped here and is not left in the ring either.
+  keepAcrossSleep(report);
   report.observationsLeft = static_cast<int>(ring_.size());
   report.elapsedMs = millis() - wakeStartedAtMs_;
   report.counters = counters_;
   inWake_ = false;
   wakeReport_ = nullptr;
+  meter_.endWake();
 
   LOG_I("wake: config %s, heartbeat %s, results %s, claim %s, jobs %s, observations %s", stepOutcomeName(report.config),
         stepOutcomeName(report.heartbeat), stepOutcomeName(report.results), stepOutcomeName(report.claim),
         stepOutcomeName(report.jobs), stepOutcomeName(report.observations));
-  LOG_I("wake: %d job(s) run, %d not run, %d transaction(s), %d batch(es), %u byte(s) in %lu ms; next in %d s%s%s",
+  LOG_I("wake: %d job(s) run, %d not run, %d transaction(s), %d batch(es), %u byte(s) posted; %lu ms of %lu at "
+        "the server%s; next in %d s%s%s%s",
         report.jobsRun, report.jobsNotRun, report.transactionsSpent, report.batchesPosted,
-        static_cast<unsigned>(report.bytesPosted), static_cast<unsigned long>(report.elapsedMs),
-        report.acceptedIntervalS, report.sleepAtLeastS > 0 ? ", holding off first" : "",
+        static_cast<unsigned>(report.bytesPosted), static_cast<unsigned long>(report.uplinkMs),
+        static_cast<unsigned long>(report.elapsedMs),
+        report.resultsKept > 0 ? ", a result kept: budget" : "", report.acceptedIntervalS,
+        report.sleepAtLeastS > 0 ? ", holding off first" : "",
+        report.keptImageWritten ? ", an image kept for the sleep" : "",
         report.why[0] == '\0' ? "" : " - nothing was sent");
   if (report.why[0] != '\0') LOG_I("wake: %s", report.why);
   return report;
@@ -840,6 +834,174 @@ bool AgentLoop::restore(const WakeState& saved) {
           static_cast<unsigned long>(saved.holdForMs / 1000u));
   }
   return true;
+}
+
+// ---- what a sleep keeps (task p1.6-22) -----------------------------------------------------------
+//
+// The offline buffer and the observation ring are RAM, and a deep sleep is the end of RAM: a
+// result a wake kept - for its budget, or because the server would not take it - was lost at the
+// sleep, and its job stayed leased until the server's lease lapsed. The WakeState cannot carry
+// twelve kilobytes of results through an RTC memory that is nearly full, so the consumer lends a
+// store and a scratch, the end of every wake writes one image of what is kept (agent/KeptImage.h:
+// results first, oldest first, then the adverts, whole or not at all, checksummed), and the boot
+// after the sleep reads it back. The image is what survives, so the buffer and the ring are made to
+// agree with it: what it cannot hold is dropped here and counted in the two figures the heartbeat
+// already carries, and a loss is a number on the exit node's page and not an accident.
+
+void AgentLoop::setRetained(IRetained* store, uint8_t* scratch, size_t scratchLen) {
+  retained_ = nullptr;
+  imageScratch_ = nullptr;
+  imageScratchLen_ = 0;
+  imageKnown_ = false;
+  keptRestored_ = false;
+  if (store == nullptr) return;
+  if (scratch == nullptr || scratchLen < kKeptImageHeaderLen || store->capacity() < kKeptImageHeaderLen) {
+    LOG_E("kept: a store of %u bytes and a scratch of %u cannot hold an image's header (%u); nothing is kept",
+          static_cast<unsigned>(store->capacity()), static_cast<unsigned>(scratch == nullptr ? 0 : scratchLen),
+          static_cast<unsigned>(kKeptImageHeaderLen));
+    return;
+  }
+  retained_ = store;
+  imageScratch_ = scratch;
+  imageScratchLen_ = scratchLen;
+}
+
+size_t AgentLoop::imageCap() const {
+  if (retained_ == nullptr) return 0;
+  const size_t cap = retained_->capacity();
+  return cap < imageScratchLen_ ? cap : imageScratchLen_;
+}
+
+uint32_t AgentLoop::emptyImageCrc() {
+  KeptImageWriter empty(imageScratch_, imageCap());
+  empty.finish(jobs_->results().dropped(), ring_.dropped(), imagesRefused_);
+  return empty.crc();
+}
+
+bool AgentLoop::restoreKept() {
+  if (retained_ == nullptr || platform_ == nullptr || jobs_ == nullptr) return false;
+  if (keptRestored_) {
+    LOG_W("kept: the image was already read this boot; it is not read twice");
+    return false;
+  }
+  keptRestored_ = true;
+  const size_t cap = imageCap();
+  const size_t got = retained_->read(imageScratch_, cap);
+  if (got == 0) {
+    // Nothing there - a first boot, an erased region. What the store "holds" is an image of
+    // nothing, so a wake that keeps nothing will not write one.
+    imageKnown_ = true;
+    lastImageCrc_ = emptyImageCrc();
+    LOG_I("kept: the store holds no image");
+    return false;
+  }
+  KeptImageReader image;
+  const char* refused = image.check(imageScratch_, got);
+  if (refused != nullptr) {
+    // Whole or not at all: nothing of a bad image reaches the buffer or the ring. The store is
+    // unknown from here, so the next wake writes a fresh image over it whatever it would hold.
+    imagesRefused_++;
+    imageKnown_ = false;
+    LOG_W("kept: the image in the store is refused whole: %s (%u byte(s) read; %lu image(s) refused in all)", refused,
+          static_cast<unsigned>(got), static_cast<unsigned long>(imagesRefused_));
+    return false;
+  }
+  ResultBuffer& results = jobs_->results();
+  if (!results.empty() || !ring_.empty()) {
+    LOG_W("kept: the buffer holds %u result(s) and the ring %u advert(s) already; what the image holds goes behind them",
+          static_cast<unsigned>(results.count()), static_cast<unsigned>(ring_.size()));
+  }
+  for (size_t i = 0; i < image.resultCount(); i++) {
+    long long jobId = 0;
+    size_t len = 0;
+    const char* body = image.result(i, jobId, len);
+    if (body != nullptr) results.push(jobId, body, len);
+  }
+  const uint32_t nowMs = millis();
+  for (size_t i = 0; i < image.advertCount(); i++) {
+    HeardAdvert a;
+    if (!image.advert(i, a)) break;
+    // The moment it was heard travels as `heardAtEpoch`; the uptime clock it was heard on is
+    // gone, so on this boot's clock it was heard "now" - which only the batch-due timer reads.
+    a.heardAtMillis = nowMs;
+    ring_.push(a);
+  }
+  results.addDropped(image.resultsDropped());
+  ring_.addDropped(image.observationsDropped());
+  imagesRefused_ += image.imagesRefused();
+  imageKnown_ = true;
+  lastImageCrc_ = image.crc();
+  LOG_I("kept: %u result(s) and %u advert(s) read back from the store (%u bytes); %lu result(s) and %lu advert(s) "
+        "were dropped before the sleep",
+        static_cast<unsigned>(image.resultCount()), static_cast<unsigned>(image.advertCount()),
+        static_cast<unsigned>(image.length()), static_cast<unsigned long>(image.resultsDropped()),
+        static_cast<unsigned long>(image.observationsDropped()));
+  return true;
+}
+
+void AgentLoop::keepAcrossSleep(WakeReport& report) {
+  if (retained_ == nullptr) return;
+  const size_t cap = imageCap();
+  KeptImageWriter image(imageScratch_, cap);
+
+  // The results first, oldest first, whole ones only, stopping at the first that does not fit:
+  // a lost result leaves a job leased, a lost advert is heard again.
+  ResultBuffer& results = jobs_->results();
+  size_t keptResults = 0;
+  for (; keptResults < results.count(); keptResults++) {
+    long long jobId = 0;
+    size_t len = 0;
+    const char* body = results.at(keptResults, jobId, len);
+    if (body == nullptr || !image.addResult(jobId, body, len)) break;
+  }
+  const size_t resultsOut = results.count() - keptResults;
+
+  // Then the adverts, with the moment each was heard: the one it came back from a sleep with, or
+  // the clock's reading of the uptime it was heard at. No clock is 0, which the batch after the
+  // next boot stamps as "now" - the same as it would have without a store.
+  const uint32_t nowMs = millis();
+  size_t keptAdverts = 0;
+  for (; keptAdverts < ring_.size(); keptAdverts++) {
+    const HeardAdvert& a = ring_.at(keptAdverts);
+    uint32_t epoch = a.heardAtEpoch;
+    if (epoch == 0 && clock_->hasTime()) epoch = epochOf(a.heardAtMillis, nowMs);
+    if (!image.addAdvert(a, epoch)) break;
+  }
+  const size_t advertsOut = ring_.size() - keptAdverts;
+
+  // What the store cannot hold is lost at the sleep, so it is dropped now and counted once, in
+  // the heartbeat's own figures, and said once.
+  if (resultsOut > 0 || advertsOut > 0) {
+    results.dropNewest(resultsOut);
+    ring_.dropNewest(advertsOut);
+    report.resultsNotKept = static_cast<int>(resultsOut);
+    report.observationsNotKept = static_cast<int>(advertsOut);
+    LOG_W("kept: %u result(s) and %u advert(s) do not fit the %u bytes of the store and are dropped "
+          "(%lu result(s), %lu advert(s) dropped in all)",
+          static_cast<unsigned>(resultsOut), static_cast<unsigned>(advertsOut), static_cast<unsigned>(cap),
+          static_cast<unsigned long>(results.dropped()), static_cast<unsigned long>(ring_.dropped()));
+  }
+
+  const size_t len = image.finish(results.dropped(), ring_.dropped(), imagesRefused_);
+  if (imageKnown_ && image.crc() == lastImageCrc_) {
+    // The store already holds this - the same results, the same adverts, the same counters - so
+    // nothing is written: a wake that posted everything and keeps nothing costs no wear at all.
+    LOG_D("kept: the store already holds this image; nothing written");
+    return;
+  }
+  if (!retained_->write(imageScratch_, len)) {
+    // What the store holds now is anybody's guess, so the next wake writes again regardless.
+    imageKnown_ = false;
+    LOG_E("kept: the store would not take an image of %u bytes; what the next boot finds is unknown",
+          static_cast<unsigned>(len));
+    return;
+  }
+  imageKnown_ = true;
+  lastImageCrc_ = image.crc();
+  report.keptImageWritten = true;
+  LOG_I("kept: %u result(s) and %u advert(s) written to the store, %u bytes of %u",
+        static_cast<unsigned>(image.resultCount()), static_cast<unsigned>(image.advertCount()),
+        static_cast<unsigned>(len), static_cast<unsigned>(cap));
 }
 
 void AgentLoop::report(TextOut& out) const {

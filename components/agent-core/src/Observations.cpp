@@ -37,6 +37,12 @@ void ObservationRing::consume(size_t count) {
   size_ -= count;
 }
 
+void ObservationRing::dropNewest(size_t count) {
+  if (count > size_) count = size_;
+  size_ -= count;
+  dropped_ += static_cast<uint32_t>(count);
+}
+
 void ObservationRing::clear() {
   first_ = 0;
   size_ = 0;

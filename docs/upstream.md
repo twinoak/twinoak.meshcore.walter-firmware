@@ -4,22 +4,23 @@ This firmware is a MeshMaster agent because somebody else already wrote the
 hard half of being one. The job logic — thirteen job types and their rules, the
 login sequence and its four classes, the config read and apply engines, the
 session cache, the airtime budget, the agent API's envelopes, the reply codec,
-the observation ring, the offline result buffer, the backoff and the server
-policy, and the loop that drives all of it — is
+the observation ring, the offline result buffer and the image a sleep keeps it
+in, the backoff and the server policy, and the loop that drives all of it — is
 `twinoak/twinoak.meshmaster.exitnode-firmware`'s `lib/agent-core/`, a library
-that stands on three interfaces and knows nothing of Arduino, the ESP-IDF,
+that stands on three interfaces (and an optional fourth, for a consumer that
+sleeps) and knows nothing of Arduino, the ESP-IDF,
 WiFi, NVS or MeshCore (`spec/proposals/03`, `spec/SYSTEM.md` §8).
 
 This firmware is built **against** that library, not forked from it. The pin is
 one line, twice:
 
 ```
-components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit bbe7ae05…
-host_test/agent-core/MANIFEST.txt    # source: … at commit bbe7ae05…
+components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit cc5a3436…
+host_test/agent-core/MANIFEST.txt    # source: … at commit cc5a3436…
 ```
 
-`bbe7ae05` is `v0.2.0`, the first release of the library a consumer may pin, and
-`AGENT_CORE_VERSION` in the copy says the same number. The two manifests are the
+`cc5a3436` is `v0.3.0`, and `AGENT_CORE_VERSION` in the copy says the same
+number. The two manifests are the
 only places the commit is written down, and
 `host_test/rails/test_rail_agent_core.cpp` fails if they disagree: the board
 would be running one release of the agent and the suites testing another.
@@ -40,7 +41,7 @@ dependencies:
   twinoak/agent-core:
     git: https://github.com/twinoak/twinoak.meshmaster.exitnode-firmware.git
     path: lib/agent-core
-    version: bbe7ae0515ba7640e4a80f9bc4541386d940f535
+    version: cc5a34366b316ead6248f651e8263c294bb6feea
 ```
 
 **That repository is private.** The component manager resolves a `git` source by
@@ -56,10 +57,10 @@ here, held byte for byte against a manifest.**
 
 | | |
 |---|---|
-| `tools/sync-agent-core.ps1 -Ref v0.2.0` | `git archive` of that commit out of a clone beside this one, into the two trees, and a `MANIFEST.txt` of SHA-256, size and commit for each. Reads the exit-node clone; writes nothing in it |
+| `tools/sync-agent-core.ps1 -Ref v0.3.0` | `git archive` of that commit out of a clone beside this one, into the two trees, and a `MANIFEST.txt` of SHA-256, size and commit for each. Reads the exit-node clone; writes nothing in it |
 | `tools/sync-agent-core.ps1 -Verify` | every file of both trees against its manifest line, plus the two commits against each other. No network, no clone. `tools/verify.ps1` runs it **before the container starts**, and so does CI |
 | `components/agent-core/` | the library, as an ESP-IDF component — its own `CMakeLists.txt` and `idf_component.yml`, unedited; ArduinoJson 7.4.3 comes from the public component registry, which needs no credential |
-| `host_test/agent-core/` | the three fakes, both fixture sets, the library's own two suites and upstream's `platformio.ini`, at **upstream's own paths**, so that every case of both suites runs here unmodified |
+| `host_test/agent-core/` | the four fakes, both fixture sets, the library's own two suites and upstream's `platformio.ini`, at **upstream's own paths**, so that every case of both suites runs here unmodified |
 
 What the copy costs, stated plainly, is the thing a dependency gives for free:
 nobody can bump it without a machine that can read the upstream repository. The
@@ -86,7 +87,7 @@ and is the dangerous one.
 
 | Watch | Where | Why we care |
 |---|---|---|
-| the three interfaces | `agent/IMesh.h`, `agent/IUplink.h`, `agent/IPlatform.h`, and `agent/IJobExtension.h` and `agent/TextOut.h` | they are *our* code's contract. A method added, removed or re-signatured is a compile error in `components/agent/` — which is the whole point of them being a contract |
+| the interfaces | `agent/IMesh.h`, `agent/IUplink.h`, `agent/IPlatform.h`, `agent/IRetained.h`, and `agent/IJobExtension.h` and `agent/TextOut.h` | they are *our* code's contract. A method added, removed or re-signatured is a compile error in `components/agent/` — which is the whole point of them being a contract |
 | the `MeshReply` constants | `kMeshReplyDataCap`, `kMeshPathCap` in `agent/IMesh.h` | MeshCore's `MAX_PACKET_PAYLOAD` and `MAX_PATH_SIZE` at *upstream's* pin, written as the library's own. A reply that does not fit is an overrun and not a truncation, so the link's caps are held against them with a `static_assert` |
 | `library.json` | the library's version, and ArduinoJson's exact version | the one dependency we also have to resolve, and the version `dependencies.lock` must agree with |
 | `tests/fixtures/contracts/MANIFEST.txt` | the dialect's commit | the envelopes the library *writes* are meshmaster.dk's at that commit. **Nothing of ours stops compiling when this moves**, which is why it is watched by name |
@@ -205,7 +206,7 @@ It is on disk, in this repository, at the pin:
 
 ```
 components/agent-core/include/agent/     the three interfaces and everything else
-components/agent-core/src/               the twenty-two sources the board compiles
+components/agent-core/src/               the twenty-three sources the board compiles
 host_test/agent-core/test/support/       the fakes the suites run against
 ```
 
@@ -220,4 +221,5 @@ this firmware is [`ARCHITECTURE.md`](ARCHITECTURE.md) §13.
 | Tag | Commit | When | Why |
 |---|---|---|---|
 <!-- upstream.yml inserts the newest row directly under this line -->
-| `v0.2.0` | `bbe7ae05` | 15 October 2026 | the first copy (task p4-01): the first release of the library a consumer may pin, and the first ESP-IDF build of it anywhere |
+| `v0.3.0` | `cc5a3436` | 22 October 2026 | the pin task p4-01 landed with (its second session): `IRetained` and the image a sleep keeps, a wake that keeps its budget, `IMesh::supports()`, `MeshReply` without `viaPath`/`snr`, and both of p4-01's upstream findings taken — so this repository compiles the library in its own dialect and exempts no warning of it |
+| `v0.2.0` | `bbe7ae05` | 15 October 2026 | the first copy (task p4-01, first session): the first release of the library a consumer may pin, and the first ESP-IDF build of it anywhere - never on `main` |

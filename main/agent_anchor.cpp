@@ -15,15 +15,17 @@
 //
 // Taking the address of a function makes the linker resolve it, and with it everything it calls:
 // `AgentLoop::wake` reaches the heartbeat, the claim, the results, the observation ring, the
-// backoff and the server policy; `AgentLoop::loop` reaches the reboot guard;
+// backoff, the server policy, the uplink's ledger of seconds and bytes, and the image a sleep
+// keeps (`KeptImage.cpp`, which is why no object of the library is left to anchor by name but the
+// two below); `AgentLoop::loop` reaches the reboot guard;
 // `JobRunner::claimAndRun` reaches all thirteen job types, the login sequence, the config read and
 // apply engines, the session cache, the airtime budget, the reply codec and the result buffer.
 //
-// Two of the library's twenty-two objects are reached by none of those three, because nothing in
+// Two of the library's twenty-three objects are reached by none of those three, because nothing in
 // the library calls them - they are the consumer's to call: `ConfigReply.cpp`'s reply parsers,
 // which an `IUplink` runs over the bytes it read (task 03, docs/library.md §4), and `LogRing.cpp`,
 // which is a 4 kB ring a consumer may keep its own log in. Both are anchored by name so that all
-// twenty-two compile *and link* for the board here; `LogRing::copyTo` rather than `logRing()`,
+// twenty-three compile *and link* for the board here; `LogRing::copyTo` rather than `logRing()`,
 // because the free function hands back a static ring and would put its 4 kB of BSS in an image
 // that has no use for it yet.
 //

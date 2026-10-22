@@ -56,6 +56,10 @@
 // board set, if any (IJobExtension.h), before it is answered `unsupported`. The runner still owns
 // the pacing, the lease, the envelope and the log; the extension writes the data and the outcome.
 //
+// And one of the thirteen the mesh cannot carry (IMesh::supports, task p1.6-23) - a trace over a
+// link that has no request for one - is `unsupported` at no transaction too, with nothing sent
+// and the job never begun on the mesh; the heartbeat did not advertise it either.
+//
 // **Every admin session on a repeater where this exit node holds a grant ends with the restore**
 // (task p4.1-60): `setperm <own key> <granted level>` as the session's last command, because on
 // stock firmware the login table *is* the ACL and the admin login has just rewritten our entry
@@ -94,6 +98,7 @@
 #include <agent/ResultBuffer.h>
 #include <agent/Sessions.h>
 #include <agent/TextOut.h>
+#include <agent/UplinkMeter.h>
 
 namespace mm {
 
@@ -203,6 +208,13 @@ class JobRunner {
   void setIdentity(const char* publicKeyHex);
   void setBudget(const AgentBudget& budget) { gate_.setBudget(budget); }
 
+  // The ledger of what a wake spends at the server (agent/UplinkMeter.h), which `AgentLoop::begin`
+  // lends this runner: every call this runner makes goes through it, so the claim and every
+  // result a job posts are inside the wake's byte cap and its uplink seconds and not beside them
+  // (task p1.6-21). A runner nobody lent one to - a host test of this class alone - makes its
+  // calls as it always did, bounded by nothing.
+  void setMeter(UplinkMeter* meter) { meter_ = meter; }
+
   // The handlers compiled in beside the thirteen (IJobExtension.h), or nullptr: the Heltec sets
   // none. The heartbeat advertises its types after the thirteen.
   void setExtension(IJobExtension* extension) { extension_ = extension; }
@@ -236,14 +248,16 @@ class JobRunner {
   // The offline buffer (task 06): results the server did not take are kept and posted later,
   // oldest first, with the timestamps and the client ids they were made with. Called by the
   // agent loop after every heartbeat the server answered - "the offline buffer is posted first,
-  // in order" (EXIT-NODES §5, docs/ops/agent.md §4). Safe to call with nothing waiting.
-  void flushResults();
-
-  // The same, with a bound on what may go out: a wake on an LTE plan posts the oldest results
-  // while the next one's body still fits in `bytesLeft`, which this decrements, and leaves the
-  // rest for the next wake with the timestamps they were made with (task p1.5-18). `posted` is
-  // how many went through. A body larger than `bytesLeft` stops the flush and is not dropped.
-  void flushResults(size_t& bytesLeft, int& posted);
+  // in order" (EXIT-NODES §5, docs/ops/agent.md §4). Safe to call with nothing waiting, and
+  // returns how many went through.
+  //
+  // There is **one** flush and it is bounded by whatever the wake's ledger says (setMeter, task
+  // p1.6-21): a wake on a metered plan posts the oldest results while the next one's body still
+  // fits in the bytes and the uplink seconds it has left, and leaves the rest for the next wake
+  // with the timestamps they were made with. Nothing is dropped and nothing goes out of order;
+  // with no ledger, or a ledger with no bounds - `loop()`, so the Heltec - the bound is nothing
+  // and this is what it always was.
+  int flushResults();
 
   // How many results are waiting to be posted, which is the heartbeat's `queueDepth`.
   int queueDepth() const { return static_cast<int>(results_.count()); }
@@ -258,10 +272,18 @@ class JobRunner {
 
   const AirtimeGate& gate() const { return gate_; }
   const ResultBuffer& results() const { return results_; }
+  // The buffer itself, for the one thing outside this runner that writes it: the kept image the
+  // loop writes at the end of a wake and reads back after a deep sleep (agent/IRetained.h, task
+  // p1.6-22). Nothing else may push into it - a result reaches it through `post()` or not at all.
+  ResultBuffer& results() { return results_; }
   uint32_t claims() const { return claims_; }
   uint32_t ran() const { return ran_; }
   uint32_t postFailures() const { return postFailures_; }
   uint32_t resultsDropped() const { return results_.dropped(); }
+  // Results this runner could not post inside a wake's byte cap or its uplink seconds and kept
+  // for the next wake: *kept: budget*, which is a bound of ours and not a failure of the
+  // server's, so it backs nothing off (task p1.6-21). The WakeReport carries a wake's own count.
+  uint32_t resultsKeptForBudget() const { return resultsKeptForBudget_; }
 
   // `jobs` on the console: the last ten with their outcome and their transactions.
   void report(TextOut& out) const;
@@ -387,7 +409,19 @@ class JobRunner {
   bool leaseRanOut(const ClaimedJob& job) const;
   void randomBytes(uint8_t* out, size_t len);
   void remember(const ClaimedJob& job, Outcome outcome, int transactions, bool posted);
+  // One result on its way to the server: the queue ahead of it first, then this one if the
+  // budget has room for it, and otherwise **kept behind the queue** - in the order it was made,
+  // which is the buffer's rule (ResultBuffer.h). True when the server took it.
   bool post(long long jobId, const char* body, size_t len);
+  // Whether a body of this length may go out at all, which is the wake's ledger's answer and
+  // "yes" for a runner that was lent none.
+  bool mayPost(size_t len) const { return meter_ == nullptr || meter_->mayPost(len); }
+  // Every call this runner makes to the server goes through here, and that is the whole of the
+  // accounting: the ledger times the call and weighs the body (agent/UplinkMeter.h).
+  template <typename Call>
+  bool spend(size_t bodyBytes, Call call) {
+    return meter_ == nullptr ? call() : meter_->spend(bodyBytes, call);
+  }
   // Every remembered job with this id is marked posted, once its result has gone through.
   void markPosted(long long jobId);
   // The platform's millisecond clock, under the name every line of JobRunner.cpp already used
@@ -404,6 +438,8 @@ class JobRunner {
 
   AirtimeGate gate_;
   SessionStore sessions_;
+  // The wake's ledger, or null: AgentLoop::begin lends it (setMeter).
+  UplinkMeter* meter_ = nullptr;
 
   Record recent_[kRemembered];
   int recentCount_ = 0;
@@ -414,6 +450,7 @@ class JobRunner {
   uint32_t claims_ = 0;
   uint32_t ran_ = 0;
   uint32_t postFailures_ = 0;
+  uint32_t resultsKeptForBudget_ = 0;
   // How many jobs the last claim handed over, which is how far claimed(i) and runClaimed(i) go.
   int claimed_ = 0;
 

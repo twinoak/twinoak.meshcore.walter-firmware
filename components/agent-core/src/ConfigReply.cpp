@@ -1,6 +1,6 @@
 #include <agent/ConfigReply.h>
 
-#include <ArduinoJson.h>
+#include <agent/Json.h>
 
 #include <cstdio>
 #include <cstring>
@@ -38,14 +38,18 @@ bool takeBudget(JsonObjectConst obj, AgentBudget& out, char* err, size_t cap) {
          takeInt(b, "minGapSeconds", out.minGapSeconds, err, cap);
 }
 
-bool takeTime(JsonObjectConst obj, char* text, size_t textCap, uint32_t& unix, char* err, size_t cap) {
+// `epoch` and not `unix`: GCC predefines `unix` as 1 in every `gnu++` dialect on a Linux host, so
+// a consumer compiling this file as `gnu++17` got fifteen errors here (the first consumer did -
+// twinoak.meshcore.walter-firmware, its p4-01). tools/check-library-host.py greps the library for
+// every such name now, and compiles it in both dialects, so the next one fails here.
+bool takeTime(JsonObjectConst obj, char* text, size_t textCap, uint32_t& epoch, char* err, size_t cap) {
   const char* s = obj["serverTime"];
   if (s == nullptr) {
     say(err, cap, "missing: serverTime");
     return false;
   }
   std::snprintf(text, textCap, "%s", s);
-  if (!parseUtc(s, unix)) {
+  if (!parseUtc(s, epoch)) {
     say(err, cap, "serverTime is not a UTC timestamp");
     return false;
   }

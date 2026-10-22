@@ -7,15 +7,13 @@
 # put each exemption back for our code only. C++17: what core/ is written in, host and target
 # alike; exceptions and RTTI are off by sdkconfig for the firmware and by host_test/ for core.
 #
-# A second argument is the dialect, for code that is not ours: `twinoak_ours(agent_core c++17)`
-# gives the copied library and its suites the same strictness in the strict dialect upstream
-# compiles them in (host_test/CMakeLists.txt says why that matters there, task p4-01). Our own
-# code stays gnu++17, which is what ESP-IDF's own dialect is a later version of.
+# One dialect, gnu++17 - what ESP-IDF's own is a later version of - and the copied agent core is
+# compiled in it too (host_test/CMakeLists.txt, task p4-01). It took a second argument for one
+# release of that library, whose `ConfigReply.cpp` had a parameter named `unix` and so could not
+# be compiled in any GNU dialect on a Linux host; v0.3.0 renamed it and greps its own sources for
+# every such name, so nothing here needs a dialect of its own.
 function(twinoak_ours target)
   set(dialect gnu++17)
-  if(ARGC GREATER 1)
-    set(dialect ${ARGV1})
-  endif()
   target_compile_options(${target} PRIVATE
     -Wall -Wextra -Werror -Werror=extra
     -Werror=unused-function -Werror=unused-variable -Werror=unused-but-set-variable

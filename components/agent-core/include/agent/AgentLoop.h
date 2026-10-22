@@ -37,8 +37,9 @@
 //         first answer
 //
 // `jobTypes` is the thirteen types JobRunner has a handler for - every type of API §3 since
-// task 05 - and the types of the extension the board set, if any (IJobExtension.h); routing
-// sends nothing else, because it requires the type advertised.
+// task 05 - less any the mesh says it cannot carry (IMesh::supports, task p1.6-23; the Heltec's
+// mesh carries all thirteen), and then the types of the extension the board set, if any
+// (IJobExtension.h); routing sends nothing else, because it requires the type advertised.
 //
 // Host-portable since task p1.5-15: the server, the platform and the mesh are the three seams
 // (IUplink.h, IPlatform.h, IMesh.h), and what the heartbeat says about this board - the version,
@@ -57,6 +58,15 @@
 // sleep (a WakeState, which the caller keeps in retained storage and hands back). Two things it
 // subtracts: a BackOff returns rather than spins, and the reboot guard does not fire - a unit
 // has its own supervisor and its own idea of what a failure costs.
+//
+// **What a sleep keeps, since task p1.6-22.** The WakeState is small on purpose and carries no
+// result and no advert, so a result a wake kept for its budget - or one the server would not
+// take - was lost with the RAM at the next deep sleep, and its job stayed leased until the
+// server's lease lapsed. A sleeping consumer may now hand the loop a store (IRetained.h) and a
+// scratch: at the end of every wake the loop writes **one image** of the kept results and the
+// ring's waiting adverts into it, only when that would change what the store holds, and
+// `restoreKept()` reads it back after the next boot. The Heltec hands none and nothing of it
+// runs there.
 
 #pragma once
 
@@ -67,11 +77,13 @@
 #include <agent/Envelopes.h>
 #include <agent/IMesh.h>
 #include <agent/IPlatform.h>
+#include <agent/IRetained.h>
 #include <agent/IUplink.h>
 #include <agent/JobRunner.h>
 #include <agent/Observations.h>
 #include <agent/ServerPolicy.h>
 #include <agent/TextOut.h>
+#include <agent/UplinkMeter.h>
 
 namespace mm {
 
@@ -102,9 +114,6 @@ int transactionsOf(const ClaimedJob& job);
 // types are not known until the claim has answered.
 constexpr int kTransactionsPerJobAtLeast = 2;
 
-// "No byte cap": what `loop()` posts with, and what a Budget of 0 bytes means.
-constexpr size_t kNoByteCap = static_cast<size_t>(-1);
-
 // What one wake promises the server, in the heartbeat (EXIT-NODES §6, *An agent that paces
 // itself*). Both fields are 0 for an agent that proposes nothing - the Heltec, whose heartbeat
 // bytes are then exactly what they were - and `loop()` never sets either.
@@ -128,11 +137,17 @@ struct Budget {
   // said so in the report (the Walter's *no time*, docs/ARCHITECTURE.md §10).
   uint32_t wakeSeconds = 0;
   // Of that, what the calls to meshmaster.dk together may take: an LTE attach that went badly
-  // must not eat the slice the radio needs.
+  // must not eat the slice the radio needs. **Every** call the wake makes is in it - the config,
+  // the heartbeat, the claim, every result and every batch - because they all go through one
+  // ledger (agent/UplinkMeter.h, task p1.6-21). When it is spent the wake stops calling the
+  // server and keeps what is left for the next wake.
   uint32_t uplinkSeconds = 0;
-  // The bytes of body this wake may post - results and observation batches, the two things that
-  // carry weight - because an LTE plan is metered in bytes. What does not fit stays where it is,
-  // with the timestamps it was made with, for the next wake.
+  // The bytes of body this wake may post, because an LTE plan is metered in bytes: **every**
+  // body it posts, from every step - the offline buffer, every result of a job it claimed, every
+  // observation batch - against one number (task p1.6-21). What does not fit stays where it is,
+  // with the timestamps it was made with, for the next wake. The bytes of the config call, the
+  // heartbeat and the claim are not counted here: those bodies are the uplink implementation's
+  // to write and are not countable from inside the library. Their seconds are counted.
   size_t postBytes = 0;
 };
 
@@ -181,6 +196,13 @@ struct WakeReport {
   uint32_t sleepAtLeastS = 0;  // a backoff or a Retry-After: do not come back before this
 
   int resultsFlushed = 0;      // results that had been waiting and went through
+  // Results this wake could not post inside its byte cap or its uplink seconds: **kept** in the
+  // offline buffer, behind whatever was already there, for the next wake to post with the
+  // timestamps they were made with (*kept: budget*). A bound of ours is not a failure of the
+  // server's, so nothing backs off for one; what must never happen is a claimed job left leased
+  // and silent, and a kept result is the buffer's answer to that (EXIT-NODES §5, *offline is
+  // normal*).
+  int resultsKept = 0;
   int jobsClaimed = 0;
   int jobsRun = 0;
   int jobsNotRun = 0;          // claimed, never on the air: reported `failed`, *wake budget*
@@ -188,8 +210,17 @@ struct WakeReport {
   int observationsPosted = 0;
   int observationsLeft = 0;    // still in the ring when the wake ended
   int transactionsSpent = 0;   // what went on the air, against the intent's cap
-  size_t bytesPosted = 0;
+  size_t bytesPosted = 0;      // every byte of body this wake posted, from every step
+  uint32_t uplinkMs = 0;       // what the server calls took together, which uplinkSeconds bounds
   uint32_t elapsedMs = 0;
+
+  // What this wake left in retained storage (IRetained.h, task p1.6-22), when the caller gave
+  // the loop a store: whether an image was written at all - at most one a wake, and none when
+  // the store already holds what it would say - and what the store was too small for, dropped
+  // from RAM and counted in the heartbeat's `resultsDropped` and `observationsDropped`.
+  bool keptImageWritten = false;
+  int resultsNotKept = 0;
+  int observationsNotKept = 0;
 
   bool halted = false;         // a 401: nothing more is sent until a person fixes it
   // The reboot guard **would** have fired (AgentLoop's twelve unanswered calls over ninety
@@ -231,6 +262,14 @@ static_assert(std::is_trivially_copyable<WakeState>::value, "a wake's state goes
 // when a `radio.*` setting changes: the library reads no setting of its own.
 struct HeartbeatIdentity {
   const char* agentVersion = "";           // meshmaster_agent_version()
+  // How this exit node reaches its radio, in meshmaster.dk's words (EXIT-NODES §2, the server's
+  // `AgentTransports`): `serial` and `tcp` are a companion on a cable, `native` is an exit node
+  // that *is* its repeater (the unit of D-45: the Walter over its box link), and `onboard` is a
+  // board that is its own exit node (D-28) - this one, so the default is its word and the Heltec
+  // sets nothing. The library validates nothing here: the vocabulary is the server's, a word it
+  // does not know is its to refuse, and a hand-written list in this library would be a second
+  // copy of it that could drift (task p1.6-23).
+  const char* transport = "onboard";
   const char* board = nullptr;             // boardName(); nullptr leaves the field out
   const char* companionFirmware = nullptr; // meshcoreTag() on the Heltec, whose companion firmware is the one it is built from
   RadioParameters radio;                   // what the radio is programmed with; sent while there is an identity
@@ -273,6 +312,30 @@ class AgentLoop {
   // refuses a state of another version (returning false and changing nothing).
   WakeState state() const;
   bool restore(const WakeState& state);
+
+  // What a sleep keeps (task p1.6-22; agent/IRetained.h, agent/KeptImage.h). Optional, and for
+  // a device that sleeps: the Heltec calls neither.
+  //
+  // `setRetained` hands the loop a store and a scratch the image is built in - the library
+  // allocates nothing, so the RAM is yours, sized to the most you want kept: a full image is
+  // ResultBuffer::kCapacityBytes plus ObservationRing::kCapacity adverts at kKeptAdvertLen and a
+  // few hundred bytes of headers, about 19.5 kB; the image is never larger than the smaller of
+  // `scratchLen` and the store's `capacity()`, and what does not fit is dropped and counted. A
+  // scratch too small for a header, or a null store, is "no store".
+  //
+  // At the end of every `wake()` the loop writes **one image** - the kept results first, oldest
+  // first, as many whole ones as fit, then the ring's waiting adverts with the moment each was
+  // heard, as many as fit after them - and only when that image is not the one the store already
+  // holds; a unit whose wakes post everything writes nothing. `restoreKept()` is the way back in:
+  // call it once a boot, after `begin()` and before the first wake, and it reads the image into
+  // the offline buffer and the ring, with the two dropped counters the image carried. True when
+  // an image was read, false when the store held none or the image was refused - a torn, short,
+  // foreign-version or bad-checksum image is refused **whole**, never half-read, counted
+  // (`keptImagesRefused()`, which the next image carries across the sleep too) and logged with
+  // the reason.
+  void setRetained(IRetained* store, uint8_t* scratch, size_t scratchLen);
+  bool restoreKept();
+  uint32_t keptImagesRefused() const { return imagesRefused_; }
 
   // One heartbeat, from inside a job (task 06). A claim is run to the end before `claimAndRun`
   // returns and a job is paced by the airtime budget, so a config.read of twenty-one transactions
@@ -325,12 +388,12 @@ class AgentLoop {
   bool doConfig();
   bool doHeartbeat();
   void doPendingResults();
-  // One observation batch, bounded by what a wake may still post: `bytesAllowed` is decremented
-  // by the body that went through, and a batch that will not fit is shortened until it does.
-  // `loop()` passes kNoByteCap, which is what it always had.
+  // One observation batch, bounded by what a wake may still post (the ledger's `bytesLeft`): a
+  // batch that will not fit is shortened until it does, and `loop()`, whose ledger has no
+  // bounds, sends the batch it always sent.
   // `capped` says the batch would not fit in the bytes left rather than the server having
   // refused it, which are the two ways this returns false and two different things to report.
-  bool doObservations(size_t& bytesAllowed, bool* capped = nullptr);
+  bool doObservations(bool* capped = nullptr);
   void doJobs();
   void buildHeartbeat(Heartbeat& hb);
   // The steps of one wake, each of which records its own outcome in the report.
@@ -339,6 +402,14 @@ class AgentLoop {
   void wakeResults(WakeReport& report);
   void wakeJobs(WakeReport& report);
   void wakeObservations(WakeReport& report);
+  // The end of a wake: the kept results and the waiting adverts into the store as one image, if
+  // there is a store and the image would differ from what it holds (task p1.6-22).
+  void keepAcrossSleep(WakeReport& report);
+  // The most bytes an image may be here: the smaller of the scratch and the store's capacity.
+  size_t imageCap() const;
+  // The checksum an image of nothing - with the counters as they stand - would have: what the
+  // store "holds" when it holds no image at all, so that a wake with nothing kept writes none.
+  uint32_t emptyImageCrc();
   // How many jobs this wake may ask the claim for: never more than kClaimMax, and never more
   // than the intent's transaction cap can hold at kTransactionsPerJobAtLeast apiece.
   int claimMax() const;
@@ -376,7 +447,8 @@ class AgentLoop {
   ObservationRing ring_;
   Counters counters_;
   const char* publicKey_ = nullptr;
-  // The heartbeat's `jobTypes`: the thirteen, then the extension's (IJobExtension.h).
+  // The heartbeat's `jobTypes`: the thirteen the mesh carries (IMesh::supports), then the
+  // extension's (IJobExtension.h).
   const char* jobTypes_[kJobTypeCount + kMaxExtensionTypes] = {};
 
   bool halted_ = false;         // a 401: nothing but the console from here
@@ -409,15 +481,33 @@ class AgentLoop {
   // the loop: `wake()` sets it and `loop()` never does, so a board that only ever calls `loop()`
   // proposes nothing and its heartbeat bytes are what they always were.
   WakeIntent intent_;
-  Budget wakeBudget_;
+  // The budget itself is not kept here: `wake()` hands it straight to the ledger below, which is
+  // what every bound of it is read off (and the transaction cap is the intent's).
   bool inWake_ = false;             // the reboot guard is told, not taken; a BackOff returns
   uint32_t wakeStartedAtMs_ = 0;
-  uint32_t uplinkSpentMs_ = 0;      // the server calls of this wake, together
   uint32_t transactionsAtWakeStart_ = 0;  // the gate's count when the wake began
-  size_t wakeBytesLeft_ = kNoByteCap;
+  // What this wake spends at the server - its seconds and its bytes - and the one place every
+  // call of the library is made from, this object's and the runner's alike (agent/UplinkMeter.h,
+  // task p1.6-21). `begin()` lends it to the runner; `loop()` uses it with no bounds set.
+  UplinkMeter meter_;
   WakeReport* wakeReport_ = nullptr;  // the report being filled, for noteFailure's reboot line
   // The server time the last heartbeat reply carried, 0 when none has.
   uint32_t lastServerTimeUnix_ = 0;
+
+  // ---- what a sleep keeps (task p1.6-22) ------------------------------------------------------
+  // The store and the scratch the caller lent (setRetained), or null: the Heltec's are null and
+  // every branch below is skipped on it.
+  IRetained* retained_ = nullptr;
+  uint8_t* imageScratch_ = nullptr;
+  size_t imageScratchLen_ = 0;
+  // What the store holds, as far as this boot knows: the checksum of the image last read or
+  // written, so that a wake whose image would be the same writes nothing. Not known until
+  // `restoreKept()` has looked, or a write has succeeded; a write that failed makes it unknown
+  // again, and an unknown store is written at the end of the next wake whatever it would hold.
+  bool imageKnown_ = false;
+  uint32_t lastImageCrc_ = 0;
+  bool keptRestored_ = false;    // `restoreKept()` has run this boot: a second call reads nothing
+  uint32_t imagesRefused_ = 0;   // images refused whole, this boot's and the image's own count
 };
 
 }  // namespace mm

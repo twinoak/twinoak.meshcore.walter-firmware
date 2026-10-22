@@ -182,7 +182,10 @@ TEST_CASE("the test support the library's suites need came across whole") {
   // `Citations` case reads test/support/FakeMesh.h and platformio.ini relative to PROJECT_DIR).
   CHECK(fs::is_regular_file(kHost / "test" / "test_runner" / "test_runner.cpp"));
   CHECK(fs::is_regular_file(kHost / "test" / "test_loop" / "test_loop.cpp"));
-  for (const char* fake : {"FakeMesh.h", "FakePlatform.h", "FakeUplink.h", "Fixtures.h", "Jobs.h"}) {
+  // The four fakes - one per interface the library stands on, `IRetained` included since v0.3.0 -
+  // and the fixture reader and the job builders beside them.
+  for (const char* fake : {"FakeMesh.h", "FakePlatform.h", "FakeRetained.h", "FakeUplink.h",
+                           "Fixtures.h", "Jobs.h"}) {
     const fs::path p = kHost / "test" / "support" / fake;
     CHECK_MESSAGE(fs::is_regular_file(p), "host_test/agent-core/test/support/" << fake << " is gone");
   }
