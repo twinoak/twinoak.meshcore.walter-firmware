@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 
+#include "core/cycle/agent_attention.h"
 #include "core/cycle/wake_bench.h"
 
 namespace fs = std::filesystem;
@@ -34,7 +35,7 @@ std::string readFile(const fs::path& p) {
 std::string cycleDoc() { return readFile(fs::path(TWINOAK_REPO_ROOT) / "docs" / "cycle.md"); }
 
 std::string lineOf(const Pass& pass) {
-  char line[200] = {};
+  char line[224] = {};
   (void)core::cycle::recordLine(pass, line, sizeof line);
   return std::string(line);
 }
@@ -231,4 +232,105 @@ TEST_CASE("encode and decode are each other's inverse, and a foreign entry is re
   entry.kind = core::update::kind::kWakeCycle;
   entry.payload[0] = 200;  // not a Wake
   CHECK_FALSE(core::cycle::decode(entry, &back));
+}
+
+// -- the Walter's own attention (task p4-04) ----------------------------------------------------
+//
+// Not §8's, which is the radio asking for us: these two are the agent's, and they reach a person
+// through this line and through `status` (core/cycle/agent_attention.h).
+
+TEST_CASE("the agent's letters are distinct, documented, and in the record's line") {
+  const std::string doc = cycleDoc();
+  char seen[static_cast<std::size_t>(core::cycle::AgentAttentionKind::kCount)] = {};
+  for (std::uint8_t k = 1; k < static_cast<std::uint8_t>(core::cycle::AgentAttentionKind::kCount);
+       ++k) {
+    const core::cycle::AgentAttentionKind kind = static_cast<core::cycle::AgentAttentionKind>(k);
+    const char c = core::cycle::letter(kind);
+    CHECK(c != '?');
+    for (std::uint8_t j = 1; j < k; ++j) CHECK(seen[j] != c);
+    seen[k] = c;
+    // No letter of the agent's is a letter of a step's outcome: one line carries both.
+    for (std::uint8_t o = 0; o < static_cast<std::uint8_t>(Outcome::kCount); ++o) {
+      CHECK(core::cycle::letter(static_cast<Outcome>(o)) != c);
+    }
+    CHECK_MESSAGE(doc.find(std::string("`") + c + "`") != std::string::npos, std::string(1, c));
+    CHECK_MESSAGE(doc.find(core::cycle::describe(kind)) != std::string::npos,
+                  std::string(core::cycle::describe(kind)));
+  }
+
+  Pass pass;
+  CHECK_MESSAGE(lineOf(pass).find(", agent ") == std::string::npos,
+                "nothing raised, nothing said");
+  pass.agent_attention = core::cycle::agent_attention::kTokenRefused;
+  CHECK(lineOf(pass).find(", agent u") != std::string::npos);
+  pass.agent_attention = core::cycle::agent_attention::kRebootWanted;
+  CHECK(lineOf(pass).find(", agent h") != std::string::npos);
+  pass.agent_attention = core::cycle::agent_attention::kAll;
+  CHECK(lineOf(pass).find(", agent uh") != std::string::npos);
+}
+
+TEST_CASE("the agent's attention crosses a sleep in the duty cycle's record, and one raise is reported once") {
+  WakeBench bench;
+  bench.modemWorks();
+  bench.boot();
+  bench.v().begin();
+
+  // Raised by the agent inside this wake - a 401 from the server at step 8 - and carried by this
+  // wake's own record, because that is the record written next.
+  core::cycle::AgentAttention attention(&bench.duty().reason(), &bench.v().journal);
+  attention.raiseTokenRefused();
+  CHECK(bench.duty().reason().agentAttention() == core::cycle::agent_attention::kTokenRefused);
+
+  const Pass& first = bench.v().run();
+  CHECK(first.agent_attention == core::cycle::agent_attention::kTokenRefused);
+  CHECK(lineOf(first).find(", agent u") != std::string::npos);
+
+  // Taken: the record has carried it, so the next wake says nothing - and the raise survived a
+  // sleep on the way, because the byte is in the retained record (a boot in between).
+  CHECK(bench.duty().reason().agentAttention() == 0u);
+  const Pass& second = bench.oneWake();
+  CHECK(second.agent_attention == 0u);
+  CHECK(lineOf(second).find(", agent ") == std::string::npos);
+}
+
+TEST_CASE("a raise before a sleep is in the next wake's record: the byte is retained") {
+  WakeBench bench;
+  bench.modemWorks();
+  {
+    // The first wake raises it after its own record was written, which is the case the retained
+    // byte is for: nothing of this wake can carry it any more.
+    const Pass& first = bench.oneWake();
+    CHECK(first.agent_attention == 0u);
+    core::cycle::AgentAttention attention(&bench.duty().reason(), &bench.v().journal);
+    attention.raiseRebootWanted("the loop asked and did not get one");
+  }
+  const Pass& second = bench.oneWake();
+  CHECK(second.agent_attention == core::cycle::agent_attention::kRebootWanted);
+  CHECK(lineOf(second).find(", agent h") != std::string::npos);
+}
+
+TEST_CASE("`status` says the Walter's own attention in a sentence, and the journal keeps a refused restart") {
+  WakeBench bench;
+  bench.modemWorks();
+  bench.boot();
+  bench.v().begin();
+  core::cycle::AgentAttention attention(&bench.duty().reason(), &bench.v().journal);
+
+  CHECK_MESSAGE(bench.v().runLine("status").find("agent: ATTENTION") == std::string::npos,
+                "nothing raised, nothing said");
+
+  attention.raiseTokenRefused();
+  const std::string with_token = bench.v().runLine("status");
+  CHECK(with_token.find("agent: ATTENTION u") != std::string::npos);
+  CHECK(with_token.find("set server.token") != std::string::npos);
+
+  attention.raiseRebootWanted("12 server calls unanswered in 95 min, wifi up");
+  const std::string both = bench.v().runLine("status");
+  CHECK(both.find("agent: ATTENTION uh") != std::string::npos);
+
+  // And the refused restart is in `journal`, where a person reading a week of a mast will find
+  // it - a 401 is not journalled, because it is a state a person fixes and not news about work.
+  const std::string log = bench.v().runLine("journal");
+  CHECK(log.find("agent, the agent asked for a restart for its health") != std::string::npos);
+  CHECK(log.find("12 server calls unanswered in 95 min") != std::string::npos);
 }

@@ -332,6 +332,45 @@ bool SimRak::onRequest(const link::Packet& packet, std::vector<std::uint8_t>* pa
       put8(*payload, static_cast<std::uint8_t>(last_snr_q4));
       return true;
     }
+    case link::type::kObsPull: {
+      // §7: `max` records wanted; as many as fit one payload and no more than `max`, oldest
+      // first, removed from the ring as they go. `remaining` is what is left after this answer
+      // and `dropped` is what was lost since the last pull.
+      ++obs_pulls;
+      const std::uint8_t max = size >= 1 ? at[0] : 0;
+      // "The RAK returns as many as fit in one payload and no more than `max`": the bound that
+      // decides is the payload's, because a record with a path and application data is far
+      // bigger than the 45-byte smallest one link::kMaxObservations is counted from.
+      std::size_t count = 0;
+      std::size_t bytes = link::kObsPullHeadSize;
+      while (count < observations.size() && count < max && count < link::kMaxObservations) {
+        const Advert& next = observations[count];
+        const std::size_t record = 45 + next.path.size() + next.app_data.size();
+        if (bytes + record > link::kMaxPayload) break;
+        bytes += record;
+        ++count;
+      }
+      *payload = statusOnly(link::status::kOk);
+      put8(*payload, static_cast<std::uint8_t>(observations.size() - count));
+      put16(*payload, obs_dropped_since_pull);
+      put8(*payload, static_cast<std::uint8_t>(count));
+      for (std::size_t i = 0; i < count; ++i) {
+        const Advert& a = observations.front();
+        payload->insert(payload->end(), a.pubkey.begin(), a.pubkey.end());
+        put32(*payload, a.adv_ts);
+        put32(*payload, a.age_s);
+        put8(*payload, static_cast<std::uint8_t>(a.snr_q4));
+        put16(*payload, static_cast<std::uint16_t>(a.rssi));
+        put8(*payload, a.path_len);
+        payload->insert(payload->end(), a.path.begin(), a.path.end());
+        put8(*payload, static_cast<std::uint8_t>(a.app_data.size()));
+        payload->insert(payload->end(), a.app_data.begin(), a.app_data.end());
+        observations.pop_front();
+        ++obs_handed_out;
+      }
+      obs_dropped_since_pull = 0;
+      return true;
+    }
     case link::type::kCli: {
       if (size < link::kMinCliLine || size > link::kMaxCliLine) {
         *payload = statusOnly(link::status::kMalformed);

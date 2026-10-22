@@ -76,6 +76,9 @@ constexpr std::uint16_t kSelfUpdate = 0x0002;   // the Walter's own (task p2-04)
 constexpr std::uint16_t kSupervisor = 0x0003;   // the ladder (task p2-05)
 constexpr std::uint16_t kDutyCycle = 0x0004;    // sleep and the band (task p3-04, core/cycle/sleep.h)
 constexpr std::uint16_t kWakeCycle = 0x0005;    // one wake's record (task p3-05, core/cycle/wake_cycle.h)
+// The Walter's own attention, when it is news rather than a letter: a restart the agent library
+// asked for and did not get (task p4-04, core/cycle/agent_attention.h).
+constexpr std::uint16_t kAgentAttention = 0x0006;
 }  // namespace kind
 
 struct Entry {

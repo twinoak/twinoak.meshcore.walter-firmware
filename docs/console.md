@@ -140,6 +140,9 @@ supervisor's stop is printed at every level.
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
 | `agent url` | (task p4-03) the server the agent's uplink is configured for (`server.url` as it is used, a trailing slash off), whether `server.token` is set, and the `X-Agent-Version` header every call to it carries - this firmware's own version. It reads; it does not call |
 | `agent probe` | (task p4-03) one `GET /agent/v1/config` now, with the token: the status, `Retry-After` and `X-RateLimit-Remaining` when the answer carried them, and the config the server answered (the agent's id and label, its transport, the budget, the poll interval, the server's time). The bench's first look at a server; the uplink must be up (`lte up` first). See *The agent's uplink* |
+| `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
+| `agent heartbeat` | (task p4-04) the body `POST /agent/v1/heartbeat` would carry, built and **not sent**: the bench's way to compare it with meshmaster.dk's contract fixture by eye. It asks the radio nothing |
+| `agent obs [pull]` | (task p4-04) the observation ring the agent posts from: how many adverts wait, how many were heard, how many were dropped (the figure the heartbeat carries), what the radio's own ring has lost and how much is still in it, and the last five - the key, how long ago, the hops, the signal and the role, and **never the name** a stranger chose (`spec/LINK-PROTOCOL.md` §7). `agent obs pull` drains the radio's ring into it first (§7's `OBS_PULL`, as many pages as it answers) |
 
 ### Sleep and the battery
 
@@ -755,6 +758,67 @@ body is ever printed - the line is the status and a sentence of this firmware's 
 chain this firmware does not carry, or a host that does not answer, is one `error:` line: `agent
 probe: no reply: the TLS handshake failed: the chain, the name or the version` - a failure of the
 handshake, not of the server, which `docs/bench.md` §17 is where to tell apart on a desk.
+
+## The agent's identity
+
+From task p4-04 (`components/agent/identity.h`, `walter_platform.h`, `observations.h`;
+`docs/ARCHITECTURE.md` §13). Three lines, no slot, and **nothing in them is typed by a person**:
+every field comes from the radio over the box link or from this firmware's own tables.
+
+```
+> agent id
+agent: version 0.4.0+1a2b3c4, board walter, transport native
+repeater: 7f3a9c02e1b44d9a0f6c2b7d8e9a1c3f5d7b9e0a2c4e6f8a0b1c2d3e4f5a6b7c
+  name "TwinOak Risskov", firmware 0.1.0, board rak4630-single, built on repeater-v1.17.1+d9296435, boot id 0x1a2b3c4d
+radio: 869.618 MHz, bw 62.5 kHz, sf 8, cr 8
+job types (13): status, telemetry, neighbours, config.read, config.apply, cli, trace, discover, advert.request, clock.sync, password.set, acl.set, reboot
+intent: next check-in 3600 s, at most 37 transaction(s) this wake (band normal)
+clock: 1791936000, from the network
+heap: 176880 free, 160224 the least ever
+server.token set
+the link said: 1 identity read(s), 1 radio read(s), 0 restart(s) of the radio
+```
+
+Where each of them comes from: the key and the advert name are §5.6's `IDENTITY`, the firmware,
+the board and what it is built on are §5.1's `HELLO`, and the radio block is one `CLI` line -
+`get radio`, which is the only line of the repeater's console that carries all four numbers. The
+key is read once a boot and again whenever `boot_id` changes; the radio block again after that,
+or after a `set` line has crossed the link for the unit's own repeater. **A radio with no identity
+yet** - a RAK with no application, or one turned into a scanner - is not a failure: the unit still
+checks in, and the line says that the heartbeat will carry no key, no radio block and no job types,
+which is how a unit registered before its repeater says *radio not identified*.
+
+```
+> agent heartbeat
+agent heartbeat: POST /agent/v1/heartbeat, 571 bytes, built and not sent
+{"agentVersion":"0.4.0+1a2b3c4","transport":"native","at":"2026-10-14T00:00:00Z", ... }
+```
+
+The body is the library's own writer over the identity above, so it is the bytes a wake would
+post - to be held against meshmaster.dk's `tests/fixtures/contracts/AgentHeartbeat.json` by eye on
+the bench (`docs/bench.md` §17). It asks the radio nothing and sends nothing.
+
+```
+> agent obs pull
+agent obs: the radio's ring drained: 2 record(s) kept
+agent obs: 2 of 64 waiting, 2 heard, 0 dropped (the heartbeat's figure)
+  the radio: 0 dropped since it booted, 0 still waiting there, 1 pull(s) made
+  the last few, newest first (no names):
+   1. 7f3a9c02e1b44d9a0f6c2b7d8e9a1c3f5d7b9e0a2c4e6f8a0b1c2d3e4f5a6b7c 300 s ago, 2 hop(s), snr -2.50 dB, companion
+   2. a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90 41 s ago, 0 hop(s), snr 7.25 dB, rssi -84 dBm, repeater, with a position
+```
+
+**No advert name is printed, ever.** §7 says it in so many words - "the name inside `app_data` is
+something a stranger chose. Neither end logs it" - and every line of this console is kept in the
+four kilobytes `dump` prints, so a name printed here would be a name written down. The key, the
+age, the hops, the signal, the role and *whether* there was a position are what crosses into the
+console; the name itself goes into the ring and out again in the batch the agent posts.
+
+`agent obs` without `pull` reads the ring and asks the radio nothing. The two drop figures are
+different things: the ring's is what **this** firmware had to overwrite and is the one the
+heartbeat carries as `observationsDropped`, and the radio's is what the RAK's own ring lost since
+it booted - the increase in it between two wakes is added to the first, once, so that a loss one
+hop away is still a number on the unit's page.
 
 ## Sleep, and what wakes it
 

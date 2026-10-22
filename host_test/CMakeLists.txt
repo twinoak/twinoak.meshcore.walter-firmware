@@ -162,6 +162,10 @@ target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/genera
 # The vendored TweetNaCl extract's entry points, for the tests that hold our wrappers against it.
 target_include_directories(core_tests SYSTEM PRIVATE ${CORE}/third_party)
 twinoak_ours(core_tests)
+# FIXTURES_DIR is the copied contract fixtures (task p4-01's second tree), under the same name
+# the library's own suites are given it: task p4-04's heartbeat test holds this unit's body
+# against meshmaster.dk's `AgentHeartbeat.json` and must read the fixture rather than a
+# transcription of it. It is set after the two trees are located, below.
 target_compile_definitions(core_tests PRIVATE
   TWINOAK_VERSION="${TWINOAK_VERSION}"
   TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}"
@@ -326,6 +330,10 @@ add_custom_target(agent_no_idf_include
   VERBATIM)
 add_dependencies(agent agent_no_idf_include)
 target_link_libraries(core_tests PRIVATE agent)
+# And the contract fixtures, for task p4-04's heartbeat test (the comment above core_tests' own
+# definitions says why it is set here: the copied trees are located further up this file).
+target_compile_definitions(core_tests PRIVATE
+  FIXTURES_DIR="${AGENT_CORE_HOST}/tests/fixtures/contracts")
 
 # -- the mesh over the link: the runner's scenarios, again, and the link's own cases (task p4-02)
 # Two more GoogleTest binaries, because the simulated stock repeater they put behind the RAK is

@@ -61,9 +61,15 @@ bool isRadioVerb(Verb verb) {
     case Verb::kHttpGet:
     case Verb::kFetch:
     case Verb::kTrustTls:
-    // The agent's uplink (task p4-03): a server, not a radio.
+    // The agent's uplink (task p4-03) and its identity (task p4-04): a server and this unit's
+    // own name for itself, not a radio - `agent id` does ask the radio who it is, but a unit has
+    // one (spec/SYSTEM.md S-11) and the line takes no slot.
     case Verb::kAgentUrl:
     case Verb::kAgentProbe:
+    case Verb::kAgentId:
+    case Verb::kAgentHeartbeat:
+    case Verb::kAgentObs:
+    case Verb::kAgentObsPull:
     // The settings and the rest of the console (task p3-03): about the unit, not a radio.
     case Verb::kGet:
     case Verb::kGetAll:
@@ -126,12 +132,13 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
                  net::TrustLoader* trust, settings::Settings* settings,
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
-                 update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent)
+                 update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
+                 AgentProbe* identity)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
-      mesh_(mesh), agent_(agent), flasher_(pins, clock, slots),
+      mesh_(mesh), agent_(agent), identity_(identity), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -381,7 +388,32 @@ void Console::tick() {
   if (!receiver_->active()) transferEnded();
 }
 
+// A command is on the stack for as long as one of these lives: `pump()` reads it.
+class Console::LineInProgress {
+ public:
+  explicit LineInProgress(bool& flag) : flag_(flag) { flag_ = true; }
+  ~LineInProgress() { flag_ = false; }
+  LineInProgress(const LineInProgress&) = delete;
+  LineInProgress& operator=(const LineInProgress&) = delete;
+
+ private:
+  bool& flag_;
+};
+
+void Console::pump() {
+  // Whatever the radio sent while the caller was waiting: events queued, scanner lines kept. It
+  // reads what is there and returns - nothing here blocks on the radio.
+  radio_.poll();
+  if (!running_line_) tick();
+}
+
+void Console::agentLine(const char* line) {
+  if (line == nullptr) return;
+  print(line);
+}
+
 void Console::runLine(const char* line) {
+  const LineInProgress running(running_line_);
   if (std::strlen(line) > kMaxLineLength + 2) {
     print("error: line too long (200 characters at most)\n");
     return;
@@ -459,6 +491,10 @@ void Console::runLine(const char* line) {
     case Verb::kTrustTls: trustTls(); return;
     case Verb::kAgentUrl: agentUrl(); return;
     case Verb::kAgentProbe: agentProbe(); return;
+    case Verb::kAgentId: agentId(); return;
+    case Verb::kAgentHeartbeat: agentHeartbeat(); return;
+    case Verb::kAgentObs: agentObs(false); return;
+    case Verb::kAgentObsPull: agentObs(true); return;
     case Verb::kGet: get(*p.command.key); return;
     case Verb::kGetAll: getAll(); return;
     case Verb::kSet: set(*p.command.key, p.command.text); return;
@@ -657,6 +693,17 @@ void Console::status() {
            uplink::describe(u.reached), static_cast<unsigned long>(u.wakes),
            static_cast<unsigned long>(u.tries),
            static_cast<unsigned long>(u.wakes_until_next_try));
+  }
+  // The Walter's **own** attention (task p4-04): the agent's 401 and a restart it asked for and
+  // did not get. Not §8's, which is the radio asking for us and is the `radio health` line
+  // above; nothing of this touches the radio (core/cycle/agent_attention.h).
+  if (duty_ != nullptr) {
+    const std::uint8_t raised = duty_->reason().agentAttention();
+    if (raised != 0) {
+      char letters[3] = {};
+      cycle::agentAttentionLetters(raised, letters);
+      printf("agent: ATTENTION %s - %s\n", letters, cycle::describeAgentAttention(raised));
+    }
   }
   if (server_ != nullptr) {
     if (server_->serverHost()[0] == 0) {
@@ -2825,6 +2872,138 @@ void Console::agentProbe() {
   }
 }
 
+// ---------------------------------------------------------------------------- the agent's identity
+
+bool Console::identityOk() {
+  if (identity_ != nullptr) return true;
+  print("error: this build has no agent identity: nothing was given to the console "
+        "(main/main.cpp)\n");
+  return false;
+}
+
+void Console::agentId() {
+  if (!identityOk()) return;
+  AgentIdentityView& v = identity_view_;
+  const bool known = identity_->identity(&v);
+  if (!v.session) {
+    print("agent id: the radio has answered nothing in this boot, so there is no identity to read "
+          "out of it ('rak hello')\n");
+  } else if (!known) {
+    // A unit registered before its repeater: it checks in all the same, with no key and no job
+    // types (tasks/phase-4/FOLLOWUPS.md's [04], meshmaster.dk's p4.16-132).
+    print("agent id: the radio has no identity yet, so the heartbeat carries no key, no radio "
+          "block and no job types - the unit is alive and its repeater is not identified\n");
+  }
+  printf("agent: version %s, board %s, transport %s\n", v.agent_version, v.board, v.transport);
+  if (known) {
+    printf("repeater: %s\n", v.public_key);
+    printf("  name \"%s\", firmware %s, board %s, built on %s, boot id 0x%08lx\n",
+           v.companion_name,
+           v.companion_firmware[0] != 0 ? v.companion_firmware : "(none reported)",
+           v.companion_board[0] != 0 ? v.companion_board : "?",
+           v.companion_upstream[0] != 0 ? v.companion_upstream : "?",
+           static_cast<unsigned long>(v.boot_id));
+  }
+  if (v.radio_known) {
+    // The four as the repeater's own console prints them, so that a person can hold this line
+    // against `rak cli get radio` with their eyes.
+    printf("radio: %.3f MHz, bw %.1f kHz, sf %d, cr %d\n", v.freq_mhz, v.bw_khz, v.sf, v.cr);
+  } else {
+    printf("radio: not read%s\n",
+           known ? " (the repeater's console did not answer 'get radio')" : "");
+  }
+  printf("job types (%d): %s\n", v.job_type_count, v.job_type_count > 0 ? v.job_types : "none");
+  printf("intent: next check-in %lu s, at most %d transaction(s) this wake (band %s)\n",
+         static_cast<unsigned long>(v.next_check_in_s), v.max_transactions_this_wake, v.band);
+  if (v.time_known) {
+    printf("clock: %lu, from the %s\n", static_cast<unsigned long>(v.epoch), v.time_source);
+  } else {
+    print("clock: this unit does not know what time it is, so the heartbeat's `at` is 0\n");
+  }
+  printf("heap: %lu free, %lu the least ever\n", static_cast<unsigned long>(v.free_heap),
+         static_cast<unsigned long>(v.min_free_heap));
+  // The token belongs to the settings and never to the identity: *set* or *unset*, as
+  // `get server.token` and `agent url` say it.
+  if (settings_ != nullptr) {
+    printf("server.token %s\n", settings_->serverToken()[0] != 0 ? "set" : "unset");
+  }
+  printf("the link said: %lu identity read(s), %lu radio read(s), %lu restart(s) of the radio",
+         static_cast<unsigned long>(v.identity_reads), static_cast<unsigned long>(v.radio_reads),
+         static_cast<unsigned long>(v.boot_changes));
+  if (v.unreadable != 0) {
+    printf(", %lu unreadable radio line(s)", static_cast<unsigned long>(v.unreadable));
+  }
+  if (v.no_identity != 0) {
+    printf(", %lu answer(s) with no key", static_cast<unsigned long>(v.no_identity));
+  }
+  print("\n");
+}
+
+void Console::agentHeartbeat() {
+  if (!identityOk()) return;
+  std::size_t length = 0;
+  const char* body = identity_->heartbeat(&length);
+  if (body == nullptr) {
+    print("error: agent heartbeat: the body did not fit the buffer it is built in\n");
+    return;
+  }
+  printf("agent heartbeat: POST /agent/v1/heartbeat, %lu bytes, built and not sent\n",
+         static_cast<unsigned long>(length));
+  // The body itself. A heartbeat carries no credential - the token travels in a header (task
+  // p4-03) - so it goes to the port and into the ring like any other line of ours.
+  print(body);
+  print("\n");
+}
+
+void Console::agentObs(bool pull) {
+  if (!identityOk()) return;
+  if (pull) {
+    const std::size_t kept = identity_->pull();
+    printf("agent obs: the radio's ring drained: %lu record(s) kept\n",
+           static_cast<unsigned long>(kept));
+  }
+  AgentObservationsView& v = obs_view_;
+  identity_->observations(&v);
+  if (!v.ring) {
+    print("agent obs: there is no observation ring in this build: the agent's loop owns it "
+          "(task p4-05)\n");
+    return;
+  }
+  printf("agent obs: %lu of %lu waiting, %lu heard, %lu dropped (the heartbeat's figure)\n",
+         static_cast<unsigned long>(v.count), static_cast<unsigned long>(v.capacity),
+         static_cast<unsigned long>(v.heard), static_cast<unsigned long>(v.dropped));
+  printf("  the radio: %lu dropped since it booted, %u still waiting there, %lu pull(s) made",
+         static_cast<unsigned long>(v.radio_dropped), static_cast<unsigned>(v.remaining),
+         static_cast<unsigned long>(v.pulls));
+  if (v.own_key != 0) {
+    printf(", %lu about this unit itself (dropped)", static_cast<unsigned long>(v.own_key));
+  }
+  if (v.unreadable != 0) printf(", %lu unreadable", static_cast<unsigned long>(v.unreadable));
+  print("\n");
+  if (v.rows == 0) {
+    print("  nothing in the ring ('agent obs pull')\n");
+    return;
+  }
+  // The last few, newest first, and **no names**: §7 says neither end logs the name a stranger
+  // chose, and every line of this console is kept in the ring `dump` prints.
+  print("  the last few, newest first (no names):\n");
+  for (std::size_t i = 0; i < v.rows; ++i) {
+    const AgentObservationRow& r = v.row[i];
+    printf("  %2lu. %s %lu s ago, %u hop(s)", static_cast<unsigned long>(i + 1), r.public_key,
+           static_cast<unsigned long>(r.ago_s), static_cast<unsigned>(r.hops));
+    if (r.snr_known) {
+      // Quarter-decibels as the air carries them, printed as a decimal: -10 is -2.50 dB.
+      const int whole = r.snr_q4 / 4;
+      const unsigned quarter = static_cast<unsigned>((r.snr_q4 < 0 ? -r.snr_q4 : r.snr_q4) % 4);
+      printf(", snr %s%d.%02u dB", r.snr_q4 < 0 && whole == 0 ? "-" : "", whole, quarter * 25u);
+    }
+    if (r.rssi_known) printf(", rssi %d dBm", r.rssi);
+    if (r.role[0] != 0) printf(", %s", r.role);
+    if (r.has_position) print(", with a position");
+    print("\n");
+  }
+}
+
 void Console::fetch(const char* base_url, image::Which which) {
   if (!httpOk() || !uplinkUp()) return;
   if (fetch_ == nullptr) {
@@ -3339,6 +3518,16 @@ void Console::printJournalEntry(std::size_t number, const update::Entry& entry) 
       printWakeEntry(number, entry, p);
       return;
     }
+    case update::kind::kAgentAttention: {
+      cycle::AgentPayload p;
+      if (!cycle::decode(entry, &p)) break;
+      printf("  %2lu. seq %lu: agent, %s", static_cast<unsigned long>(number),
+             static_cast<unsigned long>(entry.seq), cycle::describe(p.what));
+      if (p.count != 0) printf(" (%u since the record began)", static_cast<unsigned>(p.count));
+      if (p.why[0] != 0) printf(": %s", p.why);
+      print("\n");
+      return;
+    }
     default: break;
   }
   printf("  %2lu. seq %lu: kind 0x%04x, %u byte(s) - nothing in this build reads it\n",
@@ -3418,7 +3607,7 @@ void Console::printPass(const cycle::Pass& pass) {
     }
     print("\n");
   }
-  char line[200] = {};
+  char line[224] = {};
   (void)cycle::recordLine(pass, line, sizeof line);
   printf("%s\n", line);
   printf("the wake: %s; the budget %lu ms, %lu left, %lu outside it; the bound %lu ms\n",

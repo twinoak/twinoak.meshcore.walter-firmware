@@ -265,6 +265,11 @@ bool ModemUplink::call(const char* endpoint, const std::uint8_t* body, std::size
   } else if (r.status == 401) {
     counters_.denied = saturate(counters_.denied);
     std::snprintf(out.error, sizeof out.error, "http 401: the token was refused");
+    // The Walter's own attention (task p4-04): the library halts the loop on a 401 and nothing
+    // more is sent until a person types `set server.token`, so without this the only trace of it
+    // would be a log line the next deep sleep forgets. Nothing of the radio is touched
+    // (core/cycle/agent_attention.h).
+    if (attention_ != nullptr) attention_->raiseTokenRefused();
   } else if (r.status == 403) {
     counters_.denied = saturate(counters_.denied);
     std::snprintf(out.error, sizeof out.error, "http 403: this unit is refused (paused, or not its route)");

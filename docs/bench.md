@@ -1132,8 +1132,9 @@ been simulated into one that has actually spent a day looking after a radio.
 
 ## 17. The agent
 
-From tasks p4-02 and p4-03 (`components/agent/`; `docs/ARCHITECTURE.md` §13; `docs/console.md`,
-*The radio, over the box link* and *The agent's uplink*). The mesh items need §3 walked and a
+From tasks p4-02, p4-03 and p4-04 (`components/agent/`; `docs/ARCHITECTURE.md` §13;
+`docs/console.md`, *The radio, over the box link*, *The agent's uplink* and *The agent's
+identity*). The mesh items need §3 walked and a
 **second repeater** on the bench — any MeshCore repeater
 on the air, with this unit's key granted on its console (`setperm <this unit's key> 1`), because
 a bare status request is answered only to a key the repeater's ACL holds; a login is the agent's
@@ -1175,12 +1176,46 @@ business (task p4-05), not this command's. Phase 4's task 06 orders the rest of 
       probe: no reply: …` line naming the handshake, not a connection and not a status, and the
       token not on the wire - the modem refused the chain before the request head went. Then
       `server.url` back.
+- [ ] **`agent id` shows the RAK's own key and version** (task p4-04). With the radio up
+      (`rak hello` first, or after a wake), `agent id`: the `repeater:` line is the key the RAK's
+      own console prints for `get public.key`, character for character; the `name` is its
+      `get name`; `firmware` is its `ver`'s first word and `built on` is the MeshCore tag inside
+      the same reply. Nothing of it was typed on this Walter — that is what the item is for. The
+      `job types (13)` line and `server.token set` are the other two to glance at.
+- [ ] **The radio block the RAK's console agrees with** (task p4-04). `agent id`'s `radio:` line
+      against `rak cli get radio` on the same unit, and against `get radio` typed on the RAK's own
+      console: the same four numbers, the frequency to three decimals. Then move one of them on
+      the RAK (`set radio 869.400,62.5,8,8` there) and run `agent id` again: it still shows the
+      old block, because the key did not change and the block is read once — and after
+      `rak cli set radio 869.400,62.5,8,8` **through the link**, the next `agent id` shows the new
+      one. That is the `config.apply` path, walked by hand.
+- [ ] **`agent heartbeat` against the contract fixture** (task p4-04). Print it and read it beside
+      meshmaster.dk's `tests/fixtures/contracts/AgentHeartbeat.json`: the field order, the
+      `transport native`, the `board walter`, the radio block, the thirteen job types, and the two
+      optional fields — `nextCheckInS` the band's interval in seconds and
+      `maxTransactionsThisWake` the band's cap. Write the band `agent id` said beside it. Nothing
+      is sent; this is an eye on the bytes before task p4-05 posts them.
+- [ ] **A radio with no identity** (task p4-04). `rak role scanner` (or a RAK with no application
+      flashed): `agent id` says *the radio has no identity yet*, `job types (0): none`, and
+      `agent heartbeat` prints a body with **no** `companionPublicKey`, no `companionFirmware`, no
+      `radio` and `"jobTypes":[]` — a unit that is alive and whose repeater is not identified,
+      which is what a unit registered before its repeater sends. `rak role repeater` back, then
+      `rak hello`, and the next `agent id` has the key again.
+- [ ] **`agent obs` and §7's drain** (task p4-04; the second repeater of the mesh items, or any
+      node advertising on the air). `agent obs` first: the ring empty, and the radio's own count
+      of what is waiting. Then `agent obs pull`: the records go into the ring, and the rows show
+      the key, how long ago, the hops, the SNR and the RSSI, and the role — and **no name**, which
+      is the thing to check by eye (§7: neither end logs the name a stranger chose). Hold a row's
+      key against the advertising node's own, and its SNR against what the RAK's `stats-radio`
+      says of the same packet. Then `dump`: no name there either. An advert from the unit's **own**
+      repeater must not be in the ring at all — the counts line says how many were dropped as its
+      own.
 
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
-reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 109 of
-them, in 19 files. Each has a sentence beside it where it is declared; **change the number and the
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 114 of
+them, in 20 files. Each has a sentence beside it where it is declared; **change the number and the
 sentence together**, and nowhere else - the host tests, the console's help and the documents all
 follow the constant.
 
@@ -1411,3 +1446,17 @@ uplink deadline a call is begun with.
 | Constant | Now | Measured |
 |---|---:|---|
 | `kLeastCallMs` | `5000` | |
+
+**`components/agent/include/walter_agent/identity.h`** (5) - **§17** measures what one wake with
+an attach and a job actually costs the pack, which is what the per-band transaction cap promises
+the server (`maxTransactionsThisWake`). Each is written in the copied library's own arithmetic
+(the dearest-job figure above them is the library's own and is not a bench number), so what to
+bring back is *how many transactions a wake in each band can pay for* and not the arithmetic.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kPlenty` | two claimed jobs at the dearest job's price | |
+| `kNormal` | `kPlenty / 2` | |
+| `kSaving` | `mm::kDefaultConfigKeyCount + mm::kConfigReadExtraCount + 1 + mm::kTransactionsForLogin + mm::kTransactionsForAclRestore` | |
+| `kCritical` | `0` | |
+| `kUnknown` | `kNormal` | |

@@ -64,6 +64,31 @@ wake 1204 timer: radio healthy, band normal, steps yy-yyyy-ys, 9 s awake, next 6
 | `x` | **failed**: it was attempted and did not work |
 | `.` | **not reached**: the pass ended before it |
 
+### The Walter's own attention
+
+A wake that has something of its **own** to report - not the radio's §8 attention, which prints as
+`, attention <reason>` - ends the line with `, agent <letters>`:
+
+```
+wake 1205 timer: radio healthy, band normal, steps yy-yyyy-ys, 11 s awake, next 60 min, agent u
+```
+
+| | Means |
+|---|---|
+| `u` | **the server refused this unit's token (http 401): set server.token.** The agent library halts on it and nothing more is sent until a person types a new one, so without this the only trace would be a log line the next deep sleep forgets |
+| `h` | **the agent asked for a restart for its health and did not get one.** `mm::IPlatform::rebootForHealth`, which this firmware answers by journalling and not restarting: the supervisor and the wake cycle own restarts. In one-wake mode the library never asks, so this letter is a door that should stay shut |
+
+The letters are task p4-04's (`core/cycle/agent_attention.h`). The byte they come from is one of
+the two the duty cycle's retained record kept spare, so a raise **survives a sleep**: it is read
+at step 10, which is why a 401 at step 8 is in this wake's own record, and the record that carried
+it clears it - one raise is reported once, and a condition that is still there raises it again.
+Neither letter is one a step's outcome uses, because one line carries both fields. `status` says
+the same thing in a sentence, and a restart the agent asked for is a journal entry
+of its own (`journal`: *agent, the agent asked for a restart for its health and did not get one*).
+
+**Nothing of it touches the radio.** No frame is sent, no ladder is climbed and the radio is not
+woken: it is a byte, a letter and a line.
+
 ### What is journalled, and what is not
 
 **Not every wake.** The journal is 1024 entries of 64 bytes in one 64 KB partition and it exists

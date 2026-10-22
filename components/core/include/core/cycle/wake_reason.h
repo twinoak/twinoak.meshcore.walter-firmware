@@ -180,6 +180,16 @@ class WakeReason {
   // A wake in which it was not, and the band was `saving`: one more towards the Nth.
   void modemWasSkipped();
 
+  // The Walter's **own** attention, which is not §8's and has nothing to do with the radio: the
+  // agent's two (a token the server refused, a restart the library asked for and did not get).
+  // `core/cycle/agent_attention.h` is what raises it and what the bits mean; it lives in this
+  // record because it has to cross a sleep and RTC memory has no slot left
+  // (`interfaces/retained.h`, kDutyCycle). Raising it is additive; the wake record that carries
+  // it takes it, so one raise is reported once.
+  void raiseAgentAttention(std::uint8_t bits);
+  std::uint8_t agentAttention() const { return record_.agent_attention; }
+  void clearAgentAttention();
+
   // The wake is ending in a sleep: its duration goes into this wake's entry, and the record is
   // stored. Called by core/cycle/sleep.h on the one way out of a wake.
   void endingInSleep(std::uint32_t lasted_s);
@@ -202,7 +212,12 @@ class WakeReason {
     std::uint8_t faults_in_a_row;
     std::uint8_t band;              // core::power::Band, for the next wake's hysteresis
     std::uint8_t wakes_in_saving;
-    std::uint8_t spare[2];
+    // The Walter's own attention (task p4-04, core/cycle/agent_attention.h): one of the two
+    // bytes this record kept spare. It is here and not in a slot of its own because
+    // interfaces/retained.h has none left and because what it has to do - survive a sleep, be
+    // read by the wake that follows - is what this record is for.
+    std::uint8_t agent_attention;
+    std::uint8_t spare;
     WakeEntry items[kWakesRemembered];
   };
   static_assert(sizeof(WakeEntry) == 8, "a wake entry is eight bytes");

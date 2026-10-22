@@ -166,6 +166,16 @@ const CommandDef kCommands[kCommandCount] = {
     {"agent probe", "agent probe", Group::kUplink,
      "one GET /agent/v1/config now, with the token: the status, Retry-After and the rate limit "
      "left, the config the server answered. The bench's first look at a server; 'lte up' first"},
+    {"agent id", "agent id", Group::kUplink,
+     "who this exit node says it is: the repeater's key, name and firmware from the link, the "
+     "radio block its console agrees with, the job types the heartbeat advertises, and what this "
+     "wake promises the server. Nothing of it is typed by a person"},
+    {"agent heartbeat", "agent heartbeat", Group::kUplink,
+     "the body POST /agent/v1/heartbeat would carry, as bytes, built and not sent: the bench's "
+     "way to compare it with meshmaster.dk's contract fixture by eye"},
+    {"agent obs [pull]", "agent obs", Group::kUplink,
+     "the observation ring: how many adverts wait, how many were dropped, and the last five "
+     "without their names. 'agent obs pull' drains the radio's own ring into it first"},
 
     // -- sleep and the battery (task p3-04) ----------------------------------------------------
     {"wake", "wake", Group::kDutyCycle,

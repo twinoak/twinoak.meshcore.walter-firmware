@@ -106,6 +106,11 @@ bool LinkMesh::refreshCounters() {
   counters_.adverts = m.adverts;
   counters_.advertsDropped = m.adverts_dropped;
   radio_tx_ = m.tx;
+  // §6.4's `obs_dropped`: what the RAK's **observation** ring lost, which is the library's
+  // `observationsDropped` one hop earlier (task p4-04, walter_agent/observations.h). Kept beside
+  // the library's counters and not in them: the library's figure is its own ring's, and the two
+  // are added together in exactly one place.
+  radio_obs_dropped_ = m.obs_dropped;
   return true;
 }
 
