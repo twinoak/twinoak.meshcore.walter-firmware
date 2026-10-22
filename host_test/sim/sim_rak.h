@@ -29,18 +29,25 @@
 //   - a password is in RAM for the length of the send: the one buffer here is wiped as soon as
 //     the repeater has been handed the login, and a sensitive CLI line the same.
 //
-// What it does not model: airtime, two-byte flood hashes (the RAK's own packet building, which
-// the link does not show) and OBS_PULL (task p4-04; the fixtures answer it meanwhile).
+// §7's OBS_PULL is modelled too (task p4-04): a ring of adverts a test pushes, handed out oldest
+// first, at most five to a payload and at most `max`, removed from the ring as they go, with
+// `remaining` and the per-pull `dropped` the specification asks for. The fixtures' own two-advert
+// case answers a radio that is not this one.
+//
+// What it does not model: airtime and two-byte flood hashes (the RAK's own packet building, which
+// the link does not show).
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <string>
 #include <vector>
 
 #include <agent/IMesh.h>
 
+#include "core/link/codec/messages.h"
 #include "core/link/codec/packet.h"
 #include "core/link/codec/wire.h"
 #include "fakes/fake_clock.h"
@@ -86,6 +93,23 @@ class SimRak final : public interfaces::ByteStream {
   // at all, which the Walter reads as the expected silence. Unset, every line is
   // `Unknown command` (CommonCLI::handleCommand at d9296435).
   std::function<bool(const std::string& line, std::string* reply)> console;
+  // §7, one advert this radio heard: what a test pushes into its ring and what OBS_PULL hands
+  // out. `age_s` is measured by the radio, so it is right whatever either clock said.
+  struct Advert {
+    std::vector<std::uint8_t> pubkey;  // 32 bytes
+    std::uint32_t adv_ts = 0;
+    std::uint32_t age_s = 0;
+    std::int8_t snr_q4 = 0;
+    std::int16_t rssi = core::link::kRssiUnknown;
+    std::uint8_t path_len = 0;  // bits 7-6 the hash size minus one, bits 5-0 the hop count
+    std::vector<std::uint8_t> path;
+    std::vector<std::uint8_t> app_data;  // MeshCore's advert payload, 0 to 32 bytes
+  };
+  // The radio's own ring, oldest first. A test pushes; a pull takes from the front.
+  std::deque<Advert> observations;
+  // §7's `dropped`: lost since the last OBS_PULL. Cleared by a pull, as the specification says.
+  std::uint16_t obs_dropped_since_pull = 0;
+
   // §5.8, LPP_GET's answer: the fixtures' eight bytes (link-v1.json, `lpp response`) unless a
   // test sets the companion's telemetry bytes.
   std::vector<std::uint8_t> lpp = {0x01, 0x74, 0x01, 0x90, 0x01, 0x67, 0x00, 0x28};
@@ -113,6 +137,8 @@ class SimRak final : public interfaces::ByteStream {
   std::uint32_t reply_gets = 0;
   std::uint32_t counter_reads = 0;
   std::uint32_t path_reads = 0;
+  std::uint32_t obs_pulls = 0;
+  std::uint32_t obs_handed_out = 0;
 
   bool jobBegun() const { return job_; }
   bool awaiting() const { return await_.kind != Await::kNone; }

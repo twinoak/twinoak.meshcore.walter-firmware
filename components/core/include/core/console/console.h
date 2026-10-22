@@ -20,10 +20,12 @@
 
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
+#include "core/console/agent_probe.h"
 #include "core/console/commands.h"
 #include "core/console/log_ring.h"
 #include "core/console/mesh_probe.h"
 #include "core/console/parser.h"
+#include "core/cycle/agent_attention.h"
 #include "core/cycle/duty_cycle.h"
 #include "core/cycle/wake_cycle.h"
 #include "core/settings/settings.h"
@@ -94,7 +96,11 @@ class Console {
           // The agent's uplink behind `agent url` and `agent probe` (task p4-03): the probe is
           // components/agent/'s, over ModemUplink and the HTTPS client; core/ sees only the
           // seam (core/console/uplink_probe.h). A build without one answers in one line.
-          UplinkProbe* agent = nullptr);
+          UplinkProbe* agent = nullptr,
+          // The agent's identity behind `agent id`, `agent heartbeat` and `agent obs` (task
+          // p4-04): components/agent/'s, over the box link and the copied library, behind
+          // core/console/agent_probe.h. A build without one answers in one line.
+          AgentProbe* identity = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -117,7 +123,27 @@ class Console {
   // One whole line, as if typed and ended. What feed() calls; tests call it directly.
   void runLine(const char* line);
 
+  // What somebody else's blocking wait may run while it waits (task p4-04): the radio's port
+  // read - so an EV_MESH_REPLY or an EV_ATTENTION that arrives inside the agent's reply wait is
+  // one this end heard - and one turn of this console. **Not the line editor**: no byte is read
+  // and no command is started, so a pump cannot run a command inside a command; and while a
+  // command of this console is itself what is waiting, `tick()` is left alone too, because the
+  // console is already on the stack. It is what `agent::WalterPlatform::delayMs` calls, and in
+  // task p4-05 it is the library's own `pump` as well (docs/library.md §6 step 3).
+  void pump();
+
+  // One line the copied agent library formatted, into this port and into the ring `dump` prints
+  // (task p4-04): the sink `mm::logSetSink` is given, through main/. The line arrives stamped
+  // and with its own CR LF and is written as it is - the library's own rails are what keep a
+  // payload, a reply body and a password out of it, and the one test that greps every line of
+  // this console for a secret greps these too.
+  void agentLine(const char* line);
+
  private:
+  // Set while a command of this console is on the stack, so that `pump()` leaves the console
+  // alone while one is (task p4-04).
+  class LineInProgress;
+
   // The slot a `rak ...` line is about (task p1-06), resolved once in runLine: an optional `@N`
   // after the word `rak`, `@0` without one. slotOk() is where a slot this adapter does not have
   // becomes one line of refusal; the selection itself is taken by whoever faces the radio - the
@@ -254,6 +280,13 @@ class Console {
   bool agentOk();  // false, with one error line, when this build has no agent uplink
   void agentUrl();
   void agentProbe();
+  // The agent's identity (task p4-04). `agent id` reads the radio where it has to - one
+  // IDENTITY and one `get radio`, and neither again while nothing has changed; the other two
+  // ask it nothing unless `agent obs pull` says so.
+  bool identityOk();
+  void agentId();
+  void agentHeartbeat();
+  void agentObs(bool pull);
 
   // One whole wake (task p3-05).
   bool cycleOk();  // false, with one error line, when this build has no wake cycle
@@ -315,8 +348,13 @@ class Console {
   cycle::WakeCycle* cycle_ = nullptr;
   MeshProbe* mesh_ = nullptr;
   UplinkProbe* agent_ = nullptr;
+  AgentProbe* identity_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
+  // A command of this console is on the stack: `pump()` then reads the radio and leaves the
+  // console alone, so that a blocking call inside a command cannot drive a transfer or a trial
+  // from inside it (task p4-04).
+  bool running_line_ = false;
   board::Slot slot_{};  // the slot the line being run is about
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.
@@ -329,6 +367,12 @@ class Console {
   // The last few kilobytes this port printed, for `dump`. A member for the same reason the
   // flasher is one: 4 KB does not belong on the main task's 3584-byte stack.
   LogRing log_;
+  // What `agent id` and `agent obs` are given (task p4-04): about seven hundred bytes and about
+  // five hundred, members for the same reason - the main task's stack is 3584 bytes and the
+  // console's own frames are on it too. Each is filled at the top of its own command and read
+  // nowhere else.
+  AgentIdentityView identity_view_;
+  AgentObservationsView obs_view_;
   char line_[kMaxLineLength + 8] = {};
   std::size_t length_ = 0;
   bool last_was_cr_ = false;

@@ -54,7 +54,13 @@
 #include "platform/sleeper.h"
 #include "platform/uart.h"
 #include "platform/usb_console.h"
+#include "platform/entropy.h"
+#include "platform/heap.h"
+#include "walter_agent/agent_probe.h"
+#include "walter_agent/identity.h"
 #include "walter_agent/link_mesh.h"
+#include "walter_agent/observations.h"
+#include "walter_agent/walter_platform.h"
 #include "walter_agent/mesh_probe.h"
 #include "walter_agent/modem_uplink.h"
 #include "walter_agent/uplink_probe.h"
@@ -89,6 +95,10 @@ platform::RadioUart g_uart;
 // GPIO8. USB is not one of them - this chip cannot wake from deep sleep on a cable - so a boot
 // that finds a host stays awake instead (components/platform/sleeper.cpp).
 platform::EspSleeper g_sleeper;
+// The two the copied agent library asks of a platform (task p4-04, interfaces/entropy.h and
+// interfaces/heap.h): thirty-two random bits and the heap's two figures.
+platform::EspEntropy g_entropy;
+platform::EspHeap g_heap;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
 // The settings (task p3-03): NVS behind interfaces::KeyValue, and the table over it. The store
@@ -126,6 +136,36 @@ core::cycle::NetworkClock g_wall(g_clock);
 // about where it will be built, not a protocol (spec/SYSTEM.md §8), and the MeshMaster agent goes
 // behind this interface in phase 4.
 core::cycle::NullBackend g_backend;
+
+// The agent's two function pointers (task p4-04). `mm::logSetSink` and the library's `pump` take
+// plain function pointers, so the console they reach is this one pointer - there is one console
+// on this board and it is a function static of app_main, which is why this is set rather than
+// initialised.
+core::console::Console* g_console = nullptr;
+
+// Where a line the copied library formatted goes: this port, and the four kilobytes `dump`
+// prints. The line arrives stamped and with its own CR LF.
+void agentLogLine(const char* line) {
+  if (g_console != nullptr) g_console->agentLine(line);
+}
+
+// What the library's idle waits run: the radio's port read, and one turn of the console unless a
+// command of it is what is waiting (core/console/console.h, `pump`).
+void agentPump() {
+  if (g_console != nullptr) g_console->pump();
+}
+
+// `log.level` as the library's own level: the same four words and the same order
+// (core/settings/keys.h's Level, agent/Log.h's LogLevel), held together by a static_assert so
+// that a fifth on either side is a failed build and not a quiet mismatch.
+mm::LogLevel agentLogLevel(core::settings::Level level) {
+  static_assert(static_cast<int>(core::settings::Level::kError) == static_cast<int>(mm::LogLevel::Error) &&
+                    static_cast<int>(core::settings::Level::kWarn) == static_cast<int>(mm::LogLevel::Warn) &&
+                    static_cast<int>(core::settings::Level::kInfo) == static_cast<int>(mm::LogLevel::Info) &&
+                    static_cast<int>(core::settings::Level::kDebug) == static_cast<int>(mm::LogLevel::Debug),
+                "the console's log levels and the library's are the same four, in the same order");
+  return static_cast<mm::LogLevel>(level);
+}
 
 }  // namespace
 
@@ -448,11 +488,64 @@ extern "C" void app_main() {
   static agent::ModemUplink server(http_client, settings, g_clock, g_wall, core::version());
   static agent::ModemUplinkProbe agent_probe(server);
 
+  // The platform and the identity the library needs of this board (task p4-04,
+  // components/agent/walter_platform.h and identity.h; docs/ARCHITECTURE.md §13):
+  //
+  //   the platform   the millisecond clock, the hardware's random bits, the heap's two figures,
+  //                  phase 3's network clock as the wall clock, and the library's log lines into
+  //                  this console's ring. `delayMs` pumps the link and the console, so the
+  //                  library's idle waits are this firmware's turns.
+  //   the attention  the Walter's own, raised by a 401 and by a restart the library asks for and
+  //                  does not get (core/cycle/agent_attention.h): a byte of the duty cycle's
+  //                  retained record, a letter in the wake record, a line in `status`.
+  //   the identity   who this exit node is, from the radio: §5.6's key, HELLO's version and
+  //                  `CLI get radio`. Nothing of it is typed by a person.
+  //   the ring       the library's observation ring. **It is the loop's in task p4-05**
+  //                  (`AgentLoop::begin` hands its own to the mesh and this one is dropped); it
+  //                  is here so that §7's drain has somewhere to put a record before then.
+  static core::cycle::AgentAttention agent_attention(&duty.reason(), g_journal);
+  server.raiseAttentionThrough(&agent_attention);
+  static agent::WalterPlatform agent_platform(g_clock, g_wall, g_entropy, g_heap,
+                                              &agent_attention);
+  static agent::Identity agent_identity(radio, core::version());
+  static mm::ObservationRing agent_ring;
+  mesh.setRing(&agent_ring);
+  static agent::Observations agent_observations(radio, mesh);
+  static agent::IdentityProbe identity_probe(agent_identity, mesh, agent_observations,
+                                             agent_platform, &duty);
+
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
-                                        &battery, &mesh_probe, &agent_probe);
+                                        &battery, &mesh_probe, &agent_probe, &identity_probe);
+  // The library's log goes where every other line of this port goes: the console's print(), and
+  // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
+  // level of its own and a person who turned this port down meant the whole port.
+  g_console = &console;
+  agent_platform.beginLog(&agentLogLine, agentLogLevel(settings.level()));
+  // What `delayMs` pumps while the agent waits, which is the same function the library's runner
+  // is given in task p4-05: the radio's port read and one turn of the console.
+  agent_platform.pumpWith(&agentPump);
+  // Who this exit node is, once a boot and before anything of the agent asks: the key goes to
+  // the mesh's local door (task p4-02's `setOwnKey`) and to the observation drain, which is what
+  // drops an advert about this unit's own repeater.
+  (void)agent_identity.refresh();
+  mesh.setOwnKey(agent_identity.publicKey());
+  agent_observations.useOwnKey(agent_identity.publicKey());
+  if (agent_identity.known()) {
+    std::printf("agent: this exit node is %s, firmware %s%s\n", agent_identity.publicKeyHex(),
+                agent_identity.companionFirmware(),
+                agent_identity.radio().known ? "" : " (the radio block was not read)");
+  } else if (agent_identity.sessionUp()) {
+    std::printf("agent: the radio has no identity yet; a heartbeat would carry no key and no job "
+                "types ('agent id')\n");
+  } else {
+    // Nothing has been asked of the radio in this boot, so there is no session to read an
+    // identity out of; the wake's step 2 opens one and `agent id` reads it then.
+    std::printf("agent: no identity read yet (the radio has not been asked anything in this "
+                "boot); 'agent id'\n");
+  }
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop
   // was reached with the board in the safe state" (core/update/self_update.h) and the console is

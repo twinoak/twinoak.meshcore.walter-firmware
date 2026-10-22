@@ -63,6 +63,7 @@
 #include <agent/JobEnvelopes.h>
 #include <agent/RateLimit.h>
 
+#include "core/cycle/agent_attention.h"
 #include "core/net/client.h"
 #include "core/settings/settings.h"
 #include "interfaces/clock.h"
@@ -129,6 +130,10 @@ class ModemUplink final : public mm::IUplink {
   // here on takes what is left of it as its total deadline.
   void setDeadline(std::uint64_t deadline_ms) { deadline_ms_ = deadline_ms; }
   std::uint64_t deadline() const { return deadline_ms_; }
+  // Where a 401 is raised (task p4-04): the Walter's own attention, for the next wake record and
+  // for `status`. A null one is a build with no duty cycle, and then a 401 is a log line and the
+  // `Call` record and nothing more.
+  void raiseAttentionThrough(core::cycle::AgentAttention* attention) { attention_ = attention; }
   // The library's wall clock, when the platform has one (task p4-04): the server time a config
   // reply and a claim carry is offered to it, as the reference agent does. The heartbeat's is the
   // loop's own business. nullptr is "nobody to tell".
@@ -190,6 +195,7 @@ class ModemUplink final : public mm::IUplink {
 
   LinkState link_;
   std::uint64_t deadline_ms_ = 0;
+  core::cycle::AgentAttention* attention_ = nullptr;
 
   // The one buffer of this object the token is copied into: `Bearer <token>`, wiped before a
   // call returns. A member and not a stack buffer, so that a test can read it back - and because

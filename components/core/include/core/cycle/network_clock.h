@@ -56,7 +56,21 @@ class NetworkClock final : public interfaces::WallClock {
   // The same, for a test and for the bench: an epoch judged by the same window.
   bool give(std::uint32_t epoch);
 
-  // interfaces::WallClock: the time now, with §5.4's source 1 (the cellular network). False
+  // The **server's** own time, which every config reply, heartbeat reply and claim of the agent
+  // carries (task p4-04; the library offers it through `mm::IClock::takeServerTime`). Judged by
+  // the same window, and refused when the cellular network has already given one in this boot:
+  // a time that came off the network wins, which is the rule the library's own clock keeps and a
+  // sensible one - the network's is the modem's own clock and the server's has a round trip in
+  // it. Taking it matters because §5.4's `TIME_SET` carries where the time came from, and a
+  // Walter with a server time and no network time can still set the radio's clock and say
+  // truthfully that the source was the server (source 2) rather than the network (source 1).
+  bool giveFromServer(std::uint32_t epoch);
+
+  // §5.4's source byte for the time this object holds: 1 the cellular network, 2 the server,
+  // 0 when there is none.
+  std::uint8_t source() const { return source_; }
+
+  // interfaces::WallClock: the time now, with §5.4's source for where it came from. False
   // until a time has been believed in *this* boot.
   bool now(interfaces::WallTime* out) override;
 
@@ -69,9 +83,13 @@ class NetworkClock final : public interfaces::WallClock {
   void forget();
 
  private:
+  bool take(std::uint32_t epoch, std::uint8_t source);
+
   interfaces::Clock& clock_;
+
   std::uint32_t epoch_ = 0;
   std::uint64_t taken_ms_ = 0;
+  std::uint8_t source_ = 0;  // link::time_source::*, 0 when nothing is known
   bool known_ = false;
 };
 

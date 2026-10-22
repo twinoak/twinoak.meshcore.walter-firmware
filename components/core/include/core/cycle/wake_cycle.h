@@ -270,6 +270,11 @@ struct Pass {
   bool dry = false;
   Wake reason = Wake::kUnknown;
   std::uint8_t attention = 0;                              // §8's reason, when the radio asked
+  // The Walter's **own** attention, as `core/cycle/agent_attention.h`'s bits: the agent's 401
+  // and a restart it asked for and did not get. Read at step 10, so that one raised by this
+  // wake's own step 8 is in this wake's record, and cleared once the record has carried it.
+  // Nothing of it touches the radio.
+  std::uint8_t agent_attention = 0;
   supervisor::Health radio = supervisor::Health::kUnknown;
   supervisor::Silence silence = supervisor::Silence::kNone;
   power::Band band = power::Band::kUnknown;

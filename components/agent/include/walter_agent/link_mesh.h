@@ -128,6 +128,10 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // The radio's own `tx` (§6.4: every packet it transmitted, forwards included), which counters()
   // deliberately does not carry: an exit node on a repeater must not report forwards as its own.
   std::uint32_t radioTx() const { return radio_tx_; }
+  // §6.4's `obs_dropped`: what the RAK's observation ring has lost since it booted. Not one of
+  // the library's `MeshCounters` - its `observationsDropped` is its own ring's - and task
+  // p4-04's `Observations` is what adds the increase to that figure, once.
+  std::uint32_t radioObsDropped() const { return radio_obs_dropped_; }
   lc::Fault lastFault() const { return last_fault_; }
   std::uint8_t lastStatus() const { return last_status_; }
   const LinkMeshCounters& linkCounters() const { return link_counters_; }
@@ -234,6 +238,7 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   LastRecord last_record_;
   mm::MeshCounters counters_;
   std::uint32_t radio_tx_ = 0;
+  std::uint32_t radio_obs_dropped_ = 0;
   mm::ObservationRing* ring_ = nullptr;
 
   // The one buffer of this object a password is copied into, wiped before sendLogin() returns.

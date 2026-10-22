@@ -1,5 +1,7 @@
 #include "core/cycle/wake_cycle.h"
 
+#include "core/cycle/agent_attention.h"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -184,14 +186,19 @@ std::size_t recordLine(const Pass& pass, char* out, std::size_t cap) {
   if (out == nullptr || cap == 0) return 0;
   char letters[interfaces::kBackendStepLetters] = {};
   stepLetters(pass, letters, sizeof letters);
+  // The Walter's own attention, as one or two letters (task p4-04): `t` the token was refused,
+  // `h` a restart was asked for and not taken. docs/cycle.md has the table beside the steps'.
+  char agent[3] = {};
+  agentAttentionLetters(pass.agent_attention, agent);
   const unsigned minutes = static_cast<unsigned>(pass.interval_s / 60u);
   const int n = std::snprintf(
-      out, cap, "wake %lu %s: radio %s, band %s, steps %s, %lu s awake, next %u min%s%s%s",
+      out, cap, "wake %lu %s: radio %s, band %s, steps %s, %lu s awake, next %u min%s%s%s%s%s",
       static_cast<unsigned long>(pass.wakes), cycle::name(pass.reason),
       supervisor::describe(pass.radio), power::name(pass.band), letters,
       static_cast<unsigned long>(pass.awake_s), minutes,
       pass.attention != 0 ? ", attention " : "",
       pass.attention != 0 ? link::client::attentionName(pass.attention) : "",
+      agent[0] != 0 ? ", agent " : "", agent,
       pass.carried != interfaces::Ask::kNothing ? ", one update step" : "");
   if (n <= 0) return 0;
   return static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1;
@@ -1068,6 +1075,9 @@ bool WakeCycle::driveUpdate(std::uint64_t deadline_ms) {
 
 void WakeCycle::stepSleep() {
   (void)begin(Step::kSleep);  // it needs nothing and has no least: every wake ends here
+  // The Walter's own attention, read **here** and not at step 1: what raises it is step 8's
+  // agent, so a 401 of this wake belongs in this wake's record (task p4-04).
+  pass_.agent_attention = duty_.reason().agentAttention();
   pass_.awake_s = static_cast<std::uint32_t>(clock_.nowMs() / 1000u);
   // Unless a restart has been asked for. On the board the call that asked for one does not
   // return - the Walter's own update switching slots, a trial rejecting itself
@@ -1109,11 +1119,15 @@ void WakeCycle::stepSleep() {
   pass_.step[static_cast<std::size_t>(Step::kSleep)].outcome = Outcome::kDone;
   journalWake();
   if (out_ != nullptr) {
-    char line[200] = {};
+    char line[224] = {};
     (void)recordLine(pass_, line, sizeof line);
     say(line);
     say("\n");
   }
+  // The record has carried the Walter's own attention, so one raise is reported once; a
+  // condition that is still there raises it again at the next wake
+  // (core/cycle/agent_attention.h). A dry run does not reach this function and clears nothing.
+  if (pass_.agent_attention != 0) duty_.reason().clearAgentAttention();
 
   const SleepResult r = pass_.shortened ? duty_.sleepFor(seconds, false) : duty_.sleepNow();
   pass_.sleep = r;

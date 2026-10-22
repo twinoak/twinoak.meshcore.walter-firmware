@@ -9,6 +9,7 @@
 idf_component_register(
   SRCS "pins.cpp" "clock.cpp" "retained.cpp" "boot.cpp" "usb_console.cpp" "uart.cpp"
        "flash_partition.cpp" "own_update.cpp" "key_value.cpp" "sleeper.cpp"
+       "entropy.cpp" "heap.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces core esp_driver_gpio esp_driver_uart esp_timer
            esp_driver_usb_serial_jtag vfs esp_system esp_hw_support esp_rom soc

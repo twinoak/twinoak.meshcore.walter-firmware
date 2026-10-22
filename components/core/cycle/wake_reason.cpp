@@ -237,6 +237,21 @@ void WakeReason::modemWasSkipped() {
   if (begun_) save();
 }
 
+// The Walter's own attention (task p4-04). Additive, and stored at once rather than at the end
+// of the wake: what raises it is a 401 or a refused restart, and both are moments a wake may not
+// come back from.
+void WakeReason::raiseAgentAttention(std::uint8_t bits) {
+  if (bits == 0) return;
+  record_.agent_attention = static_cast<std::uint8_t>(record_.agent_attention | bits);
+  if (begun_) save();
+}
+
+void WakeReason::clearAgentAttention() {
+  if (record_.agent_attention == 0) return;
+  record_.agent_attention = 0;
+  if (begun_) save();
+}
+
 void WakeReason::endingInSleep(std::uint32_t lasted_s) {
   // 0 is reserved for "it never reached sleep", so a wake shorter than a second is recorded as
   // one second: it did reach sleep, and that is the thing the entry is asked about.

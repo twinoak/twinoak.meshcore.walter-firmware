@@ -154,6 +154,10 @@
 //
 //   agent url             the server the uplink is configured for, whether a token is set, and
 //                         the X-Agent-Version header every call carries
+//   agent id              who this exit node says it is: the repeater's key and version from the
+//                         link, the radio block, the job types it advertises, the intent
+//   agent heartbeat       the body it would post, to compare with the contract fixture by eye
+//   agent obs [pull]      the observation ring; `pull` drains §7 into it first
 //   agent probe           one GET /agent/v1/config now, with the token: the status and the
 //                         config the server answered. The bench's first look at a server
 //
@@ -240,6 +244,13 @@ enum class Verb : std::uint8_t {
   // GET /agent/v1/config now. Not `rak` lines: a server is not a radio and takes no slot.
   kAgentUrl,
   kAgentProbe,
+  // The agent's identity (task p4-04): who this exit node says it is, the heartbeat body it
+  // would post, and the observation ring - with `agent obs pull` the one §7 drain a person may
+  // ask for by hand.
+  kAgentId,
+  kAgentHeartbeat,
+  kAgentObs,
+  kAgentObsPull,
   // The Walter's own update (task p2-04).
   kSelfStatus,
   kSelfReceive,

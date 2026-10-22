@@ -120,7 +120,9 @@ components/
                         whether a USB host is on the port (task p3-04); and **the backend** -
                         one exchange of what this unit knows for a closed set of requests it
                         already knows how to carry out, which is the seam the MeshMaster agent
-                        goes behind (task p3-05, docs/cycle.md; spec/SYSTEM.md §8).
+                        goes behind (task p3-05, docs/cycle.md; spec/SYSTEM.md §8); and the two
+                        the copied agent library asks of a platform - thirty-two random bits and
+                        the heap's two figures (task p4-04).
                         ("hal/" when this file was written; ESP-IDF owns a component of
                         that name - task p0-01)
   agent-core/           **not ours**: twinoak.meshmaster.exitnode-firmware's lib/agent-core/ at
@@ -146,16 +148,30 @@ components/
                         ServerPolicy reads it, no redirect followed, the wake's deadline
                         refusing a call it could not finish; uplink_probe.h, `agent url` and
                         `agent probe` behind the console's seam (core/console/uplink_probe.h).
+                        Task p4-04: walter_platform.h, the library's mm::IPlatform and the
+                        mm::IClock behind it - a delay that pumps the link and the console rather
+                        than spinning, the hardware's random bits and the heap's two figures
+                        through two new interfaces, phase 3's network clock as the wall clock
+                        (and the server's own time offered back to it), the library's log into
+                        this console's ring, and a rebootForHealth that journals and does not
+                        restart; identity.h, who this exit node says it is - the repeater's key
+                        from IDENTITY, its version from HELLO, the radio block from one
+                        `CLI get radio`, and the per-band intent one wake promises the server;
+                        observations.h, §7's OBS_PULL into the library's advert ring with
+                        MeshCore's own app_data decoded and this unit's own records dropped;
+                        agent_probe.h, `agent id`, `agent heartbeat` and `agent obs` behind the
+                        console's seam (core/console/agent_probe.h).
                         Logic, like core/: no ESP-IDF include (the same build step), no heap
                         (the same check), tested on the host against a simulated RAK and a
-                        scripted server. Task 04 adds the platform here
+                        scripted server
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
                         region (tasks p2-02, p2-03), the OTA slots behind esp_ota_* (task p2-04),
                         the settings in the `nvs` partition behind a key-value store (task p3-03),
                         deep sleep with its two wake sources - the timer and ext1 on the radio's
-                        line - and the USB Serial/JTAG connection monitor (task p3-04)
+                        line - and the USB Serial/JTAG connection monitor (task p3-04),
+                        esp_random() and the heap's two figures (task p4-04)
   modem/                the Walter's LTE modem behind interfaces/' uplink: the one component that
                         names a WalterModem symbol, on UART2 because UART1 is the radio's (task
                         p3-01); and its TLS over socket 1 and its certificate slots, with the one
@@ -1203,7 +1219,7 @@ registry.
 |---|---|---|
 | `IMesh` | `LinkMesh` (task p4-02, **built**: `components/agent/link_mesh.h`) | one request of `spec/LINK-PROTOCOL.md` §6 per call — the link was designed against this list (`SYSTEM.md` S-4): `JOB_BEGIN`/`JOB_END`, `PATH_SET`, the five `SEND_*`, `MESH_COUNTERS` — and §7's `OBS_PULL` for the advert ring (task p4-04 fills the hook). `awaitReply` is the `EV_MESH_REPLY`, waited for over the runner's own timeout plus a margin, with `REPLY_GET` as the fallback; the send carries a ceiling (§6.2 takes the timeout at the send, the library gives it at the await), and when this end gives up first the wait is ended with `JOB_BEGIN` again so the RAK is never busy for the next send. The path is cached and read back with `PATH_GET` after a flood's reply (a returned path is learned, §6.3). `counters().tx` is `client_tx`, never the radio's `tx`. `overheard()` is 0 and `rxByType` empty: §6.4 carries neither (a specification gap). `supports()` is *MESH_CLIENT in the session* for every core type, trace included — §6.2 has `SEND_TRACE` and §6.3 a trace record |
 | `IUplink` | `ModemUplink` (task p4-03, **built**: `components/agent/modem_uplink.h`) | the seven calls of the agent API (API §3) over phase 3's HTTPS client (§9), **one request each**: `GET /agent/v1/config`, `POST …/heartbeat`, `…/observations`, `…/jobs/claim`, `…/jobs/{id}/result`, `…/extend`, `…/progress` under `server.url`, with `Authorization: Bearer <server.token>`, `X-Agent-Version: <this firmware's version>`, `Accept: application/json` and `Content-Type: application/json` on a POST; the body the library's writer made, carried unchanged; the reply read into one buffer of the object (2 kB, 6 kB for a claim), cut at the bound by the client and refused here, parsed by the library's own parser and wiped. The token is read from the settings for the call into one buffer, handed to the client as a pointer, flagged *sensitive* so the transport wipes the head it wrote the moment it is on the wire, and wiped when the client returns; it is in no log line, no URL, no error text. The `Call` record as `ServerPolicy` reads it: `reachable` is a status, whatever it said; `ok` a 2xx whose body fit and parsed; `retryAfterS` the header as seconds, 0 for absent or a date; `rateLimitRemaining` or -1; `via` "lte". No redirect is followed on an agent route (a 3xx is `ok = false`); `https://` only is the client's rule and the settings table's. The owner gives it the wake's uplink deadline and says when the modem is up; a call that could not finish in what is left is `reachable = false` with *budget* and touches the modem not at all. The library's 120-a-minute limiter is taken before every call |
-| `IPlatform` / `IClock` | `WalterPlatform` (task p4-04) | mostly interfaces this firmware already has: `Clock::nowMs()`, `Clock::delayMs()`, `esp_random()`, `WallClock`, the heap figures, `Restart`, and the health record in retained storage for the self-reboot count |
+| `IPlatform` / `IClock` | `WalterPlatform` (task p4-04, **built**: `components/agent/walter_platform.h`) | seven primitives and a wall clock, over interfaces this firmware mostly already had. `millis()` is `Clock::nowMs()`'s low thirty-two bits; `delayMs()` is a **yield that pumps** — the library idles through it inside a job's reply wait, so it reads the radio's port and turns the console once (`Console::pump`), never a busy spin; `random()` is `interfaces/entropy.h` (`esp_random()`, new in this task); `freeHeap()`/`minFreeHeap()` are `interfaces/heap.h` (new in this task), reported and never decided on. The clock is phase 3's `NetworkClock` (§9): `hasTime()` is false until the modem has been asked and is false again after every sleep, and `takeServerTime()` offers the server's own time **to that same object**, refused when the cellular network has already given one — so the radio's `TIME_SET` of the next wake carries source 2 and a real epoch rather than nothing. The log is the third seam of the header and is not a method: the library formats its line and this hands it to the console's `agentLine`, so an agent line is on the port and in the four kilobytes `dump` prints, with the library's redaction preserved by adding nothing to it. And `rebootForHealth(why)` **does not restart this board**: it journals (a `kAgentAttention` entry), raises the Walter's own attention for the wake record and `status`, and then — being `[[noreturn]]` — yields for ever and leaves the board to the one thing that owns restarts, the bound on the wake (§10). In one-wake mode the library never calls it, so it is a door kept shut; `selfReboots()` is 0 for the same reason — the heartbeat's `reboots` counts restarts made *that way*, and this firmware makes none |
 
 And a fourth, **optional** and ours to fill because this unit sleeps (`agent/IRetained.h`,
 `agent/KeptImage.h`, new in `v0.3.0`): a store that outlives a deep sleep. A result the server did
@@ -1215,8 +1231,10 @@ store already holds, refused whole when it is torn or foreign and counted when i
 may hold nothing a result may not — the runner wipes every credential before a result is
 written — and the store is bytes and a capacity, nothing more. No task of this phase was written
 for it (it did not exist when they were); `capacity`/`write`/`read` over a flash region or an NVS
-blob belongs beside `WalterPlatform` in task p4-04, and what it is worth — a week of results and
-adverts surviving the sleeps that would otherwise drop them — is task p4-05's simulated month.
+blob belongs beside `WalterPlatform`, and what it is worth — a week of results and adverts
+surviving the sleeps that would otherwise drop them — is task p4-05's simulated month. **Task
+p4-04 did not fill it**: it has no caller until the loop exists, a seam nothing drives is a seam
+nothing tests, and the loop is p4-05's.
 
 **The local door** (task p4-02). A job begun for the unit's *own* repeater — the key `IDENTITY`
 answers, which task p4-04 gives `LinkMesh::setOwnKey()` — sends nothing on the mesh: the link has
@@ -1241,10 +1259,68 @@ job. Per core type:
 | `status`, `neighbours` | no request of §5 yields the bytes the job parses | `failed` — link 1.1 |
 | `trace` | a radio cannot trace a round trip to itself | `failed` |
 
-The job types this unit advertises, the heartbeat's identity taken from the radio, and the
-observations pulled out of the RAK's ring are task p4-04's; `AgentBackend : Backend` — the
-implementation of §10's seam, which is **one call to `AgentLoop::wake()`** — and the firmware jobs
-mapped onto phase 2's image store and update machines are task p4-05's.
+### The identity: who this exit node says it is (task p4-04)
+
+`components/agent/identity.h`. The heartbeat's identity is **read from the radio and from this
+firmware's own tables, and nothing of it is typed by a person**:
+
+| field | where it comes from |
+|---|---|
+| `companionPublicKey` | §5.6 `IDENTITY`. This exit node *is* its repeater (`SYSTEM.md` S-1), so the repeater's MeshCore key is the key the server knows the unit by. A key of all zeros — a RAK with no application — is **not** a key |
+| `companionFirmware` | §5.1 `HELLO`'s `fw_version`: the **repeater firmware's** release version (`0.1.0`), which meshmaster.dk looks up against the *Repeater* product's releases. Not the MeshCore tag, which `HELLO`'s `upstream` carries and which `agent id` prints beside it |
+| `agentVersion` | `core::version()`, looked up against the *Walter* product |
+| `board`, `transport` | `walter`, and `native` — meshmaster.dk's word for an exit node that is its repeater (EXIT-NODES §2) |
+| the radio block | §5.7 `CLI get radio`, **one line and one request**: the repeater's console answers `> <freq>,<bw>,<sf>,<cr>`, which is the only line that carries all four (`get freq` answers the frequency alone and there is no `get bw`, `get sf` or `get cr`). The specification's own fixture is that exchange |
+| `jobTypes` | **the library's, not the identity's**: it asks `IMesh::supports()` for each of its thirteen and then the extension's. `LinkMesh` answers from the session's `MESH_CLIENT` bit, so a radio with nothing to carry advertises nothing |
+| `budget` | the server's, kept by the library |
+
+The key is read once a boot and again whenever `boot_id` changes (§5.1: a restart means every
+per-boot thing we hold about the radio is gone); the radio block again after that, and again when
+a `set` line has crossed the local door for the unit's own repeater — a `config.apply` job may
+have moved exactly those four numbers.
+
+**A unit may have no radio identity at all, and still checks in.** Since 20 October a unit is
+registered at meshmaster.dk before its repeater is, and its RAK may hold no application yet. The
+heartbeat then carries no `companionPublicKey`, no `companionFirmware`, no `radio` block and an
+**empty** `jobTypes` — a unit without a radio can run no job, and an empty list is how it says so
+— and the server keeps the key it had (every one of those fields is optional in
+`MeshMaster.Contracts`). Its page shows it alive and *radio not identified*; the first heartbeat
+after the radio has an identity carries the key.
+
+**The job type list is the one place the server could be surprised**, and it is deliberate: the
+list is what the server routes by, so it is *every* type the mesh can carry and is **not** reduced
+by the local door's table above. A `status` or a `neighbours` job for the unit's *own* repeater is
+routed here and comes back `unsupported`, because the door cannot build those bytes over the UART;
+meshmaster.dk's routing then tries the next candidate (`EligibleAsync`). The alternative — not
+advertising them — would stop this unit answering `status` for a *neighbour*, which it does
+perfectly well, and `supports()` is asked per type and not per peer.
+
+**What one wake promises** (`WakeIntent`): `nextCheckInS` is the interval policy's own decision
+for the band in seconds (§10 step 5), and `maxTransactionsThisWake` is a per-band table written in
+the library's own arithmetic — `plenty` is both jobs a claim may hand over at the dearest job's
+price, `normal` half of that, `saving` one real job's worth (the daily `config.read` of the
+server's default key list), and `critical` **nothing**, because the modem is not brought up in
+that band at all. Every number is a placeholder until the bench ([`bench.md`](bench.md)).
+
+**The observations** (`components/agent/observations.h`). §7's `OBS_PULL` is drained into the
+library's ring, record for record: the key, the age the radio measured, the SNR and the RSSI, the
+path and its hop count, and — out of `app_data`, which is MeshCore's own advert payload — the
+type, the position and the name. Records whose key is this unit's own repeater are **dropped
+before they are kept** (the server ignores one anyway, and the bytes are not worth an attach), and
+the RAK's own `obs_dropped` from §6.4 is added to the library's `observationsDropped` as it grows,
+once, so that a loss one hop away is still a number on the unit's page. **An advert's name reaches
+no line of any log**: §7 says neither end logs it, so it goes into the ring and out again in the
+batch the agent posts, and `agent obs` prints the key, the age, the signal and the role.
+
+**The Walter's own attention** (`core/cycle/agent_attention.h`). Two things the agent can learn
+that no radio can tell us: a `401` — the token was refused, and the library halts — and a restart
+it asked for and did not get. Each raises a bit of the duty cycle's retained record, which the
+next wake record carries as a letter and `status` as a sentence; the second is journalled as well.
+Nothing of it wakes the radio.
+
+`AgentBackend : Backend` — the implementation of §10's seam, which is **one call to
+`AgentLoop::wake()`** — and the firmware jobs mapped onto phase 2's image store and update
+machines are task p4-05's.
 
 ### Where it sits in one wake
 
