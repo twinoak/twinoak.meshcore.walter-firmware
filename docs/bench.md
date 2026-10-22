@@ -42,6 +42,7 @@ Two marks:
 | [2](#2-the-pins-and-the-reset-line) | The pins and the reset line | §1, a meter, then a scope, then the RAK wired |
 | [3](#3-the-link) | The link (the UART) | §2, the RAK with the repeater firmware |
 | [4](#4-swd) | SWD | §2, the SWD lines wired, a scope |
+| [4a](#4a-the-radios-base) ⚠ | The radio's base | §4, a factory RAK4630 (RUI3), a release with a `provision` file, the RAK's USB-C |
 | [5](#5-flashing) ★⚠ | Flashing | §4, a repeater image, time |
 | [6](#6-the-kill-line) ⚠ | The kill line | §§2–5, the kill emulator |
 | [7](#7-the-slot) | The slot | §§1–6 |
@@ -322,6 +323,71 @@ every number; the nRF52840 Product Specification ("Debug and trace") gives the c
   `FAULT ... at 0x50000000`: nothing lives there, and the access port's error response is read
   and cleared, after which the next command works.
 
+## 4a. The radio's base
+
+**⚠ erases the radio whole: RUI3, any identity it had, UICR. A person's command, once per
+radio, naming the radio (`spec/SYSTEM.md` S-5a).** Phase 6, task 03 walks this with the rig; this
+is the walk.
+
+Needs: §4 walked (`rak swd id` answers through the filters); a **factory RAK4630 with RUI3** on the
+production chain — the LTE box's D-sub to the LoRa box's, through the bulkheads, as in the field
+(the hardware repository's `walter-swd-bench/README.md`, *What you need*); a repeater release
+that carries the board's `provision` file, pushed with `walterctl.py push --as base` (§8), and its
+`swd` image pushed `--as candidate`; the RAK's USB-C and a laptop for the end. The firmware's side
+is `components/core/provision/` over the door of `core/nrf52/provision_door` (task p5-02); the
+session, line for line, is `provisioning.md` *A factory radio*, and what the host tests proved —
+every factory state, every refusal with nothing written, a power cut at every operation — is
+`tasks/phase-5/reports/03.md`.
+
+- [ ] **`rak provision check` on the factory radio.** Expected: the base's line (`bootloader
+  0x000f4000, S140 6.1.1`, with the real base's byte count and *check 5p again … ok* — **write
+  down the milliseconds**, which is 5p over ~450 KB of HEX out of the Walter's flash); `battery:
+  unknown … accepted` (RUI3 answers no POWER_GET); `swd: DPIDR 0x2ba01477; control access port IDR
+  0x02880000; protection: open` or `CLOSED`; on an open radio `chip: nRF52840, variant AAF0:
+  improved APPROTECT …` and `device id <16 hex digits>`; on a closed one `link: no application
+  answers HELLO`; and `next: rak provision <that> confirm`. **Write down the variant and whether
+  the port was open or closed: ______ / ______.** This is `spec/SYSTEM.md` §10.2's first half,
+  and `PROJECT-KNOWLEDGE.md` wants it. A variant the table does not know is said here (*the
+  command would be refused at step 3*), with nothing erased: stop, and extend
+  `core/provision/variant.h` with its source before anything else.
+- [ ] **The typed line, and the seven steps.** Type exactly what `check` said. Expected, one line
+  per step as each ends, then `rak provision: PROVISIONED slot 0: device id …, variant …, base
+  sha256 …, port after the reset open; N s in all`. **Write down the time of each step** — the
+  simulator predicts, at 125 kHz with a real ~180 KB base, about 21 s for the write (447 µs a
+  word) and 40 s for the verify (866 µs a word), under a second for the erase (tERASEALL 169 ms
+  typical, polled every 10 ms), 1.6 s for the reset and the bootloader's `kBootloaderSettleMs`,
+  and the base's 98 passes over its ~450 KB of HEX out of the Walter's flash on top (invisible on
+  the host; `image verify base`'s milliseconds ×98 is the estimate): **about a minute and a
+  half, and a stop after step 4 is a sentence, not a hang.** On a locked radio step 3 comes after
+  step 4 (the identity is readable only then). If the port was closed and reads *still closed
+  after the erase and one soft reset*, note it: that is a part the Product Specification's
+  model does not cover.
+- [ ] **The port after the reset — §10.2's second half.** The `[7/7]` line says `the port after
+  it open, NRFFW[0] 0x000f4000` or `CLOSED`. **Write it down: ______.** Closed on an `AAF0` part
+  means the RAK bootloader in the release does not copy `UICR.APPROTECT` into `APPROTECT.DISABLE`
+  at start-up (it was built with an MDK older than 8.45.0): the radio works, the flasher cannot
+  reach it, and `rak update --first-install` will refuse the chip as *protected* until the
+  repeater firmware's release carries a bootloader that does. That is a finding for the repeater
+  repository, not a failure of this command.
+- [ ] **The RAK's USB-C on a laptop: a UF2 drive appears.** The bootloader waits in DFU mode with
+  no application. (Unplug it again before the next item: the Walter's debug port and a DFU over
+  USB are two masters.)
+- [ ] **`rak watch` says the slot awaits its first install**, and `status` says `radio health:
+  awaiting its first install`. Leave the unit for a few heartbeats (`rak ladder` asks now): no
+  rung is climbed, no reset pulse, no kill — the radio is silent by design.
+- [ ] **`rak update --first-install`** with the candidate pushed: the flasher accepts the chip
+  (`SoftDevice` where the profile says, the settings page erased and written), the radio boots the
+  application, the health check passes, *done*. `rak watch` no longer says *awaits*. **Write down
+  how long the first install took: ______.**
+- [ ] **The same command again, on a radio that now has an identity.** `rak provision check`
+  names it by its device id (the port is open); typing that line erases the application and its
+  identity with the radio, which is what naming an open radio consents to. Only if the radio is
+  disposable (`bench.local.json`, phase 6).
+- [ ] **A power cut in the middle, if a radio can be spared:** pull the Walter's USB during step 5.
+  Expected afterwards: `rak provision check` says *protection: CLOSED* on an `AAF0` part (something
+  is in flash, `UICR.APPROTECT` is not `0x5A` yet) and `next: rak provision locked confirm`; that
+  line finishes it. On a legacy part the port reads open and the line is the device id again.
+
 ## 5. Flashing
 
 **★ one of the three that matter most. ⚠ writes the radio's flash.**
@@ -477,16 +543,16 @@ firmware (`tools/verify.ps1 -TestKey`, flashed as §1's first item) together wit
 signed with the specification's public test key — the dry run `tools/verify.ps1` leaves in
 `out/release/` is one, for the *Walter's* own image; a repeater release has to come from the
 repeater repository's own dry run, or be made by hand with
-`python spec/tools/manifestref.py` over a repeater image. Until the release key exists
-(`spec/SYSTEM.md` §10 item 1) a normal build accepts nothing, which is the point of the second
-item below.
+`python spec/tools/manifestref.py` over a repeater image. A normal build accepts only a release
+signed with the release key (`keys/release-keys.txt`), which is the point of the fourth item
+below.
 
 - [ ] **The store says what it is, on a board.** `image list` on a fresh unit prints the layout —
-  `2 slots x 3 images of 815104 bytes (199 sectors)`, `4923392 bytes of a 6291456-byte partition,
-  1368064 left` — then `slot 0, rak4630-single` with three `empty` lines, then `slot 1: no radio in
-  this adapter`. The boot lines have gained `image store: rakfw at 0x630000 (6144 KB), …`. If
-  either says something else, the partition table and the firmware disagree and nothing below is
-  worth doing.
+  `2 slots x 3 images of 815104 bytes (199 sectors)`, `plus one base of 655360 bytes (160 sectors)
+  a slot`, `6242304 bytes of a 6291456-byte partition, 49152 left` — then `slot 0, rak4630-single`
+  with three `empty` lines and `base       empty`, then `slot 1: no radio in this adapter`. The
+  boot lines have gained `image store: rakfw at 0x630000 (6144 KB), …`. If either says something
+  else, the partition table and the firmware disagree and nothing below is worth doing.
 
 - [ ] **`walterctl.py push --as golden` on a test-key build, and `image list` shows it.** With the
   release directory on the laptop:
@@ -509,10 +575,11 @@ item below.
   succeeds, and `image list` then shows the same image twice in different areas.
 
 - [ ] **A normal build refuses the same push at check 1, and `trust` says why.** Flash a build made
-  without `-DTWINOAK_TRUST_TEST_KEY=1`; `trust` prints `trust: none: no update will be accepted
-  (keys/release-keys.txt names no key; …)`, and the push ends with *check 1, the signature: the key
-  id names no key this build trusts* — with nothing stored and no sector erased. This is the state
-  every unit is in until the release key exists, and it is the right one.
+  without `-DTWINOAK_TRUST_TEST_KEY=1`; `trust` prints the release key's id (`trust: 1 key this
+  build accepts a release signed with: 73efdd383a957596`, since 2026-10-20) and **not** the
+  specification's test key, and the push ends with *check 1, the signature: the key id names no key
+  this build trusts* — with nothing stored and no sector erased. A unit in service accepts a
+  release signed by the release key and nothing else, which is the point.
 
 - [ ] **Pull the Walter's power during a push.** Mid-transfer (a release of a few hundred KB gives
   a comfortable window), unplug the USB. Afterwards: the console comes up, and `image list` shows
@@ -536,7 +603,39 @@ item below.
   radio, so slot 0 is the only one*, and nothing on the port changes. The areas for slot 1 are in
   the partition all the same, which is what `image list`'s last lines say.
 
-Nothing here flashes a radio: putting a stored image on the RAK is §9's.
+- [ ] **`walterctl.py push --as base` of a real release, over the cable** (task p5-01;
+  `spec/FIRMWARE-MANIFEST.md` §4a, `spec/SYSTEM.md` S-5a). With a repeater release that carries a
+  `provision` file — the real base: the MBR, SoftDevice S140 6.1.1 and the bootloader, ~450 KB of
+  Intel HEX:
+
+  ```
+  python tools/walterctl.py push --port COM7 --as base <release-dir>
+  ```
+
+  It prints the file it is sending, then `stored as the base`, and then *nothing is written to a
+  radio by this: that is `rak provision`, typed by a person*. **Write down how long the push took**:
+  it is three times the bytes of a radio image and the first measurement of one.
+
+- [ ] **`image list` shows the base with the right bootloader and SoftDevice.** The `base` lines
+  say `the board's base, <n> bytes, sha256 …, bootloader 0x000f4000` and `S140 6.1.1, <n> bytes of
+  flash, <n> UICR words, the MBR's parameter page at 0x000fe000`. If the bootloader's address is
+  not `0x000F4000` or the SoftDevice is not S140 6.1.1, that release's base is not the one this
+  firmware's board profile was written for and `rak provision` (§17) must not be run with it.
+
+- [ ] **`image verify base` passes after a power cycle.** Unplug and replug the Walter, then
+  `image verify base`: the SHA-256 is the one in its record, **and** `check 5p over the stored
+  bytes: a base for rak4630-single (0x00026000 to 0x000ed000), bootloader 0x000f4000` with the same
+  flash byte count and UICR word count as the record's. **Write down the milliseconds**: §4a's
+  rules are read over ~450 KB out of flash, twice, and task p5-03 pays that before it writes
+  anything to a radio.
+
+- [ ] **`image erase base`, and the base again.** `image erase base` answers *base: forgotten in
+  slot 0*; `image list` shows `base       empty`; `image verify base` says *there is no image in
+  that slot*. Push it again and it is back. (The base is the one thing in the store a command may
+  erase besides a candidate and a scanner image: nothing depends on its being there.)
+
+Nothing here flashes a radio or writes a chip's UICR: putting a stored image on the RAK is §9's,
+and giving a factory radio its base is `rak provision` — task p5-03's, and a person's.
 
 ## 9. Updating the radio
 
@@ -1033,8 +1132,8 @@ been simulated into one that has actually spent a day looking after a radio.
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
-reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 107 of
-them, in 17 files. Each has a sentence beside it where it is declared; **change the number and the
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 108 of
+them, in 18 files. Each has a sentence beside it where it is declared; **change the number and the
 sentence together**, and nowhere else - the host tests, the console's help and the documents all
 follow the constant.
 
@@ -1051,6 +1150,13 @@ a scope.
 | Constant | Now | Measured |
 |---|---:|---|
 | `kKillTiming` | `1000, 30000, 200` | |
+
+**`provision/provision.h`** (1) - **§4a** measures how long the Adafruit bootloader takes to come
+up after the pin reset before the debug port answers again.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kBootloaderSettleMs` | `1500` | |
 
 **`update/radio_update.h`** (9) - **§9** measures a real repeater from reset to HELLO, and how
 long a bad build takes to show itself.

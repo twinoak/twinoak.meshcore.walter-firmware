@@ -36,6 +36,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -110,6 +111,11 @@ class SwdTarget final : public interfaces::Pins {
   bool strict = true;                 // a host protocol error fails the running test at once
   bool present = true;                // false: no target and no pull-up; the line keeps what was last driven
   bool silent = false;                // powered and there, answering nothing
+  // The power goes after this many answered transfers (task p5-03: a power cut at every step of
+  // `rak provision`, where the steps between the writes are reads): the target falls silent and
+  // on_silenced runs, which a bench uses to take the chip's power with it. 0: never.
+  unsigned silent_after_transfers = 0;
+  std::function<void()> on_silenced;
   bool requires_line_reset = true;    // a request before any line reset is a host error (B4.3.3)
   unsigned min_line_reset_clocks = 50;  // B4.3.3
   unsigned wait_next = 0;             // WAIT to the next N requests that may WAIT (B4.2.3)
@@ -122,6 +128,16 @@ class SwdTarget final : public interfaces::Pins {
   void attachAp(std::uint8_t apsel, AccessPort& ap);
   void setStickyError();  // CTRL/STAT.STICKYERR: FAULT to everything but the three exempt requests
   void startInJtag() { mode_ = Mode::kJtag; }  // an SWJ-DP in JTAG mode until the switch (B5.2.2)
+  // The debug port as a reset of the chip leaves it (task p5-02): the power-up requests and
+  // acknowledges gone, SELECT and the sticky flags cleared, and the port back in its reset state,
+  // where only a DPIDR read is answered until the host sends a line reset (B4.3.3). The
+  // simulated chip calls this at a pin reset and, when told that the part needs it, at a CTRL-AP
+  // soft reset - so that a host which does not reconnect afterwards is caught.
+  void resetDap();
+  // The chip's reset line, as the target sees it (task p5-02): called when the host releases
+  // nRESET after asserting it (output-low, then input: docs/ARCHITECTURE.md §2 rule 2). The
+  // nRF52 bench wires it to the simulated chip's pin reset.
+  std::function<void()> on_pin_reset;
 
   // ---- what the tests read ----------------------------------------------------------------
   std::uint32_t ctrlStat() const;
@@ -162,6 +178,14 @@ class SwdTarget final : public interfaces::Pins {
   void clearErrors() { errors_.clear(); }
 
  private:
+  // One transfer answered: counted, and the silent_after_transfers knob applied.
+  void noteTransfer() {
+    counters_.transfers++;
+    if (silent_after_transfers != 0 && counters_.transfers >= silent_after_transfers && !silent) {
+      silent = true;
+      if (on_silenced) on_silenced();
+    }
+  }
   enum class Mode : std::uint8_t { kJtag, kSwd };
   // Where the target is in a transfer, in rising edges (see core/swd/wire.cpp, Wire::transfer).
   enum class Phase : std::uint8_t {

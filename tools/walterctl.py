@@ -6,10 +6,15 @@ which is the bench's stand-in for a server until phase 3 gives the Walter an upl
 
     walterctl.py push --port COM7 --as candidate <release-dir> [--image <id>] [--slot 0]
     walterctl.py push --console ./walter_console --as candidate <release-dir>
+    walterctl.py push --port COM7 --as base <release-dir>
 
 A <release-dir> is what tools/release/build_release.py writes and a GitHub Release carries:
 `manifest.json`, `manifest.json.sig` and the image files the manifest names. The three things that
-go over the wire are the manifest, its signature and the one `swd` file of the chosen image.
+go over the wire are the manifest, its signature and the one file of the chosen image: its `swd`
+file for a radio's image, its `ota` file for the Walter's own, and - with `--as base` - its
+`provision` file, the board's base (spec/FIRMWARE-MANIFEST.md section 4a, SYSTEM.md S-5a). A base
+is stored and nothing more: writing one to a radio is `rak provision` on the console, typed by a
+person.
 
 **Nothing here is trusted by the Walter.** The six checks of spec/FIRMWARE-MANIFEST.md section 5
 run on the Walter, over the bytes as they land in its flash; this program only delivers them, and
@@ -70,9 +75,13 @@ TRIES = 4            # how often one frame is sent before giving up
 REPLY_TIMEOUT = 5.0  # seconds to wait for one acknowledgement
 HELLO_TIMEOUT = 2.0
 
-# The three images of a radio slot, and `self`: the Walter's own `ota` image into its other
+# The three images of a radio slot, the slot's base, and `self`: the Walter's own `ota` image into its other
 # application slot (`self receive`, task p2-04).
-WHICH = ("golden", "candidate", "scanner", "self")
+WHICH = ("golden", "candidate", "scanner", "base", "self")
+
+# What `--as` takes out of the release: the manifest `use` of the file to send.
+USE_OF = {"golden": "swd", "candidate": "swd", "scanner": "swd", "base": "provision",
+          "self": "ota"}
 PROTOCOL = "walter image receive 1"
 
 
@@ -281,8 +290,8 @@ class Transfer:
 
 
 def read_release(directory, image_id=None, use="swd"):
-    """The manifest's bytes, its signature line and the file of `use` (swd for a radio, ota for the
-    Walter's own) of the chosen image."""
+    """The manifest's bytes, its signature line and the file of `use` (swd for a radio's image,
+    provision for its base, ota for the Walter's own) of the chosen image."""
     manifest_path = os.path.join(directory, "manifest.json")
     sig_path = manifest_path + ".sig"
     for path in (manifest_path, sig_path):
@@ -303,6 +312,9 @@ def read_release(directory, image_id=None, use="swd"):
     if not choices and use == "ota":
         raise Fault("no image in this manifest has an `ota` file: there is no Walter image here "
                     "(a radio's `swd` file goes with --as golden|candidate|scanner)")
+    if not choices and use == "provision":
+        raise Fault("no image in this manifest has a `provision` file: this release carries no "
+                    "base for a board (FIRMWARE-MANIFEST.md section 4a)")
     if not choices:
         raise Fault("no image in this manifest has an `swd` file: there is nothing a Walter can "
                     "flash over SWD here (an `ota` file is the Walter's own update: --as self)")
@@ -339,7 +351,7 @@ def read_release(directory, image_id=None, use="swd"):
 
 
 def push(args):
-    use = "ota" if args.which == "self" else "swd"
+    use = USE_OF[args.which]
     manifest, manifest_bytes, signature, image, entry, data = read_release(args.release, args.image, use)
     print("release %s %s, %s: %s, %d bytes, sha256 %s"
           % (manifest.get("product"), manifest.get("version"), image.get("id"),
@@ -374,10 +386,13 @@ def push(args):
                   % (sent, len(data), text))
             print("`self status` on the console shows it; `self switch` makes it the next to boot")
             return 0
-        print("stored as the %s image%s: %d of %d bytes sent, %s"
-              % (args.which, " of slot %d" % args.slot if args.slot else "", sent, len(data), text))
+        print("stored as the %s%s: %d of %d bytes sent, %s"
+              % ("base" if args.which == "base" else "%s image" % args.which,
+                 " of slot %d" % args.slot if args.slot else "", sent, len(data), text))
         print("`image list` on the console shows it; `image verify %s` reads it back out of flash"
               % args.which)
+        if args.which == "base":
+            print("nothing is written to a radio by this: that is `rak provision`, typed by a person")
         return 0
     except Fault as fault:
         print("walterctl: %s" % fault, file=sys.stderr)
@@ -406,8 +421,9 @@ def main(argv):
     p = sub.add_parser("push", help="send a release's image into the Walter's image store")
     p.add_argument("release", help="a release directory: manifest.json, its .sig, the image files")
     p.add_argument("--as", dest="which", required=True, choices=WHICH,
-                   help="which of the slot's three images to store it as; `self` for the Walter's own "
-                        "ota image, into its other application slot")
+                   help="which of the slot's three images to store it as; `base` for the board's "
+                        "provision file; `self` for the Walter's own ota image, into its other "
+                        "application slot")
     p.add_argument("--image", help="the manifest image's id, when it has more than one file of the use")
     p.add_argument("--slot", type=int, default=0, help="the radio's position (0 today)")
     where = p.add_mutually_exclusive_group(required=True)

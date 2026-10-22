@@ -10,6 +10,7 @@ const char* name(Which which) {
     case Which::kGolden: return "golden";
     case Which::kCandidate: return "candidate";
     case Which::kScanner: return "scanner";
+    case Which::kBase: return "base";
   }
   return "?";
 }
@@ -35,14 +36,17 @@ const char* describe(StoreError error) {
     case StoreError::kFlashRead: return "the flash could not be read";
     case StoreError::kFlashWrite: return "the flash could not be written";
     case StoreError::kFlashErase: return "the flash could not be erased";
-    case StoreError::kTooLarge: return "the file is larger than an image area holds";
+    case StoreError::kTooLarge: return "the file is larger than the area it would go in holds";
     case StoreError::kEmptyFile: return "there is nothing to store";
-    case StoreError::kWrongUse: return "this store holds a radio's swd images and nothing else";
+    case StoreError::kWrongUse:
+      return "this store holds a radio's swd images and the board's provision file, nothing else";
     case StoreError::kOnBadList:
       return "this image failed a health check once and is never tried again";
     case StoreError::kGoldenNotEmpty:
       return "the golden image is already there: it is replaced by a promotion, not by a load";
     case StoreError::kNeverGolden: return "the golden image is not erased";
+    case StoreError::kNotAnImage:
+      return "the base is not one of the three images: it has a door of its own";
     case StoreError::kEmpty: return "there is no image in that slot";
     case StoreError::kBusy: return "another write is open on the store";
     case StoreError::kNotWriting: return "no write is open on the store";
@@ -83,6 +87,20 @@ constexpr std::uint32_t kRecOffSize = 0x08;
 constexpr std::uint32_t kRecOffLoad = 0x0C;
 constexpr std::uint32_t kRecOffSha = 0x10;
 constexpr std::uint32_t kRecOffDescriptor = 0x30;
+// A base has no descriptor (spec/FIRMWARE-MANIFEST.md §4a), so what §4a found in it goes in those
+// same 96 bytes; the record's `use` byte says which of the two they are, and nothing reads them as
+// the other (store.h says why they share the room).
+constexpr std::uint32_t kRecOffBaseBootloader = kRecOffDescriptor + 0x00;
+constexpr std::uint32_t kRecOffBaseFlashBytes = kRecOffDescriptor + 0x04;
+constexpr std::uint32_t kRecOffBaseSdId = kRecOffDescriptor + 0x08;
+constexpr std::uint32_t kRecOffBaseSdVersion = kRecOffDescriptor + 0x0C;
+constexpr std::uint32_t kRecOffBaseMbrParams = kRecOffDescriptor + 0x10;
+constexpr std::uint32_t kRecOffBaseHasMbrParams = kRecOffDescriptor + 0x14;
+constexpr std::uint32_t kRecOffBaseUicrCount = kRecOffDescriptor + 0x16;
+constexpr std::uint32_t kRecOffBaseUicrMap = kRecOffDescriptor + 0x18;
+constexpr std::uint32_t kRecBaseUsed = 0x18 + sizeof(BaseSummary{}.uicr);
+static_assert(kRecBaseUsed <= kDescriptorSize,
+              "a base's summary must fit the room the descriptor has in a record");
 constexpr std::uint32_t kRecOffVersion = 0x90;
 constexpr std::uint32_t kRecOffCommit = 0xB0;  // 40 characters, a terminator and three pad bytes
 constexpr std::uint32_t kRecOffStoredAt = 0xDC;
@@ -110,8 +128,8 @@ constexpr std::uint32_t kIdxOffSlots = 0x05;
 constexpr std::uint32_t kIdxOffRoles = 0x06;
 constexpr std::uint32_t kIdxOffBadCount = 0x07;
 constexpr std::uint32_t kIdxOffSeq = 0x08;
-constexpr std::uint32_t kIdxOffAreas = 0x0C;  // kRadioSlots * kWhichCount bytes
-constexpr std::uint32_t kIdxOffStale = kIdxOffAreas + kRadioSlots * kWhichCount;
+constexpr std::uint32_t kIdxOffAreas = 0x0C;  // kRadioSlots * kPromotableCount bytes
+constexpr std::uint32_t kIdxOffStale = kIdxOffAreas + kRadioSlots * kPromotableCount;
 constexpr std::uint32_t kIdxOffBad = 0x18;
 constexpr std::uint32_t kIdxOffCrc = kIdxOffBad + kBadListMax * kSha256Size;
 constexpr std::uint32_t kIdxUsed = kIdxOffCrc + 4;
@@ -166,7 +184,7 @@ void StoredImage::rewind() {
 void Store::identity(Index* index) {
   *index = Index{};
   for (std::size_t s = 0; s < kRadioSlots; ++s) {
-    for (std::size_t w = 0; w < kWhichCount; ++w) {
+    for (std::size_t w = 0; w < kPromotableCount; ++w) {
       index->area_of[s][w] = static_cast<std::uint8_t>(w);
     }
     index->stale[s] = kNoArea;
@@ -180,7 +198,7 @@ bool Store::loadIndex(Index* out, std::uint8_t* from_copy) const {
     if (!region_.read(copy * kSectorSize, bytes, kIdxUsed)) continue;
     if (get32(bytes) != kIndexMagic) continue;
     if (bytes[kIdxOffFormat] != kFormatVersion) continue;
-    if (bytes[kIdxOffSlots] != kRadioSlots || bytes[kIdxOffRoles] != kWhichCount) continue;
+    if (bytes[kIdxOffSlots] != kRadioSlots || bytes[kIdxOffRoles] != kPromotableCount) continue;
     if (get32(bytes + kIdxOffCrc) != bodyCrc(bytes, kIdxOffCrc)) continue;
     const std::uint32_t seq = get32(bytes + kIdxOffSeq);
     if (found && seq <= out->seq) continue;
@@ -190,15 +208,17 @@ bool Store::loadIndex(Index* out, std::uint8_t* from_copy) const {
     index.seq = seq;
     bool sane = true;
     for (std::size_t s = 0; s < kRadioSlots; ++s) {
-      bool used[kWhichCount] = {};
-      for (std::size_t w = 0; w < kWhichCount; ++w) {
-        const std::uint8_t area = bytes[kIdxOffAreas + s * kWhichCount + w];
-        if (area >= kWhichCount || used[area]) sane = false;  // not a permutation: not an index
+      bool used[kPromotableCount] = {};
+      for (std::size_t w = 0; w < kPromotableCount; ++w) {
+        const std::uint8_t area = bytes[kIdxOffAreas + s * kPromotableCount + w];
+        // A permutation of the three image areas and nothing else: the base's area is not in the
+        // index, and an index that pointed an image at it would point it at a smaller area.
+        if (area >= kPromotableCount || used[area]) sane = false;
         else used[area] = true;
         index.area_of[s][w] = area;
       }
       const std::uint8_t stale = bytes[kIdxOffStale + s];
-      if (stale != kNoArea && stale >= kWhichCount) sane = false;
+      if (stale != kNoArea && stale >= kPromotableCount) sane = false;
       index.stale[s] = stale;
     }
     if (!sane) continue;
@@ -220,12 +240,12 @@ StoreError Store::writeIndex(const Index& next) {
   std::uint8_t bytes[kIdxUsed] = {};
   bytes[kIdxOffFormat] = kFormatVersion;
   bytes[kIdxOffSlots] = static_cast<std::uint8_t>(kRadioSlots);
-  bytes[kIdxOffRoles] = static_cast<std::uint8_t>(kWhichCount);
+  bytes[kIdxOffRoles] = static_cast<std::uint8_t>(kPromotableCount);
   bytes[kIdxOffBadCount] = next.bad_count;
   put32(bytes + kIdxOffSeq, index_.seq + 1);
   for (std::size_t s = 0; s < kRadioSlots; ++s) {
-    for (std::size_t w = 0; w < kWhichCount; ++w) {
-      bytes[kIdxOffAreas + s * kWhichCount + w] = next.area_of[s][w];
+    for (std::size_t w = 0; w < kPromotableCount; ++w) {
+      bytes[kIdxOffAreas + s * kPromotableCount + w] = next.area_of[s][w];
     }
     bytes[kIdxOffStale + s] = next.stale[s];
   }
@@ -284,6 +304,9 @@ StoreError Store::begin() {
 
 std::uint8_t Store::areaOf(Which which, board::Slot slot) const {
   if (slot.index >= kRadioSlots) return kNoArea;
+  // The base's area is the same one for ever: nothing points at it, so nothing can be made to
+  // point somewhere else (store.h, the index).
+  if (which == Which::kBase) return kBaseArea;
   return index_.area_of[slot.index][static_cast<std::size_t>(which)];
 }
 
@@ -309,9 +332,22 @@ bool Store::readRecord(std::uint32_t header, Record* out) const {
   out->size = get32(bytes + kRecOffSize);
   out->load_address = get32(bytes + kRecOffLoad);
   std::memcpy(out->sha256, bytes + kRecOffSha, kSha256Size);
-  // The 96 bytes are kept verbatim, so they are read back with §4's own parser: magic, length
-  // and CRC. A record whose copy of the descriptor does not parse is not a record.
-  if (!parse(bytes + kRecOffDescriptor, kDescriptorSize, &out->descriptor)) {
+  if (out->use == Use::kProvision) {
+    // A base: those 96 bytes are what §4a found in the file, not a descriptor (§4a: a base
+    // carries none).
+    out->base = BaseSummary{};
+    out->base.bootloader = get32(bytes + kRecOffBaseBootloader);
+    out->base.flash_bytes = get32(bytes + kRecOffBaseFlashBytes);
+    out->base.softdevice_id = get32(bytes + kRecOffBaseSdId);
+    out->base.softdevice_version = get32(bytes + kRecOffBaseSdVersion);
+    out->base.mbr_params = get32(bytes + kRecOffBaseMbrParams);
+    out->base.has_mbr_params = bytes[kRecOffBaseHasMbrParams] != 0;
+    out->base.uicr_word_count = static_cast<std::uint16_t>(
+        bytes[kRecOffBaseUicrCount] | (bytes[kRecOffBaseUicrCount + 1] << 8));
+    std::memcpy(out->base.uicr, bytes + kRecOffBaseUicrMap, sizeof out->base.uicr);
+  } else if (!parse(bytes + kRecOffDescriptor, kDescriptorSize, &out->descriptor)) {
+    // An image's 96 bytes are kept verbatim, so they are read back with §4's own parser: magic,
+    // length and CRC. A record whose copy of the descriptor does not parse is not a record.
     out->present = false;
     return false;
   }
@@ -431,11 +467,21 @@ StoreError Store::beginWrite(Which which, board::Slot slot, const ExpectedFile& 
   if (!ready_) return StoreError::kRegionTooSmall;
   if (slot.index >= kRadioSlots) return StoreError::kNoSuchSlot;
   if (writing_) return StoreError::kBusy;
-  if (expected.use() != Use::kSwd) return StoreError::kWrongUse;
+  // An `swd` file into one of the three images, a `provision` file into the base, and nothing
+  // else either way: the base is not an image (spec/FIRMWARE-MANIFEST.md §4a).
+  const bool base = which == Which::kBase;
+  const Use wanted = base ? Use::kProvision : Use::kSwd;
+  if (expected.use() != Use::kSwd && expected.use() != Use::kProvision) {
+    return StoreError::kWrongUse;
+  }
+  if (expected.use() != wanted) return StoreError::kNotAnImage;
   if (expected.slot() != slot) return StoreError::kNoSuchSlot;
   if (expected.size() == 0) return StoreError::kEmptyFile;
-  if (expected.size() > kImageBytesMax) return StoreError::kTooLarge;
-  if (isBad(expected.sha256())) return StoreError::kOnBadList;
+  if (expected.size() > areaCapacity(which)) return StoreError::kTooLarge;
+  // The bad list is about images that failed a health check (task p2-03). A base is not
+  // health-checked - S-5a's read-back of every word is its check - so it is not on that list and
+  // not held to it.
+  if (!base && isBad(expected.sha256())) return StoreError::kOnBadList;
 
   const std::uint32_t header = headerOffset(which, slot);
   Record existing;
@@ -548,15 +594,7 @@ StoreError Store::endWrite() {
   return written_ == write_size_ ? StoreError::kNone : StoreError::kSizeMismatch;
 }
 
-StoreError Store::commit(const AcceptedImage& token) {
-  if (!writing_) return StoreError::kNotWriting;
-  if (buffered_ != 0 || written_ != write_size_) return StoreError::kSizeMismatch;
-  // The token must be the verdict over the very file these bytes were written for.
-  if (token.use() != write_use_ || token.slot() != write_slot_ ||
-      token.file().size != write_size_ || !sha256Equal(token.sha256(), write_sha256_)) {
-    return StoreError::kTokenMismatch;
-  }
-
+StoreError Store::readBackAndCheck() {
   // The bytes are in place: read them back out of flash and hash them. A record is never made
   // valid over bytes nobody has read.
   Sha256 hash;
@@ -570,7 +608,12 @@ StoreError Store::commit(const AcceptedImage& token) {
   std::uint8_t digest[kSha256Size];
   hash.finish(digest);
   if (!sha256Equal(digest, write_sha256_)) return StoreError::kHashMismatch;
+  return StoreError::kNone;
+}
 
+StoreError Store::writeRecord(const Fields* descriptor, const BaseSummary* base,
+                              const char* version, const char* commit_hex,
+                              const std::uint8_t* key_id) {
   std::uint32_t stored_at = 0;
   interfaces::WallTime when{};
   if (clock_.now(&when)) stored_at = when.epoch;
@@ -583,26 +626,67 @@ StoreError Store::commit(const AcceptedImage& token) {
   put32(bytes + kRecOffSize, write_size_);
   put32(bytes + kRecOffLoad, write_load_address_);
   std::memcpy(bytes + kRecOffSha, write_sha256_, kSha256Size);
-  // The descriptor is kept as the 96 bytes of §4, rebuilt from the fields the verdict read out
-  // of the image itself, so that `image list` and the update's health check read it with the same
-  // parser the image was checked with.
-  const Built built = build(token.descriptor());
-  if (!built.ok) return StoreError::kTokenMismatch;  // a descriptor that cannot be rebuilt
-  std::memcpy(bytes + kRecOffDescriptor, built.descriptor.bytes, kDescriptorSize);
-  std::memcpy(bytes + kRecOffVersion, token.version(), kVersionSize - 1);
-  std::memcpy(bytes + kRecOffCommit, token.commit(), kCommitSize);
+  if (descriptor != nullptr) {
+    // The descriptor is kept as the 96 bytes of §4, rebuilt from the fields the verdict read out
+    // of the image itself, so that `image list` and the update's health check read it with the
+    // same parser the image was checked with.
+    const Built built = build(*descriptor);
+    if (!built.ok) return StoreError::kTokenMismatch;  // a descriptor that cannot be rebuilt
+    std::memcpy(bytes + kRecOffDescriptor, built.descriptor.bytes, kDescriptorSize);
+  } else if (base != nullptr) {
+    put32(bytes + kRecOffBaseBootloader, base->bootloader);
+    put32(bytes + kRecOffBaseFlashBytes, base->flash_bytes);
+    put32(bytes + kRecOffBaseSdId, base->softdevice_id);
+    put32(bytes + kRecOffBaseSdVersion, base->softdevice_version);
+    put32(bytes + kRecOffBaseMbrParams, base->mbr_params);
+    bytes[kRecOffBaseHasMbrParams] = base->has_mbr_params ? 1 : 0;
+    bytes[kRecOffBaseUicrCount] = static_cast<std::uint8_t>(base->uicr_word_count);
+    bytes[kRecOffBaseUicrCount + 1] = static_cast<std::uint8_t>(base->uicr_word_count >> 8);
+    std::memcpy(bytes + kRecOffBaseUicrMap, base->uicr, sizeof base->uicr);
+  }
+  std::memcpy(bytes + kRecOffVersion, version, kVersionSize - 1);
+  std::memcpy(bytes + kRecOffCommit, commit_hex, kCommitSize);
   put32(bytes + kRecOffStoredAt, stored_at);
-  std::memcpy(bytes + kRecOffKeyId, token.keyId(), kKeyIdSize);
+  std::memcpy(bytes + kRecOffKeyId, key_id, kKeyIdSize);
   put32(bytes + kRecOffCrc, bodyCrc(bytes, kRecOffCrc));
   put32(bytes, kRecordMagic);
 
   if (!region_.write(write_header_ + 4, bytes + 4, kRecOffCrc + 4 - 4)) {
     return StoreError::kFlashWrite;
   }
-  // The one final small write that makes the record - and the image - exist.
+  // The one final small write that makes the record - and what it describes - exist.
   if (!region_.write(write_header_, bytes, 4)) return StoreError::kFlashWrite;
   writing_ = false;
   return StoreError::kNone;
+}
+
+StoreError Store::commit(const AcceptedImage& token) {
+  if (!writing_) return StoreError::kNotWriting;
+  if (write_which_ == Which::kBase) return StoreError::kNotAnImage;
+  if (buffered_ != 0 || written_ != write_size_) return StoreError::kSizeMismatch;
+  // The token must be the verdict over the very file these bytes were written for.
+  if (token.use() != write_use_ || token.slot() != write_slot_ ||
+      token.file().size != write_size_ || !sha256Equal(token.sha256(), write_sha256_)) {
+    return StoreError::kTokenMismatch;
+  }
+  const StoreError read_back = readBackAndCheck();
+  if (read_back != StoreError::kNone) return read_back;
+  const Fields descriptor = token.descriptor();
+  return writeRecord(&descriptor, nullptr, token.version(), token.commit(), token.keyId());
+}
+
+StoreError Store::commitBase(const AcceptedBase& token) {
+  if (!writing_) return StoreError::kNotWriting;
+  if (write_which_ != Which::kBase) return StoreError::kNotAnImage;
+  if (buffered_ != 0 || written_ != write_size_) return StoreError::kSizeMismatch;
+  if (token.use() != write_use_ || token.slot() != write_slot_ ||
+      token.file().size != write_size_ || !sha256Equal(token.sha256(), write_sha256_)) {
+    return StoreError::kTokenMismatch;
+  }
+  const StoreError read_back = readBackAndCheck();
+  if (read_back != StoreError::kNone) return read_back;
+  const BaseSummary summary = token.summary();
+  return writeRecord(nullptr, &summary, token.version(), token.commit(), token.keyId());
 }
 
 void Store::abandonWrite() {
@@ -674,6 +758,7 @@ StoreError Store::erase(Which which, board::Slot slot) {
   if (slot.index >= kRadioSlots) return StoreError::kNoSuchSlot;
   if (which == Which::kGolden) return StoreError::kNeverGolden;
   if (writing_ && write_which_ == which && write_slot_ == slot) return StoreError::kBusy;
+  // The base goes the same way the candidate and the scanner image do: `image erase base`.
   const std::uint32_t header = headerOffset(which, slot);
   const StoreError e = invalidate(header);
   if (e != StoreError::kNone) return e;

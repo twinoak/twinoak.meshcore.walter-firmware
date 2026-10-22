@@ -97,6 +97,8 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakSwdId:
     case Verb::kRakSwdMem:
     case Verb::kRakFlashTest:
+    case Verb::kRakProvisionCheck:
+    case Verb::kRakProvision:
     case Verb::kRakUpdate:
     case Verb::kRakUpdateFirstInstall:
     case Verb::kRakUpdateStatus:
@@ -119,12 +121,14 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::SelfUpdate* self, supervisor::Supervisor* supervisor,
                  uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
                  net::TrustLoader* trust, settings::Settings* settings,
-                 update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle)
+                 update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
+                 update::BatterySource* battery)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
-      flasher_(pins, clock, slots) {}
+      flasher_(pins, clock, slots),
+      provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
   if (slots_.exists(slot)) return true;
@@ -419,6 +423,8 @@ void Console::runLine(const char* line) {
     case Verb::kRakSwdId: rakSwdId(); return;
     case Verb::kRakSwdMem: rakSwdMem(p.command.address, p.command.words); return;
     case Verb::kRakFlashTest: rakFlashTest(); return;
+    case Verb::kRakProvisionCheck: rakProvisionCheck(); return;
+    case Verb::kRakProvision: rakProvision(p.command.text, p.command.on); return;
     case Verb::kTrust: trust(); return;
     case Verb::kImageList: imageList(); return;
     case Verb::kImageVerify: imageVerify(static_cast<image::Which>(p.command.which)); return;
@@ -609,6 +615,9 @@ void Console::status() {
       const image::StoreError e = images_->read(which, board::Slot{0}, &record);
       if (e != image::StoreError::kNone) {
         printf(" %s=%s", image::name(which), image::describe(e));
+      } else if (record.present && which == image::Which::kBase) {
+        // A base has no version of ours to print (§4a): the bootloader's address says which it is.
+        printf(" base=0x%08lx", static_cast<unsigned long>(record.base.bootloader));
       } else if (record.present) {
         printf(" %s=%s", image::name(which), record.descriptor.version);
       } else {
@@ -1336,6 +1345,254 @@ void Console::rakFlashTest() {
   printFlashResult("rak flash-test", r);
 }
 
+// ---------------------------------------------------------------------- the radio's base (p5-03)
+//
+// rak provision check, and rak provision <radio> confirm: spec/SYSTEM.md S-5a on
+// core/provision/provision.h. The console makes the grant from the typed word - this file is
+// the one place a parsed verb becomes a grant (rail R3b) - and prints each step as the sequence
+// ends it, then one line for the outcome. docs/provisioning.md is the session, replayed by a
+// host test.
+
+class Console::ProvisionPrinter final : public provision::StepListener {
+ public:
+  explicit ProvisionPrinter(Console& console) : console_(console) {}
+  void onStep(provision::Step step, const provision::Result& r) override {
+    console_.printProvisionStep(step, r);
+  }
+
+ private:
+  Console& console_;
+};
+
+namespace {
+
+namespace prov = core::provision;
+
+// Defined below, with the image store's commands.
+void hashHex(const std::uint8_t* hash, std::size_t bytes, char* out);
+
+const char* portWord(bool open) { return open ? "open" : "CLOSED"; }
+
+// The base's one line: its hash, the bootloader's address, which SoftDevice.
+void baseSummaryLine(char* buf, std::size_t size, const prov::Result& r) {
+  char hash[17];
+  hashHex(r.base_sha256, 8, hash);
+  const unsigned long v = r.base.softdevice_version;
+  std::snprintf(buf, size, "sha256 %s..., bootloader 0x%08lx, S%lu %lu.%lu.%lu, %lu bytes of flash, %u UICR words",
+                hash, static_cast<unsigned long>(r.base.bootloader),
+                static_cast<unsigned long>(r.base.softdevice_id), v / 1000000u, (v / 1000u) % 1000u,
+                v % 1000u, static_cast<unsigned long>(r.base.flash_bytes),
+                static_cast<unsigned>(r.base.uicr_word_count));
+}
+
+}  // namespace
+
+void Console::rakProvisionCheck() {
+  const flasher::BoardProfile* profile = flasher::profileForSlot(slot_);
+  printf("rak provision check: slot %u, %s; nothing is written\n", static_cast<unsigned>(slot_.index),
+         profile != nullptr ? profile->name : "no board profile");
+  const prov::Result r = provision_.check(slot_);
+  // The store.
+  if (r.base_present && r.check_status != prov::Status::kBaseRefused && r.check_status != prov::Status::kBaseUnreadable) {
+    char line[160];
+    baseSummaryLine(line, sizeof line, r);
+    printf("  base: %s; check 5p again over the stored bytes: ok (%lu ms)\n", line,
+           static_cast<unsigned long>(r.base_check_ms));
+  } else if (r.check_status == prov::Status::kBaseRefused) {
+    printf("  base: refused at check 5p: %s\n", r.why);
+  } else if (r.check_status == prov::Status::kBaseUnreadable) {
+    printf("  base: %s\n", prov::describe(r.check_status));
+  } else {
+    printf("  base: %s\n", prov::describe(prov::Status::kNoBase));
+  }
+  // The battery.
+  if (!r.battery_known) {
+    print("  battery: unknown (no reading over the link); accepted, as a first install accepts it\n");
+  } else if (r.check_status == prov::Status::kBatteryLow || r.check_status == prov::Status::kBatteryFalling) {
+    printf("  battery: %lu mV: %s\n", static_cast<unsigned long>(r.battery_mv), prov::describe(r.check_status));
+  } else {
+    printf("  battery: %lu mV\n", static_cast<unsigned long>(r.battery_mv));
+  }
+  // The radio.
+  if (!r.attached) {
+    char line[160];
+    if (r.status == prov::Status::kPins) {
+      printf("error: rak provision check: %s: %s\n", prov::describe(r.status), board::describe(r.pins));
+    } else {
+      describeFailure(line, sizeof line, "rak provision check", r.nrf);
+      printf("%s\n", line);
+    }
+    return;
+  }
+  printf("  swd: DPIDR 0x%08lx; control access port IDR 0x%08lx; protection: %s%s\n",
+         static_cast<unsigned long>(r.dpidr), static_cast<unsigned long>(r.ctrl_ap_idr),
+         portWord(r.port_open_at_attach),
+         r.port_open_at_attach ? "" : " (the identity is readable only after the erase)");
+  if (r.port_open_at_attach) {
+    printf("  chip: nRF52840, variant %s: %s\n", r.variant.text, prov::describe(r.variant.kind));
+    printf("  device id %08lx%08lx\n", static_cast<unsigned long>(r.identity.device_id[1]),
+           static_cast<unsigned long>(r.identity.device_id[0]));
+  } else if (r.application_answered) {
+    printf("  link: an application answers HELLO: public key %s... ('rak id'); it is named before it is erased\n",
+           r.key16);
+  } else {
+    print("  link: no application answers HELLO\n");
+  }
+  if (r.check_status != prov::Status::kOk) {
+    printf("  the command would be refused at step 1: %s\n", prov::describe(r.check_status));
+  }
+  if (r.status == prov::Status::kVariantUnknown) {
+    print("  the command would be refused at step 3: INFO.VARIANT is not in the table; nothing would be erased\n");
+  }
+  if (r.next[0] != 0) printf("  next: %s\n", r.next);
+}
+
+void Console::printProvisionStep(prov::Step step, const prov::Result& r) {
+  const unsigned long ms = r.step_ms[static_cast<std::size_t>(step)];
+  char line[160];
+  switch (step) {
+    case prov::Step::kCheck:
+      baseSummaryLine(line, sizeof line, r);
+      printf("  [1/7] checked: the base %s;\n", line);
+      if (r.battery_known) {
+        printf("        battery %lu mV; the slot is free (%lu ms)\n", static_cast<unsigned long>(r.battery_mv), ms);
+      } else {
+        printf("        battery unknown (no reading over the link: accepted); the slot is free (%lu ms)\n", ms);
+      }
+      return;
+    case prov::Step::kAttach:
+      if (r.port_open_at_attach) {
+        printf("  [2/7] attached: DPIDR 0x%08lx, protection open; nRF52840 %s, device id %08lx%08lx, as typed (%lu ms)\n",
+               static_cast<unsigned long>(r.dpidr), r.variant.text,
+               static_cast<unsigned long>(r.identity.device_id[1]),
+               static_cast<unsigned long>(r.identity.device_id[0]), ms);
+      } else {
+        printf("  [2/7] attached: DPIDR 0x%08lx, protection CLOSED; the link: %s (%lu ms)\n",
+               static_cast<unsigned long>(r.dpidr),
+               r.application_answered ? "an application answers HELLO, and it is the one named"
+                                      : "no application answers HELLO, as 'locked' says",
+               ms);
+      }
+      return;
+    case prov::Step::kVariant:
+      printf("  [3/7] variant %s: %s (%lu ms)\n", r.variant.text, prov::describe(r.variant.kind), ms);
+      return;
+    case prov::Step::kErase:
+      printf("  [4/7] erased: CTRL-AP ERASEALL; the port %s; flash, NRFFW[0] and APPROTECT blank; the core halted (%lu ms)\n",
+             r.soft_reset_done ? "open after one CTRL-AP soft reset (the only reset until step 7)"
+                               : "open after it (no soft reset needed)",
+             ms);
+      return;
+    case prov::Step::kWrite:
+      printf("  [5/7] written: %lu flash words in %lu runs, %lu UICR words, UICR.APPROTECT %s (%lu ms)\n",
+             static_cast<unsigned long>(r.flash_words), static_cast<unsigned long>(r.flash_runs),
+             static_cast<unsigned long>(r.uicr_words),
+             r.approtect_written == prov::kErasedWord ? "left erased (legacy)" : "= 0x0000005a", ms);
+      return;
+    case prov::Step::kVerify:
+      printf("  [6/7] verified: %lu words read back and equal; UICR.APPROTECT reads 0x%08lx (%lu ms)\n",
+             static_cast<unsigned long>(r.verified_words), static_cast<unsigned long>(r.approtect_read), ms);
+      return;
+    case prov::Step::kReset:
+      if (r.port_open_after_reset) {
+        printf("  [7/7] reset: one pin reset (waited %lu ms for the spacing), the bootloader given %lu ms; the port after it open, NRFFW[0] 0x%08lx (%lu ms)\n",
+               static_cast<unsigned long>(r.reset_wait_ms), static_cast<unsigned long>(prov::kBootloaderSettleMs),
+               static_cast<unsigned long>(r.nrffw0_after), ms);
+      } else {
+        printf("  [7/7] reset: one pin reset (waited %lu ms for the spacing), the bootloader given %lu ms; the port after it CLOSED (%lu ms)\n",
+               static_cast<unsigned long>(r.reset_wait_ms), static_cast<unsigned long>(prov::kBootloaderSettleMs), ms);
+      }
+      return;
+    case prov::Step::kNone:
+    case prov::Step::kDone:
+      return;
+  }
+}
+
+void Console::printProvisionRefusal(const prov::Result& r) {
+  char detail[192] = "";
+  switch (r.status) {
+    case prov::Status::kBaseRefused:
+      std::snprintf(detail, sizeof detail, ": %.150s", r.why);  // §4a's longest sentence is 119
+      break;
+    case prov::Status::kPins:
+    case prov::Status::kResetFailed:
+    case prov::Status::kLookFailed:
+      if (r.pins != board::Outcome::kOk) std::snprintf(detail, sizeof detail, ": %s", board::describe(r.pins));
+      break;
+    case prov::Status::kSwd:
+    case prov::Status::kHaltFailed:
+    case prov::Status::kVerifyFailed:
+      std::snprintf(detail, sizeof detail, ": %s", nrf52::describe(r.nrf.status));
+      break;
+    case prov::Status::kDoor:
+    case prov::Status::kEraseFailed:
+    case prov::Status::kWriteFailed:
+      std::snprintf(detail, sizeof detail, ": %s", nrf52::describe(r.door.status));
+      break;
+    case prov::Status::kVerifyMismatch:
+      if (r.mismatch_address != 0) {
+        std::snprintf(detail, sizeof detail, ": at 0x%08lx the base says 0x%08lx and the radio reads 0x%08lx",
+                      static_cast<unsigned long>(r.mismatch_address), static_cast<unsigned long>(r.mismatch_expected),
+                      static_cast<unsigned long>(r.mismatch_actual));
+      } else {
+        std::snprintf(detail, sizeof detail, ": UICR.APPROTECT should read 0x%08lx and reads 0x%08lx",
+                      static_cast<unsigned long>(r.mismatch_expected), static_cast<unsigned long>(r.mismatch_actual));
+      }
+      break;
+    case prov::Status::kNotBlank:
+    case prov::Status::kApplicationAnswers:
+      if (r.application_answered) std::snprintf(detail, sizeof detail, " (public key %s...)", r.key16);
+      break;
+    default:
+      break;
+  }
+  printf("error: rak provision: refused at step %u (%s): %s%s\n", static_cast<unsigned>(r.ended),
+         prov::describe(r.ended), prov::describe(r.status), detail);
+  if (r.erased) {
+    print("  the radio is erased: run the command again from the top ('rak provision check' says what to type)\n");
+  } else {
+    print("  nothing was erased\n");
+  }
+  if (r.next[0] != 0 && !r.erased) printf("  next: %s\n", r.next);
+}
+
+void Console::rakProvision(const char* radio, bool confirmed) {
+  if (!confirmed) {
+    printf("rak provision %s: would erase the radio whole - RUI3, any identity, UICR - through the CTRL-AP\n", radio);
+    printf("  and write the base from the store; to do it, type: rak provision %s %s\n", radio, kConfirmWord);
+    return;
+  }
+  nrf52::ProvisionGrant grant = nrf52::grantFromTypedCommand(radio);
+  if (!grant.valid()) {
+    printf("error: rak provision: %s; 'rak provision check' says what to type\n",
+           prov::describe(prov::Status::kGrantMalformed));
+    return;
+  }
+  printf("rak provision: slot %u, %s: S-5a's seven steps; nothing is written before step 4, each printed as it ends\n",
+         static_cast<unsigned>(slot_.index), radio);
+  ProvisionPrinter printer(*this);
+  const prov::Result r = provision_.run(slot_, static_cast<nrf52::ProvisionGrant&&>(grant), &printer);
+  if (!r.ok()) {
+    printProvisionRefusal(r);
+    return;
+  }
+  char hash[17];
+  hashHex(r.base_sha256, 8, hash);
+  printf("rak provision: PROVISIONED slot %u: device id %08lx%08lx, variant %s, base sha256 %s..., port after the reset %s; %lu s in all\n",
+         static_cast<unsigned>(slot_.index), static_cast<unsigned long>(r.identity.device_id[1]),
+         static_cast<unsigned long>(r.identity.device_id[0]), r.variant.text, hash,
+         portWord(r.port_open_after_reset), static_cast<unsigned long>((r.total_ms + 999u) / 1000u));
+  if (!r.port_open_after_reset) {
+    print("  the access port is CLOSED after the reset: this bootloader does not copy UICR.APPROTECT into APPROTECT.DISABLE on a\n"
+          "  revision 3 part (spec/SYSTEM.md 10.2). The radio works - a UF2 drive on its USB - and the flasher cannot reach it until\n"
+          "  that is solved; the base was verified word for word before the reset\n");
+  }
+  print("  the slot awaits its first install: the supervisor leaves the radio alone until 'rak update --first-install' commits\n");
+  print("  next: python tools/walterctl.py push --port <port> --as candidate <release-dir>\n"
+        "        rak update --first-install\n");
+}
+
 // ----------------------------------------------------------------------- the trust table (p2-01)
 //
 // trust: the key ids this build accepts a release manifest signed with (spec/FIRMWARE-MANIFEST.md
@@ -1397,6 +1654,27 @@ bool Console::imagesOk() {
   return false;
 }
 
+// The base's lines: what §4a found in the file, out of the record (spec/FIRMWARE-MANIFEST.md
+// §4a; the record keeps the summary where an image keeps its descriptor).
+void Console::baseLines(const image::Record& record) {
+  char hash[17];
+  hashHex(record.sha256, 8, hash);
+  const unsigned long v = static_cast<unsigned long>(record.base.softdevice_version);
+  printf("the board's base, %lu bytes, sha256 %s..., bootloader 0x%08lx\n",
+         static_cast<unsigned long>(record.size), hash,
+         static_cast<unsigned long>(record.base.bootloader));
+  printf("             S%lu %lu.%lu.%lu, %lu bytes of flash, %u UICR words",
+         static_cast<unsigned long>(record.base.softdevice_id), v / 1000000, (v / 1000) % 1000,
+         v % 1000, static_cast<unsigned long>(record.base.flash_bytes),
+         static_cast<unsigned>(record.base.uicr_word_count));
+  if (record.base.has_mbr_params) {
+    printf(", the MBR's parameter page at 0x%08lx\n",
+           static_cast<unsigned long>(record.base.mbr_params));
+  } else {
+    print("\n");
+  }
+}
+
 void Console::imageOneLine(const image::Record& record) {
   printf("  %-9s  ", image::name(record.which));
   if (!record.present) {
@@ -1411,14 +1689,18 @@ void Console::imageOneLine(const image::Record& record) {
     print("empty\n");
     return;
   }
-  const char* role = image::role_name(record.descriptor.role);
-  char hash[17];
-  hashHex(record.sha256, 8, hash);
-  printf("%s %s %s %s, %lu bytes at 0x%08lx, sha256 %s..., area %u\n",
-         role != nullptr ? role : "?", record.descriptor.board, record.descriptor.band,
-         record.descriptor.version, static_cast<unsigned long>(record.size),
-         static_cast<unsigned long>(record.load_address), hash,
-         static_cast<unsigned>(images_->areaOf(record.which, record.slot)));
+  if (record.use == image::Use::kProvision) {
+    baseLines(record);
+  } else {
+    const char* role = image::role_name(record.descriptor.role);
+    char hash[17];
+    hashHex(record.sha256, 8, hash);
+    printf("%s %s %s %s, %lu bytes at 0x%08lx, sha256 %s..., area %u\n",
+           role != nullptr ? role : "?", record.descriptor.board, record.descriptor.band,
+           record.descriptor.version, static_cast<unsigned long>(record.size),
+           static_cast<unsigned long>(record.load_address), hash,
+           static_cast<unsigned>(images_->areaOf(record.which, record.slot)));
+  }
   char key[image::kKeyIdHexSize + 1];
   image::keyIdHex(record.key_id, key);
   if (record.stored_at != 0) {
@@ -1432,12 +1714,16 @@ void Console::imageOneLine(const image::Record& record) {
 
 void Console::imageList() {
   if (!imagesOk()) return;
-  printf("image store: %u slots x %u images of %lu bytes (%lu sectors) and a header sector each,\n"
-         "  and %lu index sectors: %lu bytes of a %lu-byte partition, %lu left; index sequence %lu\n",
-         static_cast<unsigned>(image::kRadioSlots), static_cast<unsigned>(image::kWhichCount),
+  printf("image store: %u slots x %u images of %lu bytes (%lu sectors) and a header sector each,\n",
+         static_cast<unsigned>(image::kRadioSlots),
+         static_cast<unsigned>(image::kPromotableCount),
          static_cast<unsigned long>(image::kImageBytesMax),
-         static_cast<unsigned long>(image::kDataSectors),
-         static_cast<unsigned long>(image::kIndexCopies),
+         static_cast<unsigned long>(image::kDataSectors));
+  printf("  plus one base of %lu bytes (%lu sectors) a slot, and %lu index sectors:\n",
+         static_cast<unsigned long>(image::kBaseBytesMax),
+         static_cast<unsigned long>(image::kBaseSectors),
+         static_cast<unsigned long>(image::kIndexCopies));
+  printf("  %lu bytes of a %lu-byte partition, %lu left; index sequence %lu\n",
          static_cast<unsigned long>(image::kStoreBytes),
          static_cast<unsigned long>(image::kPartitionBytes),
          static_cast<unsigned long>(image::kPartitionBytes - image::kStoreBytes),
@@ -1464,6 +1750,43 @@ void Console::imageList() {
   }
 }
 
+// `image verify base`: the hash out of flash, and then §4a's seven rules over the same bytes
+// against **this build's** region for the board - check 5p again, on the bytes as they lie in the
+// Walter's own flash, because that is what task p5-03 will write to a radio.
+void Console::verifyBase(const image::Record& record) {
+  const flasher::BoardProfile* profile = flasher::profileForSlot(slot_);
+  if (profile == nullptr) {
+    print("base: this adapter has no radio in that slot, so there is no region to judge it "
+          "against\n");
+    return;
+  }
+  image::StoredImage stored;
+  const image::StoreError opened = images_->open(image::Which::kBase, slot_, &stored);
+  if (opened != image::StoreError::kNone) {
+    printf("error: %s\n", image::describe(opened));
+    return;
+  }
+  const image::BaseResult result = base_reader_.read(stored, profile->app.begin, profile->app.end);
+  if (!result.ok()) {
+    printf("base: check 5p over the stored bytes: %s: %s\n", image::describe(result.reason),
+           result.why);
+    return;
+  }
+  printf("base: check 5p over the stored bytes: a base for %s (0x%08lx to 0x%08lx), bootloader "
+         "0x%08lx,\n", profile->name, static_cast<unsigned long>(profile->app.begin),
+         static_cast<unsigned long>(profile->app.end),
+         static_cast<unsigned long>(result.summary.bootloader));
+  printf("  %lu bytes of flash in %u runs, %u UICR words - the same as its record says\n",
+         static_cast<unsigned long>(result.summary.flash_bytes),
+         static_cast<unsigned>(result.runs.count),
+         static_cast<unsigned>(result.summary.uicr_word_count));
+  if (result.summary.bootloader != record.base.bootloader ||
+      result.summary.flash_bytes != record.base.flash_bytes ||
+      result.summary.uicr_word_count != record.base.uicr_word_count) {
+    print("  WRONG: the record and the bytes disagree about what this base is\n");
+  }
+}
+
 void Console::imageVerify(image::Which which) {
   if (!imagesOk() || !slotOk(slot_)) return;
   image::Record record;
@@ -1481,12 +1804,13 @@ void Console::imageVerify(image::Which which) {
   const image::StoreError e = images_->verify(which, slot_);
   const unsigned long ms = static_cast<unsigned long>(clock_.nowMs() - t0);
   if (e != image::StoreError::kNone) {
-    printf("error: %s %s: %s\n", image::name(which), record.descriptor.version,
-           image::describe(e));
+    printf("error: %s %s: %s\n", image::name(which),
+           which == image::Which::kBase ? "" : record.descriptor.version, image::describe(e));
     return;
   }
   printf("%s: %lu bytes read back and hashed in %lu ms: the SHA-256 is the one in its record\n",
          image::name(which), static_cast<unsigned long>(record.size), ms);
+  if (which == image::Which::kBase) verifyBase(record);
 }
 
 void Console::imageErase(image::Which which) {
@@ -1523,13 +1847,18 @@ void Console::imageReceive(image::Which which) {
   }
   const image::SlotNeeds& needs = receiver_->needs();
   // One printf a line: Console::printf writes into a 200-byte buffer and cuts what does not fit.
-  printf("image receive: slot %u's %s image; this port is now a framed binary transfer\n",
-         static_cast<unsigned>(slot_.index), image::name(which));
+  const bool base = which == image::Which::kBase;
+  printf("image receive: slot %u's %s; this port is now a framed binary transfer\n",
+         static_cast<unsigned>(slot_.index), base ? "base" : image::name(which));
   print("  (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,\n");
   printf("  then the file: tools/walterctl.py push --as %s\n", image::name(which));
-  printf("  what will be accepted: role %s, board %s, band %s, and all six checks of\n",
-         needs.role, needs.board, needs.band);
+  printf("  what will be accepted: role %s, board %s, band %s, and %s of\n", needs.role,
+         needs.board, needs.band, base ? "checks 1 to 4 and 5p" : "all six checks");
   print("  FIRMWARE-MANIFEST section 5 run here - the laptop is not trusted\n");
+  if (base) {
+    print("  (a base is the board's MBR, SoftDevice and bootloader as Intel HEX, section 4a: it\n"
+          "  is written to a radio only by `rak provision`, and by nothing automatic)\n");
+  }
 }
 
 void Console::transferEnded() {
@@ -1577,6 +1906,9 @@ void Console::printUpdateOutcome() {
   const update::Status& st = update_->status();
   char hash[17];
   hashHex(st.sha256, 8, hash);
+  // A first install that committed clears the slot's "awaiting its first install" (task p5-03)
+  // now, not at the next heartbeat.
+  if (supervisor_ != nullptr) supervisor_->noticeFirstInstall();
   switch (st.state) {
     case update::State::kDone:
       if (st.kind == update::Kind::kRoleScanner) {
@@ -2030,6 +2362,11 @@ void Console::rakWatch() {
   }
   if (w.counts_from_journal) {
     print("  the counts were read back from the journal: a power cut cleared the retained record\n");
+  }
+  if (w.awaiting_first_install) {
+    printf("the slot awaits its first install (rak provision, journal entry %lu): the ladder is not climbed for a silent radio\n"
+           "  until 'rak update --first-install' commits\n",
+           static_cast<unsigned long>(w.awaiting_since_seq));
   }
   if (w.battery_known) {
     printf("battery: %lu mV, read %lu s ago (a power cycle needs %lu mV, a flash %lu mV)\n",

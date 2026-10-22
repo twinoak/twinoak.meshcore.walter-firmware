@@ -29,6 +29,7 @@ the two protocols the boxes share are in [`spec/`](spec/README.md) — start wit
 | 2 | images and updates: signatures, the image store, the radio's update, the Walter's own, the supervisor | built |
 | 3 | the uplink and staying alive: the modem, verified HTTPS, settings and the console, the duty cycle, the wake cycle | built |
 | 4 | **the agent**: the exit-node firmware's job logic at a seam, the mesh over the link, the uplink over the modem | waits for two piles elsewhere (`spec/SYSTEM.md` §8) |
+| 5 | the radio's base (S-5a): the `provision` file in the store, the CTRL-AP and UICR behind one door, `rak provision` | built |
 | later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
 
 Also not done, and not hidden: **no release key exists yet**, so a unit accepts no update at all
@@ -67,10 +68,12 @@ Also not done, and not hidden: **no release key exists yet**, so a unit accepts 
 - **It sends no mesh traffic.** The box link has a call for every mesh request the protocol
   defines; this firmware uses none of them, and a grep and a simulated month of wakes hold it to
   that.
-- **It never erases a chip.** There is no code path in this repository that writes the nRF52's
-  `ERASEALL` or `ERASEUICR`, or any word of its UICR. A module whose access port is protected is
-  detected, reported and refused; opening one destroys the bootloader, the SoftDevice and the
-  node's identity, and is a bench procedure for a person.
+- **Nothing automatic erases a chip or writes UICR.** No supervisor rung, no update, no wake and
+  no job from a server leads to the nRF52's `ERASEALL` or to a word of its UICR; a module whose
+  access port is protected is detected, reported and refused by everything that runs by itself.
+  The one path is `spec/SYSTEM.md` S-5a: a person's typed `rak provision <radio> confirm`, which
+  erases a factory radio whole and gives it its base through one door, and rails R3 and R3b hold
+  that door to its one caller ([`docs/provisioning.md`](docs/provisioning.md), *A factory radio*).
 - **It does not update two things in one wake**, and it does not update anything while its own
   image is unconfirmed (`spec/SYSTEM.md` S-7).
 
@@ -184,7 +187,7 @@ every test in the suite rather than one).
 
 | | |
 |---|---|
-| never a chip erase | no `ERASEALL`, no `ERASEUICR`, no write to UICR — a grep over every source, and a tripwire in the simulated chip |
+| never a chip erase by anything automatic | no `ERASEALL`, no `ERASEUICR`, no write to UICR anywhere but one door — a grep over every source that allows exactly two files, `regs.h` and `provision_door.cpp` (R3), and a tripwire in the simulated chip that only a test about the door may disarm. Since `spec/SYSTEM.md` S-5a (2026-10-20) a person's typed `rak provision <radio> confirm` is the one exception: it goes through that door, which checks the typed grant against the chip itself, and R3b holds the door to its one caller — `core/provision/`, and never the supervisor, an update, the flasher, the wake cycle or an agent |
 | the pins have rules | reset is open-drain and **never driven high**; everything radio-facing is an input before the kill line goes high; two resets at least a second apart — checked by the fake pins at every transition of every test |
 | an image goes into its region and nowhere else | the flasher's region is this firmware's own table per board; a manifest cannot widen it, and the simulated chip fails any test that writes outside the window it declared |
 | nothing is flashed that is not signed | the store's two doors take only the verdict's tokens, which have no public constructor: no signed manifest, no erased sector |

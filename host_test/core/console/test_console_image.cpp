@@ -24,6 +24,7 @@
 #include "core/image/store_bench.h"
 #include "sim/scripted_radio.h"
 
+using bench::BaseFile;
 using bench::Candidate;
 using core::board::kKillTiming;
 using core::board::RadioPins;
@@ -109,12 +110,14 @@ TEST_CASE("image list on an empty store says the layout and that every slot is e
   const std::string text = rig.run("image list");
   CHECK(has(text, "image store:"));
   CHECK(has(text, "2 slots x 3 images of 815104 bytes (199 sectors)"));
-  CHECK(has(text, "4923392 bytes of a 6291456-byte partition, 1368064 left"));
+  CHECK(has(text, "plus one base of 655360 bytes (160 sectors) a slot"));
+  CHECK(has(text, "6242304 bytes of a 6291456-byte partition, 49152 left"));
   CHECK(has(text, "slot 0, rak4630-single"));
   CHECK(has(text, "slot 1: no radio in this adapter"));
   CHECK(has(text, "golden     empty"));
   CHECK(has(text, "candidate  empty"));
   CHECK(has(text, "scanner    empty"));
+  CHECK(has(text, "base       empty"));
 }
 
 TEST_CASE("image list, verify and erase over a store with images in it") {
@@ -268,12 +271,64 @@ TEST_CASE("a build with no image store says so in one line") {
   }
 }
 
+TEST_CASE("the base in image list, image verify and image erase (task p5-01)") {
+  Rig rig;
+  const BaseFile base("base-small");
+  REQUIRE(rig.b.putBase(Slot{0}, base) == StoreError::kNone);
+
+  SUBCASE("image list shows it: the hash, the size, the bootloader and the SoftDevice") {
+    const std::string text = rig.run("image list");
+    CHECK(has(text, "base       the board's base,"));
+    CHECK(has(text, "bootloader 0x000f4000"));
+    CHECK(has(text, "S140 6.1.1"));
+    CHECK(has(text, "bytes of flash, 2 UICR words"));
+    CHECK(has(text, "the MBR's parameter page at 0x000fe000"));
+    // And it is not read as an image: no role, board, band or version line for it.
+    CHECK_FALSE(has(text, "base       repeater"));
+  }
+  SUBCASE("image verify base: the hash out of flash, and check 5p over the same bytes") {
+    const std::string text = rig.run("image verify base");
+    CHECK(has(text, "base: "));
+    CHECK(has(text, "read back and hashed"));
+    CHECK(has(text, "the SHA-256 is the one in its record"));
+    CHECK(has(text, "base: check 5p over the stored bytes: a base for rak4630-single "
+                    "(0x00026000 to 0x000ed000)"));
+    CHECK(has(text, "runs, 2 UICR words - the same as its record says"));
+    CHECK_FALSE(has(text, "WRONG"));
+  }
+  SUBCASE("image erase base: allowed, and the base is gone") {
+    CHECK(has(rig.run("image erase base"), "base: forgotten in slot 0"));
+    CHECK(has(rig.run("image list"), "base       empty"));
+    CHECK(has(rig.run("image verify base"), "there is no image in that slot"));
+  }
+  SUBCASE("image receive base: the port is handed over, and the checks are named") {
+    const std::string text = rig.run("image receive base");
+    CHECK(has(text, "image receive: slot 0's base"));
+    CHECK(has(text, "tools/walterctl.py push --as base"));
+    CHECK(has(text, "checks 1 to 4 and 5p"));
+    CHECK(has(text, "written to a radio only by `rak provision`"));
+  }
+  SUBCASE("status names the base beside the three images") {
+    const std::string text = rig.run("status");
+    CHECK(has(text, "images: golden=empty candidate=empty scanner=empty base=0x000f4000"));
+  }
+}
+
+TEST_CASE("the parser's words name the base where it can be typed") {
+  Rig rig;
+  CHECK(has(rig.run("image verify"), "image verify needs one of golden, candidate, scanner or base"));
+  CHECK(has(rig.run("image verify basis"),
+            "image: not one of golden, candidate, scanner or base: basis"));
+  CHECK(has(rig.run("image erase golden"),
+            "image erase: the golden image is not erased (image erase candidate | scanner | base)"));
+}
+
 TEST_CASE("help names the five image commands") {
   Rig rig;
   const std::string text = rig.run("help");
   CHECK(has(text, "image list"));
   CHECK(has(text, "image verify <which>"));
-  CHECK(has(text, "image erase <candidate|scanner>"));
+  CHECK(has(text, "image erase <candidate|scanner|base>"));
   CHECK(has(text, "image bad"));
   CHECK(has(text, "image receive <which>"));
 }

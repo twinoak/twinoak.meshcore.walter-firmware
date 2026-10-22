@@ -26,6 +26,15 @@ idf_component_register(
        "swd/dp.cpp"
        "swd/mem_ap.cpp"
        "nrf52/nrf52.cpp"
+       # The one door (task p5-02, S-5a): the CTRL-AP's erase and soft reset, the UICR and the
+       # base's flash behind a grant only a typed console command can make. The only file but
+       # regs.h that may name the forbidden registers (rail R3); included by core/provision/
+       # alone (rail R3b).
+       "nrf52/provision_door.cpp"
+       # The sequence (task p5-03, S-5a): `rak provision`, the door's one caller (rail R3b),
+       # and the variant table it acts on.
+       "provision/variant.cpp"
+       "provision/provision.cpp"
        "image/crypto/sha256.cpp"
        "flasher/board_profile.cpp"
        "flasher/bootloader_settings.cpp"
@@ -41,6 +50,9 @@ idf_component_register(
        "image/manifest.cpp"
        "image/choose.cpp"
        "image/file_check.cpp"
+       # The board's base (task p5-01): FIRMWARE-MANIFEST.md section 4a over a `provision` file,
+       # which check 5p of the verdict applies.
+       "image/base.cpp"
        "image/verdict.cpp"
        # The image store (task p2-02): the records in the rakfw partition, and the framed
        # transfer that loads one over USB.

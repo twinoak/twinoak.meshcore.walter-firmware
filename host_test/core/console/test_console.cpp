@@ -19,6 +19,7 @@
 #include "fakes/fake_pins.h"
 #include "fakes/fake_retained.h"
 #include "fakes/fake_wall_clock.h"
+#include "fixtures/manifest_files.h"
 #include "sim/scripted_radio.h"
 
 using core::board::kKillTiming;
@@ -105,12 +106,20 @@ TEST_CASE("help lists every command") {
   CHECK(contains(text, "'rak kill' wants the word 'confirm' after the number"));
 }
 
-TEST_CASE("trust says this build accepts no update, because keys/release-keys.txt names no key (task p2-01)") {
+TEST_CASE("trust says which keys this build accepts a release signed with (task p2-01)") {
   Rig rig;
   const std::string text = rig.run("trust");
   CHECK(contains(text, "ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, "));
-  CHECK(contains(text, "trust: none: no update will be accepted (keys/release-keys.txt names no key;\n"));
-  CHECK(contains(text, "spec/SYSTEM.md section 10 item 1"));
+  const std::vector<std::string> named = fixtures::releaseKeyIds();
+  if (named.empty()) {
+    // The state before the release key was made (spec/SYSTEM.md section 10 item 1).
+    CHECK(contains(text, "trust: none: no update will be accepted (keys/release-keys.txt names no key;\n"));
+    CHECK(contains(text, "spec/SYSTEM.md section 10 item 1"));
+  } else {
+    CHECK(contains(text, "trust: 1 key this build accepts a release signed with:"));
+    for (const std::string& id : named) CHECK_MESSAGE(contains(text, id.c_str()), id);
+  }
+  // Never the specification's public test key: that is the +TESTKEY build and it warns.
   CHECK_FALSE(contains(text, "TEST KEY"));
   CHECK(rig.run("trust me") == "error: trust takes no argument, or 'tls': me\n");  // `trust tls` is task p3-02's
   // Not a radio verb: no slot, no hold, nothing on the pins.

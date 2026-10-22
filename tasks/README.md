@@ -74,9 +74,11 @@ pick them up. Merging never releases; a release is a person pushing a tag.
 | [2](phase-2/README.md) | images and updates: signatures, the store, the radio's update, its own, the supervisor | 5 |
 | [3](phase-3/README.md) | the uplink and staying alive: the modem, HTTPS, settings, the duty cycle, the wake cycle | 6 |
 | [4](phase-4/README.md) | the agent: the exit-node firmware's job logic as a library at a pin, the mesh over the link, the uplink over the modem, the firmware jobs on the update machines — waits for meshmaster.dk 4.14 and the exit-node firmware's 1.5 | 6 |
+| [5](phase-5/README.md) | the radio's base (`spec/SYSTEM.md` S-5a): the `provision` file in the store, the CTRL-AP and UICR behind one door, `rak provision` | 3 |
+| [6](phase-6/README.md) | the bench: a tool a session may drive the rig with, the first walk, the radio's base and first image on silicon, the unit checking in with meshmaster.dk | 4 |
 
-Not in these piles, on purpose: anything that needs the rig (a bench pile
-follows the first boards); a NoiseScope session as a job; the dual adapter's
+Not in these piles, on purpose: anything that needs the rig before phase 6
+(phase 6 is the bench pile); a NoiseScope session as a job; the dual adapter's
 second radio (the seam is there from phase 1, task 06). The MeshMaster agent
 was kept out of phases 0–3 (nothing was to be written against a guess about
 the server); since 14 October the server side is decided (`spec/SYSTEM.md`

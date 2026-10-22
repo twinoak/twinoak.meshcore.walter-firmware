@@ -1,6 +1,6 @@
-// The trust table (task p2-01): the build's own - generated from keys/release-keys.txt, which
-// names no key today - and a table of the tests' own: lookup by id, the key id as section 3
-// defines it, the bound of three.
+// The trust table (task p2-01): the build's own - generated from keys/release-keys.txt, whatever
+// that file names - and a table of the tests' own: lookup by id, the key id as section 3 defines
+// it, the bound of three.
 #include <doctest.h>
 
 #include <cstring>
@@ -14,15 +14,28 @@ using core::image::kMaxTrustedKeys;
 using core::image::TrustedKey;
 using core::image::TrustTable;
 
-TEST_CASE("this build trusts no key: keys/release-keys.txt names none, and the test key is not in it") {
+TEST_CASE("this build trusts the keys keys/release-keys.txt names, and never the test key") {
+  // The release key was made on 2026-10-20 (spec/SYSTEM.md section 10 item 1) and its public half
+  // is in keys/release-keys.txt, so the build's table is no longer empty. What the table must say
+  // is what that file says - read here, never written down - and that the specification's public
+  // test key is not among it: a build that trusted it would accept anybody's firmware (section 3).
   const TrustTable& build = core::image::buildTrust();
-  CHECK(build.empty());
-  CHECK(build.count() == 0);
+  const std::vector<std::string> named = fixtures::releaseKeyIds();
+  CHECK(build.count() == named.size());
+  CHECK(build.empty() == named.empty());
+  for (std::size_t i = 0; i < named.size() && i < build.count(); ++i) {
+    char hex[core::image::kKeyIdHexSize + 1];
+    core::image::keyIdHex(build.at(i).id, hex);
+    CHECK_MESSAGE(std::string(hex) == named[i], "key " << i << " of the build's table");
+    CHECK(build.find(build.at(i).id) == &build.at(i));
+  }
   CHECK_FALSE(core::image::trustsTestKey());
   const TrustedKey test = fixtures::testKey();
   CHECK(build.find(test.id) == nullptr);
   std::uint8_t zero[kKeyIdSize] = {};
   CHECK(build.find(zero) == nullptr);
+  MESSAGE("keys/release-keys.txt names " << named.size() << " key(s); the build's table holds "
+          << build.count());
 }
 
 TEST_CASE("the key id is the first eight bytes of SHA-256 over the public key, as 16 lowercase hex characters") {

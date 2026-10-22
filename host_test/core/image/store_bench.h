@@ -6,6 +6,9 @@
 // constructor. So `put()` below is what the USB transfer and - in phase 3 - a download do, in the
 // same order: judge the manifest and its signature, open the write, stream the bytes, judge the
 // file as it now lies in flash, commit.
+//
+// `putBase()` (task p5-01) is the same way in for the slot's base, through checks 1, 2, 3, 4 and
+// 5p and the store's other door, commitBase(const AcceptedBase&).
 #pragma once
 
 #include <doctest.h>
@@ -27,6 +30,7 @@
 namespace bench {
 
 using core::board::Slot;
+using core::image::AcceptedBase;
 using core::image::AcceptedImage;
 using core::image::ImageVerdict;
 using core::image::Record;
@@ -71,6 +75,41 @@ struct Candidate {
     n.role = role;
     n.board = core::flasher::kRak4630Single.name;
     n.band = band;
+    return n;
+  }
+};
+
+// The fixture row for a generated base by name.
+inline const fixtures::StoreBase& baseNamed(const char* name) {
+  for (std::size_t i = 0; i < fixtures::kStoreBaseCount; ++i) {
+    if (std::strcmp(fixtures::kStoreBases[i].name, name) == 0) return fixtures::kStoreBases[i];
+  }
+  FAIL("no generated base named " << name);
+  return fixtures::kStoreBases[0];
+}
+
+// A base (spec/FIRMWARE-MANIFEST.md §4a), its manifest and the manifest's signature.
+struct BaseFile {
+  std::vector<std::uint8_t> manifest;
+  std::string signature;
+  std::vector<std::uint8_t> file;
+  const fixtures::StoreBase* row = nullptr;
+
+  explicit BaseFile(const char* name) {
+    row = &baseNamed(name);
+    manifest = fixtures::readGenerated(row->manifest);
+    signature = fixtures::asText(fixtures::readGenerated(row->sig));
+    file = fixtures::readGenerated(row->file);
+    REQUIRE(file.size() == row->size);
+  }
+
+  // A base is listed under the image it goes under (§4a), which for the fixtures is the repeater's.
+  SlotNeeds needs(Slot slot) const {
+    SlotNeeds n;
+    n.slot = slot;
+    n.role = "repeater";
+    n.board = core::flasher::kRak4630Single.name;
+    n.band = "868";
     return n;
   }
 };
@@ -167,6 +206,63 @@ struct StoreBench {
     const StoreError wrote = stream(image, chunk, store.written());
     if (wrote != StoreError::kNone) return wrote;
     return commit();
+  }
+
+  // -- the base's way in (task p5-01) ------------------------------------------------------------
+
+  core::image::Outcome judgeBaseManifest(const BaseFile& base, Slot slot) {
+    const core::flasher::BoardProfile* profile = core::flasher::profileForSlot(slot);
+    if (profile == nullptr) profile = &core::flasher::kRak4630Single;
+    return verdict.judgeManifest(base.manifest.data(), base.manifest.size(),
+                                 base.signature.data(), base.signature.size(), base.needs(slot),
+                                 Use::kProvision, profile);
+  }
+
+  StoreError openBase(Slot slot, const BaseFile& base) {
+    const core::image::Outcome o = judgeBaseManifest(base, slot);
+    REQUIRE_MESSAGE(o.ok(), core::image::describe(o.failed) << ": " << o.why);
+    REQUIRE(verdict.expected() != nullptr);
+    return store.beginWrite(Which::kBase, slot, *verdict.expected());
+  }
+
+  StoreError streamBase(const BaseFile& base, std::uint32_t chunk = 240, std::uint32_t from = 0) {
+    for (std::uint32_t at = from; at < base.file.size();) {
+      const std::uint32_t left = static_cast<std::uint32_t>(base.file.size()) - at;
+      const std::uint32_t n = left < chunk ? left : chunk;
+      const StoreError e = store.write(base.file.data() + at, n);
+      if (e != StoreError::kNone) return e;
+      at += n;
+    }
+    return StoreError::kNone;
+  }
+
+  // Check 4 and check 5p over the bytes as they lie in flash, then the record. `why` takes the
+  // refusal when there is one, for a test that is about which rule refused it.
+  StoreError commitBase(core::image::Outcome* why = nullptr) {
+    const StoreError ended = store.endWrite();
+    if (ended != StoreError::kNone) return ended;
+    core::image::StoredImage staged;
+    const StoreError opened = store.openStaged(&staged);
+    if (opened != StoreError::kNone) return opened;
+    const core::image::Outcome o = verdict.judgeFile(staged);
+    if (why != nullptr) *why = o;
+    if (!o.ok()) {
+      if (why == nullptr) {
+        MESSAGE("the base was refused at " << core::image::describe(o.failed) << ": " << o.why);
+      }
+      return StoreError::kHashMismatch;
+    }
+    REQUIRE(verdict.acceptedBase() != nullptr);
+    return store.commitBase(*verdict.acceptedBase());
+  }
+
+  StoreError putBase(Slot slot, const BaseFile& base, std::uint32_t chunk = 240,
+                     core::image::Outcome* why = nullptr) {
+    const StoreError opened = openBase(slot, base);
+    if (opened != StoreError::kNone) return opened;
+    const StoreError wrote = streamBase(base, chunk, store.written());
+    if (wrote != StoreError::kNone) return wrote;
+    return commitBase(why);
   }
 
   Record read(Which which, Slot slot = Slot{0}) const {

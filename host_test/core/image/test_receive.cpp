@@ -14,6 +14,7 @@
 #include "fakes/capture.h"
 #include "store_bench.h"
 
+using bench::BaseFile;
 using bench::Candidate;
 using bench::Slot;
 using bench::StoreBench;
@@ -126,6 +127,15 @@ struct Laptop {
              reinterpret_cast<const std::uint8_t*>(image.signature.data()),
              image.signature.size());
   }
+
+  // The same three files for the board's base (task p5-01): the transfer does not know the
+  // difference, which is the point of the base arriving this way.
+  void sendManifestAndSignature(const BaseFile& base) {
+    sendFile(transfer::kKindManifest, base.manifest);
+    sendFile(transfer::kKindSignature,
+             reinterpret_cast<const std::uint8_t*>(base.signature.data()),
+             base.signature.size());
+  }
 };
 
 }  // namespace
@@ -164,6 +174,56 @@ TEST_CASE("a whole transfer: the manifest, its signature, the image, and the rec
   CHECK(laptop.receiver.duplicates() == 0);
   CHECK(laptop.receiver.outOfOrder() == 0);
   CHECK(laptop.receiver.droppedFrames() == 0);
+}
+
+TEST_CASE("the same transfer, for the board's base: checks 1 to 4 and 5p, and the base's own door") {
+  // Task p5-01. `image receive base` hands the port to the same framed transfer; what differs is
+  // the `use` the target asks the verdict for (`provision`), the check that judges the file (5p,
+  // not 5 and 6) and the door the token opens (commitBase).
+  Laptop laptop;
+  const BaseFile base("base-small");
+  REQUIRE(laptop.begin(Which::kBase));
+  CHECK(laptop.receiver.target().use() == core::image::Use::kProvision);
+  CHECK(std::string(laptop.receiver.target().name()) == "base");
+
+  const Reply hello = laptop.send(transfer::kHello, 0);
+  REQUIRE(hello.got);
+  CHECK(hello.status == transfer::kOk);
+  CHECK(hello.text.find("base") != std::string::npos);
+
+  laptop.sendManifestAndSignature(base);
+  laptop.sendFile(transfer::kKindImage, base.file);
+  const Reply done = laptop.send(transfer::kCommit, 0);
+  REQUIRE(done.got);
+  REQUIRE_MESSAGE(done.status == transfer::kDone, done.text.c_str());
+  CHECK(laptop.receiver.stored());
+
+  const Record record = laptop.b.read(Which::kBase);
+  REQUIRE(record.present);
+  CHECK(record.use == core::image::Use::kProvision);
+  CHECK(record.size == base.file.size());
+  CHECK(record.base.bootloader == base.row->bootloader);
+  CHECK(laptop.b.store.verify(Which::kBase, Slot{0}) == StoreError::kNone);
+  // And the three images are where they were: empty.
+  CHECK_FALSE(laptop.b.read(Which::kGolden).present);
+  CHECK_FALSE(laptop.b.read(Which::kCandidate).present);
+}
+
+TEST_CASE("a base the file's own rules refuse: the transfer says check 5p, and nothing is stored") {
+  // The bytes are in the Walter's flash and complete; §4a is what turns them away, with the
+  // sentence the specification gives - and the slot's base stays as it was (empty).
+  Laptop laptop;
+  const BaseFile base("base-in-the-manifest-region");
+  REQUIRE(laptop.begin(Which::kBase));
+  laptop.sendManifestAndSignature(base);
+  laptop.sendFile(transfer::kKindImage, base.file);
+  const Reply done = laptop.send(transfer::kCommit, 0);
+  REQUIRE(done.got);
+  CHECK(done.status == transfer::kRefused);
+  CHECK(done.text.find("check 5p, the base") == 0);
+  CHECK(done.text.find("UICR.NRFFW[0] = 0x000D4000") != std::string::npos);
+  CHECK_FALSE(laptop.receiver.stored());
+  CHECK_FALSE(laptop.b.read(Which::kBase).present);
 }
 
 TEST_CASE("a lost chunk, a duplicated chunk and a reordered one") {

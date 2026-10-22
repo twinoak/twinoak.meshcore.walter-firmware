@@ -101,7 +101,7 @@ battery: never read (POWER_GET has not answered)
 link:...
 pins: power on;...
   uart released,...
-images: golden=empty candidate=empty scanner=empty
+images: golden=empty candidate=empty scanner=empty base=empty
 uplink:...
 backend: meshmaster.dk:443, for a self-update's third condition (task p3-05 makes the call)
 this wake: power-on;...
@@ -138,6 +138,101 @@ it. The four `error:` lines are what a wrong value gets, and nothing is stored b
    (`ARCHITECTURE.md` §11). A **merged** flash of the whole table does not.
 5. `erase confirm` is how a unit is handed on: every setting forgotten, and only the settings —
    the images, the journal, the bad list and the supervisor's counts stay.
+
+## A factory radio
+
+Every RAK4630 arrives with RAK's own firmware (RUI3), not the MBR, SoftDevice S140 6.1.1 and
+bootloader a TwinOak application is linked against. Giving it that **base** is the one thing this
+firmware does to a radio that nothing automatic may ever do (`spec/SYSTEM.md` S-5a): it erases
+the chip whole — RUI3, any identity it had, UICR — so a person types it, naming the radio, and
+types the word. Once, per radio, at the bench, with the radio on the cable (`bench.md` §4a).
+
+**The session below is a host test too**, replayed by
+`host_test/core/provision/test_provision_console.cpp` against the firmware's console over a
+simulated nRF52840 — a revision 3 module (`AAF0`) as RAK ships it, its access port open — with the
+base and a candidate already pushed over the cable. The blocks are marked `console-provision`
+because this session needs a simulated chip under the console; the `...` rule is the same as
+above. The device id is the simulated chip's; a real one prints its own, and that is what gets
+typed.
+
+Before it: the base in the store (`python tools/walterctl.py push --port COM7 --as base
+<release-dir>` of a repeater release that carries a `provision` file — `console.md`, *The board's
+base*), and the radio's first application in the candidate slot (`push --as candidate`). Then
+`rak swd id` to read the radio, `rak provision check` to be told exactly what to type, the typed
+line, and `rak update --first-install`:
+
+```console-provision
+> rak swd id
+swd: 125 kHz: connect, power-up, control port, memory port, FICR
+  DPIDR 0x2ba01477 (the nRF52840's)
+  control access port: IDR 0x02880000 (Nordic); protection: open
+  memory access port: IDR 0x24770011 (Arm, class MEM-AP; the Cortex-M4's AHB-AP)
+  chip: nRF52840, variant AAF0, flash 1024 KB = 256 pages of 4096 bytes (INFO.FLASH 1024 KB)
+  device id 0badf00ddeadbeef
+  core: running
+  power-up request withdrawn; pins released;...
+> rak provision check
+rak provision check: slot 0, rak4630-single; nothing is written
+  base: sha256 ...
+  battery: unknown (no reading over the link); accepted, as a first install accepts it
+  swd: DPIDR 0x2ba01477; control access port IDR 0x02880000; protection: open
+  chip: nRF52840, variant AAF0: improved APPROTECT (build code F, revision 3): UICR.APPROTECT = 0x5A
+  device id 0badf00ddeadbeef
+  next: rak provision 0badf00ddeadbeef confirm
+> rak provision 0badf00ddeadbeef confirm
+rak provision: slot 0, 0badf00ddeadbeef: S-5a's seven steps; nothing is written before step 4, each printed as it ends
+  [1/7] checked: the base sha256 ...
+        battery unknown (no reading over the link: accepted); the slot is free (...
+  [2/7] attached: DPIDR 0x2ba01477, protection open; nRF52840 AAF0, device id 0badf00ddeadbeef, as typed (...
+  [3/7] variant AAF0: improved APPROTECT (build code F, revision 3): UICR.APPROTECT = 0x5A (...
+  [4/7] erased: CTRL-AP ERASEALL; the port open after it (no soft reset needed); flash, NRFFW[0] and APPROTECT blank; the core halted (...
+  [5/7] written: 54 flash words in 4 runs, 2 UICR words, UICR.APPROTECT = 0x0000005a (...
+  [6/7] verified: 56 words read back and equal; UICR.APPROTECT reads 0x0000005a (...
+  [7/7] reset: one pin reset (waited 0 ms for the spacing), the bootloader given 1500 ms; the port after it open, NRFFW[0] 0x000f4000 (...
+rak provision: PROVISIONED slot 0: device id 0badf00ddeadbeef, variant AAF0, base sha256 ...
+  the slot awaits its first install: the supervisor leaves the radio alone until 'rak update --first-install' commits
+  next: python tools/walterctl.py push --port <port> --as candidate <release-dir>
+        rak update --first-install
+> rak update --first-install
+rak update: slot 0; every transition is printed as the journal takes it (this takes minutes:
+  the flash, then a 180 s proving period)
+update: check -> flashing-candidate: the preconditions hold
+  reading the pages the image covers: page 1/1 (0x00026000)
+  writing and verifying the first page: page 1/1 (0x00026000)
+  reading the whole image back: page 1/1 (0x00026000)
+update: flashing-candidate -> booting: flashed; the radio was reset
+update: booting -> proving: the radio answered
+update: proving -> committing: the health check passed
+update: committing -> done: the candidate is the golden image
+rak update: done: ...
+  (the clock check was skipped: this Walter has no time to give until phase 3's modem)
+>
+```
+
+What the seven steps are, and what each refusal means, is `console.md`, *The radio's base*. The
+things worth knowing at the bench:
+
+- **Nothing is written before step 4.** Every refusal of steps 1 to 3 — no base in the store, a
+  base that no longer passes check 5p, the battery low, the radio held by an update or the
+  ladder, a part that is not an nRF52840, the wrong device id, a variant the table does not know —
+  leaves the radio exactly as it was. `rak provision check` makes every one of them before
+  anything is typed.
+- **A locked radio is named `locked`**, and a locked radio that still runs an application is
+  named `locked:<key16>` — the first 16 hex digits of the public key `rak id` prints — so that a
+  radio with an identity is named before it loses it. `rak provision check` prints the right form.
+- **A failure after step 4 leaves the radio erased, and the same command finishes it.** There is
+  no journal: the command starts from erased, so it is simply run again. After a power cut
+  `rak provision check` says what it sees — a revision 3 part whose flash has something in it and
+  whose `UICR.APPROTECT` is not yet `0x5A` reads *closed* again, so the line to type becomes
+  `locked` — and that line is the one to type.
+- **Until `rak update --first-install` commits, the slot awaits its first install**: the radio has
+  a bootloader and no application and answers nothing on the link, and the supervisor leaves it
+  alone instead of climbing its ladder (`rak watch` and `status` say so). A first install takes
+  the **candidate**, and the image that passes its health check becomes golden.
+- **The port after the reset** is reported *open* or *CLOSED*. Closed on a revision 3 part means
+  the RAK's bootloader does not copy `UICR.APPROTECT` into `APPROTECT.DISABLE` at start-up
+  (`spec/SYSTEM.md` §10.2): the radio works — a UF2 drive on its USB — and the flasher cannot
+  reach it until that is solved. It is said, not failed.
 
 ## What is not provisioned here
 

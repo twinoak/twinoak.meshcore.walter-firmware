@@ -424,10 +424,13 @@ extern "C" void app_main() {
   // time round, the uptime kept in retained storage about once a second. Returning is not an
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
+  // The battery is the last argument (task p5-03): `rak provision` refuses on a low or falling
+  // reading by the update's rule, and accepts an unknown one as `--first-install` does.
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
-                                        g_fetch, &trust, &settings, &g_uplink, &duty, &cycle);
+                                        g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
+                                        &battery);
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop
   // was reached with the board in the safe state" (core/update/self_update.h) and the console is

@@ -96,11 +96,12 @@ Say in the report that the task was done in more than one session.
   the run unfinished, the report unwritten, the branch unpushed. Block on it
   inside the turn, or poll it inside the turn.
 - **A session cannot flash a board, attach to a network or wiggle a pin** —
-  not in these piles. It can build and run the host tests. Everything else is
+  not in phases 0–5. It can build and run the host tests. Everything else is
   Thomas's to walk with the rig on the bench, so every task ends with a *Not
   verified here* list precise enough to be walked, and the same lines are
   added to `docs/bench.md` in the order the rig is brought up
-  (`spec/SYSTEM.md` §7).
+  (`spec/SYSTEM.md` §7). **In phase 6 a session uses the rig — through
+  `tools/bench/` and nothing else** (*Phase 6* below).
 - Nobody will answer a question. Where the spec and the task are silent, take
   the smallest decision consistent with the spec and record it in the report
   under "Decisions taken without asking".
@@ -196,3 +197,27 @@ not a passing test here.
 **Phase 3.** Nothing talks to MeshMaster yet (`spec/SYSTEM.md` §8). The wake
 cycle ends at a backend interface with a null implementation; do not invent a
 server protocol to fill it.
+
+**Phase 5.** The radio's base (`spec/SYSTEM.md` S-5a). This phase writes the
+only code in the firmware that may erase a chip or write UICR, behind one door
+that only a typed console command opens. Every test that is not about the door
+runs with the simulated chip's tripwire armed, and the rails R3 and R3b hold
+the door to its one caller. "It works" is not the bar; "nothing else can reach
+it" is.
+
+**Phase 6.** The rig is on this machine. A session touches it **only through
+`tools/bench/`** (task 01 writes it): never esptool, a serial terminal or
+`walterctl.py` on a port directly, never "the only COM port". The tool reads
+`bench.local.json` and refuses, before a port opens, every line that file does
+not allow: the radio's ⚠ lines without `"radio": "disposable"`, a repeater
+image without `"rf": "dummy-load"`, the modem without `"sim": true`, the server
+without `"server": true`, and — in every configuration — `erase confirm`, the
+kill line and `rak ladder` (whose power-cycle rung is the kill line), any line
+that would set a secret, and any `rak cli` line outside the tool's read-only
+allow-list. `"radio": "disposable"` is the person's explicit consent that S-5a
+and §2 above ask for, given ahead of time for that one radio. A session never types, reads,
+logs or is given a SIM PIN or a token: Thomas types them, once, over the cable,
+and the tool sees *set* or *unset*. No `bench.local.json`, or no Walter on its
+port, is a stop condition (§5) for tasks 02–04 of the phase. A lock held by the
+repeater firmware's bench on the same radio is a stop too: never wait it out by
+retrying.

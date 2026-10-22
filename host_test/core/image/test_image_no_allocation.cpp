@@ -34,6 +34,7 @@ const char* const kImageIncludes[] = {
     "core/board/slot.h",
     "core/flasher/board_profile.h",
     "core/flasher/image_source.h",
+    "core/image/base.h",
     "core/image/choose.h",
     "core/image/crypto/ed25519.h",
     "core/image/crypto/sha256.h",
@@ -63,9 +64,9 @@ const char* const kImageIncludes[] = {
 
 TEST_CASE("nothing under components/core/image/ or the vendored crypto and tokenizer allocates") {
   // Twenty-odd files: the descriptor and SHA-256 of earlier tasks, task p2-01's nine, the
-  // store's and the transfer's four, the two vendored ones.
+  // store's and the transfer's four, task p5-01's base reader, the two vendored ones.
   checks::checkNoAllocation("the image checks",
                             checks::filesUnder(kImageDirectories,
                                                sizeof kImageDirectories / sizeof kImageDirectories[0]),
-                            kImageIncludes, sizeof kImageIncludes / sizeof kImageIncludes[0], 24, 3000);
+                            kImageIncludes, sizeof kImageIncludes / sizeof kImageIncludes[0], 26, 3400);
 }

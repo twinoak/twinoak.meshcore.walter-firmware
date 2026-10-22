@@ -33,6 +33,7 @@
 #include "core/link/client/client.h"
 #include "core/net/client.h"
 #include "core/net/trust.h"
+#include "core/provision/provision.h"
 #include "core/supervisor/supervisor.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
@@ -79,7 +80,11 @@ class Console {
           // One whole wake (task p3-05): `cycle now` and `cycle dry`. A pointer like the rest;
           // a build without it answers in one line. **The wake cycle is what reaches sleep by
           // itself**, and with a USB host on the port the console runs beside it.
-          cycle::WakeCycle* cycle = nullptr);
+          cycle::WakeCycle* cycle = nullptr,
+          // The battery as the radio reports it (task p5-03): `rak provision` refuses on a low
+          // or falling reading by the radio update's rule and accepts an unknown one, as
+          // `--first-install` does. nullptr is "unknown".
+          update::BatterySource* battery = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -157,6 +162,15 @@ class Console {
   void rakFlashTest();
   void printFlashResult(const char* what, const flasher::Result& r);
 
+  // The radio's base (task p5-03; spec/SYSTEM.md S-5a): `rak provision check`, and `rak
+  // provision <radio> confirm` - the grant made here from the typed word, the sequence in
+  // core/provision/, each step printed as it ends.
+  class ProvisionPrinter;
+  void rakProvisionCheck();
+  void rakProvision(const char* radio, bool confirmed);
+  void printProvisionStep(provision::Step step, const provision::Result& r);
+  void printProvisionRefusal(const provision::Result& r);
+
   // The trust table (task p2-01): which release keys this build accepts, or that it accepts none.
   void trust();
 
@@ -164,6 +178,10 @@ class Console {
   bool imagesOk();  // false, with one error line, when this build has no store
   void imageList();
   void imageOneLine(const image::Record& record);
+  // The base's two lines of `image list`, and `image verify base`, which re-runs check 5p over
+  // the bytes in the Walter's flash (spec/FIRMWARE-MANIFEST.md §5, §4a).
+  void baseLines(const image::Record& record);
+  void verifyBase(const image::Record& record);
   void imageVerify(image::Which which);
   void imageErase(image::Which which);
   void imageBad();
@@ -283,6 +301,11 @@ class Console {
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.
   flasher::Flasher flasher_;
+  // The sequence of `rak provision` (task p5-03): ~11 KB of the base's reader, its window and
+  // two run buffers, a member for the same reason.
+  provision::Provision provision_;
+  // §4a's reader, for `image verify base`. A member for the same reason: ~2 KB.
+  image::BaseReader base_reader_;
   // The last few kilobytes this port printed, for `dump`. A member for the same reason the
   // flasher is one: 4 KB does not belong on the main task's 3584-byte stack.
   LogRing log_;

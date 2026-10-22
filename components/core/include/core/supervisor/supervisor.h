@@ -208,6 +208,11 @@ enum class Silence : std::uint8_t {
   kWalterPoweredUp = 2,  // our own power-up reset it; it is still booting
   kUpdateRunning = 3, // an update is in progress: not ours to disturb
   kNotAnswering = 4,  // the radio really is not answering
+  // Task p5-03 (spec/SYSTEM.md S-5a): `rak provision` gave the radio its base and no
+  // application yet, so it is silent on the link by design - exactly what the ladder would
+  // answer with a reset, a power cycle or a golden image. Left alone until `rak update
+  // --first-install` commits.
+  kAwaitingFirstInstall = 5,
 };
 const char* describe(Silence silence);
 
@@ -337,6 +342,10 @@ enum class Health : std::uint8_t {
   kHealthy = 1,  // a PING was answered
   kScanner = 2,  // NoiseScope is running (§9): not a fault, and not a repeater either
   kSilent = 3,   // the question went unanswered
+  // Unanswered, and expected to be: the slot awaits its first install after `rak provision`
+  // (task p5-03). Not kSilent on purpose - the wake cycle reads kSilent as "the link is known
+  // down" for an update, and a radio with a bootloader and no application is not that.
+  kAwaitingFirstInstall = 4,
 };
 const char* describe(Health health);
 
@@ -394,6 +403,13 @@ struct Status {
   Silence silence_seen = Silence::kNone;  // what the last silence turned out to mean
   std::uint32_t entries = 0;            // journal entries this climb has written
   std::uint32_t attentions = 0;         // §8 attentions recorded and not yet taken
+  // The slot awaits its first install (task p5-03): `rak provision` erased the radio and gave
+  // it its base, and nothing runs on it until `rak update --first-install` commits. Kept where
+  // the supervisor's own state is kept - the retained record and the journal - so that a
+  // Walter restart keeps it; `awaiting_since_seq` is the journal entry that marked it, and the
+  // first-install run that clears it must be newer.
+  bool awaiting_first_install = false;
+  std::uint32_t awaiting_since_seq = 0;
 };
 
 // -- the journal entry's payload, 48 bytes ------------------------------------------------------
@@ -436,6 +452,11 @@ enum class Wrote : std::uint8_t {
   kAttention = 6,    // §8: an attention recorded (reason in `rung`, detail in `detail`)
   kCapsReset = 7,    // `rak watch reset-caps`: a person emptied the day's counts
   kQuietOver = 8,    // the quiet period passed: the ladder may be climbed once more
+  // Task p5-03: `rak provision` is about to erase the radio - the slot awaits its first
+  // install from this entry on (a stop in force is lifted with it: the radio is a new radio);
+  // and a `rak update --first-install` newer than that entry committed, so it no longer does.
+  kAwaitingFirstInstall = 9,
+  kFirstInstallDone = 10,
 };
 const char* describe(Wrote what);
 
@@ -445,6 +466,9 @@ constexpr std::uint8_t kFlagBatteryKnown = 0x04;
 constexpr std::uint8_t kFlagBatteryStale = 0x08;  // the reading is the last good one, not a fresh one
 constexpr std::uint8_t kFlagBootLoop = 0x10;
 constexpr std::uint8_t kFlagReanchored = 0x20;    // the cap window had to be re-anchored
+// In *every* entry while the slot awaits its first install (task p5-03), as the counts are, so
+// that a Walter whose retained record a power cut cleared reads the mark back from flash.
+constexpr std::uint8_t kFlagAwaitingFirstInstall = 0x40;
 
 struct Payload {
   Wrote what = Wrote::kNone;
@@ -532,6 +556,21 @@ class Supervisor final : public link::client::RestartWatcher {
   // `rak watch reset-caps`: the day's counts to zero and a stop lifted. For the bench.
   void resetCaps();
 
+  // -- the radio's base (task p5-03; spec/SYSTEM.md S-5a) --------------------------------------
+
+  // `rak provision` is about to erase the radio: from here until a `rak update --first-install`
+  // newer than this mark commits, the radio is silent by design and the ladder is not climbed
+  // for it - a silence is classified kAwaitingFirstInstall and left alone. Journalled, kept in
+  // the retained record, and a stop in force is lifted (the radio is a new radio). Nothing else
+  // clears the mark: the supervisor watches the journal for the first install's `done` entry
+  // (core/update/radio_update.h, Kind::kFirstInstall, State::kDone) at begin() and every step().
+  void markAwaitingFirstInstall();
+  bool awaitingFirstInstall() const { return awaiting_first_install_; }
+  // The journal looked at now for a committed first install newer than the mark - what begin()
+  // and step() do by themselves, and what the console does the moment `rak update
+  // --first-install` ends, so that the mark is gone before the next prompt.
+  void noticeFirstInstall() { reconcileFirstInstall(); }
+
   // link::client::RestartWatcher: an EV_BOOT, or a HELLO with a boot_id we had not seen (§5.1).
   // Called from inside a client call, so it only records.
   void onRadioRestart(std::uint32_t boot_id, std::uint8_t reset_reason) override;
@@ -551,6 +590,9 @@ class Supervisor final : public link::client::RestartWatcher {
     std::uint64_t stopped_ms;
     std::uint64_t restart_window_ms;
     std::uint32_t restarts_total;
+    std::uint8_t awaiting_first_install;  // 0 or 1 (task p5-03)
+    std::uint8_t spare[3];
+    std::uint32_t awaiting_since_seq;     // the journal entry that marked it
   };
   // And the incidents: interfaces::RetainedSlot::kSupervisorIncidents.
   struct IncidentRecord {
@@ -568,8 +610,12 @@ class Supervisor final : public link::client::RestartWatcher {
   void storeIncidents();
   // The newest supervisor entry of the journal, for the counts after a power cut.
   bool lastEntry(Payload* out) const;
-  bool journalEntry(Wrote what, const Payload& about);
+  bool journalEntry(Wrote what, const Payload& about, std::uint32_t* out_seq = nullptr);
   Payload payloadNow(Wrote what);
+  // The mark's own entry, for its seq, when the retained record is gone (task p5-03).
+  std::uint32_t lastMarkSeq() const;
+  // Clears the mark when the journal holds a committed first install newer than it.
+  void reconcileFirstInstall();
 
   // The cap window, held against the clock. True when it was rolled (the counts are zero again).
   bool rollWindow();
@@ -673,6 +719,10 @@ class Supervisor final : public link::client::RestartWatcher {
 
   std::uint64_t next_ask_ms_ = 0;
   bool asked_once_ = false;
+
+  // The slot awaits its first install (task p5-03).
+  bool awaiting_first_install_ = false;
+  std::uint32_t awaiting_since_seq_ = 0;
 
   Incident incidents_[kIncidentsKept];
   std::size_t incident_count_ = 0;

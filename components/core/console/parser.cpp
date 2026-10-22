@@ -261,6 +261,39 @@ Parsed parseRak(char* rest) {
     if (std::strcmp(arg, "repeater") == 0) return accept(Verb::kRakRoleRepeater);
     return refuse2("rak role: not one of scanner, repeater: ", arg);
   }
+  // rak provision check | <radio> [confirm] (task p5-03; spec/SYSTEM.md S-5a). The radio is
+  // one word - a DEVICEID, `locked` or `locked:<key16>` - and its grammar is the console's to
+  // judge (core/nrf52/provision_grant.h makes the grant from it); this only separates the
+  // words. Without the word the console says what the command would do; it never runs.
+  if (std::strcmp(sub, "provision") == 0) {
+    if (!hasArg) {
+      return refuse("rak provision needs a radio: rak provision check | <DEVICEID>|locked|locked:<key16> confirm");
+    }
+    char* word = arg;
+    char* rest = word;
+    while (*rest != 0 && !isSpace(*rest)) ++rest;
+    if (*rest != 0) {
+      *rest++ = 0;
+      while (*rest != 0 && isSpace(*rest)) ++rest;
+    }
+    if (std::strcmp(word, "check") == 0) {
+      if (*rest != 0) return refuse("rak provision check takes no argument");
+      return accept(Verb::kRakProvisionCheck);
+    }
+    for (const char* p = rest; *p != 0; ++p) {
+      if (isSpace(*p)) return refuse2("rak provision takes a radio and at most one word: ", kConfirmWord);
+    }
+    if (*rest != 0 && std::strcmp(rest, kConfirmWord) != 0) {
+      return refuse3("rak provision: the only word after the radio is '", kConfirmWord, "'");
+    }
+    const std::size_t n = std::strlen(word);
+    if (n > kMaxCliLine) return refuse("rak provision: the radio is at most 160 characters");
+    Parsed p = accept(Verb::kRakProvision);
+    std::memcpy(p.command.text, word, n + 1);
+    p.command.text_size = n;
+    p.command.on = *rest != 0;
+    return p;
+  }
   // rak flash-test confirm (task p1-05, the word from task p3-03): the one command that writes
   // to a radio's flash outside the update machine, so it is never one typo away.
   if (std::strcmp(sub, "flash-test") == 0) {
@@ -315,9 +348,10 @@ Parsed parseRak(char* rest) {
   return refuse2("unknown rak subcommand (try 'help'): ", sub);
 }
 
-// `image <subcommand> ...` (task p2-02). The optional slot comes after the image's role -
-// `image verify golden @1` - which is the shape the task gives the commands; `image list` and
-// `image bad` are about the whole store and take nothing.
+// `image <subcommand> ...` (task p2-02; task p5-01 added `base`, which is the slot's base and
+// not an image - the words below say so where a refusal has to name them). The optional slot
+// comes after the image's role - `image verify golden @1` - which is the shape the task gives the
+// commands; `image list` and `image bad` are about the whole store and take nothing.
 Parsed parseImage(char* rest, std::uint8_t* slot) {
   if (*rest == 0) {
     return refuse("image needs a subcommand: image list | verify <which> | erase <which> | bad | receive <which>");
@@ -352,7 +386,7 @@ Parsed parseImage(char* rest, std::uint8_t* slot) {
   }
 
   if (!hasArg) {
-    return refuse3("image ", sub, " needs an image: golden, candidate or scanner");
+    return refuse3("image ", sub, " needs one of golden, candidate, scanner or base");
   }
   // The role, then an optional @slot and nothing else.
   char* word = arg;
@@ -364,12 +398,13 @@ Parsed parseImage(char* rest, std::uint8_t* slot) {
   }
   core::image::Which which = core::image::Which::kGolden;
   if (!core::image::whichFromName(word, &which)) {
-    return refuse2("image: not one of golden, candidate or scanner: ", word);
+    return refuse2("image: not one of golden, candidate, scanner or base: ", word);
   }
   // The golden image is never erased by a command (S-5: a known-good image is always on hand);
   // said here so that the refusal names the command and not the store.
   if (verb == Verb::kImageErase && which == core::image::Which::kGolden) {
-    return refuse("image erase: the golden image is not erased (image erase candidate | scanner)");
+    return refuse("image erase: the golden image is not erased (image erase candidate | scanner "
+                  "| base)");
   }
   if (*after != 0) {
     char* slot_word = after;
@@ -379,7 +414,7 @@ Parsed parseImage(char* rest, std::uint8_t* slot) {
       *tail++ = 0;
       while (*tail != 0 && isSpace(*tail)) ++tail;
     }
-    if (*tail != 0) return refuse3("image ", sub, " takes an image and an optional @slot");
+    if (*tail != 0) return refuse3("image ", sub, " takes one of them and an optional @slot");
     std::uint32_t number = 0;
     if (slot_word[0] != '@' || !parseSeconds(slot_word + 1, number) || !board::isSlot(number)) {
       return refuse2("image: not a slot (@0 or @1): ", slot_word);

@@ -7,6 +7,14 @@
 // all. A power cut while one is being written cannot leave something that looks like an image and
 // is not.
 //
+// And, since task p5-01, one thing beside them that is **not** an image: the slot's **base**
+// (spec/FIRMWARE-MANIFEST.md §4a, spec/SYSTEM.md S-5a) - the MBR, SoftDevice and bootloader a
+// factory radio has to be given before any of our images can run on it, as an Intel HEX file. It
+// is in the store because it arrives the way an image does, over the same transfer, judged by the
+// same manifest; everything else about it differs, and the differences all point one way: a base
+// is never promoted, never health-checked, never flashed by an update, and the one door that
+// writes a base takes an AcceptedBase (core/image/verdict.h) and nothing else.
+//
 // -- the layout ---------------------------------------------------------------------------------
 //
 //   rakfw (partitions.csv: data/0x40 at 0x630000, 6 MB), sector 4 KB
@@ -16,6 +24,12 @@
 //     then six areas, slot 0's three and slot 1's three, each
 //       + 0              the header sector: the record, and the progress of a transfer
 //       + 4 KB           the image's bytes, kDataSectors of them
+//     then two base areas, slot 0's and slot 1's, each
+//       + 0              the header sector, the same one
+//       + 4 KB           the base's bytes, kBaseSectors of them
+//
+// The base areas come after the six, so that the six are where they were before task p5-01 and a
+// store written by a firmware that had no base is read by one that has.
 //
 // The store is laid out for **two** radio slots from the start (task p1-06), so that a dual unit
 // does not need the partition rewritten; the second slot's areas are there whether or not the
@@ -54,6 +68,11 @@
 // either door without a manifest signed by a key this build trusts; and since only commit()
 // writes a record, bytes in an area are not an image until the six checks have passed over them.
 //
+// The base has its own door of the same shape: `commitBase()` takes an **AcceptedBase**, the
+// token of 1, 2, 3, 4 and 5p, and nothing else - no conversion exists between the two tokens, so
+// a base cannot be committed as an image or an image as a base, and the mistake does not compile
+// (host_test/rails/test_rail_tokens.cpp asks the compiler and says so).
+//
 // -- no heap, no ESP-IDF ------------------------------------------------------------------------
 //
 // One Store is ~4.3 KB (a sector buffer and the index) and belongs in static storage.
@@ -65,6 +84,7 @@
 #include "core/board/slot.h"
 #include "core/flasher/board_profile.h"
 #include "core/flasher/image_source.h"
+#include "core/image/base.h"
 #include "core/image/crypto/sha256.h"
 #include "core/image/descriptor.h"
 #include "core/image/manifest.h"
@@ -77,14 +97,22 @@ namespace image {
 
 // -- the three images of a slot -----------------------------------------------------------------
 
-// What an image in a slot is for. Not core::image::Role, which is the descriptor's byte (§4).
-enum class Which : std::uint8_t { kGolden = 0, kCandidate = 1, kScanner = 2 };
+// What something in a slot is. Not core::image::Role, which is the descriptor's byte (§4).
+// kBase is the board's base and not an image at all (§4a); it is last, so that the three images
+// keep the numbers they have in the index and in every record already written.
+enum class Which : std::uint8_t { kGolden = 0, kCandidate = 1, kScanner = 2, kBase = 3 };
 
-constexpr std::size_t kWhichCount = 3;
+// The three images a promotion moves between, and how many things a slot holds in all. The index
+// maps only the three: the base's area is fixed (kBaseArea below), which is how "a promotion
+// never moves a pointer to or from the base" is held - there is no pointer to move.
+constexpr std::size_t kPromotableCount = 3;
+constexpr std::size_t kWhichCount = 4;
 
 const char* name(Which which);
-// "golden", "candidate", "scanner" -> Which. False for anything else.
+// "golden", "candidate", "scanner", "base" -> Which. False for anything else.
 bool whichFromName(const char* text, Which* out);
+// Whether this is one of the three images, as against the base.
+constexpr bool isImage(Which which) { return which != Which::kBase; }
 
 // -- the layout, in numbers ---------------------------------------------------------------------
 
@@ -119,23 +147,61 @@ constexpr std::uint32_t kDataSectors = kImageBytesMax / kSectorSize;
 constexpr std::uint32_t kAreaSectors = kDataSectors + 1;  // + the header sector
 constexpr std::uint32_t kAreaBytes = kAreaSectors * kSectorSize;
 
+// The largest base (task p5-01). A base is Intel HEX **text**, about 2.75 times the bytes it
+// describes: a record of 16 data bytes is 44 characters with its newline. What it describes on a
+// RAK4630 is the MBR (0x0 to 0x1000, 4 KB), the SoftDevice S140 6.1.1 (0x1000 to 0x26000,
+// 148 KB) and the bootloader (0xF4000 to 0xFE000, 40 KB) - 192 KB, so ~528 KB of text - and a
+// handful of UICR words. 640 KB holds that, and any base of up to 232 KB of flash bytes, which is
+// more than everything outside the application region (0x26000 to 0xED000) amounts to.
+//
+// It is **not** kImageBytesMax: eight areas of that size would not fit the partition (the
+// arithmetic below), and a base has no use for it.
+constexpr std::uint32_t kBaseBytesMax = 640 * 1024;
+constexpr std::uint32_t kBaseSectors = kBaseBytesMax / kSectorSize;
+constexpr std::uint32_t kBaseAreaSectors = kBaseSectors + 1;  // + the header sector
+constexpr std::uint32_t kBaseAreaBytes = kBaseAreaSectors * kSectorSize;
+static_assert(kBaseBytesMax % kSectorSize == 0, "a base area is a whole number of sectors");
+
 // The index: two copies, a sector each (the erase unit), the newer valid one wins.
 constexpr std::uint32_t kIndexCopies = 2;
 constexpr std::uint32_t kIndexBytes = kIndexCopies * kSectorSize;
 
-constexpr std::uint32_t kAreaCount = static_cast<std::uint32_t>(kRadioSlots * kWhichCount);
-constexpr std::uint32_t kStoreBytes = kIndexBytes + kAreaCount * kAreaBytes;
+constexpr std::uint32_t kAreaCount = static_cast<std::uint32_t>(kRadioSlots * kPromotableCount);
+constexpr std::uint32_t kBaseAreaCount = static_cast<std::uint32_t>(kRadioSlots);
+constexpr std::uint32_t kStoreBytes =
+    kIndexBytes + kAreaCount * kAreaBytes + kBaseAreaCount * kBaseAreaBytes;
 
+// The whole of it, in one place - the numbers `image list` prints:
+//
+//   the index          2 sectors                                   8 KB
+//   six image areas    2 slots x 3 x (199 + 1) sectors         4 800 KB
+//   two base areas     2 slots x (160 + 1) sectors             1 288 KB
+//                                                             --------
+//                                                              6 096 KB of a 6 144 KB partition
 static_assert(kStoreBytes <= kPartitionBytes,
               "the image store's layout does not fit the rakfw partition (partitions.csv); "
               "either the partition grows or an area holds less");
 static_assert(kImageBytesMax >= kLargestAppRegion, "an area must hold the largest image");
 
-// Where an area begins in the region: the index first, then slot 0's three and slot 1's three.
-// `area` is the *physical* area of that slot, 0 to 2; which role each holds is the index's.
+// The base's area in a slot, which no promotion ever moves: one number, and not a pointer in the
+// index. 3 is "past the three image areas", which is what areaOffset makes of it.
+constexpr std::uint8_t kBaseArea = static_cast<std::uint8_t>(kPromotableCount);
+
+// Where an area begins in the region: the index first, then slot 0's three images and slot 1's
+// three, then the two base areas. `area` is the *physical* area of that slot - 0 to 2 for an
+// image, which role each holds being the index's, and kBaseArea for the base, which is fixed.
 constexpr std::uint32_t areaOffset(std::size_t slot, std::size_t area) {
+  if (area >= kBaseArea) {
+    return kIndexBytes + kAreaCount * kAreaBytes +
+           static_cast<std::uint32_t>(slot) * kBaseAreaBytes;
+  }
   return kIndexBytes +
-         static_cast<std::uint32_t>(slot * kWhichCount + area) * kAreaBytes;
+         static_cast<std::uint32_t>(slot * kPromotableCount + area) * kAreaBytes;
+}
+
+// How many bytes of file an area holds. The base's holds fewer, and says so at its own door.
+constexpr std::uint32_t areaCapacity(Which which) {
+  return which == Which::kBase ? kBaseBytesMax : kImageBytesMax;
 }
 
 // -- the record ---------------------------------------------------------------------------------
@@ -174,6 +240,13 @@ constexpr std::size_t kBadListMax = 8;
 
 // What a slot holds. `present` is the only thing a caller may act on: a record whose magic,
 // format or CRC is not right is not present at all.
+//
+// A base's record is the same record, with `use` kProvision, and the 96 bytes that hold an
+// image's descriptor holding `base` instead - because a base has no descriptor (§4a: "it carries
+// no descriptor ... it is not ours, and it is not an image"), and because a record's layout is
+// bytes in flash that outlive the firmware that wrote them: the base took the room that was
+// already there rather than moving the CRC and making every record of format 1 unreadable. The
+// `use` byte says which of the two the 96 bytes are, and nothing reads them as the other.
 struct Record {
   bool present = false;
   Which which = Which::kGolden;       // what it is now - which role was asked for
@@ -182,9 +255,10 @@ struct Record {
   board::Slot slot;
   Use use = Use::kUnknown;
   std::uint32_t size = 0;
-  std::uint32_t load_address = 0;
+  std::uint32_t load_address = 0;     // 0 for a base: its records say where its bytes go
   std::uint8_t sha256[kSha256Size] = {};
   Fields descriptor;                       // the 96 bytes inside the image (§4), as stored
+  BaseSummary base;                        // and, for a base, what §4a found in it instead
   char version[kVersionSize] = {};         // the manifest's `version`
   char commit[kCommitSize + 1] = {};       // the manifest's `commit`
   std::uint32_t stored_at = 0;             // epoch seconds, 0 when the Walter had no time to give
@@ -207,12 +281,14 @@ enum class StoreError : std::uint8_t {
   kFlashRead,
   kFlashWrite,
   kFlashErase,
-  kTooLarge,         // the file is larger than an image area holds
+  kTooLarge,         // the file is larger than the area it is going into holds
   kEmptyFile,        // nothing to store
-  kWrongUse,         // this store holds a radio's images: §2's `swd` files and nothing else
+  kWrongUse,         // an `swd` file in an image's place, a `provision` file in the base's, and
+                     // nothing else in either
   kOnBadList,        // this hash failed a health check once and is never tried again
   kGoldenNotEmpty,   // golden is reached through a promotion once there has been one
   kNeverGolden,      // the golden image is not erased by a command
+  kNotAnImage,       // an image's door, with the base; or the base's, with an image
   kEmpty,            // there is no image in that slot
   kBusy,             // another write is open on this store
   kNotWriting,       // commit() or write() with no write open
@@ -285,8 +361,10 @@ class Store {
 
   // -- writing: only with task p2-01's verdict --------------------------------------------------
 
-  // Opens a write of `expected` into a slot. The existing record is invalidated first (one small
-  // write), so the slot is empty from here on until commit() succeeds. An interrupted write of
+  // Opens a write of `expected` into a slot - one of the three images, or the base, whose
+  // `expected` must be the `provision` file (kWrongUse otherwise; kNotAnImage for an `swd` file
+  // into the base's place or the other way round). The existing record is invalidated first (one
+  // small write), so the slot is empty from here on until the matching commit succeeds. An interrupted write of
   // the same file resumes where it left off: written() says where, and the caller sends the rest.
   //
   // Refusals: kOnBadList (the hash failed a health check once), kGoldenNotEmpty (golden may be
@@ -318,9 +396,14 @@ class Store {
   StoreError openStaged(StoredImage* out) const;
 
   // After endWrite(): reads the bytes back from flash, hashes them, holds them to the token, and
-  // then writes the record's body and makes it valid with one final small write. The only way a
-  // record comes to exist.
+  // then writes the record's body and makes it valid with one final small write. The only way an
+  // image's record comes to exist; kNotAnImage when the open write is the base's.
   StoreError commit(const AcceptedImage& token);
+
+  // The same for a base, and the only way a base's record comes to exist: the token of checks 1,
+  // 2, 3, 4 and 5p (spec/FIRMWARE-MANIFEST.md §5), which only ImageVerdict can make.
+  // kNotAnImage when the open write is one of the three images'.
+  StoreError commitBase(const AcceptedBase& token);
 
   // Give up on an open write. The slot stays empty; the bytes and the progress record stay in
   // flash, so the same file can be resumed later. Nothing is written.
@@ -328,7 +411,8 @@ class Store {
 
   // -- promotion, the bad list and erasing ------------------------------------------------------
 
-  // The candidate becomes the golden image, without copying a byte: the index's role-to-area
+  // The candidate becomes the golden image, without copying a byte - the base is not in this and
+  // cannot be: the index's role-to-area
   // pointers are swapped and written atomically (two copies, sequence numbers, the newer valid
   // one wins). The image that was golden is kept until the new one is in place, and there is
   // never a moment with no golden image once there has been one. The area that held the old
@@ -344,7 +428,9 @@ class Store {
   const std::uint8_t* badAt(std::size_t i) const;
 
   // Invalidates a slot's record and clears its header sector. kNeverGolden for the golden image:
-  // S-5 says a known-good image is always on hand, and a console command is not how it goes.
+  // S-5 says a known-good image is always on hand, and a console command is not how it goes. The
+  // base may be erased: it is a file a person put there and nothing depends on its being there
+  // (S-5a is a person's command from start to finish).
   StoreError erase(Which which, board::Slot slot);
 
   // Which physical area a role is in (0 to 2), for a console line and for the tests that show a
@@ -353,10 +439,12 @@ class Store {
   std::uint32_t indexSequence() const { return index_.seq; }
 
  private:
-  // The index, in memory.
+  // The index, in memory. It maps the three images and not the base, whose area is kBaseArea and
+  // is never anything else - so the bytes of an index record are what they were before task
+  // p5-01, and a store written by the firmware before it is read by the one after it.
   struct Index {
     std::uint32_t seq = 0;
-    std::uint8_t area_of[kRadioSlots][kWhichCount] = {};
+    std::uint8_t area_of[kRadioSlots][kPromotableCount] = {};
     std::uint8_t stale[kRadioSlots] = {};  // an area whose record a promotion must still destroy
     std::uint8_t bad_count = 0;
     std::uint8_t bad[kBadListMax][kSha256Size] = {};
@@ -373,6 +461,11 @@ class Store {
   StoreError invalidate(std::uint32_t header);
   StoreError flushSector(bool last);
   StoreError writeProgress();
+  // The body of a record, up to but not including the one final small write of the magic word:
+  // everything the two commits have in common.
+  StoreError readBackAndCheck();
+  StoreError writeRecord(const Fields* descriptor, const BaseSummary* base, const char* version,
+                         const char* commit_hex, const std::uint8_t* key_id);
 
   interfaces::FlashRegion& region_;
   interfaces::WallClock& clock_;

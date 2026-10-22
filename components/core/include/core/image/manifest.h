@@ -30,10 +30,10 @@ namespace image {
 // manifest has one. A larger release is a release this firmware cannot read, said so at check 2.
 constexpr std::size_t kMaxImages = 8;
 
-// Files per image. §2 lists six `use` values (swd, usb-dfu, usb-uf2, ota, factory, debug) and a
-// file is "one way of delivering that image", so one per use is the most a well-formed image
-// has.
-constexpr std::size_t kMaxFilesPerImage = 6;
+// Files per image. §2 lists seven `use` values (swd, usb-dfu, usb-uf2, ota, factory, debug, and
+// `provision` - the board's base, §4a, from 2026-10-20) and a file is "one way of delivering that
+// image", so one per use is the most a well-formed image has.
+constexpr std::size_t kMaxFilesPerImage = 7;
 
 // JSON tokens the parser can hold: a manifest filled to the two bounds above is ~850 tokens
 // (counted in manifest.cpp); 1024 leaves room for the optional `upstream` object and for fields
@@ -59,7 +59,18 @@ constexpr std::size_t kCommitSize = 40;  // §2: 40 hex characters
 // -- the words ---------------------------------------------------------------------------------
 
 enum class Product : std::uint8_t { kUnknown, kRepeater, kWalter };
-enum class Use : std::uint8_t { kUnknown, kSwd, kUsbDfu, kUsbUf2, kOta, kFactory, kDebug };
+// §2's `use` values. kProvision is the board's base (§4a): not an image at all, which is why
+// nothing that takes an image takes one (core/image/verdict.h's AcceptedBase).
+enum class Use : std::uint8_t {
+  kUnknown,
+  kSwd,
+  kUsbDfu,
+  kUsbUf2,
+  kOta,
+  kFactory,
+  kDebug,
+  kProvision,
+};
 
 const char* name(Product product);
 const char* name(Use use);
@@ -188,6 +199,13 @@ enum class ValidateReason : std::uint8_t {
   kNeedsAppRegion,     // "an swd image needs app_region"
   kAppRegionNotHex,    // ours: start or end is not 1 to 8 hex digits
   kDoesNotFitRegion,   // "the image does not fit its app_region"
+  // §2's rules for a `provision` file (the base, §4a), each one `manifestref.validate`'s.
+  kHexIsForProvision,      // "format hex is for a provision file only"
+  kProvisionNotHex,        // "a provision file is Intel HEX (format hex)"
+  kProvisionLoadAddress,   // "a provision file has no load_address: its records say where"
+  kProvisionNotNrf52840,   // "a provision file is for an nRF52840 board"
+  kProvisionNeedsRegion,   // "a provision file needs its image's app_region"
+  kTwoProvisionFiles,      // "more than one provision file in image <id>"
 };
 
 const char* describe(ValidateReason reason);

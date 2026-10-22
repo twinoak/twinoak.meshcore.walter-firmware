@@ -75,6 +75,15 @@ const CommandDef kCommands[kCommandCount] = {
      "write, verify and erase a two-page pattern at the top of the radio's application region, "
      "only if those pages are blank; the radio restarts. It writes to the radio's flash outside "
      "the update machine, so it wants the word"},
+    {"rak provision check", "rak provision check", Group::kRadio,
+     "no write, ever: attach to the radio and say whether its access port is open (and its "
+     "DEVICEID) or closed (and whether an application answers on the link), what the variant "
+     "table would do, the base in the store, and the exact line to type next"},
+    {"rak provision <DEVICEID>|locked|locked:<key16> confirm", "rak provision", Group::kRadio,
+     "give a factory radio its base (S-5a): a chip erase through the CTRL-AP, the base's flash "
+     "and UICR words through the one door, every word read back, one pin reset. It erases the "
+     "radio whole - RUI3, any identity, UICR - so it wants the radio named and the word; the "
+     "slot then awaits its first install (minutes; docs/provisioning.md)"},
     {"rak update", "rak update", Group::kRadio,
      "flash the candidate, prove it, make it golden - or roll back to the golden image and never "
      "try that candidate again (minutes; docs/update.md)"},
@@ -96,17 +105,18 @@ const CommandDef kCommands[kCommandCount] = {
 
     // -- images, trust and this firmware's own slots --------------------------------------------
     {"image list", "image list", Group::kImages,
-     "every slot's three images: role, board, version, size, hash, when it was stored"},
+     "every slot's three images and its base: role, board, version, size, hash, when it was "
+     "stored"},
     {"image verify <which>", "image verify", Group::kImages,
      "read one back out of flash and hold it to the SHA-256 in its record: what finds flash rot "
      "before an update does"},
-    {"image erase <candidate|scanner>", "image erase", Group::kImages,
+    {"image erase <candidate|scanner|base>", "image erase", Group::kImages,
      "forget one; the golden image is never erased (S-5: a known-good image is always on hand)"},
     {"image bad", "image bad", Group::kImages,
      "the hashes of candidates that failed a health check and are never tried again"},
     {"image receive <which>", "image receive", Group::kImages,
-     "hand this port to a framed transfer and take manifest.json, its .sig and the image "
-     "(tools/walterctl.py push); the six checks run here"},
+     "hand this port to a framed transfer and take manifest.json, its .sig and the image - or, "
+     "with `base`, the board's provision file (tools/walterctl.py push); the checks run here"},
     {"trust", "trust", Group::kImages,
      "the release keys this build accepts a manifest signed with, after a self-test of the "
      "signature arithmetic on this board"},

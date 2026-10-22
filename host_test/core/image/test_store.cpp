@@ -96,27 +96,38 @@ TEST_CASE("the layout is laid out for two radio slots and fits the rakfw partiti
   CHECK(core::image::kPartitionBytes == rakfw.size);
   CHECK(core::image::kStoreBytes <= rakfw.size);
 
-  // The arithmetic the report gives, derived rather than written down: an area holds the largest
-  // application region of any board profile this build knows, rounded up to a sector, plus one
-  // header sector; six areas (two slots x three images); two index sectors.
+  // The arithmetic the report gives, derived rather than written down: an image area holds the
+  // largest application region of any board profile this build knows, rounded up to a sector,
+  // plus one header sector; six of those (two slots x three images); a base area of 640 KB and
+  // one header sector a slot (task p5-01); two index sectors.
   CHECK(core::image::kLargestAppRegion ==
         core::flasher::kRak4630Single.app.end - core::flasher::kRak4630Single.app.begin);
   CHECK(core::image::kImageBytesMax == 0xC7000u);
   CHECK(core::image::kDataSectors == 199u);
   CHECK(core::image::kAreaBytes == 200u * 4096u);
   CHECK(core::image::kAreaCount == 6u);
-  CHECK(core::image::kStoreBytes == 2u * 4096u + 6u * 200u * 4096u);
-  CHECK(core::image::kStoreBytes == 4923392u);
-  CHECK(rakfw.size - core::image::kStoreBytes == 1368064u);
+  CHECK(core::image::kBaseBytesMax == 640u * 1024u);
+  CHECK(core::image::kBaseSectors == 160u);
+  CHECK(core::image::kBaseAreaBytes == 161u * 4096u);
+  CHECK(core::image::kBaseAreaCount == 2u);
+  CHECK(core::image::kStoreBytes ==
+        2u * 4096u + 6u * 200u * 4096u + 2u * 161u * 4096u);
+  CHECK(core::image::kStoreBytes == 6242304u);
+  CHECK(rakfw.size - core::image::kStoreBytes == 49152u);
 
   // The areas are where areaOffset() says, they do not overlap, and the last one ends inside the
-  // partition.
+  // partition: the six image areas first - where they were before the base existed - then the two
+  // base areas.
   std::uint32_t expect = core::image::kIndexBytes;
   for (std::size_t s = 0; s < core::image::kRadioSlots; ++s) {
-    for (std::size_t a = 0; a < core::image::kWhichCount; ++a) {
+    for (std::size_t a = 0; a < core::image::kPromotableCount; ++a) {
       CHECK(core::image::areaOffset(s, a) == expect);
       expect += core::image::kAreaBytes;
     }
+  }
+  for (std::size_t s = 0; s < core::image::kRadioSlots; ++s) {
+    CHECK(core::image::areaOffset(s, core::image::kBaseArea) == expect);
+    expect += core::image::kBaseAreaBytes;
   }
   CHECK(expect == core::image::kStoreBytes);
   MESSAGE("rakfw at " << rakfw.at << ", " << rakfw.size << " bytes; the store uses "
