@@ -61,6 +61,9 @@ bool isRadioVerb(Verb verb) {
     case Verb::kHttpGet:
     case Verb::kFetch:
     case Verb::kTrustTls:
+    // The agent's uplink (task p4-03): a server, not a radio.
+    case Verb::kAgentUrl:
+    case Verb::kAgentProbe:
     // The settings and the rest of the console (task p3-03): about the unit, not a radio.
     case Verb::kGet:
     case Verb::kGetAll:
@@ -123,12 +126,12 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
                  net::TrustLoader* trust, settings::Settings* settings,
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
-                 update::BatterySource* battery, MeshProbe* mesh)
+                 update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
-      mesh_(mesh), flasher_(pins, clock, slots),
+      mesh_(mesh), agent_(agent), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -454,6 +457,8 @@ void Console::runLine(const char* line) {
     case Verb::kHttpGet: httpGet(p.command.url); return;
     case Verb::kFetch: fetch(p.command.url, static_cast<image::Which>(p.command.which)); return;
     case Verb::kTrustTls: trustTls(); return;
+    case Verb::kAgentUrl: agentUrl(); return;
+    case Verb::kAgentProbe: agentProbe(); return;
     case Verb::kGet: get(*p.command.key); return;
     case Verb::kGetAll: getAll(); return;
     case Verb::kSet: set(*p.command.key, p.command.text); return;
@@ -2772,6 +2777,52 @@ void Console::httpGet(const char* url) {
          r.verdict == net::Verdict::kTooLarge ? " (cut off: a console line reads 1 KB at most)" : "",
          static_cast<unsigned long>(r.elapsed_ms));
   if (r.authorization_dropped) print("  (an Authorization header was not carried past the first host)\n");
+}
+
+// ---------------------------------------------------------------------------- the agent's uplink
+
+bool Console::agentOk() {
+  if (agent_ != nullptr) return true;
+  print("error: this build has no agent uplink: nothing was given to the console (main/main.cpp)\n");
+  return false;
+}
+
+void Console::agentUrl() {
+  if (!agentOk()) return;
+  const char* url = agent_->url();
+  // The URL and the version header, and whether a token is set - never the token (S-12).
+  printf("agent url: %s%s\n", url[0] != 0 ? url : "server.url unset", url[0] != 0 ? "" : " (no backend call is made)");
+  printf("  X-Agent-Version: %s\n", agent_->version());
+  printf("  server.token %s\n", agent_->tokenSet() ? "set" : "unset");
+  if (!agent_->configured()) print("  not configured: both are needed before a call is made\n");
+}
+
+void Console::agentProbe() {
+  if (!agentOk() || !uplinkUp()) return;
+  if (!agent_->configured()) {
+    print("error: agent probe: not configured: server.url and server.token are needed ('set server.url "
+          "https://...', 'set server.token ...')\n");
+    return;
+  }
+  printf("agent probe: GET %s/agent/v1/config with the token (the chain is verified against this build's "
+         "roots)\n", agent_->url());
+  UplinkProbeResult r;
+  agent_->probe(&r);
+  if (!r.reachable) {
+    printf("error: agent probe: %s (%lu ms)\n", r.error, static_cast<unsigned long>(r.elapsed_ms));
+    return;
+  }
+  printf("agent probe: %s -> http %d %s, %lu bytes, %lu ms, via %s\n", r.endpoint, r.status,
+         r.ok ? "ok" : "not ok", static_cast<unsigned long>(r.reply_bytes),
+         static_cast<unsigned long>(r.elapsed_ms), r.via);
+  if (!r.ok) printf("  %s\n", r.error);
+  if (r.retry_after_s != 0) printf("  Retry-After: %lu s\n", static_cast<unsigned long>(r.retry_after_s));
+  if (r.rate_limit_remaining >= 0) printf("  X-RateLimit-Remaining: %d\n", r.rate_limit_remaining);
+  if (r.ok) {
+    printf("  agent %lld \"%s\", transport %s, budget %d/min gap %d s, poll %d s, serverTime %s\n",
+           r.agent_id, r.label, r.transport, r.max_transactions_per_minute, r.min_gap_seconds,
+           r.poll_interval_s, r.server_time);
+  }
 }
 
 void Console::fetch(const char* base_url, image::Which which) {

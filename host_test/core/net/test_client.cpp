@@ -249,6 +249,57 @@ TEST_CASE("the token a request carried is in no line of the trace") {
   CHECK(has(b.trace.text, "-> 200"));
 }
 
+TEST_CASE("a sensitive request's credential is wiped from the transport's head once it is on the wire") {
+  // The one copy below the caller's that this firmware can reach is the request head the
+  // transport writes (core/net/http_over_tls.h, head_): with `sensitive` the head is zeroed
+  // after the send and on every way out; without it (the control) the bytes are still there,
+  // because a fetch's requests carry nothing worth the cost.
+  NetBench b;
+  b.server().serve("/final", {'f'});
+  b.server().statuses["/denied"] = sim::StatusRule{401, "", "no"};
+  constexpr const char* kSecret = "s3cr3t-t0ken-4242";
+  auto transportHolds = [&](const char* needle) {
+    const std::string image(reinterpret_cast<const char*>(&b.http.http), sizeof b.http.http);
+    return image.find(needle) != std::string::npos;
+  };
+  auto clientHolds = [&](const char* needle) {
+    const std::string image(reinterpret_cast<const char*>(&b.client), sizeof b.client);
+    return image.find(needle) != std::string::npos;
+  };
+  MemorySink body;
+
+  Options control;
+  control.authorization = "Bearer s3cr3t-t0ken-4242";
+  CHECK(b.client.get("https://server.example/final", control, body).verdict == Verdict::kOk);
+  CHECK(transportHolds(kSecret));  // the control: the grep finds what is there
+
+  Options sensitive;
+  sensitive.authorization = "Bearer s3cr3t-t0ken-4242";
+  sensitive.sensitive = true;
+  CHECK(b.client.get("https://server.example/final", sensitive, body).verdict == Verdict::kOk);
+  CHECK_FALSE(transportHolds(kSecret));
+  CHECK_FALSE(transportHolds("Bearer"));
+  CHECK_FALSE(clientHolds(kSecret));
+  // On the wire once, as the header: the request itself was whole.
+  REQUIRE(b.server().requests.size() == 2);
+  CHECK(b.server().requests[1].header("Authorization") == "Bearer s3cr3t-t0ken-4242");
+
+  // Every way out: a refused status, a failed handshake, a request that could not be written.
+  CHECK(b.client.get("https://server.example/denied", sensitive, body).verdict == Verdict::kDenied);
+  CHECK_FALSE(transportHolds(kSecret));
+  b.socket().refuse_tls = true;
+  CHECK(b.client.get("https://server.example/final", sensitive, body).verdict == Verdict::kFailed);
+  CHECK_FALSE(transportHolds(kSecret));
+  b.socket().refuse_tls = false;
+  Options unwritable = sensitive;
+  interfaces::HttpHeader bad[1] = {{"X-Bad", "line\r\nbreak"}};
+  unwritable.headers = bad;
+  unwritable.header_count = 1;
+  const Result r = b.client.get("https://server.example/final", unwritable, body);
+  CHECK(r.outcome == HttpOutcome::kBadRequest);
+  CHECK_FALSE(transportHolds(kSecret));
+}
+
 TEST_CASE("a URL that is not https is refused before the modem is touched") {
   NetBench b;
   MemorySink body;

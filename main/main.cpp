@@ -56,6 +56,8 @@
 #include "platform/usb_console.h"
 #include "walter_agent/link_mesh.h"
 #include "walter_agent/mesh_probe.h"
+#include "walter_agent/modem_uplink.h"
+#include "walter_agent/uplink_probe.h"
 
 #include "agent_anchor.h"
 
@@ -436,12 +438,21 @@ extern "C" void app_main() {
   // through the probe, for the bench.
   static agent::LinkMesh mesh(radio, g_clock);
   static agent::LinkMeshProbe mesh_probe(mesh);
+  // The server as the agent's loop will see it (task p4-03, components/agent/modem_uplink.h):
+  // the library's IUplink as the seven calls of the agent API over the HTTPS client above, the
+  // token read from `server.token` for each call and wiped, `X-Agent-Version` this firmware's
+  // own. **Nothing of the agent drives it yet** either - the loop goes behind the backend seam
+  // in task p4-05, which is also what tells it the wake's deadline and that the modem is up -
+  // so today its one caller is the console's `agent probe`, through the probe, for the bench.
+  // A namespace-scope object: about 9 kB of reply and request buffers, never a local.
+  static agent::ModemUplink server(http_client, settings, g_clock, g_wall, core::version());
+  static agent::ModemUplinkProbe agent_probe(server);
 
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
-                                        &battery, &mesh_probe);
+                                        &battery, &mesh_probe, &agent_probe);
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop
   // was reached with the board in the safe state" (core/update/self_update.h) and the console is

@@ -138,6 +138,8 @@ supervisor's stop is printed at every level.
 | `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. **The only place this firmware prints them**, and they are in no log line, no journal entry and no `status` |
 | `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time; the response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
+| `agent url` | (task p4-03) the server the agent's uplink is configured for (`server.url` as it is used, a trailing slash off), whether `server.token` is set, and the `X-Agent-Version` header every call to it carries - this firmware's own version. It reads; it does not call |
+| `agent probe` | (task p4-03) one `GET /agent/v1/config` now, with the token: the status, `Retry-After` and `X-RateLimit-Remaining` when the answer carried them, and the config the server answered (the agent's id and label, its transport, the budget, the poll interval, the server's time). The bench's first look at a server; the uplink must be up (`lte up` first). See *The agent's uplink* |
 
 ### Sleep and the battery
 
@@ -718,6 +720,41 @@ trust tls: 2 roots; the modem's certificate slots are tracked in retained storag
 The slots are written at the first request of a boot whose record says they differ - a first
 boot, a power cut (retained storage does not survive one), a release with another root - and not
 otherwise; `trust tls` before that says *not written yet: written at the next request*.
+
+## The agent's uplink
+
+From task p4-03 (`components/agent/modem_uplink.h`; `docs/ARCHITECTURE.md` §13). Two lines, no
+slot; `agent probe` needs the uplink up (`lte up` first) and both `server.url` and `server.token`
+set, and is refused in one line otherwise. Every call the agent makes to meshmaster.dk goes the
+same road this command does: one request of the HTTPS client above, the chain verified, the token
+read from `server.token` for the call and wiped after it, `X-Agent-Version` this firmware's own.
+
+```
+> agent url
+agent url: https://meshmaster.dk
+  X-Agent-Version: 0.4.0+1a2b3c4
+  server.token set
+```
+
+`agent url` reads and does not call. The token is never printed: *set* or *unset*, as `get
+server.token` says it. Without a URL it says `server.url unset (no backend call is made)`, and
+*not configured* until both are there.
+
+```
+> agent probe
+agent probe: GET https://meshmaster.dk/agent/v1/config with the token (the chain is verified against this build's roots)
+agent probe: /agent/v1/config -> http 200 ok, 186 bytes, 2831 ms, via lte
+  X-RateLimit-Remaining: 119
+  agent 3 "Grenaa unit", transport native, budget 2/min gap 20 s, poll 3600 s, serverTime 2026-10-22T14:00:01Z
+```
+
+What a status prints is what the agent's policy will do with it (`agent/ServerPolicy.h`): a `401`
+is `-> http 401 not ok` and *the token was refused* (the loop halts on it); a `429` or a `503`
+prints the `Retry-After` the server named; a `403` is *this unit is refused*. No byte of an error
+body is ever printed - the line is the status and a sentence of this firmware's own. A host whose
+chain this firmware does not carry, or a host that does not answer, is one `error:` line: `agent
+probe: no reply: the TLS handshake failed: the chain, the name or the version` - a failure of the
+handshake, not of the server, which `docs/bench.md` §17 is where to tell apart on a desk.
 
 ## Sleep, and what wakes it
 

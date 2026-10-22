@@ -16,6 +16,11 @@ std::uint64_t sooner(std::uint64_t a, std::uint64_t b) { return a < b ? a : b; }
 HttpOverTls::HttpOverTls(interfaces::TlsSocket& socket, TrustLoader* trust, interfaces::Clock& clock)
     : socket_(socket), trust_(trust), clock_(clock) {}
 
+void HttpOverTls::wipeHead() {
+  volatile char* p = head_;
+  for (std::size_t i = 0; i < sizeof head_; ++i) p[i] = 0;
+}
+
 void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::HttpWantedHeader* wanted,
                           std::size_t wanted_count, interfaces::HttpResponse* response,
                           interfaces::HttpBodySink& sink) {
@@ -28,6 +33,8 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
   const std::uint64_t deadline = started + total_ms;
 
   auto finish = [&](interfaces::HttpOutcome outcome) {
+    // Every way out: a sensitive head is gone whether it was sent, refused or half-written.
+    if (request.sensitive) wipeHead();
     response->outcome = outcome;
     response->status = parser_.status();
     response->has_content_length = parser_.hasContentLength();
@@ -83,7 +90,11 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
       return;
   }
 
-  if (!socket_.send(reinterpret_cast<const std::uint8_t*>(head_), head_len, deadline)) {
+  const bool sent = socket_.send(reinterpret_cast<const std::uint8_t*>(head_), head_len, deadline);
+  // The head is on the wire (or refused): a credential in it is wiped now, before the body goes
+  // and before the seconds a response takes over LTE-M, and not only at the end.
+  if (request.sensitive) wipeHead();
+  if (!sent) {
     finish(interfaces::HttpOutcome::kSendFailed);
     return;
   }

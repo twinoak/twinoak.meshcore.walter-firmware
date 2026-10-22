@@ -657,6 +657,13 @@ Parsed parseLine(const char* line) {
   }
   if (std::strcmp(verb, "http") == 0) return parseHttp(rest);
   if (std::strcmp(verb, "fetch") == 0) return parseFetch(rest);
+  // The agent's uplink (task p4-03): two words, no argument.
+  if (std::strcmp(verb, "agent") == 0) {
+    if (!hasRest) return refuse("agent needs a subcommand: agent url, agent probe");
+    if (std::strcmp(rest, "url") == 0) return accept(Verb::kAgentUrl);
+    if (std::strcmp(rest, "probe") == 0) return accept(Verb::kAgentProbe);
+    return refuse2("unknown agent subcommand (url, probe): ", rest);
+  }
   if (std::strcmp(verb, "image") == 0) {
     std::uint8_t slot = 0;
     Parsed p = parseImage(rest, &slot);

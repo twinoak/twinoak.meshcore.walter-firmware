@@ -42,8 +42,8 @@ struct CommandDef {
   const char* help;  // one line; the console wraps it
 };
 
-// 62, the length below: the table's own static_assert holds it.
-constexpr std::size_t kCommandCount = 62;
+// 64, the length below: the table's own static_assert holds it.
+constexpr std::size_t kCommandCount = 64;
 extern const CommandDef kCommands[kCommandCount];
 
 // The word a command that could cost a radio asks for before it does anything: `erase confirm`,

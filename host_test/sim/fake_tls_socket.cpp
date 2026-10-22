@@ -4,14 +4,17 @@
 
 namespace sim {
 
+// Through delayMs() and not advance(): a connect and a receive are waits, and a clock another
+// clock is tied to (host_test/shim/support/FakePlatform.h, task p4-03: the agent library's
+// platform clock moves with the link's) sees a wait and not a jump.
 bool FakeTlsSocket::spend(std::uint32_t cost, std::uint64_t deadline) {
   const std::uint64_t now = clock_.nowMs();
   if (now >= deadline) return false;
   if (now + cost > deadline) {
-    clock_.advance(deadline - now);
+    clock_.delayMs(static_cast<std::uint32_t>(deadline - now));
     return false;
   }
-  clock_.advance(cost);
+  if (cost != 0) clock_.delayMs(cost);
   return true;
 }
 

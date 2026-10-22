@@ -9,6 +9,12 @@
 // Deadlines: `total_ms` bounds the whole - connect, send, every receive - and `piece_ms` bounds
 // the wait for the next piece of the response. Each receive is given the sooner of the two.
 // Zero means the defaults below.
+//
+// A sensitive request (task p4-03; interfaces/http.h, HttpRequest::sensitive): the head this
+// object writes carries the credential, and it is the one copy below the caller's that this
+// firmware can reach - the modem's own UART buffer is the library's. So the head is wiped the
+// moment it is on the wire and again on every way out of request(), and host_test/core/net/
+// test_client.cpp reads this object back to see no byte of the credential left in it.
 #pragma once
 
 #include <cstddef>
@@ -52,6 +58,10 @@ class HttpOverTls final : public interfaces::Http {
   std::uint32_t connects() const { return connects_; }
 
  private:
+  // The head's bytes to zero, through a volatile so the write is not elided (a sensitive
+  // request's credential, task p4-03).
+  void wipeHead();
+
   interfaces::TlsSocket& socket_;
   TrustLoader* trust_;
   interfaces::Clock& clock_;

@@ -211,7 +211,7 @@ TEST_CASE("no file but the parser matches a command word of its own") {
   // the same would be a second grammar. The five words every command of the table begins with
   // are searched for as compared literals.
   const char* verbs[] = {"\"rak\"", "\"image\"", "\"self\"", "\"lte\"", "\"trust\"",
-                         "\"help\"", "\"status\"", "\"get\"", "\"set\"", "\"erase\""};
+                         "\"help\"", "\"status\"", "\"get\"", "\"set\"", "\"erase\"", "\"agent\""};
   for (const fs::path& file : firmwareSources()) {
     const std::string name = file.filename().string();
     if (name == "parser.cpp" || name == "parser.h" || name == "commands.cpp" ||

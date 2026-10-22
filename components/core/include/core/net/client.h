@@ -67,6 +67,12 @@ struct Options {
   std::uint32_t total_ms = 0;
   std::uint32_t piece_ms = 0;
   bool follow_redirects = true;
+  // The Authorization value is a credential that must not outlive the request (task p4-03,
+  // spec/SYSTEM.md S-12): the transport wipes the request head it wrote the moment it is on the
+  // wire (interfaces/http.h, HttpRequest::sensitive). The client keeps no copy of any header -
+  // `authorization` is the caller's pointer and is copied into the head alone - so this flag
+  // reaches the one buffer below the caller's that holds the bytes. The caller wipes its own.
+  bool sensitive = false;
   // Where the transport writes the response as it arrives, when the caller wants to watch it: the
   // status and the wanted headers are in it before the first body piece (interfaces/http.h), so
   // a sink that must decide from the status - the download's, which refuses to append a 200 -

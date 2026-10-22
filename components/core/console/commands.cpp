@@ -160,6 +160,12 @@ const CommandDef kCommands[kCommandCount] = {
      "a release from <base-url>/manifest.json into the candidate (default) or scanner image: the "
      "three steps, each of the six checks as it passes, the image in ranges (minutes). Without a "
      "base URL it uses the setting fetch.url"},
+    {"agent url", "agent url", Group::kUplink,
+     "the server the agent's uplink is configured for (server.url), whether a token is set, and "
+     "the X-Agent-Version header it sends"},
+    {"agent probe", "agent probe", Group::kUplink,
+     "one GET /agent/v1/config now, with the token: the status, Retry-After and the rate limit "
+     "left, the config the server answered. The bench's first look at a server; 'lte up' first"},
 
     // -- sleep and the battery (task p3-04) ----------------------------------------------------
     {"wake", "wake", Group::kDutyCycle,

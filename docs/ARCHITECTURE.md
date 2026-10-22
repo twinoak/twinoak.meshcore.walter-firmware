@@ -137,9 +137,18 @@ components/
                         one buffer and wiped, and the *local door*: a job for the unit's own
                         repeater served over §5.7's CLI and §5.8's LPP_GET with nothing on the
                         mesh; mesh_probe.h, `rak mesh status` behind the console's seam
-                        (core/console/mesh_probe.h). Logic, like core/: no ESP-IDF include (the
-                        same build step), no heap (the same check), tested on the host against
-                        a simulated RAK. Tasks 03 and 04 add the uplink and the platform here
+                        (core/console/mesh_probe.h). Task p4-03: modem_uplink.h, the library's
+                        mm::IUplink as the seven calls of meshmaster.dk's agent API over
+                        core/net/'s HTTPS client - one request per call, `Authorization: Bearer`
+                        read from `server.token` for the call and wiped (the transport's copy
+                        of the head too), `X-Agent-Version` this firmware's own, the reply
+                        bounded and parsed by the library's own parser, the `Call` record as
+                        ServerPolicy reads it, no redirect followed, the wake's deadline
+                        refusing a call it could not finish; uplink_probe.h, `agent url` and
+                        `agent probe` behind the console's seam (core/console/uplink_probe.h).
+                        Logic, like core/: no ESP-IDF include (the same build step), no heap
+                        (the same check), tested on the host against a simulated RAK and a
+                        scripted server. Task 04 adds the platform here
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
@@ -194,17 +203,31 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         two suites**, copied at the same commit as the component and at upstream's
                         own paths, so that all 93 of its cases run here unmodified (§13, task
                         p4-01). GoogleTest, pinned, for these binaries and nothing else
+  shim/                 `support/FakePlatform.h`, which shadows the library's platform fake with
+                        one whose clock is tied to the link's fake clock (task p4-02; shared
+                        since p4-03): what every binary that runs one of the library's suites
+                        over this firmware's code puts before the library's own test support
   agent-link/           the runner's scenarios, again, through the framing (task p4-02): shim/
-                        holds a `support/FakeMesh.h` and a `support/FakePlatform.h` that shadow
-                        the library's - the same simulated stock repeater and the same clock,
-                        with sim_rak.h and LinkMesh put between the runner and the repeater, and
-                        the two clocks tied - so that test_runner.cpp compiles a second time,
+                        holds a `support/FakeMesh.h` that shadows the library's - the same
+                        simulated stock repeater, with sim_rak.h and LinkMesh put between the
+                        runner and the repeater - so that test_runner.cpp compiles a second time,
                         unchanged, with every send a frame and every reply an event
                         (`agent_core_runner_link_tests`); and test_link_mesh.cpp, what the
                         scenarios do not say (`agent_link_tests`). GoogleTest, because the
                         repeater behind the RAK is the library's fake
+  agent-uplink/         the loop's scenarios, again, through HTTPS (task p4-03): shim/ holds a
+                        `support/FakeUplink.h` that shadows the library's scripted meshmaster.dk
+                        with one that keeps its every knob and record behind ModemUplink, the
+                        HTTPS client and the scripted server - every call a request over the
+                        firmware's own HTTP/1.1, every fault a real status - so that
+                        test_loop.cpp compiles a second time, unchanged
+                        (`agent_core_loop_uplink_tests`): the loop does not know which uplink it has
   agent/                the tests of components/agent/ that need no simulated repeater: `rak mesh
-                        status` against the scripted radio, and the no-allocation check (p4-02)
+                        status` against the scripted radio and the no-allocation check (p4-02);
+                        the uplink against the scripted server answering the contract fixtures'
+                        bytes - the seven calls, every status, the token read back from every
+                        buffer, the bound, the redirect, the deadline - and `agent url` and
+                        `agent probe` on the console (p4-03)
 tools/                  verify.ps1 and verify.sh (the definition of "verified"), check_rails.py
                         (**every rail, one entry each**, run by verify.sh), check_partitions.py,
                         the trust-table and TLS-root generators, release/ (the release tooling),
@@ -1125,6 +1148,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §15) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |
 | **the mesh over the link** | ✔ the library's 46 runner scenarios a second time, unchanged, with `LinkMesh` and a simulated RAK between the runner and the simulated stock repeater — every send a frame, every reply an event, `client_tx` held equal to the repeater's sends at the end of every job; and 21 cases of the link's own: the lost event (one `REPLY_GET`, never a lost reply), the lost request (the link's retry, still one packet), the RAK's 120 s job timeout, a password read back as zeros from the mesh client, the link client and the RAK and found on the wire once, the sensitive CLI line's flag bit, a `password.set` leaving no value anywhere, the send's ceiling and the Walter's own timer with the wait ended by `JOB_BEGIN`, a late reply dropped and counted, a `boot_id` change under a job and under a wait, the path cached and read back, every core type carried with a session and none without, `client_tx` exact across a mix of jobs, and the local door for each of the thirteen types; the console's `rak mesh status` against the fixtures; the no-allocation check (task p4-02) | `components/agent/` in the board's link, reached by the console's probe; the no-ESP-IDF build step | `docs/bench.md` §17: a `status` on a neighbour over the air — one packet, one reply, `client_tx` up by one |
+| **the uplink over the modem** | ✔ the library's 47 loop scenarios a second time, unchanged, with `ModemUplink`, the HTTPS client and the scripted server between the loop and the library's own scripted meshmaster.dk — every call a request over the firmware's HTTP/1.1, every fault a real 401, 429, 503, 422 or a refused handshake, every claim's bytes on the wire; and the uplink's own cases against the contract fixtures' bytes: each of the seven calls' route, method, headers and body, the reply parsed into the fixture's record; 401, 429 with `Retry-After` as seconds and as a date, 503 with and without, 500, 403, a TLS failure, no route, no uplink, a body one byte over the bound (and one that fits), a 200 the parser refuses, a redirect; the token read back as zeros from the uplink, the client and the transport after every call and found in no log line, error, URL or trace, on the wire once; the wake's deadline refusing a call before the modem is touched and bounding one that stalls; `https://` only; the 120-a-minute ceiling; and `agent url` / `agent probe` on the console with the token nowhere in what it printed (task p4-03) | `components/agent/` in the board's link, reached by the console's probe; the no-ESP-IDF build step | `docs/bench.md` §17: `agent probe` against meshmaster.dk — a 200 with a token from `/exit-nodes/new`, a 401 with a wrong one, a TLS failure against a host whose chain this firmware does not carry |
 | **the agent core** | ✔ the library's own two suites, here, against the copied fakes and both fixture sets: `agent_core_runner` (46 cases — all thirteen job types, one send per command, the credential wiped, the lease, the offline buffer, and the fake's own citations) and `agent_core_loop` (47 — the loop, the heartbeat's bytes, the backoff, the reboot guard, every wake case, and what a sleep keeps: the image's bytes, a torn one refused whole, the uplink's ledger, nothing secret in the store), compiled from the same sources the board gets under the same sanitizers and `-Werror`; and the pin's two places held equal (`host_test/rails/test_rail_agent_core.cpp`) | the component in the board's link, all twenty-three objects of it, kept by `main/agent_anchor.cpp` until task p4-05 calls `wake()`; `tools/sync-agent-core.ps1 -Verify` (every file of both copied trees against its manifest, before the container starts) and `tools/check_rails.py`'s entry A (the library's boundary as an allow list, ten ways of skipping certificate verification, no store and no file system) | nothing: the library is linked and unused until p4-05, and what it then does is `docs/bench.md` §§17–18 and phase 4's own bench lines |
 
 ## 13. The agent
@@ -1178,7 +1202,7 @@ registry.
 | Seam | Ours | What it is made of |
 |---|---|---|
 | `IMesh` | `LinkMesh` (task p4-02, **built**: `components/agent/link_mesh.h`) | one request of `spec/LINK-PROTOCOL.md` §6 per call — the link was designed against this list (`SYSTEM.md` S-4): `JOB_BEGIN`/`JOB_END`, `PATH_SET`, the five `SEND_*`, `MESH_COUNTERS` — and §7's `OBS_PULL` for the advert ring (task p4-04 fills the hook). `awaitReply` is the `EV_MESH_REPLY`, waited for over the runner's own timeout plus a margin, with `REPLY_GET` as the fallback; the send carries a ceiling (§6.2 takes the timeout at the send, the library gives it at the await), and when this end gives up first the wait is ended with `JOB_BEGIN` again so the RAK is never busy for the next send. The path is cached and read back with `PATH_GET` after a flood's reply (a returned path is learned, §6.3). `counters().tx` is `client_tx`, never the radio's `tx`. `overheard()` is 0 and `rxByType` empty: §6.4 carries neither (a specification gap). `supports()` is *MESH_CLIENT in the session* for every core type, trace included — §6.2 has `SEND_TRACE` and §6.3 a trace record |
-| `IUplink` | `ModemUplink` (task p4-03) | the seven calls of the agent API over phase 3's HTTPS client (§9): `Authorization: Bearer` and `X-Agent-Version` on every one, the chain verified against a root the image ships, and a `Call` record per call for the library's `ServerPolicy` to read |
+| `IUplink` | `ModemUplink` (task p4-03, **built**: `components/agent/modem_uplink.h`) | the seven calls of the agent API (API §3) over phase 3's HTTPS client (§9), **one request each**: `GET /agent/v1/config`, `POST …/heartbeat`, `…/observations`, `…/jobs/claim`, `…/jobs/{id}/result`, `…/extend`, `…/progress` under `server.url`, with `Authorization: Bearer <server.token>`, `X-Agent-Version: <this firmware's version>`, `Accept: application/json` and `Content-Type: application/json` on a POST; the body the library's writer made, carried unchanged; the reply read into one buffer of the object (2 kB, 6 kB for a claim), cut at the bound by the client and refused here, parsed by the library's own parser and wiped. The token is read from the settings for the call into one buffer, handed to the client as a pointer, flagged *sensitive* so the transport wipes the head it wrote the moment it is on the wire, and wiped when the client returns; it is in no log line, no URL, no error text. The `Call` record as `ServerPolicy` reads it: `reachable` is a status, whatever it said; `ok` a 2xx whose body fit and parsed; `retryAfterS` the header as seconds, 0 for absent or a date; `rateLimitRemaining` or -1; `via` "lte". No redirect is followed on an agent route (a 3xx is `ok = false`); `https://` only is the client's rule and the settings table's. The owner gives it the wake's uplink deadline and says when the modem is up; a call that could not finish in what is left is `reachable = false` with *budget* and touches the modem not at all. The library's 120-a-minute limiter is taken before every call |
 | `IPlatform` / `IClock` | `WalterPlatform` (task p4-04) | mostly interfaces this firmware already has: `Clock::nowMs()`, `Clock::delayMs()`, `esp_random()`, `WallClock`, the heap figures, `Restart`, and the health record in retained storage for the self-reboot count |
 
 And a fourth, **optional** and ours to fill because this unit sleeps (`agent/IRetained.h`,

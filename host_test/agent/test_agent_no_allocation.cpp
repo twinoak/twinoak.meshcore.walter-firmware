@@ -1,9 +1,10 @@
 // components/agent/ allocates nothing and includes only what it is written against (task p4-02):
-// the same check core/ is held to (checks/no_allocation.h), over the mesh client and the
-// console's probe. The library's headers it may include are the three it is an implementation
-// of or reads replies with; nothing of ESP-IDF, nothing of the standard library but the two
-// freestanding headers (tools/cmake/no_idf_include.cmake holds the first half of that at build
-// time too, for the firmware build and the host build alike).
+// the same check core/ is held to (checks/no_allocation.h), over the mesh client, the uplink
+// (task p4-03) and the console's two probes. The library's headers it may include are the ones it
+// is an implementation of, reads replies with, writes bodies with or logs through; nothing of
+// ESP-IDF, nothing of the standard library but the freestanding headers and <cstdio>/<cstring>
+// for snprintf and memcpy (tools/cmake/no_idf_include.cmake holds the first half of that at
+// build time too, for the firmware build and the host build alike).
 #include <doctest.h>
 
 #include <cstddef>
@@ -20,16 +21,33 @@ const char* const kAgentDirectories[] = {
 const char* const kAgentIncludes[] = {
     "cstddef",
     "cstdint",
+    "cstdio",
+    "cstring",
+    "agent/ConfigReply.h",
+    "agent/Credentials.h",
+    "agent/Envelopes.h",
     "agent/IMesh.h",
+    "agent/IPlatform.h",
+    "agent/IUplink.h",
+    "agent/JobEnvelopes.h",
+    "agent/Log.h",
+    "agent/RateLimit.h",
     "agent/ReplyCodec.h",
     "core/console/mesh_probe.h",
+    "core/console/uplink_probe.h",
     "core/link/client/client.h",
     "core/link/codec/messages.h",
     "core/link/codec/view.h",
     "core/link/codec/wire.h",
+    "core/net/client.h",
+    "core/settings/settings.h",
     "interfaces/clock.h",
+    "interfaces/http.h",
+    "interfaces/wall_clock.h",
     "walter_agent/link_mesh.h",
     "walter_agent/mesh_probe.h",
+    "walter_agent/modem_uplink.h",
+    "walter_agent/uplink_probe.h",
 };
 
 }  // namespace
@@ -37,5 +55,5 @@ const char* const kAgentIncludes[] = {
 TEST_CASE("components/agent/ allocates nothing and includes only what it is written against") {
   checks::checkNoAllocation("components/agent/",
                             checks::filesUnder(kAgentDirectories, sizeof kAgentDirectories / sizeof kAgentDirectories[0]),
-                            kAgentIncludes, sizeof kAgentIncludes / sizeof kAgentIncludes[0], 4, 400);
+                            kAgentIncludes, sizeof kAgentIncludes / sizeof kAgentIncludes[0], 8, 800);
 }

@@ -147,6 +147,13 @@ std::vector<std::uint8_t> ScriptedServer::respond(const std::string& text) {
 
   if (no_response) return {};
   if (!raw_response.empty()) return std::vector<std::uint8_t>(raw_response.begin(), raw_response.end());
+  if (on_request) {
+    ScriptedReply reply;
+    if (on_request(r, &reply)) {
+      return response(reply.status, reply.headers, reinterpret_cast<const std::uint8_t*>(reply.body.data()),
+                      reply.body.size(), true);
+    }
+  }
 
   // The path without its query.
   std::string path = r.path;

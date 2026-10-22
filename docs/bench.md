@@ -55,7 +55,7 @@ Two marks:
 | [14](#14-provisioning-and-the-console) | Provisioning and the console | §1 (and §§12–13 for two items) |
 | [15](#15-sleep) ★ | Sleep | §1, §3, a scope, an integrating meter |
 | [16](#16-a-day) | A day | §15, §12, §14 |
-| [17](#17-the-agent) | The agent | §3, a second repeater on the bench |
+| [17](#17-the-agent) | The agent | §3, a second repeater on the bench; §12 and a token for the uplink's items |
 | [—](#what-to-bring-back) | **What to bring back** | the numbers, in one table |
 
 The numbers above are this walk's, in walking order; the task files' own section numbers are not
@@ -1132,8 +1132,9 @@ been simulated into one that has actually spent a day looking after a radio.
 
 ## 17. The agent
 
-From task p4-02 (`components/agent/`; `docs/ARCHITECTURE.md` §13; `docs/console.md`, *The radio,
-over the box link*). Needs §3 walked and a **second repeater** on the bench — any MeshCore repeater
+From tasks p4-02 and p4-03 (`components/agent/`; `docs/ARCHITECTURE.md` §13; `docs/console.md`,
+*The radio, over the box link* and *The agent's uplink*). The mesh items need §3 walked and a
+**second repeater** on the bench — any MeshCore repeater
 on the air, with this unit's key granted on its console (`setperm <this unit's key> 1`), because
 a bare status request is answered only to a key the repeater's ACL holds; a login is the agent's
 business (task p4-05), not this command's. Phase 4's task 06 orders the rest of this section.
@@ -1157,12 +1158,29 @@ business (task p4-05), not this command's. Phase 4's task 06 orders the rest of 
       a password first crosses this link. What to hold then: the `SEND_LOGIN` and the
       `SEND_CLI` frames carry it, the RAK's `password now:` reply comes back, and `dump` on the
       Walter afterwards holds neither; the host test of the same reads every buffer back.
+- [ ] **`agent probe` against meshmaster.dk** (task p4-03; §12 walked, a SIM, and a token from
+      `/exit-nodes/new` on meshmaster.dk typed once as `set server.token …`, with `set server.url
+      https://meshmaster.dk`). `lte up`, then `agent probe`: *-> http 200 ok*, the bytes and the
+      milliseconds, and the config printed - the agent's id and label as the register shows them,
+      `transport native`, the budget, the poll interval, the server's time within a few seconds
+      of a watch. Write the milliseconds in the table below against `kLeastCallMs`: the first
+      real figure for what one call costs from a cold socket. `dump` afterwards holds no byte of
+      the token.
+- [ ] **A wrong token** (task p4-03). `set server.token` to anything else and `agent probe`
+      again: *-> http 401 not ok* and *the token was refused* - the status the agent's loop halts
+      on (task p4-05) - and no body of the server's printed. Then the right token back.
+- [ ] **A host whose chain this firmware does not carry** (task p4-03). `set server.url` to an
+      https host whose chain ends at a root `trust tls` does not list (`docs/bench.md` §13 names
+      the pair that tells a refused chain from no route), `agent probe`: one `error: agent
+      probe: no reply: …` line naming the handshake, not a connection and not a status, and the
+      token not on the wire - the modem refused the chain before the request head went. Then
+      `server.url` back.
 
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
-reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 108 of
-them, in 18 files. Each has a sentence beside it where it is declared; **change the number and the
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 109 of
+them, in 19 files. Each has a sentence beside it where it is declared; **change the number and the
 sentence together**, and nowhere else - the host tests, the console's help and the documents all
 follow the constant.
 
@@ -1385,3 +1403,11 @@ how long each step really takes.
 | Constant | Now | Measured |
 |---|---:|---|
 | `kWakeBoundMs` | `5u * 60 * 1000` | |
+
+**`components/agent/include/walter_agent/modem_uplink.h`** (1) - **§17** measures what one call to
+meshmaster.dk takes over LTE-M from a cold socket (the first `agent probe`): the least of a wake's
+uplink deadline a call is begun with.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kLeastCallMs` | `5000` | |
