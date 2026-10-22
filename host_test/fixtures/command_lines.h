@@ -53,6 +53,7 @@ const CommandLine kCommandLines[] = {
     {"rak watch", "rak watch"},
     {"rak watch reset-caps", "rak watch reset-caps"},
     {"rak ladder", "rak ladder"},
+    {"rak mesh status", "rak mesh status a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"},
     {"image list", "image list"},
     {"image verify", "image verify candidate"},
     {"image erase", "image erase candidate"},

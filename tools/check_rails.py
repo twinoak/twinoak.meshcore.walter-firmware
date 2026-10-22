@@ -660,8 +660,9 @@ INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]*)[>"]')
 def rail_core_is_portable(r):
     """docs/ARCHITECTURE.md §1: the logic lives in components/core/ with no ESP-IDF include and no
     modem symbol, so that everything which can go wrong in the field has a host test that makes it
-    go wrong."""
-    files = sources("components/core")
+    go wrong. components/agent/ (task p4-02, the agent's half of the library's seams) is logic
+    too and is held to the same."""
+    files = sources("components/core", "components/agent")
     bad = []
     for path in files:
         for number, line in enumerate(read(path).splitlines(), 1):
@@ -669,15 +670,16 @@ def rail_core_is_portable(r):
             if m and any(m.group(1).startswith(p) for p in IDF_INCLUDE_PREFIXES):
                 bad.append((path, number, line.strip()))
     if bad:
-        r.broken("components/core/ includes something of the board:", shown(bad))
+        r.broken("components/core/ or components/agent/ includes something of the board:", shown(bad))
     else:
-        r.looked_at("%d files under components/core/, no ESP-IDF or modem include" % len(files))
+        r.looked_at("%d files under components/core/ and components/agent/, no ESP-IDF or modem "
+                    "include" % len(files))
 
     hits = grep(r"\b(WalterModem|WALTER_MODEM_[A-Z_]+)\b", files)
     if hits:
-        r.broken("a WalterModem symbol in components/core/:", shown(hits))
+        r.broken("a WalterModem symbol in components/core/ or components/agent/:", shown(hits))
     else:
-        r.looked_at("no WalterModem symbol in components/core/")
+        r.looked_at("no WalterModem symbol in components/core/ or components/agent/")
 
     r.problems(must_exist("tools/cmake/no_idf_include.cmake"),
                "the build step that checks the same thing is gone:")
@@ -706,12 +708,15 @@ def rail_spec_is_a_copy(r):
     return r
 
 
-# ---- R14: no mesh request is sent by this firmware ---------------------------------------------
+# ---- R14: no mesh request is sent by this firmware outside the agent ---------------------------
 
 # The request types of LINK-PROTOCOL.md §6 and §7 - everything that needs the MESH_CLIENT or
-# OBSERVATIONS capability. The codec encodes them and the client has a call for each (that is
-# phase 1's work, and phase 4's to use); nothing above the link may name one until the agent
-# exists (spec/SYSTEM.md §8).
+# OBSERVATIONS capability. The codec encodes them and the client has a call for each (phase 1's
+# work), and since task p4-02 one place above the link uses them: components/agent/, the agent's
+# LinkMesh (spec/SYSTEM.md S-4), reached by the agent's runner (task p4-05) and, for the bench, by
+# the console's `rak mesh status` through the seam of core/console/mesh_probe.h. Nothing else may
+# name one, and no wake sends one until the agent is behind the backend seam (the simulated month
+# counts them).
 MESH_REQUESTS = ("kJobBegin", "kJobEnd", "kPathSet", "kPathGet", "kSendLogin", "kSendRequest",
                  "kSendCli", "kSendDiscovery", "kSendTrace", "kReplyGet", "kObsPull",
                  "kMeshCounters")
@@ -722,13 +727,13 @@ def rail_no_mesh_request(r):
     client's calls are not used at all. The agent goes behind the seam when the server side is
     built."""
     pattern = r"\b(%s)\b" % "|".join(MESH_REQUESTS)
-    link = re.compile(r"^components/core/(link/|include/core/link/)")
-    hits = [h for h in grep(pattern, sources("components", "main")) if not link.match(h[0])]
+    allowed = re.compile(r"^components/(core/(link/|include/core/link/)|agent/)")
+    hits = [h for h in grep(pattern, sources("components", "main")) if not allowed.match(h[0])]
     if hits:
-        r.broken("a mesh request type is named above the link:", shown(hits))
+        r.broken("a mesh request type is named above the link and outside the agent:", shown(hits))
     else:
-        r.looked_at("the %d mesh request types are named only under components/core/link/"
-                    % len(MESH_REQUESTS))
+        r.looked_at("the %d mesh request types are named only under components/core/link/ and "
+                    "components/agent/" % len(MESH_REQUESTS))
 
     r.problems(must_contain("host_test/core/cycle/test_wake_month.cpp", "No mesh request"),
                "the month's assertion is gone:")
@@ -756,7 +761,7 @@ RAILS = [
     ("R11", "the supervisor's daily caps", rail_daily_caps),
     ("R12", "core/ includes nothing of ESP-IDF or the modem library", rail_core_is_portable),
     ("R13", "spec/ is the copy it claims to be", rail_spec_is_a_copy),
-    ("R14", "no mesh request is sent by this firmware", rail_no_mesh_request),
+    ("R14", "no mesh request is sent outside the agent, and none in a wake yet", rail_no_mesh_request),
 ]
 
 

@@ -102,6 +102,9 @@ const CommandDef kCommands[kCommandCount] = {
     {"rak ladder", "rak ladder", Group::kRadio,
      "climb the supervisor's ladder now - ask, reset, power-cycle, look at the chip, stop - each "
      "rung printed as it is tried (minutes: the waits are the real ones)"},
+    {"rak mesh status <key>", "rak mesh status", Group::kRadio,
+     "one status request to a neighbouring repeater over the mesh client: begin a job with its "
+     "key, send, print the reply and the radio's client_tx before and after (the bench)"},
 
     // -- images, trust and this firmware's own slots --------------------------------------------
     {"image list", "image list", Group::kImages,

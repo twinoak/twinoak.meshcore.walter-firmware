@@ -170,6 +170,7 @@ void ScriptedRadio::onFrame(const link::Packet& packet, const std::vector<std::u
   // response is sent again. This is what makes a retry of a SEND_* transmit nothing.
   if (remembered_ && remembered_type_ == packet.type && remembered_seq_ == packet.seq) {
     seen.executed = false;
+    seen.response = remembered_payload_;
     requests.push_back(seen);
     answer(packet.type, packet.seq, remembered_payload_);
     return;
@@ -179,7 +180,15 @@ void ScriptedRadio::onFrame(const link::Packet& packet, const std::vector<std::u
   const std::vector<std::uint8_t> payload = responseFor(packet, &name);
   ++executions;
   seen.executed = true;
+  seen.response = payload;
   requests.push_back(seen);
+  if (payload.empty()) {
+    // `on_request` answered with nothing at all: a line that restarts the node (§5.7: "some
+    // commands restart the node and never answer"). Executed, not remembered, not answered.
+    last_response = payload;
+    last_response_case = name;
+    return;
+  }
   remembered_ = true;
   remembered_type_ = packet.type;
   remembered_seq_ = packet.seq;
@@ -207,6 +216,13 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
     REQUIRE_MESSAGE(one != nullptr, "the fixtures have no case called " << answer_case_);
     *case_name = answer_case_;
     return fixtures::fromHex((*one)["payload"].string());
+  }
+  if (on_request) {
+    std::vector<std::uint8_t> payload;
+    if (on_request(packet, &payload)) {
+      *case_name = payload.empty() ? "on_request: no answer" : "on_request";
+      return payload;
+    }
   }
 
   // The fixtures' own response for this type: the one whose status is OK if there is one (§3's
@@ -405,6 +421,11 @@ void ScriptedRadio::sendEvent(const std::string& case_name, std::uint32_t after_
   if (type == link::type::kEvBoot) {
     payload = helloBody(payload, 1);  // after the reset reason
   }
+  sendEventPayload(type, payload, after_ms);
+}
+
+void ScriptedRadio::sendEventPayload(std::uint8_t type, const std::vector<std::uint8_t>& payload,
+                                     std::uint32_t after_ms) {
   std::uint8_t frame[link::kMaxFrame] = {};
   const std::size_t size = link::buildFrame(
       type, event_seq, link::Bytes{payload.data(), payload.size()}, frame, sizeof frame);

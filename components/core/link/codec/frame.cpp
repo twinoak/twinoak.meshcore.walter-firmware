@@ -28,6 +28,16 @@ std::uint32_t FrameReceiver::droppedFor(Drop reason) const {
   return per_reason_[static_cast<std::size_t>(reason)];
 }
 
+void FrameReceiver::wipe() {
+  auto* collected = static_cast<volatile std::uint8_t*>(collected_);
+  for (std::size_t i = 0; i < sizeof collected_; ++i) collected[i] = 0;
+  auto* decoded = static_cast<volatile std::uint8_t*>(decoded_);
+  for (std::size_t i = 0; i < sizeof decoded_; ++i) decoded[i] = 0;
+  have_ = 0;
+  overflowed_ = false;
+  packet_ = Packet{};
+}
+
 void FrameReceiver::discardPartial() {
   have_ = 0;
   overflowed_ = false;

@@ -150,7 +150,10 @@ file(GLOB_RECURSE SIM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/sim/*.
 # core/ is the tests of the logic; rails/ is the suite's own statement about the rails
 # (task p3-06): the assertions that are about every test rather than about one, and which doctest
 # runs last because it orders test cases by file path.
+# agent/ (task p4-02) is the tests of components/agent/ that need no simulated repeater: the
+# console's `rak mesh status` against the scripted radio, and the no-allocation check.
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp
+                                                 ${CMAKE_CURRENT_LIST_DIR}/agent/*.cpp
                                                  ${CMAKE_CURRENT_LIST_DIR}/rails/*.cpp)
 add_executable(core_tests main.cpp ${FAKE_SOURCES} ${SIM_SOURCES} ${TEST_SOURCES} ${FIXTURE_HEADER}
                ${MANIFEST_FIXTURE_HEADER})
@@ -302,6 +305,68 @@ foreach(suite runner loop)
   twinoak_ours(${target})
 endforeach()
 
+# -- components/agent/, on the host (task p4-02) ------------------------------------------------
+# This firmware's own half of the library's seams: LinkMesh (mm::IMesh as one request of
+# spec/LINK-PROTOCOL.md §6 per call, over core/'s link client) and the probe behind the console's
+# `rak mesh status`. Logic, like core/: the same flags, the same no-ESP-IDF build step, the host
+# suite's no-allocation check (host_test/agent/test_agent_no_allocation.cpp). core_tests links it
+# for the console's test; the two GoogleTest binaries below drive it with the library's runner.
+set(AGENT ${REPO}/components/agent)
+file(GLOB_RECURSE AGENT_SOURCES CONFIGURE_DEPENDS ${AGENT}/*.cpp)
+add_library(agent STATIC ${AGENT_SOURCES})
+target_include_directories(agent PUBLIC ${AGENT}/include)
+target_link_libraries(agent PUBLIC core agent_core)
+twinoak_ours(agent)
+add_custom_target(agent_no_idf_include
+  COMMAND ${CMAKE_COMMAND} -DCORE_DIR=${AGENT} -DNAME=agent -P ${REPO}/tools/cmake/no_idf_include.cmake
+  COMMENT "agent has no ESP-IDF include"
+  VERBATIM)
+add_dependencies(agent agent_no_idf_include)
+target_link_libraries(core_tests PRIVATE agent)
+
+# -- the mesh over the link: the runner's scenarios, again, and the link's own cases (task p4-02)
+# Two more GoogleTest binaries, because the simulated stock repeater they put behind the RAK is
+# the library's FakeMesh, which is written against GoogleTest:
+#
+#   agent_core_runner_link_tests  test_runner.cpp - the library's own 46 cases, **unchanged** -
+#                                 compiled with host_test/agent-link/shim/ first on its include
+#                                 path, where `support/FakeMesh.h` and `support/FakePlatform.h`
+#                                 shadow the library's with the same classes behind a simulated
+#                                 RAK (sim/sim_rak.h) and the agent's LinkMesh: every scenario's
+#                                 sends are frames, every reply an EV_MESH_REPLY, every assertion
+#                                 the same, and client_tx held equal to the repeater's sends at
+#                                 the end of every job;
+#   agent_link_tests              host_test/agent-link/test_link_mesh.cpp - what the scenarios do
+#                                 not say: the lost event, the lost request, the job timeout, a
+#                                 password read back as zeros, the local door per core type,
+#                                 client_tx exact, the radio restarting under a job.
+#
+# Both carry the fakes and the simulators of core_tests (the scripted radio asserts with
+# doctest's REQUIRE inside its own code, so doctest's runtime without its main is linked too:
+# third_party/doctest_runtime.cpp).
+set(AGENT_LINK ${CMAKE_CURRENT_LIST_DIR}/agent-link)
+foreach(binary agent_core_runner_link_tests agent_link_tests)
+  if(binary STREQUAL agent_core_runner_link_tests)
+    set(source ${AGENT_CORE_HOST}/test/test_runner/test_runner.cpp)
+  else()
+    set(source ${AGENT_LINK}/test_link_mesh.cpp)
+  endif()
+  add_executable(${binary} ${source} ${FAKE_SOURCES} ${SIM_SOURCES}
+                 ${CMAKE_CURRENT_LIST_DIR}/third_party/doctest_runtime.cpp)
+  target_link_libraries(${binary} PRIVATE agent GTest::gtest doctest)
+  # The shim first, then the library's own test support it shadows, then this project.
+  target_include_directories(${binary} PRIVATE ${AGENT_LINK}/shim ${AGENT_CORE_HOST}/test
+                             ${CMAKE_CURRENT_LIST_DIR})
+  target_compile_definitions(${binary} PRIVATE
+    PROJECT_DIR="${AGENT_CORE_PROJECT}"
+    FIXTURES_DIR="${AGENT_CORE_HOST}/tests/fixtures/contracts"
+    COMPANION_DIR="${AGENT_CORE_HOST}/tests/fixtures/companion"
+    TWINOAK_VERSION="${TWINOAK_VERSION}"
+    TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}"
+    TWINOAK_REPO_ROOT="${REPO}")
+  twinoak_ours(${binary})
+endforeach()
+
 # -- the console behind a pipe (task p2-02) -----------------------------------------------------
 # The firmware's own console and image store, over a simulated flash, on stdin and stdout, so that
 # tools/walterctl.py - the laptop's end of `image receive` - is tested before a board exists. It is
@@ -322,6 +387,13 @@ set_tests_properties(core_tests PROPERTIES
 foreach(suite runner loop)
   add_test(NAME agent_core_${suite} COMMAND agent_core_${suite}_tests)
   set_tests_properties(agent_core_${suite} PROPERTIES
+    ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")
+endforeach()
+
+# The runner's scenarios through the link, and the link's own cases (task p4-02).
+foreach(binary agent_core_runner_link_tests agent_link_tests)
+  add_test(NAME ${binary} COMMAND ${binary})
+  set_tests_properties(${binary} PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")
 endforeach()
 

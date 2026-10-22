@@ -22,6 +22,7 @@
 #include "core/board/slot.h"
 #include "core/console/commands.h"
 #include "core/console/log_ring.h"
+#include "core/console/mesh_probe.h"
 #include "core/console/parser.h"
 #include "core/cycle/duty_cycle.h"
 #include "core/cycle/wake_cycle.h"
@@ -84,7 +85,11 @@ class Console {
           // The battery as the radio reports it (task p5-03): `rak provision` refuses on a low
           // or falling reading by the radio update's rule and accepts an unknown one, as
           // `--first-install` does. nullptr is "unknown".
-          update::BatterySource* battery = nullptr);
+          update::BatterySource* battery = nullptr,
+          // The mesh client behind `rak mesh status` (task p4-02): the probe is
+          // components/agent/'s, over LinkMesh and the link; core/ sees only the seam
+          // (core/console/mesh_probe.h). A build without one answers in one line.
+          MeshProbe* mesh = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -214,6 +219,8 @@ class Console {
   void rakWatch();
   void rakWatchResetCaps();
   void rakLadder();
+  // The mesh client (task p4-02).
+  void rakMeshStatus(const char* key);
   void driveLadder();  // step() until the climb is over, printing each rung
   void printLadderStep(const supervisor::Step& s);
   void printIncident(std::size_t number, const supervisor::Incident& incident);
@@ -295,6 +302,7 @@ class Console {
   update::UplinkCheck* server_ = nullptr;
   cycle::DutyCycle* duty_ = nullptr;
   cycle::WakeCycle* cycle_ = nullptr;
+  MeshProbe* mesh_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   board::Slot slot_{};  // the slot the line being run is about

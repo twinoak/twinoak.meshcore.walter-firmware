@@ -107,6 +107,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakWatch:
     case Verb::kRakWatchResetCaps:
     case Verb::kRakLadder:
+    case Verb::kRakMeshStatus:
       return true;
   }
   return false;
@@ -122,12 +123,12 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  uplink::UplinkPolicy* uplink, net::Client* http, update::Fetch* fetch,
                  net::TrustLoader* trust, settings::Settings* settings,
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
-                 update::BatterySource* battery)
+                 update::BatterySource* battery, MeshProbe* mesh)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
-      flasher_(pins, clock, slots),
+      mesh_(mesh), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -439,6 +440,7 @@ void Console::runLine(const char* line) {
     case Verb::kRakWatch: rakWatch(); return;
     case Verb::kRakWatchResetCaps: rakWatchResetCaps(); return;
     case Verb::kRakLadder: rakLadder(); return;
+    case Verb::kRakMeshStatus: rakMeshStatus(p.command.text); return;
     case Verb::kSelfStatus: selfStatus(); return;
     case Verb::kSelfReceive: selfReceive(); return;
     case Verb::kSelfSwitch: selfSwitch(p.command.radio_down); return;
@@ -3410,6 +3412,70 @@ void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
   if ((p.flags & cycle::kWakeFlagShortened) != 0) print("; the sleep was shortened");
   if (p.carried != interfaces::Ask::kNothing) printf("; %s", interfaces::describe(p.carried));
   print("\n");
+}
+
+// ------------------------------------------------------------------------ the mesh client (p4-02)
+//
+// One status request to a neighbour through the seam of core/console/mesh_probe.h: the job, the
+// send, the wait, the reply's numbers and `client_tx` before and after - which is the bench's
+// whole item (one packet on the air, one reply, client_tx up by one). The wait is what the agent's
+// runner gives a flood at the claim's defaults, 4 x 4000 ms (docs/library.md §3.3), so the
+// console is busy for up to sixteen seconds on silence.
+constexpr std::uint32_t kMeshProbeWaitMs = 16000;
+
+void Console::rakMeshStatus(const char* key) {
+  if (mesh_ == nullptr) {
+    print("error: rak mesh status: this build has no mesh client\n");
+    return;
+  }
+  printf("mesh status %.16s...: one status request over the mesh client (up to %lu ms)\n", key,
+         static_cast<unsigned long>(kMeshProbeWaitMs));
+  MeshProbeResult r;
+  mesh_->status(key, kMeshProbeWaitMs, &r);
+  switch (r.outcome) {
+    case MeshProbeResult::Outcome::kBadKey:
+      print("error: rak mesh status: the key is not 64 hex characters\n");
+      return;
+    case MeshProbeResult::Outcome::kNotBegun:
+      linkError("rak mesh status: JOB_BEGIN", r.fault, r.status);
+      return;
+    case MeshProbeResult::Outcome::kNotSent:
+      linkError("rak mesh status: SEND_REQUEST", r.fault, r.status);
+      return;
+    case MeshProbeResult::Outcome::kNoReply:
+      printf("  sent as a %s, tag 0x%08lx; no reply: the record says %s after %lu ms\n",
+             r.flooded ? "flood" : "direct packet", static_cast<unsigned long>(r.tag),
+             lc::replyStateName(r.state), static_cast<unsigned long>(r.elapsed_ms));
+      if (r.fault != lc::Fault::kNone) linkError("rak mesh status: the wait", r.fault, r.status);
+      break;
+    case MeshProbeResult::Outcome::kUnreadable:
+      printf("  sent as a %s, tag 0x%08lx; reply after %lu ms (%s, snr %d/4 dB, rssi %d dBm): "
+             "not a status reply this firmware reads (%u bytes)\n",
+             r.flooded ? "flood" : "direct packet", static_cast<unsigned long>(r.tag),
+             static_cast<unsigned long>(r.elapsed_ms), r.via_path ? "via a returned path" : "direct",
+             static_cast<int>(r.snr_q4), static_cast<int>(r.rssi), static_cast<unsigned>(r.reply_len));
+      break;
+    case MeshProbeResult::Outcome::kOk:
+      printf("  sent as a %s, tag 0x%08lx; reply after %lu ms (%s, snr %d/4 dB, rssi %d dBm)\n",
+             r.flooded ? "flood" : "direct packet", static_cast<unsigned long>(r.tag),
+             static_cast<unsigned long>(r.elapsed_ms), r.via_path ? "via a returned path" : "direct",
+             static_cast<int>(r.snr_q4), static_cast<int>(r.rssi));
+      printf("  the repeater: battery %d mV, uptime %lu s, noise floor %d dBm, last rssi %d dBm, "
+             "last snr %d/4 dB, packets rx %lu tx %lu, airtime %lu s, tx queue %d\n",
+             r.battery_mv, static_cast<unsigned long>(r.uptime_s), r.noise_floor_dbm, r.last_rssi,
+             r.last_snr_q4, static_cast<unsigned long>(r.packets_recv),
+             static_cast<unsigned long>(r.packets_sent), static_cast<unsigned long>(r.airtime_s),
+             r.tx_queue_len);
+      break;
+  }
+  if (r.counters_known) {
+    printf("  client_tx %lu -> %lu (%s%ld)\n", static_cast<unsigned long>(r.client_tx_before),
+           static_cast<unsigned long>(r.client_tx_after),
+           r.client_tx_after >= r.client_tx_before ? "+" : "",
+           static_cast<long>(r.client_tx_after) - static_cast<long>(r.client_tx_before));
+  } else {
+    print("  client_tx: MESH_COUNTERS did not answer\n");
+  }
 }
 
 }  // namespace console

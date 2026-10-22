@@ -54,6 +54,8 @@
 #include "platform/sleeper.h"
 #include "platform/uart.h"
 #include "platform/usb_console.h"
+#include "walter_agent/link_mesh.h"
+#include "walter_agent/mesh_probe.h"
 
 #include "agent_anchor.h"
 
@@ -426,11 +428,20 @@ extern "C" void app_main() {
   // while this one waits for a byte.
   // The battery is the last argument (task p5-03): `rak provision` refuses on a low or falling
   // reading by the update's rule, and accepts an unknown one as `--first-install` does.
+  // The mesh as the agent's runner will see it (task p4-02, components/agent/link_mesh.h,
+  // docs/ARCHITECTURE.md §13): the library's IMesh as one request of spec/LINK-PROTOCOL.md §6 per
+  // call, over the link client. **Nothing of the agent drives it yet** - the runner goes behind
+  // the backend seam in task p4-05 - and the unit's own repeater key (the local door) is task
+  // p4-04's to set from IDENTITY. Today its one caller is the console's `rak mesh status <key>`,
+  // through the probe, for the bench.
+  static agent::LinkMesh mesh(radio, g_clock);
+  static agent::LinkMeshProbe mesh_probe(mesh);
+
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
-                                        &battery);
+                                        &battery, &mesh_probe);
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop
   // was reached with the board in the safe state" (core/update/self_update.h) and the console is

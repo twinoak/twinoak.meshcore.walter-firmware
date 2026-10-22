@@ -227,6 +227,8 @@ enum class Verb : std::uint8_t {
   kRakWatch,
   kRakWatchResetCaps,
   kRakLadder,
+  // The mesh client (task p4-02): `rak mesh status <key>`, the key in `text`.
+  kRakMeshStatus,
   // The Walter's own update (task p2-04).
   kSelfStatus,
   kSelfReceive,

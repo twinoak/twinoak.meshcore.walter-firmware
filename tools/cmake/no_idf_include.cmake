@@ -10,6 +10,11 @@
 if(NOT DEFINED CORE_DIR)
   message(FATAL_ERROR "no_idf_include.cmake: CORE_DIR is not set")
 endif()
+# Which component the sentence names: core/ unless told otherwise. components/agent/ (task p4-02)
+# is held to the same rule with -DNAME=agent.
+if(NOT DEFINED NAME)
+  set(NAME core)
+endif()
 
 set(_forbidden
   "esp_" "esp32" "esp-idf" "freertos/" "driver/" "soc/" "hal/" "rom/" "xtensa" "riscv/"
@@ -28,12 +33,12 @@ foreach(_file IN LISTS _files)
       if(_at EQUAL 0)
         file(RELATIVE_PATH _rel "${CORE_DIR}/.." "${_file}")
         message(FATAL_ERROR
-          "core has no ESP-IDF include: ${_rel} includes <${_target}>. Logic in components/core/ "
-          "is compiled on the host and tested there; what it needs of the board it takes as an "
-          "interface from components/interfaces/ (docs/ARCHITECTURE.md §1).")
+          "${NAME} has no ESP-IDF include: ${_rel} includes <${_target}>. Logic in "
+          "components/${NAME}/ is compiled on the host and tested there; what it needs of the "
+          "board it takes as an interface from components/interfaces/ (docs/ARCHITECTURE.md §1).")
       endif()
     endforeach()
   endforeach()
 endforeach()
 list(LENGTH _files _n)
-message(STATUS "core: ${_n} files, no ESP-IDF include")
+message(STATUS "${NAME}: ${_n} files, no ESP-IDF include")

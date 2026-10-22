@@ -345,6 +345,32 @@ Parsed parseRak(char* rest) {
     }
     return p;
   }
+  // rak mesh status <key> (task p4-02): one status request to a neighbour over the mesh client.
+  // The key is the neighbour's MeshCore public key, 64 hex characters, as `rak id` prints one.
+  if (std::strcmp(sub, "mesh") == 0) {
+    if (!hasArg) return refuse("rak mesh needs an operation: rak mesh status <key>");
+    char* op = arg;
+    char* operand = op;
+    while (*operand != 0 && !isSpace(*operand)) ++operand;
+    if (*operand != 0) {
+      *operand++ = 0;
+      while (*operand != 0 && isSpace(*operand)) ++operand;
+    }
+    if (std::strcmp(op, "status") != 0) {
+      return refuse2("rak mesh: unknown operation (rak mesh status <key>): ", op);
+    }
+    if (*operand == 0) return refuse("rak mesh status needs the neighbour's key: rak mesh status <key>");
+    std::size_t n = 0;
+    for (const char* p = operand; *p != 0; ++p, ++n) {
+      const bool hex = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F');
+      if (!hex) return refuse("rak mesh status: the key is 64 hex characters, as 'rak id' prints one");
+    }
+    if (n != 64) return refuse("rak mesh status: the key is 64 hex characters, as 'rak id' prints one");
+    Parsed p = accept(Verb::kRakMeshStatus);
+    std::memcpy(p.command.text, operand, n + 1);
+    p.command.text_size = n;
+    return p;
+  }
   return refuse2("unknown rak subcommand (try 'help'): ", sub);
 }
 
