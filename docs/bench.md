@@ -23,7 +23,8 @@ Two marks:
 - ⚠ **can damage something, or lose the radio's identity.** Read the item through before typing
   anything. These are the kill line, opening a protected module, a chip erase by a person, and
   anything that writes the nRF52's flash.
-- ★ **the three that matter most.** If there is one evening, these are it:
+- ★ **the ones that matter most.** Three for the rig itself, and — since phase 4 made this unit an
+  exit node — three for the agent. If there is one evening for the rig, these are it:
   1. **§5, the first flash** — `rak flash-test`, then a real image, then the power pulled
      half-way through. The unit exists so that this cannot brick a radio, and a simulator can only
      show that the documents were followed, not that the chip agrees with them.
@@ -33,6 +34,20 @@ Two marks:
   3. **§15, a scope on nRESET across sleep and wake** — there must be no edge at all. A Walter
      that glitches the reset line every time it wakes is a Walter that reboots the repeater every
      fifteen minutes, and nothing in a host test can see it.
+
+  And if there is one evening for the agent, these three (`spec/SYSTEM.md` §8; a simulated month
+  says all three work, and what it cannot say is whether meshmaster.dk agrees):
+  4. **§18, the first heartbeat recognised** — one `agent wake` with the cable in, and the exit
+     node's page showing *this* unit, by its repeater's key, asleep afterwards. Everything else in
+     §§17–18 is downstream of the server and the unit agreeing about who this is.
+  5. **§18, the offer that resumes after a pulled cable** — a download stopped in the middle by a
+     wake's budget or by the modem going away, taken up from the stored bytes by the next wake.
+     A unit on a mast on a metered SIM will meet this on its first real release; nothing but the
+     rig can show that a resumed range and a whole one produce the same image.
+  6. **§18, the apply that rolls back on a bad candidate** — the server asked for it, the health
+     check refused it, the golden image came back and the page says `rolledBack`. This is §9's
+     promise with a server in the loop, and the one place where "the server decides" would be a
+     serious finding.
 
 ## The walk
 
@@ -56,7 +71,7 @@ Two marks:
 | [15](#15-sleep) ★ | Sleep | §1, §3, a scope, an integrating meter |
 | [16](#16-a-day) | A day | §15, §12, §14 |
 | [17](#17-the-agent) | The agent | §3, a second repeater on the bench; §12 and a token for the uplink's items |
-| [18](#18-a-day-as-an-exit-node) | A day as an exit node | §§16–17, a token, a release on the server |
+| [18](#18-a-day-as-an-exit-node) ★ | A day as an exit node | §§16–17, a token, a release on the server |
 | [—](#what-to-bring-back) | **What to bring back** | the numbers, in one table |
 
 The numbers above are this walk's, in walking order; the task files' own section numbers are not
@@ -1135,31 +1150,22 @@ been simulated into one that has actually spent a day looking after a radio.
 
 From tasks p4-02, p4-03 and p4-04 (`components/agent/`; `docs/ARCHITECTURE.md` §13;
 `docs/console.md`, *The radio, over the box link*, *The agent's uplink* and *The agent's
-identity*). The mesh items need §3 walked and a
-**second repeater** on the bench — any MeshCore repeater
-on the air, with this unit's key granted on its console (`setperm <this unit's key> 1`), because
-a bare status request is answered only to a key the repeater's ACL holds; a login is the agent's
-business (task p4-05), not this command's. Phase 4's task 06 orders the rest of this section.
+identity*).
 
-- [ ] **`rak mesh status <key>`** (task p4-02), `<key>` the neighbour's public key as its own
-      `rak id`-equivalent prints it. **One packet on the air, one reply, `client_tx` up by one**:
-      the console prints *sent as a flood* with a tag, then *reply after N ms (via a returned
-      path, snr …, rssi …)* and the repeater's battery, uptime, noise floor and packet counts,
-      then `client_tx A -> A+1 (+1)`. Hold the three against the neighbour's own console
-      (`stats-core` on it: its packets received up by one) and against a sniffer if one is up:
-      exactly one packet from this unit, flooded, two-byte path hashes. The second run goes
-      *direct*: the first reply taught the route (§6.3), and `client_tx` is up by one again.
-- [ ] **Silence** (task p4-02). The same command with a key nobody on the air has: sixteen
-      seconds, then *no reply: the record says timeout after 16000 ms* — the RAK's own record,
-      read with `REPLY_GET` after the Walter's timer ran out — and `client_tx` still up by one:
-      the packet went, nothing answered. `rak events` afterwards shows nothing of it: the
-      mesh client takes its own events. A third run must not be refused *busy*: the wait was
-      ended with `JOB_BEGIN` again.
-- [ ] **A password crosses once** (task p4-02; a laptop on the RAK's console or a logic
-      analyser on D-sub 8). Not this command's — task p4-05's first `password.set` job is where
-      a password first crosses this link. What to hold then: the `SEND_LOGIN` and the
-      `SEND_CLI` frames carry it, the RAK's `password now:` reply comes back, and `dump` on the
-      Walter afterwards holds neither; the host test of the same reads every buffer back.
+**In this order**, which is the order a person meets them: the unit registered and its token set,
+the first call to the server, who this unit says it is, what a heartbeat would carry — and then
+the mesh, which needs §3 walked and a **second repeater** on the bench: any MeshCore repeater on
+the air, with this unit's key granted on its console (`setperm <this unit's key> 1`), because a
+bare status request is answered only to a key the repeater's ACL holds. (A login is the agent's
+business, task p4-05, not `rak mesh status`'s.) The uplink's items need §12 and a token;
+everything in §18 needs this section first.
+- [ ] **The unit registered, before its repeater is** (task p4-04, and meshmaster.dk's
+      *Register an exit node*). On meshmaster.dk: *Exit nodes -> Register an exit node*
+      (`/exit-nodes/new`), **with no repeater chosen** — a unit may be registered before anybody
+      has registered the radio it looks after. It gives a token, once; copy it into
+      `set server.token …` at the cable (`docs/provisioning.md`, *The agent's first call*) with
+      `set server.url https://meshmaster.dk`. The page then shows the unit *never seen*, with no
+      key beside it. Nothing is on the wire yet.
 - [ ] **`agent probe` against meshmaster.dk** (task p4-03; §12 walked, a SIM, and a token from
       `/exit-nodes/new` on meshmaster.dk typed once as `set server.token …`, with `set server.url
       https://meshmaster.dk`). `lte up`, then `agent probe`: *-> http 200 ok*, the bytes and the
@@ -1196,12 +1202,38 @@ business (task p4-05), not this command's. Phase 4's task 06 orders the rest of 
       optional fields — `nextCheckInS` the band's interval in seconds and
       `maxTransactionsThisWake` the band's cap. Write the band `agent id` said beside it. Nothing
       is sent; this is an eye on the bytes before task p4-05 posts them.
-- [ ] **A radio with no identity** (task p4-04). `rak role scanner` (or a RAK with no application
-      flashed): `agent id` says *the radio has no identity yet*, `job types (0): none`, and
-      `agent heartbeat` prints a body with **no** `companionPublicKey`, no `companionFirmware`, no
-      `radio` and `"jobTypes":[]` — a unit that is alive and whose repeater is not identified,
-      which is what a unit registered before its repeater sends. `rak role repeater` back, then
-      `rak hello`, and the next `agent id` has the key again.
+- [ ] **A radio with no identity, and what a heartbeat says then** (task p4-04). Before the radio
+      has a key — a factory RAK with no application, or `rak role scanner` — `agent id` says *the
+      radio has no identity yet*, `job types (0): none`, and `agent heartbeat` prints a body with
+      **no** `companionPublicKey`, no `companionFirmware`, no `radio` and `"jobTypes":[]`. That is
+      what a unit registered before its repeater sends, and the page must show it **alive and
+      *radio not identified*** rather than refusing it. `rak role repeater`, then `rak hello`, and
+      the next `agent id` has the key again.
+- [ ] **The repeater registered, and the unit shown as its uplink** (meshmaster.dk's pile 4.16,
+      task 132). With the radio's key in hand (`agent id`), *Register this unit's repeater* on the
+      exit node's page: the repeater's own page then shows **this unit as its uplink, at once**,
+      and the exit node's page shows the key it is linked by. The first heartbeat after that
+      carries `companionPublicKey` — which is the link the server makes, and the first thing to
+      check if the two pages disagree about who looks after what.
+- [ ] **`rak mesh status <key>`** (task p4-02), `<key>` the neighbour's public key as its own
+      `rak id`-equivalent prints it. **One packet on the air, one reply, `client_tx` up by one**:
+      the console prints *sent as a flood* with a tag, then *reply after N ms (via a returned
+      path, snr …, rssi …)* and the repeater's battery, uptime, noise floor and packet counts,
+      then `client_tx A -> A+1 (+1)`. Hold the three against the neighbour's own console
+      (`stats-core` on it: its packets received up by one) and against a sniffer if one is up:
+      exactly one packet from this unit, flooded, two-byte path hashes. The second run goes
+      *direct*: the first reply taught the route (§6.3), and `client_tx` is up by one again.
+- [ ] **Silence** (task p4-02). The same command with a key nobody on the air has: sixteen
+      seconds, then *no reply: the record says timeout after 16000 ms* — the RAK's own record,
+      read with `REPLY_GET` after the Walter's timer ran out — and `client_tx` still up by one:
+      the packet went, nothing answered. `rak events` afterwards shows nothing of it: the
+      mesh client takes its own events. A third run must not be refused *busy*: the wait was
+      ended with `JOB_BEGIN` again.
+- [ ] **A password crosses once** (task p4-02; a laptop on the RAK's console or a logic
+      analyser on D-sub 8). Not this command's — task p4-05's first `password.set` job is where
+      a password first crosses this link. What to hold then: the `SEND_LOGIN` and the
+      `SEND_CLI` frames carry it, the RAK's `password now:` reply comes back, and `dump` on the
+      Walter afterwards holds neither; the host test of the same reads every buffer back.
 - [ ] **`agent obs` and §7's drain** (task p4-04; the second repeater of the mesh items, or any
       node advertising on the air). `agent obs` first: the ring empty, and the radio's own count
       of what is waiting. Then `agent obs pull`: the records go into the ring, and the rows show
@@ -1219,19 +1251,23 @@ From task p4-05 (`components/agent/agent_backend.h`, `firmware_jobs.h`; `docs/AR
 a unit that not only looks after its radio but is **asked** to, by meshmaster.dk, and answers.
 Needs §16 walked (a provisioned unit that sleeps and wakes on the battery), §17 walked (the uplink
 up, a token, `agent id` showing the radio's key), and — for the firmware items — a release of the
-*Repeater* product on the server to be offered, and the *Walter* product's own release for the
-self-update item. The simulated month (300 wakes) is the figure every item is held against; it
+*Repeater* product on the server to be offered, **one more Repeater release broken on purpose**
+(§9's), and the *Walter* product's own release for the self-update item. The simulated month (300 wakes) is the figure every item is held against; it
 printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committed, 1 rolled back),
 8192 bytes downloaded, every wake slept**.
 
-- [ ] **`agent wake` with the cable in, once.** `lte up` first, then `agent wake`: it runs one pass
-      of the loop through step 8's seam and prints each part — the config call (the first boot
-      only), the heartbeat with this wake's intent, the offline buffer, the claim, and whatever the
-      claim handed over — then the `WakeReport` and the sleep it chose. With nothing queued on the
-      server it is one heartbeat and *nothing to do*; `agent jobs` then shows the last jobs empty
-      and `agent state` shows the loop having heartbeated once, the poll interval, and no kept
-      image. Nothing should print a token, a password or a reply body — glance at the output and
-      then at `dump`.
+- [ ] ★ **`agent wake` with the cable in, once — the first heartbeat recognised.** `lte up` first,
+      then `agent wake`: it runs one pass of the loop through step 8's seam and prints each part —
+      the config call (the first boot only), the heartbeat with this wake's intent, the offline
+      buffer, the claim, and whatever the claim handed over — then the `WakeReport` and the sleep
+      it chose. With nothing queued on the server it is one heartbeat and *nothing to do*;
+      `agent jobs` then shows the last jobs empty and `agent state` shows the loop having
+      heartbeated once, the poll interval, and no kept image. Nothing should print a token, a
+      password or a reply body — glance at the output and then at `dump`.
+      **Then the page**: the exit node shows *this* unit, by its repeater's key, last seen now, and
+      asleep after the wake ends. **If it does not**, the token belongs to another unit or the
+      repeater was never linked (§17's last two items) — and nothing further in this section can
+      work until it does, which is why this is one of the three marked ★.
 - [ ] **A job for a neighbour.** Queue a `status` job for the second repeater (§17) on the server,
       then `agent wake`. **One packet on the air, `client_tx` up by one**, and the result posted:
       the server's job page shows it `ok` with the neighbour's battery, uptime and packet counts.
@@ -1241,16 +1277,35 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       unit, then `agent wake`. Both go through the local door: **`client_tx` does not move** and no
       packet is on the air (a sniffer sees nothing), yet both post a result — the telemetry's LPP
       channels, the config without the access list. This is the seam's own §13 table, walked.
-- [ ] **An offer, in resumable ranges.** Queue a `twinoak.fw.offer` for a Repeater release larger
-      than one wake's download budget, then `agent wake` twice. The first wake downloads part of
-      the image, posts `progress`, and **posts no result**; `agent jobs` shows the offer still
-      claimed and `agent state` a candidate part-stored. The second wake resumes from where the
-      bytes stopped and posts `stored`. Write the bytes-per-wake you set against `kWakeDownloadBytes`
-      in the table below: the first real figure for what a metered plan allows a wake to pull.
+- [ ] ★ **An offer, in resumable ranges — and the cable pulled in the middle.** Queue a
+      `twinoak.fw.offer` for a Repeater release larger than one wake's download budget, then
+      `agent wake` twice. The first wake downloads part of the image, posts `progress`, and
+      **posts no result**; `agent jobs` shows the offer still claimed and `agent state` a
+      candidate part-stored. The second wake resumes from where the bytes stopped and posts
+      `stored`. Write the bytes-per-wake you set against `kWakeDownloadBytes` in the table below:
+      the first real figure for what a metered plan allows a wake to pull.
+      **Then do it the unkind way**, which is the one that matters (★): queue the offer again for
+      a fresh release and, while the first wake is downloading, **pull the antenna or the SIM** (or
+      the whole battery) so that the wake dies mid-range rather than ending politely. Power it
+      back, `agent wake`: the download must take up again from the bytes already in the candidate
+      slot — `agent state` says how many — and the image that finally lands must have the
+      manifest's SHA-256, which `agent jobs` shows in the `stored` result. **If the hash is wrong
+      after a resume**, a range boundary is off by a byte and nothing before the rig could have
+      shown it; stop and report it.
 - [ ] **An apply that commits.** With the offered image stored (above), queue a `twinoak.fw.apply`,
       then `agent wake`. It flashes the candidate through §9's machine, health-checks it, and the
       result is `committed`; `rak status` shows the radio on the new version. One update step this
       wake, and no second — S-7, which the wake record's letters show.
+- [ ] ★ **An apply that rolls back on a bad candidate.** The same again with a release that is
+      **signed and valid but broken on purpose** (§9's deliberate bad image, offered by the server
+      instead of pushed over the cable): offer it, then apply it. The flash goes in, the radio does
+      not answer as itself, **this firmware's** health check fails it, the golden image comes back
+      and proves itself, and the result the server gets is `rolledBack` with the journal in it —
+      `ok` as a job, because a rollback is the system working. The page says `rolledBack`, the
+      candidate is on the bad list (`image list`), and **a second apply of the same hash is refused
+      `badList` with nothing flashed**. If instead the server's verdict decided anything here — a
+      `committed` for an image that does not run — that is the most serious finding this section
+      can produce.
 - [ ] **An apply of the Walter itself, across the trial.** Queue a `twinoak.fw.apply` naming a
       *Walter* release. The wake makes it the next to boot and sleeps; the board reboots into the
       new image and **the result is posted by the *next* boot's wake**, after the trial's third

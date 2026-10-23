@@ -49,3 +49,87 @@ tagged for its task as part of the task. Only the reviewer ticks an item.
   registered with no repeater; the first wake with a radio that has a key; *Register this unit's
   repeater* on the exit node's page (pile 4.16 task 132), and the repeater's page showing the unit as
   its uplink at once.
+
+## After the run (23 October, from task 06 — the specification gaps this phase raised)
+
+Nothing here is this repository's to change: `spec/` is a copy (`spec/README.md`) and the other two
+repositories are read-only to every task of this pile. Each item names **the repository it belongs
+to** and the report that raised it, and each is a thing this firmware has already worked around in
+the smallest way that fits — so none of them blocks the bench.
+
+### The box link, for `LINK-PROTOCOL.md` 1.1 (the hardware repository)
+
+- [ ] **§6.4 has no `overheard` and no count by payload type** (report 02, report 04). The
+  library's heartbeat carries both — `overheard` (frames of the mesh's own chat heard and not read)
+  and `rxByType[16]` — and nothing on this link can tell either, so `LinkMesh::overheard()` answers
+  0, which `docs/library.md` §3.2 defines as *this transport cannot see chat*, and the by-type
+  counts are never filled.
+- [ ] **§6.2 does not say that `timeout_ms` is a ceiling, and §6 has no way to end a wait**
+  (report 02). The library gives its timeout at the *await*, not at the send, so the send carries a
+  60 s ceiling and the Walter runs its own timer; when it gives up, the only request that ends the
+  RAK's wait without ending the job is `JOB_BEGIN` with the same peer, which is what this firmware
+  sends. One sentence in §6.2 — or a `REPLY_CANCEL` — would make that the specification's reading
+  rather than this firmware's.
+- [ ] **§5 has no `STATS_GET` and no `NEIGHBOURS_GET`** (report 02), so a `status` or a
+  `neighbours` job for the unit's **own** repeater cannot be served over the UART and is reported
+  `failed` at the local door — while the same job for a neighbour on the air is answered. Two
+  requests (the bytes of `RepeaterStats` as a mesh status request answers them, and the paged
+  binary neighbour list) would close the one real hole in the local door. **The likeliest thing a
+  person will notice on the bench**, and the first candidate for link 1.1.
+- [ ] **A trace of the unit's own repeater cannot work, and the library's page says the link has no
+  trace at all** (report 02). `spec/LINK-PROTOCOL.md` 1.0 *does* have `SEND_TRACE` (§6.2) and a
+  trace record (§6.3), so `supports("trace")` is true here; what is true is narrower — a RAK cannot
+  trace a round trip to itself, so a trace of the own repeater is `Failed` at the local door. The
+  sentence to correct is **the exit-node repository's** `docs/library.md` §11, which says the link
+  has no trace request.
+
+### The agent library (`twinoak.meshmaster.exitnode-firmware`, `lib/agent-core/`)
+
+- [ ] **`mm::HeardAdvert` has no field for the advert's own timestamp** (report 04). §7 carries
+  `adv_ts` inside the advert; the struct keeps only when *we* heard it, which is what the server's
+  `Observation.At` means, so nothing the server has a field for is lost — but the figure is
+  thrown away here.
+- [ ] **No field for MeshCore's two reserved feature words** (report 04). `ADV_FEAT1`/`ADV_FEAT2`
+  are stepped over so that the name begins where the builder put it, and meshmaster.dk's
+  `ObservationFields.Flags` is therefore never sent. Worth nothing until MeshCore uses the bits.
+
+### meshmaster.dk
+
+- [ ] **`unit-protocol.md` §5 does not say what a wake that runs out of budget mid-download does**
+  (report 05). This firmware posts **no result** and lets the lease expire, which the lease's own
+  expiry handles and which keeps the server from seeing a half-answer; a line in §5 saying so would
+  remove the ambiguity.
+- [ ] **The Walter's own apply result arrives a wake late** (report 05). §5's table reads as though
+  a result is posted in the apply's own job; for a self-update it cannot be — the board reboots into
+  the image being tried and the result comes from the *next* boot's wake, after the trial's third
+  condition. A note in §5, not a conflict: `Settle` is the server's equivalent.
+- [ ] **API §3 decides nothing about `X-Agent-Version`'s content** (report 03). The header must be
+  present; what it carries is the consumer's choice, and this firmware sends **its own** version
+  (`core::version()`), with the library's reported through the heartbeat's identity instead. A
+  sentence in §3 would stop the next consumer guessing differently.
+- [ ] **`AgentHeartbeatNoKey.json`** (FOLLOWUPS' `[04]` item, pile 4.16 task 132). Task 04 built the
+  keyless body from `AgentHeartbeat.json` minus the field because the fixture was not on `master`
+  yet; when it lands, task p4-04's `test_heartbeat_body.cpp` should read it instead of constructing
+  the expectation.
+
+### For the bench pile (phase 6)
+
+The agent's own items, which phase 6's `tools/bench/` must be able to drive — and the ones it must
+refuse:
+
+- [ ] **§§17–18 of `docs/bench.md` are the agent's walk**, and the three marked ★ are what a first
+  evening should buy: the first heartbeat recognised, an offer resumed after a pulled cable, an
+  apply that rolls back on a bad candidate.
+- [ ] **A session must never be given the token.** `set server.token` is a line `tools/bench/`
+  refuses, like every other line that sets a secret: Thomas types it once, over the cable, and the
+  tool sees *set* or *unset* (`tasks/RUNBOOK.md`, *Phase 6*). The agent's own lines — `agent url`,
+  `agent probe`, `agent id`, `agent heartbeat`, `agent obs`, `agent wake`, `agent jobs`,
+  `agent state` — are read-only and safe to drive; `agent obs pull` moves records out of the
+  radio's ring and is therefore not repeatable, which the tool should say rather than hide.
+- [ ] **An agent item needs the server as well as the rig**, so `bench.local.json`'s `"server":
+  true` gates §§17–18 the way `"sim": true` gates the modem's. A unit registered at meshmaster.dk
+  is a real row in somebody's register: the bench's exit node should be its own, and the tool
+  should refuse to drive a token's unit it was not told about.
+- [ ] **A job for a neighbour is airtime on somebody else's repeater.** The ⚠ rule for the radio
+  (`"radio": "disposable"`) does not cover a *second* repeater on the air; the bench pile should
+  decide whether a `status` on a neighbour needs the neighbour named in `bench.local.json` too.

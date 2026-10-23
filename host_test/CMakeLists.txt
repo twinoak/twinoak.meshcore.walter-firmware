@@ -175,6 +175,11 @@ file(GLOB_RECURSE SIM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/sim/*.
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/core/*.cpp
                                                  ${CMAKE_CURRENT_LIST_DIR}/agent/*.cpp
                                                  ${CMAKE_CURRENT_LIST_DIR}/rails/*.cpp)
+# One rail of task p4-06 is a month of wakes with the library's own simulated repeater behind the
+# RAK, and that fake asserts with GoogleTest: the file is in rails/ with its brothers but it is
+# compiled into agent_backend_tests (below), not into this doctest binary.
+set(AGENT_MONTH_RAIL ${CMAKE_CURRENT_LIST_DIR}/rails/test_rail_agent_month.cpp)
+list(REMOVE_ITEM TEST_SOURCES ${AGENT_MONTH_RAIL})
 if(NOT WALTER_AGENT)
   # Without the agent nothing of components/agent/ or the copied library is compiled: the agent's
   # tests and the RAK of §6 (which stands in front of a repeater that is the library's IMesh) go.
@@ -450,7 +455,7 @@ endforeach()
 # Upstream's test support is on the include path as it is (no shim: the repeater's clock is tied
 # to the world's by the test itself), and doctest's runtime beside GoogleTest for the bench.
 file(GLOB AGENT_BACKEND_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/agent-backend/*.cpp)
-add_executable(agent_backend_tests ${AGENT_BACKEND_SOURCES} ${FAKE_SOURCES} ${SIM_SOURCES}
+add_executable(agent_backend_tests ${AGENT_BACKEND_SOURCES} ${AGENT_MONTH_RAIL} ${FAKE_SOURCES} ${SIM_SOURCES}
                ${CMAKE_CURRENT_LIST_DIR}/third_party/doctest_runtime.cpp
                ${FIXTURE_HEADER} ${MANIFEST_FIXTURE_HEADER})
 # gtest_main, because these sources are this repository's own and carry no main() of their own

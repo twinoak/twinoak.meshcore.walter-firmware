@@ -34,18 +34,19 @@ constexpr KeyDef kKeys[kKeyCount] = {
      "off: the modem's radio is put down between wakes", 0, 0, 0, 0,
      "on | off: ask the network for 3GPP power saving (PSM) instead",
      "the next time the uplink is brought up"},
-    // The backend (spec/SYSTEM.md §8: nothing talks to MeshMaster yet, and no task of this phase
-    // invents an endpoint). What the host is for today is the self-update trial's third
-    // condition - a verified TLS handshake with it (core/update/tls_check.h).
+    // The backend: meshmaster.dk, as the agent calls it (spec/SYSTEM.md §8, task p4-03). The
+    // same host is the self-update trial's third condition - a verified TLS handshake with it
+    // (core/update/uplink_check.h) - and with no agent built it is only that.
     {Key::kServerUrl, "server.url", "srv_url", Kind::kUrl, false, nullptr,
-     "no backend call is made, and a self-update's third condition does not apply", 0, 0, 9,
+     "the agent makes no call, and a self-update's third condition does not apply", 0, 0, 9,
      static_cast<std::uint16_t>(kMaxUrlLen),
      "the backend: https://host[:port][/path], the scheme required, at most 128 characters",
-     "at once: the host a self-update's trial must reach; the backend call itself is task p3-05's"},
+     "at once: the host the agent's calls and a self-update's trial must reach"},
     {Key::kServerToken, "server.token", "srv_token", Kind::kText, true, nullptr,
-     "no backend call is made", 0, 0, 1, static_cast<std::uint16_t>(kMaxValueLen),
+     "the agent makes no call", 0, 0, 1, static_cast<std::uint16_t>(kMaxValueLen),
      "the backend's token, printable, at most 160 characters; never printed",
-     "kept for the backend call (task p3-05); nothing else reads it"},
+     "kept for the agent's calls ('agent probe', and every wake's heartbeat); nothing else "
+     "reads it"},
     {Key::kFetchUrl, "fetch.url", "fetch_url", Kind::kUrl, false, nullptr,
      "`fetch` needs a base URL on the line", 0, 0, 9, static_cast<std::uint16_t>(kMaxUrlLen),
      "a release base for `fetch` with no argument: https://host[:port][/path]",

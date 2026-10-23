@@ -102,8 +102,11 @@ components/
                         telemetry_ring.h keeps the readings of every wake until somebody takes
                         them; network_clock.h is the time of day once the network has given one,
                         and the only thing that gives the radio a time of its own accord;
-                        null_backend.h is the backend that does nothing, which is this
-                        firmware's default
+                        null_backend.h is the backend that does nothing, which is what a build
+                        with `WALTER_AGENT=0` runs on (the default build has the agent behind the
+                        seam - §13, task p4-05); agent_attention.h is the one way the agent
+                        raises a flag at the unit's own firmware (a halted loop, a refused token)
+                        without touching the radio, carried by the wake record
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
                         board, health and the supervisor hold a record each in), text out, a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
@@ -161,9 +164,21 @@ components/
                         MeshCore's own app_data decoded and this unit's own records dropped;
                         agent_probe.h, `agent id`, `agent heartbeat` and `agent obs` behind the
                         console's seam (core/console/agent_probe.h).
+                        Task p4-05: agent_backend.h, interfaces::Backend filled - one
+                        mm::AgentLoop::wake() a wake, with the loop's state restored from NVS
+                        before it and saved after, and the report mapped back into the seam's
+                        three words; firmware_jobs.h, mm::IJobExtension - the four twinoak.*
+                        job types on phase 2's image store and update machines, for this unit's
+                        own repeater; json_scan.h, a bounded flat-JSON reader for their payloads
+                        (no allocation, no ArduinoJson in our own code); region_store.h,
+                        mm::IRetained over a window of the `rakfw` partition after the store, so
+                        that a result the server would not take survives a deep sleep;
+                        agent_uplink_check.h, the self-update trial's third condition read as
+                        *one heartbeat the server answered*; agent_loop_probe.h's half of
+                        `agent wake`, `agent jobs` and `agent state`.
                         Logic, like core/: no ESP-IDF include (the same build step), no heap
-                        (the same check), tested on the host against a simulated RAK and a
-                        scripted server
+                        (the same check), tested on the host against a simulated RAK, a scripted
+                        server and the library's own simulated stock repeater
   platform/             ESP-IDF implementations of interfaces/ - thin: the GPIO driver, esp_timer,
                         RTC memory, the USB console, the reset reason (task p0-03), the radio's
                         UART (task p1-02), the `rakfw` and `journal` partitions behind a flash
@@ -209,7 +224,10 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         simulated flash's, the verdict's tokens as types, a day of wakes searched
                         for a secret, a month asked for both updates, the caps over a quarter, and
                         the failure-injection sweep that runs four suites' power-loss loops
-                        together, download to commit
+                        together, download to commit; and the agent's own month (task p4-06):
+                        test_rail_agent_month.cpp, which is compiled into agent_backend_tests
+                        rather than core_tests because the repeater behind the RAK is the
+                        library's GoogleTest fake
   fixtures/             the spec's fixtures turned into tables the tests walk (the descriptor's, task p0-02);
                         command_lines.h, every command of the console's table with something to
                         type after it, which two rails walk
@@ -243,7 +261,20 @@ host_test/              a CMake project of its own: core/ + fakes + simulators +
                         the uplink against the scripted server answering the contract fixtures'
                         bytes - the seven calls, every status, the token read back from every
                         buffer, the bound, the redirect, the deadline - and `agent url` and
-                        `agent probe` on the console (p4-03)
+                        `agent probe` on the console, with docs/provisioning.md's own agent
+                        session replayed against it (p4-03, p4-06); the platform, the identity,
+                        the heartbeat's body against meshmaster.dk's fixture, the observation
+                        drain and their console lines (p4-04); and the backend behind the seam,
+                        the four firmware jobs against the fixtures' bytes, the flat-JSON reader,
+                        the kept-image window and `agent wake`/`jobs`/`state` (p4-05). The bench
+                        these share is agent/agent_bench.h: the wake bench with the agent's half
+                        of a Walter on it and a scripted meshmaster.dk behind the HTTPS client
+  agent-backend/        the agent with a repeater **on the air** (task p4-05): the wake bench, the
+                        simulated RAK and the library's own simulated stock repeater behind it -
+                        a `status` on a neighbour through a whole wake, a `telemetry` and a
+                        `config.read` on the own repeater through the local door, and the
+                        simulated month as an exit node (`agent_backend_tests`, GoogleTest for
+                        the same reason as the two above)
 tools/                  verify.ps1 and verify.sh (the definition of "verified"), check_rails.py
                         (**every rail, one entry each**, run by verify.sh), check_partitions.py,
                         the trust-table and TLS-root generators, release/ (the release tooling),
@@ -975,8 +1006,9 @@ Three things the modem's own documents and source decided, rather than this file
 A time is believed only inside a window (not before this firmware's date, not absurdly after it):
 it is the time that sets the radio's clock, and `spec/LINK-PROTOCOL.md` §5.4 is explicit that a
 clock which goes backwards makes a MeshCore node's own traffic look replayed. Reading it into
-`interfaces::WallClock` - so that the link client has one to give - is the wake cycle's step 2 and
-is task p3-05's; until then `main/` still answers "I have no time to give".
+`interfaces::WallClock` - so that the link client has one to give - is the wake cycle's step 2
+(task p3-05, `core/cycle/network_clock.h`); since task p4-04 the agent's platform offers the
+*server's* own time to the same clock, which is believed only when the network has given none.
 
 **HTTPS** (task p3-02): the modem's TLS, **over one of its sockets and not through its HTTP
 client** — read at `walter-modem` 1.5.0, the modem's HTTP (`AT+SQNHTTPQRY`/`+SQNHTTPRING`/
@@ -1159,13 +1191,14 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
 | HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
-| **the rails** | ✔ the suite's own assertions (`host_test/rails/`): the pin rules' tally over every test that drove a wire, simulated flash's over every test that flashed (and, since task p5-02, every chip erase and UICR write counted against the chips a door test armed — the tripwire fails any other test at the first), the verdict's tokens as compile-time refusals, two secrets and the subscription's three numbers searched for in a day of wakes and every console command, a month asked for both updates and read off the journal, the supervisor's caps over a simulated quarter, and **the failure-injection sweep**: four suites' power-loss loops run together, a whole update from download to commit with the power lost at every flash operation of the store, the journal and the radio's chip in turn, each ending in the old image, the new one, or a journalled state the next wake resumes | `tools/check_rails.py`'s greps (one entry per rail, run before anything is compiled) and `tools/verify.sh`'s search of the built image for the test key's bytes and the map for a signing symbol | `docs/bench.md`, all of it: the rails are what a session can hold, and the walk is what a person must |
+| **the rails** | ✔ the suite's own assertions (`host_test/rails/`): the pin rules' tally over every test that drove a wire, simulated flash's over every test that flashed (and, since task p5-02, every chip erase and UICR write counted against the chips a door test armed — the tripwire fails any other test at the first), the verdict's tokens as compile-time refusals, two secrets and the subscription's three numbers searched for in a day of wakes and every console command, a month asked for both updates and read off the journal, the supervisor's caps over a simulated quarter, **the agent's own month** (task p4-06: a neighbour's admin password and a new one on the air, a neighbour's own setting read back, a stranger's name in an advert, and every one of them searched for in the console's ring, the library's log, the journal's bytes, the retained records and the kept image - with `client_tx` held to the runner's sends every wake), and **the failure-injection sweep**: four suites' power-loss loops run together, a whole update from download to commit with the power lost at every flash operation of the store, the journal and the radio's chip in turn, each ending in the old image, the new one, or a journalled state the next wake resumes | `tools/check_rails.py`'s greps (twenty-four entries, one per rail, run before anything is compiled) and `tools/verify.sh`'s search of the built image for the test key's bytes and the map for a signing symbol | `docs/bench.md`, all of it: the rails are what a session can hold, and the walk is what a person must |
 | the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §16): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
 | duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §15) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |
 | **the mesh over the link** | ✔ the library's 46 runner scenarios a second time, unchanged, with `LinkMesh` and a simulated RAK between the runner and the simulated stock repeater — every send a frame, every reply an event, `client_tx` held equal to the repeater's sends at the end of every job; and 21 cases of the link's own: the lost event (one `REPLY_GET`, never a lost reply), the lost request (the link's retry, still one packet), the RAK's 120 s job timeout, a password read back as zeros from the mesh client, the link client and the RAK and found on the wire once, the sensitive CLI line's flag bit, a `password.set` leaving no value anywhere, the send's ceiling and the Walter's own timer with the wait ended by `JOB_BEGIN`, a late reply dropped and counted, a `boot_id` change under a job and under a wait, the path cached and read back, every core type carried with a session and none without, `client_tx` exact across a mix of jobs, and the local door for each of the thirteen types; the console's `rak mesh status` against the fixtures; the no-allocation check (task p4-02) | `components/agent/` in the board's link, reached by the console's probe; the no-ESP-IDF build step | `docs/bench.md` §17: a `status` on a neighbour over the air — one packet, one reply, `client_tx` up by one |
 | **the uplink over the modem** | ✔ the library's 47 loop scenarios a second time, unchanged, with `ModemUplink`, the HTTPS client and the scripted server between the loop and the library's own scripted meshmaster.dk — every call a request over the firmware's HTTP/1.1, every fault a real 401, 429, 503, 422 or a refused handshake, every claim's bytes on the wire; and the uplink's own cases against the contract fixtures' bytes: each of the seven calls' route, method, headers and body, the reply parsed into the fixture's record; 401, 429 with `Retry-After` as seconds and as a date, 503 with and without, 500, 403, a TLS failure, no route, no uplink, a body one byte over the bound (and one that fits), a 200 the parser refuses, a redirect; the token read back as zeros from the uplink, the client and the transport after every call and found in no log line, error, URL or trace, on the wire once; the wake's deadline refusing a call before the modem is touched and bounding one that stalls; `https://` only; the 120-a-minute ceiling; and `agent url` / `agent probe` on the console with the token nowhere in what it printed (task p4-03) | `components/agent/` in the board's link, reached by the console's probe; the no-ESP-IDF build step | `docs/bench.md` §17: `agent probe` against meshmaster.dk — a 200 with a token from `/exit-nodes/new`, a 401 with a wrong one, a TLS failure against a host whose chain this firmware does not carry |
-| **the agent core** | ✔ the library's own two suites, here, against the copied fakes and both fixture sets: `agent_core_runner` (46 cases — all thirteen job types, one send per command, the credential wiped, the lease, the offline buffer, and the fake's own citations) and `agent_core_loop` (47 — the loop, the heartbeat's bytes, the backoff, the reboot guard, every wake case, and what a sleep keeps: the image's bytes, a torn one refused whole, the uplink's ledger, nothing secret in the store), compiled from the same sources the board gets under the same sanitizers and `-Werror`; and the pin's two places held equal (`host_test/rails/test_rail_agent_core.cpp`) | the component in the board's link, all twenty-three objects of it, kept by `main/agent_anchor.cpp` until task p4-05 calls `wake()`; `tools/sync-agent-core.ps1 -Verify` (every file of both copied trees against its manifest, before the container starts) and `tools/check_rails.py`'s entry A (the library's boundary as an allow list, ten ways of skipping certificate verification, no store and no file system) | nothing: the library is linked and unused until p4-05, and what it then does is `docs/bench.md` §§17–18 and phase 4's own bench lines |
+| **the agent behind the seam** | ✔ `AgentBackend` as one `mm::AgentLoop::wake()` a wake: the four `twinoak.*` job types read and written through meshmaster.dk's own `Firmware*` / `PowerCycle*` fixtures (an offer stopped by a byte budget and resumed, a tampered manifest at check 1, no image for this slot at check 3, an apply committed, an apply rolled back with its journal and the candidate on the bad list, a hash the server did not name, `inProgress` while this firmware is on trial, the Walter's own apply across its trial, a power cycle inside §2's bounds); the loop's state round-tripped through NVS across a deep sleep, a 503's backoff, a 401 halting the loop and raising an attention, a result the server would not take kept in flash and posted by the next wake; a job for a neighbour over the air and two for the own repeater through the local door; **a simulated month as an exit node** (300 wakes: random coverage, random jobs, two offers, two applies one of which rolls back, a server away for a week) with every rail asserted every wake; and the same again in `host_test/rails/` with every secret and every reply the mesh gave searched for afterwards (task p4-06) | `main/app_main`'s construction of the runner and the loop on the heap, the `#if WALTER_AGENT` that selects the null backend, and the second host configuration `tools/verify.sh` builds with the agent off | `docs/bench.md` §18: a day as an exit node - the first heartbeat recognised, a job on a neighbour, an offer resumed after a pulled cable, an apply that commits and one that rolls back |
+| **the agent core** | ✔ the library's own two suites, here, against the copied fakes and both fixture sets: `agent_core_runner` (46 cases — all thirteen job types, one send per command, the credential wiped, the lease, the offline buffer, and the fake's own citations) and `agent_core_loop` (47 — the loop, the heartbeat's bytes, the backoff, the reboot guard, every wake case, and what a sleep keeps: the image's bytes, a torn one refused whole, the uplink's ledger, nothing secret in the store), compiled from the same sources the board gets under the same sanitizers and `-Werror`; and the pin's two places held equal (`host_test/rails/test_rail_agent_core.cpp`) | the component in the board's link, all twenty-three objects of it, now reached by `main/app_main`'s own call to `wake()` (the `main/agent_anchor.cpp` that held it in through `--gc-sections` while nothing called it is gone, task p4-05); `tools/sync-agent-core.ps1 -Verify` (every file of both copied trees against its manifest, before the container starts) and `tools/check_rails.py`'s entry A (the library's boundary as an allow list, ten ways of skipping certificate verification, no store and no file system) | what the library does on the air and against the real server: `docs/bench.md` §§17–18 |
 
 ## 13. The agent
 
@@ -1404,9 +1437,28 @@ report has the flash and the heap the library adds.
 
 ### The rails the agent inherits
 
-Six, all of them the library's own, and this firmware owns half of each: nothing the mesh says is
+Six of them are the library's own and this firmware owns half of each: nothing the mesh says is
 logged as text; a password is in RAM for the job and gone; **one send per command** — which across
 the link is `client_tx` and the runner's transaction count being equal, exactly; TLS is verified;
 a flood's path hashes are two bytes or more, never one; and the contract is the .NET agent's, one
 dialect, posted byte for byte as the library wrote it. [`upstream.md`](upstream.md) says what a
 bump may do to each.
+
+Since task p4-06 each is an entry of [`tools/check_rails.py`](../tools/check_rails.py) — the same
+place the rest of this firmware's promises are indexed — held over **this** end of the seams,
+where the exit-node firmware's own tests cannot see:
+
+| | What it says here | Held by |
+|---|---|---|
+| R9 | nothing the mesh said is logged as text — a neighbour's reply to a job and the name a stranger put in an advert included | a month of wakes as an exit node, with both searched for in the console's ring, the library's own log (wired into the bench as `main.cpp` wires it), the journal's bytes and the retained records. **Not** in a job's result or an observation batch: the rail is *never written down*, not never sent to the server that asked |
+| R15 | a password is in RAM for the exchange and nowhere else | the password read back as zeros out of `LinkMesh`, the link client and the simulated RAK after a whole wake; on the wire exactly once each for the login and the sensitive CLI line; and no frame log anywhere in this firmware to redact (the library's `redactPayloadHex` has no caller here) |
+| R16 | one packet per command | the radio's `client_tx` moved by exactly `LinkMeshCounters::sends`, every wake of a month; and the link client's five sends have one caller, the mesh client |
+| R17 | the token is printed by nothing and goes to one host, in one header | read in four places and printed in none; every request's path, body and headers over a month, every call's error text, the console, the log, the journal and the kept image searched; `Authorization` dropped at a redirect to another host |
+| R18 | the server never chooses an image and never decides one is good | the agent's firmware jobs only *read* the store and name neither verdict token, so an image reaches it through `Fetch`'s six checks alone; an offer refused at check 3 although the server offered it; an apply the server called good rolled back by our own health check |
+| R19 | no job a finished wake claimed is left leased | both months: a wake that reached the server ended with the runner's queue empty, and a wake whose server was away kept its result in the flash window for the next one |
+| R20 | an update starts by a claimed job, a typed command or the supervisor's golden-image rung — and nothing else | a grep of the call sites of `RadioUpdate::start` and `SelfUpdate::switchNow`, with the supervisor held to `Kind::kRoleRepeater` and to naming no candidate slot |
+| R21 | a path hash is the claim's; this firmware chooses none | the one place a multi-hop path is built takes the claim's hash size unchanged, and no hash size is a literal anywhere here — so S-12's *two bytes or more* is meshmaster.dk's D-33 to keep |
+
+Entry **A** is the ninth, and it is about the copy rather than the running unit: the library's
+boundary as an allow list, no way of skipping certificate verification in either copied tree, no
+store and no file system a password could land in, and both manifests held byte for byte.

@@ -566,9 +566,33 @@ def rail_tls_verified(r):
     else:
         r.looked_at("no http:// literal")
 
+    # The copied library and its test support (task p4-01) are not ours, but the rail is about this
+    # unit: a way of not verifying a certificate anywhere in the tree would be one. Entry A refuses
+    # the same list over the same trees; R7 does it too, because this is the rail that says so and
+    # a rail with one holder is a rail that can be lost by editing one entry.
+    copied = copied_sources(AGENT_CORE, AGENT_CORE_HOST)
+    bypasses = []
+    for pattern in TLS_BYPASSES:
+        bypasses.extend(grep(re.escape(pattern), copied, code_only=False))
+    if bypasses:
+        r.broken("a way of skipping certificate verification in the copied trees:", shown(bypasses))
+    else:
+        r.looked_at("%d copied files of the agent core, none of the %d ways of skipping "
+                    "certificate verification" % (len(copied), len(TLS_BYPASSES)))
+    hits = grep(r'"http://', copied, code_only=False)
+    if hits:
+        r.broken("an http:// literal in the copied agent core:", shown(hits))
+    else:
+        r.looked_at("no http:// literal in the copied trees either")
+    # And the one thing the library asks of this end: the URL it is given must be https. The
+    # uplink refuses anything else (task p4-03) and the settings refuse to store it (S-12).
+    r.problems(must_contain("components/core/settings/keys.cpp",
+                            "the scheme must be https:// (S-12: TLS is verified)"),
+               "the settings no longer refuse a server.url that is not https:")
     r.problems(must_exist("host_test/core/net/test_trust_rail.cpp"),
                "the test half of the TLS rail is gone:")
-    r.says("held here and by host_test/core/net/test_trust_rail.cpp, which names the file and line")
+    r.says("held here over components/, main/ and both copied trees, and by "
+           "host_test/core/net/test_trust_rail.cpp, which names the file and line")
     return r
 
 
@@ -608,8 +632,18 @@ def rail_nothing_the_mesh_said(r):
     mesh reply's payload are offered to whoever asked for them and written down nowhere."""
     r.problems(must_contain("host_test/rails/test_rail_secrets.cpp", "what the mesh said"),
                "the capture test no longer searches for the radio's payloads:")
-    r.says("held by the same capture: the scripted radio's payloads are searched for in "
-           "everything that was written down")
+    # Since phase 4 the mesh says more than a scanner's line: a neighbour answers a job, and a
+    # stranger's advert carries a name. Both are searched for over a month of wakes as an exit
+    # node, in the console's ring, the library's own log, the journal and the retained records -
+    # and **not** in a job's result or an observation batch, which are what the server asked for
+    # (task p4-06; the rail is never written down, not never sent).
+    r.problems(must_contain(AGENT_MONTH_RAIL, "R9   nothing the mesh said is logged as text",
+                            "what a neighbour's config.read answered",
+                            "the name a stranger put in an advert"),
+               "the agent's month no longer searches for what the mesh said:")
+    r.says("held by the same capture (the scripted radio's payloads) and by %s: a month as an "
+           "exit node, with a neighbour's own setting and a stranger's advert name searched for "
+           "in everything this unit wrote down" % AGENT_MONTH_RAIL)
     return r
 
 
@@ -723,9 +757,10 @@ MESH_REQUESTS = ("kJobBegin", "kJobEnd", "kPathSet", "kPathGet", "kSendLogin", "
 
 
 def rail_no_mesh_request(r):
-    """spec/SYSTEM.md §8 and tasks/phase-3/README.md: this pile ends at a seam, and the mesh
-    client's calls are not used at all. The agent goes behind the seam when the server side is
-    built."""
+    """spec/SYSTEM.md §8: the mesh is spoken by the agent and by nobody else. Phase 3's wording was
+    "none at all" because that pile ended at a seam; since task p4-05 a wake *with* the agent sends
+    what a claimed job asked for and not a packet more (rail R16), and a wake **without** one -
+    which is what `WALTER_AGENT=0` and phase 3's own month are - still sends none at all."""
     pattern = r"\b(%s)\b" % "|".join(MESH_REQUESTS)
     allowed = re.compile(r"^components/(core/(link/|include/core/link/)|agent/)")
     hits = [h for h in grep(pattern, sources("components", "main")) if not allowed.match(h[0])]
@@ -741,6 +776,305 @@ def rail_no_mesh_request(r):
                "the rails' own month no longer counts mesh requests:")
     r.says("held here and by the simulated month, which counts what the radio was asked over "
            "every wake of it")
+    return r
+
+
+# ---- R15 ... R21: the rails phase 4 inherited (task p4-06) -------------------------------------
+# The agent library arrives with rails of its own, each held by a test in the repository it comes
+# from (its docs/library.md, *the rails the consumer inherits and must keep*). What those tests
+# cannot see is this end of the seams: the link, the modem, the console, the journal. These seven
+# entries are that half, and the test that holds most of them is one month of wakes as an exit
+# node with everything that could leak planted in it
+# (host_test/rails/test_rail_agent_month.cpp).
+
+AGENT_MONTH_RAIL = "host_test/rails/test_rail_agent_month.cpp"
+LINK_MESH_TEST = "host_test/agent-link/test_link_mesh.cpp"
+
+
+def rail_password_in_ram(r):
+    """spec/SYSTEM.md S-12 and S-13: a password is in RAM for the length of the exchange and
+    nowhere else. The library wipes its own `mm::Credentials`; this end's half is the link - the
+    request and frame buffers after a `SEND_LOGIN` or a sensitive `SEND_CLI`, and the receive side
+    too, because a repeater answers `password now: <new>` (task p4-02) - and the one place a
+    password could be written down on purpose, a frame log, which this firmware does not have."""
+    r.problems(must_contain("components/core/include/core/link/client/client.h",
+                            "wiped after the exchange"),
+               "the link client no longer promises to wipe:")
+    r.problems(must_contain("components/core/link/client/client.cpp",
+                            "void Client::wipeBuffers()", "receiver_.wipe()"),
+               "the link client no longer wipes both sides:")
+    r.problems(must_contain("components/core/link/codec/frame.cpp", "void FrameReceiver::wipe()"),
+               "the receiver's own wipe is gone:")
+    r.problems(must_contain("components/agent/link_mesh.cpp",
+                            "the one buffer of this object that ever holds a password"),
+               "the mesh client no longer says which buffer holds a password:")
+
+    # A frame log is the one thing that would write a login's payload down on purpose. The library
+    # has the redaction for a consumer that keeps one (agent/Credentials.h); nothing here calls it,
+    # which is how this firmware keeps the rail: there is no frame log to redact.
+    hits = grep(r"redact(Login)?PayloadHex", sources("components", "main"), code_only=False)
+    if hits:
+        r.broken("something here formats a frame's payload into a line (a frame log): the "
+                 "redaction is the library's for a consumer that has one, and this rail is that "
+                 "this firmware has none:", shown(hits))
+    else:
+        r.looked_at("no frame log anywhere: nothing calls the library's payload redaction")
+
+    r.problems(must_contain(LINK_MESH_TEST, "APasswordIsZeroInEveryBufferItCrossedAndOnTheWireOnce",
+                            "APasswordSetRecordsNoValueAnywhereThroughTheLink"),
+               "task p4-02's read-back tests are gone:")
+    r.problems(must_contain(AGENT_MONTH_RAIL, "APasswordIsZeroInEveryBufferItCrossedAfterAWholeWake",
+                            "the neighbour's admin password"),
+               "the read-back inside a whole wake is gone:")
+    r.says("held by %s (the password read back out of LinkMesh, the link client and the RAK after "
+           "a whole wake, on the wire once, and in no log) and by task p4-02's two cases at the "
+           "library's seam" % AGENT_MONTH_RAIL)
+    return r
+
+
+# The link client's five sends: one request of LINK-PROTOCOL.md §6.2 each, and one packet on the
+# air each. Only the agent's mesh client may call them - that is what makes `client_tx` countable.
+LINK_SENDS = ("sendLogin", "sendRequest", "sendCli", "sendDiscovery", "sendTrace")
+MESH_CLIENT = "components/agent/link_mesh.cpp"
+
+
+def rail_one_packet_per_command(r):
+    """spec/SYSTEM.md S-12: one packet per command. Every `SEND_*` of §6.2 is one packet on the
+    air, the radio counts them as `client_tx` (§6.4), and the figure a wake reports is the radio's
+    own - so a second send, a retry that re-sends or a send nobody asked for is visible as a
+    difference. The link client's five sends have exactly one caller."""
+    # Two kinds of call wear the same five names: the **link client's** (one §6.2 request, one
+    # packet) and the **mesh client's** (mm::IMesh, which makes exactly one of the first). They are
+    # told apart by what they are called on, so that the console's probe - which goes through the
+    # mesh client and is counted - is not mistaken for a second way onto the air.
+    call = re.compile(r"(\w+)\s*(?:\.|->)\s*(%s)\s*\(" % "|".join(LINK_SENDS))
+    on_the_client = {}
+    on_a_mesh = {}
+    for path in sources("components", "main"):
+        if path.endswith("/client.cpp") or path.endswith("client/client.h"):
+            continue  # the link client's own definition
+        for number, line in enumerate(read(path).splitlines(), 1):
+            if COMMENT.match(line):
+                continue
+            for receiver, name in call.findall(line):
+                where = on_the_client if "client" in receiver.lower() else on_a_mesh
+                where.setdefault(path, []).append(name)
+    outside = sorted(p for p in on_the_client if p != MESH_CLIENT)
+    if outside:
+        r.broken("the link client's sends are called outside %s, so client_tx is no longer one "
+                 "packet per command:" % MESH_CLIENT,
+                 ["%s: %s" % (p, ", ".join(on_the_client[p])) for p in outside])
+    elif not on_the_client:
+        r.broken("no call of the link client's sends was found at all: the grep has stopped "
+                 "matching")
+    else:
+        r.looked_at("the five §6.2 sends of the link client are called only from %s (%d calls)"
+                    % (MESH_CLIENT, len(on_the_client[MESH_CLIENT])))
+    above = sorted(p for p in on_a_mesh if not p.startswith("components/agent/"))
+    if above:
+        r.broken("something outside components/agent/ sends on a mesh:",
+                 ["%s: %s" % (p, ", ".join(on_a_mesh[p])) for p in above])
+    else:
+        r.looked_at("the mesh client's own sends are reached from %d file(s) of components/agent/, "
+                    "each one request of the link client" % len(on_a_mesh))
+
+    r.problems(must_contain(MESH_CLIENT, "link_counters_.sends"),
+               "the mesh client no longer counts the packets it was told went out:")
+    r.problems(must_contain(AGENT_MONTH_RAIL, "client_tx moved by"),
+               "the month no longer holds client_tx to the runner's sends:")
+    r.problems(must_contain("host_test/agent-backend/test_agent_month.cpp",
+                            "client_tx equals the runner's transactions"),
+               "task p4-05's month no longer holds the equality:")
+    r.problems(must_contain(LINK_MESH_TEST, "ClientTxIsTheRunnersTransactionsAcrossAMixOfJobs"),
+               "task p4-02's own count of the packets is gone:")
+    r.says("held by %s: every wake of a month, the radio's client_tx moved by exactly the number "
+           "of sends the runner was told went out" % AGENT_MONTH_RAIL)
+    return r
+
+
+# Where the token may be read. The console's one line prints the *word* `set` or `unset` and never
+# the value, which is why it is allowed to name the getter at all.
+TOKEN_READERS = ("components/agent/modem_uplink.cpp",
+                 "components/agent/firmware_jobs.cpp",
+                 "components/core/include/core/settings/settings.h",
+                 "components/core/console/console.cpp")
+
+
+def rail_token_one_host(r):
+    """spec/SYSTEM.md S-12 and the agent API: the server's token is printed by nothing, is sent as
+    one `Authorization: Bearer` header to the configured host, and is never carried past the first
+    host of a redirect (core/net/client.h). Task p4-03's rail, held here over a month."""
+    hits = grep(r"serverToken\s*\(", sources("components", "main"))
+    outside = sorted({h[0] for h in hits} - set(TOKEN_READERS))
+    if outside:
+        r.broken("the token is read outside the four places that may:", shown(hits))
+    else:
+        r.looked_at("the token is read in %d places: the two agent calls, the getter and the "
+                    "console's `set`/`unset` line" % len({h[0] for h in hits}))
+    # The console's line, exactly: the word and never the value.
+    r.problems(must_contain("components/core/console/console.cpp",
+                            'printf("server.token %s\\n", settings_->serverToken()[0] != 0 ? "set" : "unset")'),
+               "the console's token line is no longer the word `set` or `unset`:")
+    # And it goes out as a header, never in a path: the HTTPS client takes it as one option and
+    # drops it at a redirect to another host.
+    r.problems(must_contain("components/core/include/core/net/client.h",
+                            "never carried to a different host"),
+               "the HTTPS client no longer promises to drop the header at a redirect:")
+    r.problems(must_contain("components/agent/modem_uplink.cpp", "options.authorization = secret_"),
+               "the uplink no longer sends the token as the Authorization header:")
+    r.problems(must_contain("host_test/agent/test_modem_uplink.cpp",
+                            "in no log line, in no error text, in no URL and in no trace"),
+               "task p4-03's token test is gone:")
+    r.problems(must_contain(AGENT_MONTH_RAIL, "the token's one route"),
+               "the month no longer searches for the token:")
+    r.says("held by %s (every request's path, body and headers over a month, every call's error "
+           "text, the console, the log, the journal and the kept image searched) and by task "
+           "p4-03's own case" % AGENT_MONTH_RAIL)
+    return r
+
+
+# What components/agent/ may ask the image store for: reading, and the bad list. Everything that
+# writes - a sector erased, a record committed - takes a token of the verdict (R5), and the only
+# thing that makes one is the six checks of spec/FIRMWARE-MANIFEST.md §5, inside core/update/Fetch.
+STORE_READS = ("read", "isBad", "begin", "records", "badCount")
+
+
+def rail_server_chooses_nothing(r):
+    """spec/SYSTEM.md S-6 and FIRMWARE-MANIFEST.md §5: the server offers, this firmware decides.
+    An offer is a URL and a hash, and the six checks are run here over the bytes as they land; an
+    apply is a hash the unit must already hold, and whether the flashed image is good is the
+    update machine's health check and nothing the server says."""
+    calls = re.findall(r"parts_\.store->(\w+)\s*\(", read("components/agent/firmware_jobs.cpp"))
+    writes = sorted({c for c in calls if c not in STORE_READS})
+    if writes:
+        r.broken("the agent's firmware jobs call the store's %s: an image must reach it only "
+                 "through core/update/Fetch, which runs the six checks"
+                 % ", ".join(writes))
+    else:
+        r.looked_at("the agent's firmware jobs only read the store (%s)" % ", ".join(sorted(set(calls))))
+
+    tokens = grep(r"\b(ExpectedFile|AcceptedImage)\b", sources("components/agent"))
+    if tokens:
+        r.broken("components/agent/ names a verdict token: only the six checks may make one:",
+                 shown(tokens))
+    else:
+        r.looked_at("components/agent/ names neither verdict token")
+
+    r.problems(must_contain("components/agent/firmware_jobs.cpp", "Fetch", "runInto"),
+               "the offer no longer goes through core/update/Fetch:")
+    r.problems(must_contain("host_test/agent/test_firmware_jobs.cpp",
+                            "no image for the slot at check 3",
+                            "rolled back with the journal in the result"),
+               "the two cases that hold the decision here are gone:")
+    r.problems(must_contain(AGENT_MONTH_RAIL, "however firmly the server offered it",
+                            "health check fails it and the golden"),
+               "the month no longer refuses an offer and rolls an apply back:")
+    r.says("held by host_test/agent/test_firmware_jobs.cpp (an offer refused at check 3 although "
+           "the server offered it; an apply the server called good rolled back by our own health "
+           "check) and again inside the month of %s" % AGENT_MONTH_RAIL)
+    return r
+
+
+def rail_no_job_left_leased(r):
+    """unit-protocol.md §3 and docs/library.md §7: a wake either posts a job's result or keeps it
+    to post later - it never ends with a job claimed, finished and silent, because a lease the
+    server is still holding is a job nobody will run again until it expires. A result the server
+    would not take is kept in the flash window across the sleep (the kept image, agent/IRetained.h)
+    and posted by the next wake that reaches a server."""
+    r.problems(must_contain("components/agent/agent_backend.cpp", "kept"),
+               "the backend no longer keeps what it could not post:")
+    r.problems(must_exist("components/agent/region_store.cpp",
+                          "components/agent/include/walter_agent/region_store.h",
+                          "host_test/agent/test_region_store.cpp"),
+               "the flash window a result waits in is gone:")
+    r.problems(must_contain("host_test/agent-backend/test_agent_month.cpp",
+                            "No job left leased by a finished wake"),
+               "task p4-05's month no longer asserts it:")
+    r.problems(must_contain(AGENT_MONTH_RAIL, "R19, no job left leased"),
+               "the rails' own month no longer asserts it:")
+    r.says("held by both months: every wake that reached the server ended with the runner's "
+           "queue empty, and a wake whose server was away kept its result in the flash window")
+    return r
+
+
+# Who may start an update. Three files, and each is a person or a claimed job: the wake cycle (the
+# backend's ask, which with the agent built is a `twinoak.fw.apply` the server leased to this
+# unit), the console (a line somebody typed), and the agent's firmware jobs (the claim itself).
+# Nothing else - no supervisor rung, no boot path, no timer.
+UPDATE_STARTERS = ("components/core/cycle/wake_cycle.cpp",
+                   "components/core/console/console.cpp",
+                   "components/agent/firmware_jobs.cpp",
+                   "components/core/supervisor/supervisor.cpp")
+SUPERVISOR = "components/core/supervisor/supervisor.cpp"
+
+
+def rail_update_has_three_doors(r):
+    """spec/SYSTEM.md S-7 and S-6, docs/supervisor.md: an update of the radio or of this board
+    begins in one of three ways and no other - a person typed a command, the server leased this
+    unit a `twinoak.fw.apply` job, or the supervisor's own golden-image rung found that the chip
+    no longer holds the golden image. The third is the unit looking after itself: the task's table
+    names only the first two, and *Deviations* says why the third is there. What makes it safe is
+    that it can only put **the golden image** back (`Kind::kRoleRepeater`), under the daily caps
+    and the battery rule, and that nothing a server sends can reach it."""
+    for door, what in ((r"->start\s*\(", "RadioUpdate::start"), (r"->switchNow\s*\(", "SelfUpdate::switchNow")):
+        hits = [h for h in grep(door, sources("components", "main"))
+                if "update_->" in h[2] or "update->" in h[2] or "self_->" in h[2] or "self->" in h[2]]
+        outside = sorted({h[0] for h in hits} - set(UPDATE_STARTERS))
+        if outside:
+            r.broken("%s is called outside the wake cycle, the console and the agent's jobs:" % what,
+                     shown([h for h in hits if h[0] in outside]))
+        elif not hits:
+            r.broken("no call site of %s was found at all: the grep has stopped matching" % what)
+        else:
+            r.looked_at("%s: %d call sites, all in %s"
+                        % (what, len(hits), ", ".join(sorted({h[0] for h in hits}))))
+    r.problems(must_contain("components/agent/firmware_jobs.cpp", "kApplyType"),
+               "the agent's apply job is gone:")
+    # The supervisor's rung, held to the golden image: it names no candidate and no other kind.
+    kinds = set(re.findall(r"update::Kind::(\w+)", without_comments(read(SUPERVISOR))))
+    if kinds - {"kRoleRepeater", "kFirstInstall"}:
+        r.broken("the supervisor's rung starts an update of another kind than the golden image's: "
+                 "%s" % ", ".join(sorted(kinds)))
+    else:
+        r.looked_at("the supervisor names only %s: its rung puts the golden image back and "
+                    "nothing else" % ", ".join(sorted(kinds)))
+    hits = grep(r"Which::kCandidate", [SUPERVISOR])
+    if hits:
+        r.broken("the supervisor names the candidate slot: a server's image could reach the "
+                 "ladder:", shown(hits))
+    r.says("held here: four call sites - the wake cycle's ask (a claimed job), a typed console "
+           "command, the agent's own apply job, and the supervisor's golden-image rung, which "
+           "can only put back what the store already calls golden")
+    return r
+
+
+def rail_path_hashes(r):
+    """spec/SYSTEM.md S-12's last clause (meshmaster.dk D-33): path hashes this firmware chooses
+    are two bytes or more. It chooses none - the only multi-hop path it ever holds is the one the
+    claim gave it, hash size and all, passed through to `PATH_SET` unchanged (§6.1), and a path it
+    cannot hold becomes a flood rather than a narrower path. So the clause is the server's to keep
+    and this end cannot break it; the grep is that nothing of ours writes a hash size."""
+    hits = grep(r"path_mode::kHops", sources("components", "main"))
+    builders = sorted({h[0] for h in hits if "=" in h[2] and "==" not in h[2] and "!=" not in h[2]})
+    if builders != [MESH_CLIENT]:
+        r.broken("a multi-hop path is built outside %s: %s" % (MESH_CLIENT, builders or "nowhere"),
+                 shown(hits))
+    else:
+        r.looked_at("the one place a multi-hop path is built is %s, from the claim's own hash size"
+                    % MESH_CLIENT)
+    # A zero is "no path yet" (every declaration starts there and `forgetPath` goes back to it);
+    # a number from one upwards would be a size this firmware chose.
+    sizes = [h for h in grep(r"hash_size\s*=\s*[1-9]", sources("components", "main"))]
+    if sizes:
+        r.broken("a hash size is written as a number by this firmware (S-12: two bytes or more, "
+                 "and this end chooses none):", shown(sizes))
+    else:
+        r.looked_at("no hash size is ever a literal here: every one comes from the claim, the "
+                    "library or §6.3's record")
+    r.problems(must_contain(LINK_MESH_TEST, "ThePathTheClaimCarriedIsTheJobsAndADirectNeighbourIsZeroHops"),
+               "the test that the claim's path is what is sent is gone:")
+    r.says("held here: this firmware chooses no path hash, so the clause is meshmaster.dk's D-33 "
+           "to keep; what this end does is pass the claim's through or flood")
     return r
 
 
@@ -761,7 +1095,14 @@ RAILS = [
     ("R11", "the supervisor's daily caps", rail_daily_caps),
     ("R12", "core/ includes nothing of ESP-IDF or the modem library", rail_core_is_portable),
     ("R13", "spec/ is the copy it claims to be", rail_spec_is_a_copy),
-    ("R14", "no mesh request is sent outside the agent, and none in a wake yet", rail_no_mesh_request),
+    ("R14", "no mesh request is sent outside the agent, and none in a wake without one", rail_no_mesh_request),
+    ("R15", "a password is in RAM for the exchange and nowhere else", rail_password_in_ram),
+    ("R16", "one packet per command: client_tx is the runner's sends", rail_one_packet_per_command),
+    ("R17", "the token is printed by nothing and goes to one host, in one header", rail_token_one_host),
+    ("R18", "the server never chooses an image and never decides one is good", rail_server_chooses_nothing),
+    ("R19", "no job a finished wake claimed is left leased", rail_no_job_left_leased),
+    ("R20", "an update starts by a claimed job, a typed command or the golden-image rung", rail_update_has_three_doors),
+    ("R21", "a path hash is the claim's; this firmware chooses none (S-12)", rail_path_hashes),
 ]
 
 
@@ -1049,7 +1390,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="the rails, in one place")
     parser.add_argument("--list", action="store_true", help="the table, nothing run")
     parser.add_argument("--verbose", "-v", action="store_true", help="what each rail looked at")
-    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R14, R3b, A, B)")
+    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R21, R3b, A, B)")
     args = parser.parse_args(argv)
 
     entries = RAILS + EXTRA
