@@ -56,6 +56,7 @@ Two marks:
 | [15](#15-sleep) ★ | Sleep | §1, §3, a scope, an integrating meter |
 | [16](#16-a-day) | A day | §15, §12, §14 |
 | [17](#17-the-agent) | The agent | §3, a second repeater on the bench; §12 and a token for the uplink's items |
+| [18](#18-a-day-as-an-exit-node) | A day as an exit node | §§16–17, a token, a release on the server |
 | [—](#what-to-bring-back) | **What to bring back** | the numbers, in one table |
 
 The numbers above are this walk's, in walking order; the task files' own section numbers are not
@@ -1211,11 +1212,68 @@ business (task p4-05), not this command's. Phase 4's task 06 orders the rest of 
       repeater must not be in the ring at all — the counts line says how many were dropped as its
       own.
 
+## 18. A day as an exit node
+
+From task p4-05 (`components/agent/agent_backend.h`, `firmware_jobs.h`; `docs/ARCHITECTURE.md`
+§13; `docs/console.md`, *The agent behind the seam*). This is where §16's day and §17's agent meet:
+a unit that not only looks after its radio but is **asked** to, by meshmaster.dk, and answers.
+Needs §16 walked (a provisioned unit that sleeps and wakes on the battery), §17 walked (the uplink
+up, a token, `agent id` showing the radio's key), and — for the firmware items — a release of the
+*Repeater* product on the server to be offered, and the *Walter* product's own release for the
+self-update item. The simulated month (300 wakes) is the figure every item is held against; it
+printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committed, 1 rolled back),
+8192 bytes downloaded, every wake slept**.
+
+- [ ] **`agent wake` with the cable in, once.** `lte up` first, then `agent wake`: it runs one pass
+      of the loop through step 8's seam and prints each part — the config call (the first boot
+      only), the heartbeat with this wake's intent, the offline buffer, the claim, and whatever the
+      claim handed over — then the `WakeReport` and the sleep it chose. With nothing queued on the
+      server it is one heartbeat and *nothing to do*; `agent jobs` then shows the last jobs empty
+      and `agent state` shows the loop having heartbeated once, the poll interval, and no kept
+      image. Nothing should print a token, a password or a reply body — glance at the output and
+      then at `dump`.
+- [ ] **A job for a neighbour.** Queue a `status` job for the second repeater (§17) on the server,
+      then `agent wake`. **One packet on the air, `client_tx` up by one**, and the result posted:
+      the server's job page shows it `ok` with the neighbour's battery, uptime and packet counts.
+      Hold `client_tx` against the runner's transaction count in the `agent wake` output — they
+      must be equal, which is the one-send-per-command rail made visible.
+- [ ] **A job for the unit's own repeater.** Queue a `telemetry` and a `config.read` for *this*
+      unit, then `agent wake`. Both go through the local door: **`client_tx` does not move** and no
+      packet is on the air (a sniffer sees nothing), yet both post a result — the telemetry's LPP
+      channels, the config without the access list. This is the seam's own §13 table, walked.
+- [ ] **An offer, in resumable ranges.** Queue a `twinoak.fw.offer` for a Repeater release larger
+      than one wake's download budget, then `agent wake` twice. The first wake downloads part of
+      the image, posts `progress`, and **posts no result**; `agent jobs` shows the offer still
+      claimed and `agent state` a candidate part-stored. The second wake resumes from where the
+      bytes stopped and posts `stored`. Write the bytes-per-wake you set against `kWakeDownloadBytes`
+      in the table below: the first real figure for what a metered plan allows a wake to pull.
+- [ ] **An apply that commits.** With the offered image stored (above), queue a `twinoak.fw.apply`,
+      then `agent wake`. It flashes the candidate through §9's machine, health-checks it, and the
+      result is `committed`; `rak status` shows the radio on the new version. One update step this
+      wake, and no second — S-7, which the wake record's letters show.
+- [ ] **An apply of the Walter itself, across the trial.** Queue a `twinoak.fw.apply` naming a
+      *Walter* release. The wake makes it the next to boot and sleeps; the board reboots into the
+      new image and **the result is posted by the *next* boot's wake**, after the trial's third
+      condition (one heartbeat `ok`) is met. If the new image never heartbeats, the next boot rolls
+      back and the result is `rolledBack` — walk it both ways, with a good release and a broken one.
+- [ ] **A power cycle.** Queue a `twinoak.power.cycle`, then `agent wake`: the kill line drops and
+      restores the radio within the §6 bounds (a scope on the rail confirms the timing), and a
+      `HELLO` proves it came back. The result carries the cycle's outcome; `rak watch` has the
+      incident inside the supervisor's caps.
+- [ ] **A day as an exit node.** With a release on the server and a job or two queued across the
+      day, `set wake.interval 15`, pull the cable, and leave the unit a day as §16 does. Then
+      `journal` and `agent jobs`: every job claimed either posted a result or left its lease to
+      expire with its bytes kept (an offer mid-download), and `agent state` across the reset shows
+      the loop's counters having survived every sleep. Hold the day's heartbeat and job counts
+      against the simulated month's rates, and the day's energy against §16's figure — a day that
+      ran real jobs costs more than a quiet one, and *how much more* is the number this item brings
+      back.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
-reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 114 of
-them, in 20 files. Each has a sentence beside it where it is declared; **change the number and the
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 115 of
+them, in 21 files. Each has a sentence beside it where it is declared; **change the number and the
 sentence together**, and nowhere else - the host tests, the console's help and the documents all
 follow the constant.
 
@@ -1426,7 +1484,7 @@ how long each step really takes.
 | `kUplinkBoundMs` | `kWakeBudgetMs` | |
 | `kUplinkLeastMs` | `20000` | |
 | `kClockBoundMs` | `10000` | |
-| `kBackendBoundMs` | `60000` | |
+| `kBackendBoundMs` | `kUpdateBoundMs` | |
 | `kBackendLeastMs` | `30000` | |
 | `kSleepBoundMs` | `15000` | |
 | `kClockSkewS` | `60` | |
@@ -1446,6 +1504,15 @@ uplink deadline a call is begun with.
 | Constant | Now | Measured |
 |---|---:|---|
 | `kLeastCallMs` | `5000` | |
+
+**`components/agent/include/walter_agent/agent_backend.h`** (1) - **§18** measures what an LTE-M
+plan may spend on a firmware download in one wake: the most an offer fetches before it stops at a
+resumable range boundary and the next wake continues. A megabyte lets a radio image in one wake;
+a tight plan is given less.
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kWakeDownloadBytes` | `1048576` | |
 
 **`components/agent/include/walter_agent/identity.h`** (5) - **§17** measures what one wake with
 an attach and a job actually costs the pack, which is what the per-band transaction cap promises

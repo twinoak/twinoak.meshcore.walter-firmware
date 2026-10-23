@@ -79,6 +79,11 @@ constexpr std::uint16_t kWakeCycle = 0x0005;    // one wake's record (task p3-05
 // The Walter's own attention, when it is news rather than a letter: a restart the agent library
 // asked for and did not get (task p4-04, core/cycle/agent_attention.h).
 constexpr std::uint16_t kAgentAttention = 0x0006;
+// A firmware job of the agent that outlives a boot (task p4-05, components/agent/firmware_jobs.h):
+// a `twinoak.fw.apply` of the Walter's own image, whose result is posted by the boot after the
+// trial from what this entry and the self-update's say; and the end of any apply, which is what
+// `twinoak.fw.state` reports as the slot's last update.
+constexpr std::uint16_t kAgentJob = 0x0007;
 }  // namespace kind
 
 struct Entry {

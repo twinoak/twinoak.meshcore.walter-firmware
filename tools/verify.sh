@@ -91,10 +91,22 @@ step_spec_tools() {
 step_host_tests() {
   local dir=$BUILD/host
   python tools/check_rails.py || return 1
-  cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  cmake -S host_test -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWALTER_AGENT=ON \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
   cmake --build "$dir" &&
-  ctest --test-dir "$dir" --output-on-failure --no-tests=error
+  ctest --test-dir "$dir" --output-on-failure --no-tests=error || return 1
+  # The second configuration (task p4-05): the unit without an agent - WALTER_AGENT=0, the wake
+  # cycle over the null backend, nothing of components/agent/ or the copied library compiled -
+  # built in a directory of its own and run for the wake cycle's own tests and the rails' two
+  # months, which is phase 3's month unchanged. The flag reaches the sources through one
+  # generated header, so ccache answers for every object it does not change.
+  local noagent=$BUILD/host-noagent
+  echo "== the second host configuration: WALTER_AGENT=0"
+  cmake -S host_test -B "$noagent" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWALTER_AGENT=OFF \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
+  cmake --build "$noagent" --target core_tests &&
+  ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+    "$noagent/core_tests" --no-intro -sf='*/core/cycle/*,*/rails/test_rail_updates.cpp,*/rails/test_rail_secrets.cpp'
 }
 
 # What a build trusts (task p2-01, spec/FIRMWARE-MANIFEST.md §3 and §5). A normal build carries

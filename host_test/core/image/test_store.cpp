@@ -591,7 +591,10 @@ TEST_CASE("only the store reads and writes the image partition") {
   // and where main/ constructs one - and nowhere else in the firmware. The store is the only
   // thing that erases or writes the radio's images, which is why a record can be relied on.
   // The update journal (task p2-03) holds the second one: the `journal` partition, which is not
-  // the image partition and never names an image's bytes.
+  // the image partition and never names an image's bytes. The agent's RegionStore (task p4-05)
+  // holds a third: a window of its own for the loop's retained state and the one kept image a wake
+  // may leave behind - again not the image partition, and given its region by main/ as the store
+  // is given the image partition's.
   const std::vector<std::string> allowed = {
       "components/interfaces/include/interfaces/flash_region.h",
       "components/core/include/core/image/store.h",
@@ -600,6 +603,8 @@ TEST_CASE("only the store reads and writes the image partition") {
       "components/core/update/journal.cpp",
       "components/platform/include/platform/flash_partition.h",
       "components/platform/flash_partition.cpp",
+      "components/agent/include/walter_agent/region_store.h",
+      "components/agent/region_store.cpp",
   };
   std::vector<std::string> offenders;
   const std::filesystem::path root(TWINOAK_REPO_ROOT);

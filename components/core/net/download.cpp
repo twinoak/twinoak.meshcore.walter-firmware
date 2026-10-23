@@ -245,6 +245,9 @@ DownloadResult Download::fetch(const char* url, std::uint32_t expected_size, con
 
     Options options;
     options.authorization = authorization;
+    // A credential in the head is wiped by the transport the moment it is on the wire (task
+    // p4-03's rule, core/net/client.h): the agent's offer downloads with the server's token.
+    options.sensitive = authorization != nullptr;
     options.headers = headers;
     options.header_count = header_count;
     options.wanted = wanted;

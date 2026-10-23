@@ -327,6 +327,25 @@ struct BackendAnswer {
   // them. **The ring is emptied only by this** - an exchange that failed, or one whose answer
   // does not say so, leaves every reading where it was (core/cycle/telemetry_ring.h).
   bool took_readings = false;
+
+  // -- what the exchange carried out itself (task p4-05) ----------------------------------------
+  //
+  // An implementation may run one of the closed set *inside* the exchange rather than ask for it
+  // - the agent's firmware jobs do: a release fetched, the radio or the Walter updated, each on
+  // the same machine the wake cycle's step 9 would have driven, because the server wants the
+  // result in the same wake. The wake cycle has to know, for the two rails it owns around the
+  // seam: S-7's one update step a wake (`carried` is the update that went, and step 9 refuses a
+  // second), and the budget (`outside_ms` is time a bounded machine of its own spent, outside the
+  // wake's ordinary budget as a climb's and an update's are). `did` is askBit() of everything
+  // carried out, for the record; nothing in it is asked for again.
+  std::uint8_t did = 0;
+  Ask carried = Ask::kNothing;  // the one update step that went, when one did
+  std::uint32_t outside_ms = 0;
+  // How long the next sleep must be at least, in seconds, when whoever is behind the seam owes
+  // a wait: a backoff after a server that did not answer, a Retry-After it was given, or an
+  // interval the server accepted that is *longer* than this firmware's own. Never shorter: the
+  // interval is the battery's (core/power/interval_policy.h) and this can only lengthen it.
+  std::uint32_t sleep_at_least_s = 0;
 };
 
 // How an exchange went.

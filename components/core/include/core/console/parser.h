@@ -251,6 +251,11 @@ enum class Verb : std::uint8_t {
   kAgentHeartbeat,
   kAgentObs,
   kAgentObsPull,
+  // The agent's loop (task p4-05): one wake of it now, the last ten jobs as the library
+  // remembers them, and the state a sleep keeps.
+  kAgentWake,
+  kAgentJobs,
+  kAgentState,
   // The Walter's own update (task p2-04).
   kSelfStatus,
   kSelfReceive,

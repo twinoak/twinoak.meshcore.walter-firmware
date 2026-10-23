@@ -56,16 +56,24 @@
 #include "platform/usb_console.h"
 #include "platform/entropy.h"
 #include "platform/heap.h"
+#if WALTER_AGENT
+#include <agent/AgentLoop.h>
+#include <agent/JobRunner.h>
+#include <agent/Version.h>
+
+#include "walter_agent/agent_backend.h"
 #include "walter_agent/agent_probe.h"
+#include "walter_agent/agent_uplink_check.h"
+#include "walter_agent/firmware_jobs.h"
 #include "walter_agent/identity.h"
 #include "walter_agent/link_mesh.h"
-#include "walter_agent/observations.h"
-#include "walter_agent/walter_platform.h"
 #include "walter_agent/mesh_probe.h"
 #include "walter_agent/modem_uplink.h"
+#include "walter_agent/observations.h"
+#include "walter_agent/region_store.h"
 #include "walter_agent/uplink_probe.h"
-
-#include "agent_anchor.h"
+#include "walter_agent/walter_platform.h"
+#endif
 
 namespace {
 
@@ -106,9 +114,10 @@ platform::FlashPartition g_journal_partition;
 // (docs/ARCHITECTURE.md §11).
 platform::NvsKeyValue g_nvs;
 // The two application slots and ESP-IDF's rollback (task p2-04). The trial's uplink condition
-// is a TLS handshake with the configured server (task p3-02, core/update/tls_check.h), and the
-// server is the `server.url` setting (task p3-03): unset, the host is empty and the condition
-// does not apply (core/update/uplink_check.h says why that is the rule and not a gap).
+// is below, with the HTTPS client: a TLS handshake with the configured server (task p3-02), or -
+// with the agent built - one heartbeat the server answered (task p4-05); the server is the
+// `server.url` setting (task p3-03): unset, the host is empty and the condition does not apply
+// (core/update/uplink_check.h says why that is the rule and not a gap).
 platform::EspOwnUpdate g_own;
 
 // The image store and the USB transfer (task p2-02), when the partition is there: the objects
@@ -131,12 +140,15 @@ core::update::Fetch* g_fetch = nullptr;
 // way in, and it does not go through here.
 core::cycle::NetworkClock g_wall(g_clock);
 
-// The backend seam (task p3-05, interfaces/backend.h): **this implementation does nothing**, and
-// that is the firmware's default. The server side is three accepted proposals and a decision
-// about where it will be built, not a protocol (spec/SYSTEM.md §8), and the MeshMaster agent goes
-// behind this interface in phase 4.
+// The backend seam (task p3-05, interfaces/backend.h). With the agent built (WALTER_AGENT, the
+// default) the MeshMaster agent is behind it - `agent::AgentBackend`, one wake of the copied
+// library's loop, constructed in app_main below (task p4-05, docs/ARCHITECTURE.md §13). Without
+// it the implementation does nothing, which is phases 0-3's unit.
+#if !WALTER_AGENT
 core::cycle::NullBackend g_backend;
+#endif
 
+#if WALTER_AGENT
 // The agent's two function pointers (task p4-04). `mm::logSetSink` and the library's `pump` take
 // plain function pointers, so the console they reach is this one pointer - there is one console
 // on this board and it is a function static of app_main, which is why this is set rather than
@@ -150,7 +162,8 @@ void agentLogLine(const char* line) {
 }
 
 // What the library's idle waits run: the radio's port read, and one turn of the console unless a
-// command of it is what is waiting (core/console/console.h, `pump`).
+// command of it is what is waiting (core/console/console.h, `pump`). Task p4-05 hands the same
+// function to the library's runner.
 void agentPump() {
   if (g_console != nullptr) g_console->pump();
 }
@@ -166,6 +179,19 @@ mm::LogLevel agentLogLevel(core::settings::Level level) {
                 "the console's log levels and the library's are the same four, in the same order");
   return static_cast<mm::LogLevel>(level);
 }
+
+// The library's objects that must never be stack locals (docs/library.md §6: the runner alone is
+// tens of kilobytes of buffers every job shares, far more than the task stack). The loop is small
+// - mostly its 64-entry observation ring - and stays at namespace scope. The runner is ~64 kB and
+// the scratch a kept image is built in (agent/IRetained.h) ~20 kB, and this board has no PSRAM
+// (sdkconfig.defaults) and too little internal DRAM to hold both in the static `.bss` segment
+// beside the console and the update verdict. So they are taken from the heap once at boot - never
+// a local, never freed, so the whole-run lifetime the library asks for still holds - and reached
+// through a namespace-scope pointer. See tasks/phase-4/reports/05.md, decisions.
+mm::JobRunner* g_agent_jobs = nullptr;
+mm::AgentLoop g_agent_loop;
+std::uint8_t* g_kept_scratch = nullptr;
+#endif
 
 }  // namespace
 
@@ -304,10 +330,16 @@ extern "C" void app_main() {
   static core::net::HttpOverTls https(tls_socket, &trust, g_clock);
   static core::net::Client http_client(https, g_clock);
   static core::net::Download download(http_client, g_clock);
-  // The trial's third condition over the real uplink (S-6): a TLS handshake with the configured
-  // server, which is `server.url` (task p3-03) - the console's begin() hands it over. Unset, it
-  // answers "not configured" and the condition does not apply.
+  // The trial's third condition (S-6), which is `server.url` (task p3-03) - the console's
+  // begin() hands the host over, and unset it answers "not configured" and the condition does
+  // not apply. With the agent built it is **one heartbeat the server answered `ok`**, told by the
+  // agent's wake (task p4-05, walter_agent/agent_uplink_check.h); without it, phase 3's TLS
+  // handshake with the configured server (core/update/tls_check.h).
+#if WALTER_AGENT
+  static agent::AgentUplinkCheck g_uplink;
+#else
   static core::update::TlsHandshakeCheck g_uplink(tls_socket, &trust, g_clock);
+#endif
   std::printf("https: %lu TLS roots (keys/tls), %s; 'trust tls', 'http get <url>', 'fetch <base-url>'\n",
               static_cast<unsigned long>(core::net::tlsRootCount()),
               trust.recordLost() ? "the modem's slots have no record and are written at the first request"
@@ -327,7 +359,7 @@ extern "C" void app_main() {
       g_store = &store;
       g_receiver = &receiver;
       // The fetch of a release into this store (task p3-02): over the client, the download and
-      // the same verdict the USB transfer uses. The console's `fetch` and, later, the wake cycle.
+      // the same verdict the USB transfer uses. The console's `fetch`, and the agent's offer.
       static core::update::Fetch fetch(http_client, download, store, verdict, g_clock, &g_usb);
       g_fetch = &fetch;
       std::printf("image store: rakfw at 0x%06" PRIx32 " (%" PRIu32 " KB), %u bytes laid out for "
@@ -364,15 +396,15 @@ extern "C" void app_main() {
   const void* volatile verdict_anchor = core::image::verdictAnchor();
   (void)verdict_anchor;
 
-  // The agent core (task p4-01, main/agent_anchor.cpp, docs/ARCHITECTURE.md §13): the exit-node
-  // firmware's job logic at a pinned commit, linked and called by nothing until task 05 puts
-  // AgentLoop::wake() behind the backend seam. The anchor is what keeps --gc-sections from
-  // dropping it, so that this build proves the library links for the board and not only that it
-  // compiles; the version it reports is the library's own.
-  const void* volatile agent_core_anchor = main_app::agentCoreAnchor();
-  (void)agent_core_anchor;
-  std::printf("agent-core: %s, linked; the seam is still core/cycle/null_backend.h\n",
-              main_app::agentCoreVersion());
+#if WALTER_AGENT
+  // The agent core (task p4-01, docs/ARCHITECTURE.md §13): the exit-node firmware's job logic at
+  // a pinned commit. Since task p4-05 it is behind the backend seam and called by every wake, so
+  // nothing has to anchor it in the image.
+  std::printf("agent-core: %s, behind the backend seam ('agent wake', 'agent jobs', 'agent state')\n",
+              mm::kAgentCoreVersion);
+#else
+  std::printf("agent: not built (WALTER_AGENT=0): the seam is core/cycle/null_backend.h\n");
+#endif
 
   std::fflush(stdout);
 
@@ -457,10 +489,90 @@ extern "C" void app_main() {
   static core::cycle::TelemetryRing readings(g_retained);
   readings.begin();
 
+#if WALTER_AGENT
+  // The agent (tasks p4-02 to p4-05; docs/ARCHITECTURE.md §13), constructed here because the
+  // wake cycle below takes the backend it is behind:
+  //
+  //   the mesh       the library's IMesh as one request of spec/LINK-PROTOCOL.md §6 per call,
+  //                  over the link client; the unit's own repeater served through the local door
+  //                  (task p4-02);
+  //   the server     the library's IUplink as the seven calls of the agent API over the HTTPS
+  //                  client above, the token read from `server.token` for each call and wiped
+  //                  (task p4-03). A namespace-scope object: about 9 kB of buffers, never a local;
+  //   the platform   the millisecond clock, the hardware's random bits, the heap's two figures,
+  //                  phase 3's network clock as the wall clock, the library's log lines into this
+  //                  console's ring; `delayMs` pumps the link and the console (task p4-04);
+  //   the attention  the Walter's own, raised by a 401 and by a restart the library asks for and
+  //                  does not get (core/cycle/agent_attention.h);
+  //   the identity   who this exit node is, from the radio: §5.6's key, HELLO's version and
+  //                  `CLI get radio`. Nothing of it is typed by a person (task p4-04);
+  //   the ring       the loop's own (`AgentLoop::begin` hands it to the mesh); §7's drain fills
+  //                  it at every wake and `agent obs pull` by hand;
+  //   the jobs       the four `twinoak.*` job types on the image store and the update machines,
+  //                  and the kept image's store in the tail of the `rakfw` partition - the
+  //                  48 KB past the image store's layout (walter_agent/region_store.h);
+  //   the backend    one `AgentLoop::wake()` per exchange: the seam (task p4-05).
+  static core::cycle::AgentAttention agent_attention(&duty.reason(), g_journal);
+  static agent::LinkMesh mesh(radio, g_clock);
+  static agent::LinkMeshProbe mesh_probe(mesh);
+  static agent::ModemUplink server(http_client, settings, g_clock, g_wall, core::version());
+  static agent::ModemUplinkProbe agent_probe(server);
+  server.raiseAttentionThrough(&agent_attention);
+  static agent::WalterPlatform agent_platform(g_clock, g_wall, g_entropy, g_heap,
+                                              &agent_attention);
+  static agent::Identity agent_identity(radio, core::version());
+  static agent::Observations agent_observations(radio, mesh);
+  agent::FirmwareJobs::Parts job_parts;
+  job_parts.store = g_store;
+  job_parts.update = g_update;
+  job_parts.self = self_update_ptr;
+  job_parts.fetch = g_fetch;
+  job_parts.journal = g_journal;
+  job_parts.supervisor = &supervisor;
+  job_parts.guard = &duty.guard();
+  static agent::FirmwareJobs firmware_jobs(job_parts, radio_pins, slots, radio, server, settings,
+                                           g_clock, g_wall);
+  static agent::IdentityProbe identity_probe(agent_identity, mesh, agent_observations,
+                                             agent_platform, &duty, &firmware_jobs);
+  // What a sleep keeps: the window after the image store's layout in the `rakfw` partition
+  // (core/image/store.h, kStoreBytes), when the partition is there and has room.
+  agent::RegionStore* kept = nullptr;
+  if (g_store != nullptr && g_rakfw.size() > core::image::kStoreBytes) {
+    static agent::RegionStore kept_store(g_rakfw, core::image::kStoreBytes,
+                                         g_rakfw.size() - core::image::kStoreBytes);
+    if (kept_store.usable()) kept = &kept_store;
+  }
+  // The runner and the kept-image scratch from the heap, once, at the top of this boot (see their
+  // declaration): a deep sleep is a full reboot, so app_main runs again and takes them again.
+  if (g_agent_jobs == nullptr) g_agent_jobs = new mm::JobRunner();
+  if (g_kept_scratch == nullptr) g_kept_scratch = new std::uint8_t[agent::kKeptScratchBytes]();
+  agent::AgentBackend::Parts agent_parts;
+  agent_parts.mesh = &mesh;
+  agent_parts.server = &server;
+  agent_parts.platform = &agent_platform;
+  agent_parts.identity = &agent_identity;
+  agent_parts.observations = &agent_observations;
+  agent_parts.jobs = g_agent_jobs;
+  agent_parts.loop = &g_agent_loop;
+  agent_parts.firmware = &firmware_jobs;
+  agent_parts.trial = &g_uplink;
+  agent_parts.state_store = g_nvs.ready() ? &g_nvs : nullptr;
+  agent_parts.kept = kept;
+  agent_parts.kept_scratch = g_kept_scratch;
+  agent_parts.kept_scratch_len = agent::kKeptScratchBytes;
+  agent_parts.duty = &duty;
+  agent_parts.self = self_update_ptr;
+  agent_parts.update = g_update;
+  static agent::AgentBackend backend(agent_parts, g_clock, g_wall);
+  interfaces::Backend& the_backend = backend;
+#else
+  interfaces::Backend& the_backend = g_backend;
+#endif
+
   // **One wake, start to finish** (task p3-05, docs/cycle.md): the ten steps in order, each
   // bounded, each outcome written down, ending in sleep. Everything above is handed to it as an
-  // interface; the backend is `g_backend`, which does nothing.
-  static core::cycle::WakeCycle cycle(duty, radio, uplink, g_backend, readings, g_wall, g_clock,
+  // interface; the backend is the agent's (task p4-05), or the one that does nothing.
+  static core::cycle::WakeCycle cycle(duty, radio, uplink, the_backend, readings, g_wall, g_clock,
                                       &supervisor, g_update, self_update_ptr, g_fetch, g_store,
                                       g_journal, &settings);
 
@@ -468,71 +580,27 @@ extern "C" void app_main() {
   // time round, the uptime kept in retained storage about once a second. Returning is not an
   // option here (the console is this task); the task watchdog watches the idle tasks, which run
   // while this one waits for a byte.
-  // The battery is the last argument (task p5-03): `rak provision` refuses on a low or falling
-  // reading by the update's rule, and accepts an unknown one as `--first-install` does.
-  // The mesh as the agent's runner will see it (task p4-02, components/agent/link_mesh.h,
-  // docs/ARCHITECTURE.md §13): the library's IMesh as one request of spec/LINK-PROTOCOL.md §6 per
-  // call, over the link client. **Nothing of the agent drives it yet** - the runner goes behind
-  // the backend seam in task p4-05 - and the unit's own repeater key (the local door) is task
-  // p4-04's to set from IDENTITY. Today its one caller is the console's `rak mesh status <key>`,
-  // through the probe, for the bench.
-  static agent::LinkMesh mesh(radio, g_clock);
-  static agent::LinkMeshProbe mesh_probe(mesh);
-  // The server as the agent's loop will see it (task p4-03, components/agent/modem_uplink.h):
-  // the library's IUplink as the seven calls of the agent API over the HTTPS client above, the
-  // token read from `server.token` for each call and wiped, `X-Agent-Version` this firmware's
-  // own. **Nothing of the agent drives it yet** either - the loop goes behind the backend seam
-  // in task p4-05, which is also what tells it the wake's deadline and that the modem is up -
-  // so today its one caller is the console's `agent probe`, through the probe, for the bench.
-  // A namespace-scope object: about 9 kB of reply and request buffers, never a local.
-  static agent::ModemUplink server(http_client, settings, g_clock, g_wall, core::version());
-  static agent::ModemUplinkProbe agent_probe(server);
-
-  // The platform and the identity the library needs of this board (task p4-04,
-  // components/agent/walter_platform.h and identity.h; docs/ARCHITECTURE.md §13):
-  //
-  //   the platform   the millisecond clock, the hardware's random bits, the heap's two figures,
-  //                  phase 3's network clock as the wall clock, and the library's log lines into
-  //                  this console's ring. `delayMs` pumps the link and the console, so the
-  //                  library's idle waits are this firmware's turns.
-  //   the attention  the Walter's own, raised by a 401 and by a restart the library asks for and
-  //                  does not get (core/cycle/agent_attention.h): a byte of the duty cycle's
-  //                  retained record, a letter in the wake record, a line in `status`.
-  //   the identity   who this exit node is, from the radio: §5.6's key, HELLO's version and
-  //                  `CLI get radio`. Nothing of it is typed by a person.
-  //   the ring       the library's observation ring. **It is the loop's in task p4-05**
-  //                  (`AgentLoop::begin` hands its own to the mesh and this one is dropped); it
-  //                  is here so that §7's drain has somewhere to put a record before then.
-  static core::cycle::AgentAttention agent_attention(&duty.reason(), g_journal);
-  server.raiseAttentionThrough(&agent_attention);
-  static agent::WalterPlatform agent_platform(g_clock, g_wall, g_entropy, g_heap,
-                                              &agent_attention);
-  static agent::Identity agent_identity(radio, core::version());
-  static mm::ObservationRing agent_ring;
-  mesh.setRing(&agent_ring);
-  static agent::Observations agent_observations(radio, mesh);
-  static agent::IdentityProbe identity_probe(agent_identity, mesh, agent_observations,
-                                             agent_platform, &duty);
-
+  // The battery is the last argument of phase 5's (task p5-03): `rak provision` refuses on a low
+  // or falling reading by the update's rule, and accepts an unknown one as `--first-install`
+  // does. The agent's seams into the console (tasks p4-02 to p4-05) come after it.
+#if WALTER_AGENT
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
-                                        &battery, &mesh_probe, &agent_probe, &identity_probe);
+                                        &battery, &mesh_probe, &agent_probe, &identity_probe,
+                                        &backend);
   // The library's log goes where every other line of this port goes: the console's print(), and
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
   g_console = &console;
   agent_platform.beginLog(&agentLogLine, agentLogLevel(settings.level()));
-  // What `delayMs` pumps while the agent waits, which is the same function the library's runner
-  // is given in task p4-05: the radio's port read and one turn of the console.
-  agent_platform.pumpWith(&agentPump);
-  // Who this exit node is, once a boot and before anything of the agent asks: the key goes to
-  // the mesh's local door (task p4-02's `setOwnKey`) and to the observation drain, which is what
-  // drops an advert about this unit's own repeater.
-  (void)agent_identity.refresh();
-  mesh.setOwnKey(agent_identity.publicKey());
-  agent_observations.useOwnKey(agent_identity.publicKey());
+  // The loop begun over the seams (docs/library.md §6): the runner and the loop, the identity,
+  // the extension, the state the last sleep left in NVS, the kept image read back. The pump the
+  // library's waits run is the console's: the radio's port read and one turn of the console.
+  backend.begin(&agentPump);
+  // Who this exit node is, as the boot line says it; the backend's begin() has already handed
+  // the key to the mesh's local door (task p4-02's `setOwnKey`) and to the observation drain.
   if (agent_identity.known()) {
     std::printf("agent: this exit node is %s, firmware %s%s\n", agent_identity.publicKeyHex(),
                 agent_identity.companionFirmware(),
@@ -546,6 +614,16 @@ extern "C" void app_main() {
     std::printf("agent: no identity read yet (the radio has not been asked anything in this "
                 "boot); 'agent id'\n");
   }
+  std::printf("agent: the loop's state %s the last sleep; the kept image's store %s\n",
+              backend.stateSurvived() ? "survived" : "did not survive",
+              kept != nullptr ? "is the rakfw partition's tail" : "is not there");
+#else
+  static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,
+                                        slots, g_store, g_receiver, g_update, g_journal,
+                                        self_update_ptr, &supervisor, &uplink, &http_client,
+                                        g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
+                                        &battery);
+#endif
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop
   // was reached with the board in the safe state" (core/update/self_update.h) and the console is

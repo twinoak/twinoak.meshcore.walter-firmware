@@ -762,8 +762,30 @@ void WakeCycle::stepBackend() {
   fillKnowledge();
   pass_.readings_offered = readings_.offerTo(&known_);
   answer_ = interfaces::BackendAnswer{};
-  const std::uint64_t deadline = deadlineFor(Step::kBackend);
+  // The exchange is given an update's own deadline (task p4-05: the agent's jobs are minutes, and
+  // a firmware job is one of the update machines run inside it). What it spends inside a machine of
+  // its own comes back as `outside_ms` and is outside the ordinary budget, as a climb's and an
+  // update's time are; the rest - a heartbeat, a claim - is inside it. Nothing of this moves a null
+  // backend: it answers at once.
+  const std::uint64_t deadline = step_began_ms_ + kBackendBoundMs;
   pass_.exchanged = backend_.exchange(known_, deadline, &answer_);
+  outside_ms_ += answer_.outside_ms;
+  // A firmware job's machine ran inside the exchange for up to those same twenty minutes: that wall
+  // time is outside the ordinary budget but still counts against the guard's ceiling, so the bound
+  // is raised to cover it - and only when a machine did run (`outside_ms`), so a wake that merely
+  // heartbeated keeps the ordinary bound, or the ladder's if the radio was silent and it climbed.
+  if (answer_.outside_ms > 0) allow(kBackendBoundMs);
+  // What the exchange carried out itself is the wake's business from here: S-7's one update
+  // step a wake is held by `update_ran_`, which step 9 reads, and the record says what went.
+  pass_.did = answer_.did;
+  if (answer_.carried == interfaces::Ask::kUpdateRadio ||
+      answer_.carried == interfaces::Ask::kUpdateSelf) {
+    update_ran_ = true;
+    pass_.carried = answer_.carried;
+  } else if (answer_.carried != interfaces::Ask::kNothing &&
+             pass_.carried == interfaces::Ask::kNothing) {
+    pass_.carried = answer_.carried;
+  }
   if (pass_.exchanged == interfaces::Exchanged::kFailed) {
     finish(Step::kBackend, Outcome::kFailed, "the exchange failed");
     return;
@@ -787,7 +809,8 @@ void WakeCycle::stepBackend() {
     (void)applySettings();
     wanted_ = static_cast<std::uint8_t>(wanted_ & ~interfaces::askBit(interfaces::Ask::kSetSettings));
   }
-  finish(Step::kBackend, Outcome::kDone, "it asked for something");
+  finish(Step::kBackend, Outcome::kDone,
+         answer_.asks != 0 ? "it asked for something" : "the exchange did something itself");
 }
 
 bool WakeCycle::applySettings() {
@@ -1111,6 +1134,19 @@ void WakeCycle::stepSleep() {
       pass_.shortened = true;
     }
   }
+  // Lengthened when whoever is behind the seam owes a wait (task p4-05): a backoff or a
+  // Retry-After the agent's loop carried out of its wake, or an interval the server accepted that
+  // is longer than the policy's own. Never shortened by it: the battery wins, and a week is the
+  // most a sleep may be asked for (core/settings/keys.h's own ceiling for `wake.interval`).
+  bool lengthened = false;
+  if (pass_.exchanged != interfaces::Exchanged::kFailed || answer_.sleep_at_least_s != 0) {
+    const std::uint32_t at_least = answer_.sleep_at_least_s < kSleepAtMostS ? answer_.sleep_at_least_s : kSleepAtMostS;
+    if (at_least > seconds) {
+      seconds = at_least;
+      lengthened = true;
+    }
+  }
+  pass_.lengthened = lengthened;
   pass_.interval_s = seconds;
 
   // The wake's record goes to the journal **before** the sleep, because a sleep does not return.
@@ -1129,7 +1165,7 @@ void WakeCycle::stepSleep() {
   // (core/cycle/agent_attention.h). A dry run does not reach this function and clears nothing.
   if (pass_.agent_attention != 0) duty_.reason().clearAgentAttention();
 
-  const SleepResult r = pass_.shortened ? duty_.sleepFor(seconds, false) : duty_.sleepNow();
+  const SleepResult r = (pass_.shortened || pass_.lengthened) ? duty_.sleepFor(seconds, false) : duty_.sleepNow();
   pass_.sleep = r;
   if (r.refusal != SleepRefusal::kNone) {
     finish(Step::kSleep, Outcome::kFailed, describe(r.refusal));

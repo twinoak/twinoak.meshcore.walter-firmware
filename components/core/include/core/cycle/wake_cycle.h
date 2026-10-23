@@ -61,13 +61,16 @@
 //
 // -- the seam ----------------------------------------------------------------------------------
 //
-// Step 8 talks to `interfaces::Backend` and to nothing else. In this repository the only
-// implementation does nothing (`core/cycle/null_backend.h`). **Nothing here invents a server, a
+// Step 8 talks to `interfaces::Backend` and to nothing else. **Nothing here invents a server, a
 // URL path, a JSON field or a job**: what crosses the seam is a plain structure this firmware
-// fills and a closed set of requests it already knows how to carry out (spec/SYSTEM.md §8,
-// spec/proposals/). The mesh client's calls are not used at all - no job is begun, no
-// observation is pulled, nothing is sent on the mesh - and a host test runs a simulated month of
-// wakes and holds the radio to it.
+// fills and a closed set of requests it already knows how to carry out (spec/SYSTEM.md §8).
+// Phases 0 to 3 had nothing behind it (`core/cycle/null_backend.h`, still the build without an
+// agent); since task p4-05 the MeshMaster agent is (components/agent/agent_backend.h: one
+// `mm::AgentLoop::wake()`), and its firmware jobs run the fetch and the two update machines
+// *inside* the exchange, reporting back what they carried out so that the two rails this file
+// owns around the seam still hold: one update step a wake, and the budget. The mesh is the
+// agent's; a wake with the null backend still sends nothing on it, and the simulated month of
+// phase 3 holds the radio to that.
 //
 // Logic: no ESP-IDF include, no heap. One WakeCycle is about a kilobyte of state (most of it the
 // structure that crosses the seam) and belongs in static storage.
@@ -200,14 +203,26 @@ constexpr std::uint32_t kUplinkLeastMs = 20000;
 // Step 7. One TIME_SET, or a TIME_GET and a TIME_SET.
 constexpr std::uint32_t kClockBoundMs = 10000;
 
-// Step 8. One exchange with whoever is behind the seam. A minute: an implementation that wants
-// longer is an implementation spending a battery it cannot see (interfaces/backend.h). And the
-// least worth beginning one for is half of that: the unit is on LTE-M at a few kilobytes a
-// second (spec/proposals/02, *Serving*), so an exchange given ten seconds would be an exchange
-// cut off halfway, and half an exchange is worse than none - the readings would be offered and
-// nobody would have taken them.
-constexpr std::uint32_t kBackendBoundMs = 60000;
+// Step 8. One exchange with whoever is behind the seam. Until task p4-05 that was a minute: an
+// implementation that wanted longer was one spending a battery it could not see. The agent is
+// behind the seam now (components/agent/agent_backend.h) and one exchange is a heartbeat, a
+// claim and the jobs the claim handed over - a `config.read` of a neighbour is twenty-one
+// transactions at the airtime budget's two a minute, which is eleven minutes, and a
+// `twinoak.fw.apply` is the radio's whole update machine with its three-minute proving period.
+// So the exchange is given an update's own deadline (kUpdateBoundMs, twenty minutes), and what it
+// spent inside a bounded machine of its own is reported back as outside the budget
+// (interfaces/backend.h, BackendAnswer::outside_ms), as a climb's and an update's time are. That
+// outside time still counts against the guard's wall-clock ceiling, so the step **raises the bound
+// on the wake** to this number (core/cycle/wake_guard.h) - but only when such a machine actually
+// ran, so a wake that merely heartbeated keeps the ordinary bound. The battery's say is the
+// intent the agent promises the server - the per-band transaction cap of
+// components/agent/identity.h, a bench placeholder - and not this number. The least worth
+// beginning one for is unchanged: the unit is on LTE-M at a few kilobytes a second
+// (spec/proposals/02, *Serving*), so an exchange given ten seconds would be an exchange cut off
+// halfway, and half an exchange is worse than none.
+constexpr std::uint32_t kBackendBoundMs = kUpdateBoundMs;
 constexpr std::uint32_t kBackendLeastMs = 30000;
+static_assert(kBackendBoundMs <= kRaisedBoundMax, "the exchange's bound has to be one a wake may ask for");
 
 // Step 10. SLEEP_NOTICE, the modem down, the pads held (core/cycle/sleep.h). Fifteen seconds,
 // and it is **never refused for want of time**: `kSteps`'s least for this step is zero.
@@ -229,6 +244,15 @@ constexpr std::uint32_t kDownloadMinutes = 5;
 // its bound. A machine that answers `waited` for ever is a bug, and a bound in time alone would
 // let it spin: five thousand slices of a tenth of a second is longer than any bound here.
 constexpr std::uint32_t kSlicesMax = 5000;
+
+// -- a fixed ceiling, not a bench number -------------------------------------------------------
+
+// How much longer the next sleep may be made by whoever is behind the seam (task p4-05: a
+// backoff, a Retry-After, or an accepted interval longer than the policy's own): a week, which
+// is `wake.interval`'s own ceiling in core/settings/keys.h said in seconds. Never shorter than
+// the policy's: the battery wins. A week is a week and no measurement moves it, so it is outside
+// the section above and has no row in docs/bench.md.
+constexpr std::uint32_t kSleepAtMostS = 7u * 24 * 60 * 60;
 
 // One row of the step table: what the step is, what it is allowed to spend, and which steps must
 // have succeeded before it is worth attempting. **This is the dependency table**, and it is data:
@@ -296,6 +320,7 @@ struct Pass {
   // The seam.
   interfaces::Exchanged exchanged = interfaces::Exchanged::kFailed;
   std::uint8_t asks = 0;                                   // what the answer asked for, as bits
+  std::uint8_t did = 0;                                    // what the exchange carried out itself (task p4-05)
   interfaces::Ask carried = interfaces::Ask::kNothing;     // the one thing that was done
   std::size_t readings_offered = 0;
   bool readings_taken = false;
@@ -304,6 +329,7 @@ struct Pass {
   bool clock_set = false;      // the radio's clock was set in this wake
   bool time_known = false;     // this firmware knew what day it was
   bool shortened = false;      // step 10's interval was shortened for a half-done download
+  bool lengthened = false;     // ... or lengthened for a wait the backend owes (task p4-05)
 
   Outcome outcomeOf(Step s) const { return step[static_cast<std::size_t>(s)].outcome; }
   bool ok(Step s) const { return outcomeOf(s) == Outcome::kDone; }

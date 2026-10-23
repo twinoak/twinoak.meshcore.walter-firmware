@@ -133,7 +133,13 @@ inline void checkNoAllocation(const std::string& what, const std::vector<std::st
           const bool before = at > 0 && isWordByte(code[at - 1]);
           const bool after = at + length < code.size() && isWordByte(code[at + length]);
           // Part of a longer identifier - "kUnset" holds "set" - and not the word itself.
-          const bool inside_a_word = before || after;
+          bool inside_a_word = before || after;
+          // A member call - `w.string(...)`, `p->string(...)` - is a method of an object and not
+          // the `std::string` type: the library's bounded, heap-free `mm::JsonWriter::string`
+          // (agent/JsonWriter.h) is how components/agent/ writes a job result (task p4-05), and a
+          // method named for a forbidden word is not the thing the word forbids.
+          const bool member = at >= 1 && (code[at - 1] == '.' || (at >= 2 && code[at - 1] == '>' && code[at - 2] == '-'));
+          inside_a_word = inside_a_word || (member && at + length < code.size() && code[at + length] == '(');
           // The word as a std::string: doctest prints a `const char*` variable as a pointer
           // (`filldata<T*>` in doctest.h), and a message that cannot name the word is no use.
           CHECK_MESSAGE(inside_a_word, file << ":" << number

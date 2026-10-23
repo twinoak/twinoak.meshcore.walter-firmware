@@ -46,7 +46,15 @@ void wipe(void* at, std::size_t size) {
 
 }  // namespace
 
-SimRak::SimRak(fakes::FakeClock& clock, mm::IMesh& repeater) : radio(clock), clock_(clock), repeater_(repeater) {
+SimRak::SimRak(fakes::FakeClock& clock, mm::IMesh& repeater)
+    : own_radio_(clock), radio(own_radio_), clock_(clock), repeater_(repeater) {
+  radio.on_request = [this](const link::Packet& packet, std::vector<std::uint8_t>* payload) {
+    return onRequest(packet, payload);
+  };
+}
+
+SimRak::SimRak(ScriptedRadio& existing, fakes::FakeClock& clock, mm::IMesh& repeater)
+    : own_radio_(clock), radio(existing), clock_(clock), repeater_(repeater) {
   radio.on_request = [this](const link::Packet& packet, std::vector<std::uint8_t>* payload) {
     return onRequest(packet, payload);
   };
