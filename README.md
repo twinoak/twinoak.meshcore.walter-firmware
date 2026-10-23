@@ -13,14 +13,25 @@ from afar** and can be looked after without climbing to it. The plan, the decisi
 the two protocols the boxes share are in [`spec/`](spec/README.md) — start with
 [`spec/SYSTEM.md`](spec/SYSTEM.md).
 
+Since phase 4 a unit is three things at once: **a repeater** on the mesh, **an exit node** —
+meshmaster.dk reaches that repeater, and its neighbours on the air, through this box — and **a
+remotely updatable one**, which is the whole reason the box exists. It is registered once, by a
+person, at meshmaster.dk (*Exit nodes → Register an exit node*), which gives the unit a token that
+is typed into its console once and read back by nothing afterwards
+([`docs/provisioning.md`](docs/provisioning.md)); after that the unit checks in on its own
+interval, runs the jobs the server has for it and sleeps again
+([`docs/field.md`](docs/field.md), *As an exit node*).
+
 ## The state of things
 
-> **No board has run this firmware.** Phases 0 to 3 are built, and everything in them is tested on
-> a host against simulators: a simulated nRF52 down to its flash controller, a flash that loses
+> **No board has run this firmware.** Phases 0 to 5 are built, and everything in them is tested
+> on a host against simulators: a simulated nRF52 down to its flash controller, a flash that loses
 > power at any operation, a scripted repeater, a fake modem that fails in every way a real one
-> does, a scripted HTTPS server. Nothing has been flashed to a Walter, no pin has been wiggled, no
-> SIM has attached. [`docs/bench.md`](docs/bench.md) is the walk that turns that sentence over, one
-> step at a time, and this line stays here until a unit has walked it.
+> does, a scripted HTTPS server, a scripted meshmaster.dk and the agent library's own simulated
+> stock repeater. Nothing has been flashed to a Walter, no pin has been wiggled, no SIM has
+> attached, and no unit has ever checked in with the real server.
+> [`docs/bench.md`](docs/bench.md) is the walk that turns that sentence over, one step at a time,
+> and this line stays here until a unit has walked it.
 
 | Phase | What | |
 |---|---|---|
@@ -28,7 +39,7 @@ the two protocols the boxes share are in [`spec/`](spec/README.md) — start wit
 | 1 | hands on the radio: the box link, the debug port, the nRF52, the flasher | built |
 | 2 | images and updates: signatures, the image store, the radio's update, the Walter's own, the supervisor | built |
 | 3 | the uplink and staying alive: the modem, verified HTTPS, settings and the console, the duty cycle, the wake cycle | built |
-| 4 | **the agent**: the exit-node firmware's job logic at a seam, the mesh over the link, the uplink over the modem | waits for two piles elsewhere (`spec/SYSTEM.md` §8) |
+| 4 | **the agent**: the exit-node firmware's job logic as a library at a pin, the mesh over the link, the uplink over the modem, the platform and the identity, the firmware jobs on the update machines | built; needs **meshmaster.dk 4.14 or newer** deployed to talk to |
 | 5 | the radio's base (S-5a): the `provision` file in the store, the CTRL-AP and UICR behind one door, `rak provision` | built |
 | later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
 
@@ -48,26 +59,34 @@ Also not done, and not hidden: **no release key exists yet**, so a unit accepts 
    repeater *and* the server inside one boot;
 4. it is the unit's **uplink**: LTE-M, HTTPS with a verified chain, resumable downloads
    ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §9);
-5. it **sleeps**, and the battery it shares with the repeater chooses for how long: a full pack
+5. it is the unit's **MeshMaster agent**: one wake is one check-in with meshmaster.dk — a
+   heartbeat that says who this unit is and what it can do, and then the jobs the server has for
+   it, run one at a time. Jobs for its **own** repeater go over the UART between the boxes with no
+   packet on the air; jobs for a **neighbour** go over the repeater's radio, one packet per
+   command. The job logic itself is the exit-node firmware's, taken as a library at a pinned
+   commit ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §13,
+   [`docs/upstream.md`](docs/upstream.md));
+6. it **sleeps**, and the battery it shares with the repeater chooses for how long: a full pack
    under a sunny panel gets a wake every quarter of an hour, a sinking one in December gets one a
    day, and below a floor the modem is not used at all ([`docs/power.md`](docs/power.md)). One wake
    is one pass of ten steps and then deep sleep ([`docs/cycle.md`](docs/cycle.md)).
 
 ## What it deliberately does not do
 
-- **It is not the MeshMaster agent yet.** The wake cycle ends at a *backend interface* whose only
-  implementation does nothing. Nothing in phases 0–3 names a server endpoint, a JSON field or a
-  job, because the MeshMaster side was not decided when they were written and a guess would have
-  had to be unwritten. The agent — for its own repeater over the UART, and as an exit node for the
-  neighbours through the repeater's radio — is phase 4 (`spec/SYSTEM.md` §8). **Its job logic is
-  here**, as of task p4-01: the exit-node firmware's `agent-core` library at a pinned commit,
-  compiled for the board and for the host and linked into the image, with its own two suites
-  passing in this repository's host tests ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §13,
-  [`docs/upstream.md`](docs/upstream.md)). What is still missing is the three implementations it
-  stands on and the wiring — phase 4's tasks 02 to 05 — so nothing talks to a server yet.
-- **It sends no mesh traffic.** The box link has a call for every mesh request the protocol
-  defines; this firmware uses none of them, and a grep and a simulated month of wakes hold it to
-  that.
+- **It does not invent a protocol.** Nothing here names a server endpoint, a JSON field or a job
+  type of its own: the agent protocol is meshmaster.dk's and is spoken by the library
+  (`spec/SYSTEM.md` §8), the link to the repeater is `spec/LINK-PROTOCOL.md`, and the job shapes
+  are meshmaster.dk's own contract fixtures, which the host tests read rather than transcribe. A
+  unit therefore needs **meshmaster.dk 4.14 or newer** to talk to; against anything older it
+  heartbeats and is told nothing to do.
+- **It takes no server's word about an image.** A release the server offers is checked six ways
+  against the bytes in this unit's own flash (`spec/FIRMWARE-MANIFEST.md` §5), the hash an apply
+  names must be one the unit already holds, and whether a flashed image is good is decided by the
+  health check in the box — never by the server. An apply the server called good and the box
+  refused is reported as `rolledBack`, and the candidate is never tried again.
+- **It is no mesh chat.** The box link has a call for every mesh request the protocol defines, and
+  the agent uses them only for a job it was asked to do: **one packet per command**, nothing
+  relayed, nothing overheard written down. A grep and two simulated months hold it to that.
 - **Nothing automatic erases a chip or writes UICR.** No supervisor rung, no update, no wake and
   no job from a server leads to the nRF52's `ERASEALL` or to a word of its UICR; a module whose
   access port is protected is detected, reported and refused by everything that runs by itself.
@@ -110,6 +129,9 @@ sanitizers, with fakes and simulators that make things go wrong). `components/in
 `core/` asks of the world, `components/platform/` the ESP-IDF answers — kept thin enough that
 reading them is the test — `components/modem/` the LTE modem (`dptechnics/walter-modem`, a managed
 component pinned in `dependencies.lock`), and `main/` the start-up that constructs the real things.
+`components/agent/` is this firmware's half of the agent library's seams — the mesh over the box
+link, the uplink over HTTPS, the platform, the identity and the firmware jobs — and is logic too:
+the same flags, the same no-ESP-IDF rule, the same host tests.
 `sdkconfig.defaults` carries a reason per line; `partitions.csv` is checked against every build.
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the map.
 
@@ -181,9 +203,9 @@ fails until the release key exists ([`keys/README.md`](keys/README.md)).
 ## The rails
 
 The promises this firmware makes are each a test or a grep that fails the build, and they are
-indexed in one place: **[`tools/check_rails.py`](tools/check_rails.py)** (run by `verify.ps1`, one
-entry per rail, `--list` prints them) and **`host_test/rails/`** (the assertions that are about
-every test in the suite rather than one).
+indexed in one place: **[`tools/check_rails.py`](tools/check_rails.py)** (run by `verify.ps1`,
+twenty-four entries, one per rail, `--list` prints them) and **`host_test/rails/`** (the
+assertions that are about every test in the suite rather than one, and the two simulated months).
 
 | | |
 |---|---|
@@ -195,7 +217,13 @@ every test in the suite rather than one).
 | never both updates in one wake | and never one at all while this firmware's own image is unconfirmed |
 | TLS is verified | the modem's other validation levels are named nowhere in this firmware, the one call that configures a profile is one call, and there is no `http://` literal |
 | secrets stay where they are | a token and a PIN in NVS, a repeater's password in RAM for the length of an exchange; no command, log line, journal entry or wake record carries either |
-| nothing the mesh said is logged as text | and no mesh request is sent at all |
+| nothing the mesh said is logged as text | not a neighbour's reply to a job, not a stranger's name in an advert, not a scanner's line: it goes into the result the server asked for and into no log, journal or retained record — searched for over a month of wakes as an exit node |
+| a password crosses once, and is nowhere afterwards | a repeater's password is in RAM for the exchange, wiped from the link's send *and* receive buffers, on the wire exactly once, and read back as zeros out of every buffer it crossed |
+| one packet per command | the radio's own `client_tx` moved by exactly the number of sends the agent's runner was told went out, every wake of a month |
+| the token goes to one host, in one header | read in four places and printed in none; `Authorization: Bearer` to the configured host and dropped at a redirect to another; in no URL, no body, no error text and no log |
+| the server chooses nothing | it offers; this firmware checks all six and decides. An apply's hash must be one the unit already holds, and a health check in the box — not a verdict from the server — says whether a flashed image stays |
+| an update starts in one of three ways | a claimed job, a typed console command, or the supervisor's own golden-image rung — and nothing else, by a grep of the call sites |
+| no job a finished wake claimed is left leased | a result the server would not take is kept in flash across the sleep and posted by the next wake that reaches one |
 | slowly, and within limits | everything the supervisor does to the repeater has a wait, a backoff and a daily cap |
 | the agent core is a copy and keeps its boundary | every file of `components/agent-core/` and `host_test/agent-core/` byte for byte what its manifest says, the pin in two places held equal, every `#include` in the library its own or ArduinoJson or the standard library, and no store, no file system and no way of skipping certificate verification in either tree |
 

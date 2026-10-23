@@ -1,8 +1,9 @@
 # A unit in the field
 
 What a TwinOak repeater-v2 unit on a mast does by itself, what it does when something is wrong,
-and what a person can and cannot do about it from a distance. For the person who owns the mast,
-not for the person who writes the firmware — the firmware's own map is
+what it does for the server that looks after it, and what a person can and cannot do about it
+from a distance. For the person who owns the mast, not for the person who writes the firmware —
+the firmware's own map is
 [`ARCHITECTURE.md`](ARCHITECTURE.md), the wake is [`cycle.md`](cycle.md), the console is
 [`console.md`](console.md), and the first bring-up of a unit is [`bench.md`](bench.md).
 
@@ -44,8 +45,8 @@ sleep.** It is minutes at the outside and seconds in the ordinary case
 5. **what may this wake afford** — the battery decides the rest of the wake and the next interval;
 6. **the modem** — attach, and read the network's time;
 7. **set the radio's clock** — from the network's time, when the radio's is unset or wrong;
-8. **report in** — one exchange with the server. **Today there is no server**: this firmware's
-   backend does nothing, by design, until the MeshMaster agent is built;
+8. **report in** — one exchange with meshmaster.dk: a heartbeat, and the jobs the server has for
+   this unit, run one at a time (*As an exit node*, below);
 9. **at most one update step**, of one box, never both (and only if the battery allows);
 10. **tell the radio I am going, and sleep** — always. A wake that reached nothing else has still
     done the one thing that matters.
@@ -58,6 +59,89 @@ a pack has been measured.
 Nothing a wake does is retried for ever: every step has a deadline, a whole wake has a bound, and
 a wake that has not reached sleep in five minutes is **ended by a reset** — the work is in the
 journal and the next wake takes it up. The sleep after a fault is *longer*, not shorter.
+
+## As an exit node
+
+Step 8 is the one a person sees from the outside. A provisioned unit is registered at
+meshmaster.dk as **an exit node** — *the uplink of* its repeater — and from then on it is the way
+the server reaches that repeater, and sometimes its neighbours too.
+
+**When it checks in.** Only when it is awake, which is on its own interval and nobody else's: a
+quarter of an hour on a full pack, an hour on a middling one, six hours when it is saving, once a
+day at the floor. The server may ask for a *shorter* interval and is not given one — the battery
+wins; it may ask for a longer one and gets it. Between wakes the unit is in deep sleep with the
+modem off and **cannot be reached at all**. Nothing queued on the server is lost by that: a job
+waits until the next wake, and a wake takes as many as its band affords (two at the top, none at
+the floor).
+
+**What it will do for its own repeater**, over the UART between the boxes, with no packet on the
+air: read and change its settings, read its telemetry and status, set its clock, its access list,
+its password; flash it a new application and roll it back; power-cycle it. These are the jobs the
+server shows against the repeater itself, and the unit is simply how they get there.
+
+**What it will do for a neighbour** — another repeater on the air, which this unit's radio can
+reach: the same read-only and administrative jobs the MeshMaster agent does anywhere, each **one
+packet** from this unit's radio and one reply. It never floods the mesh with chat, never relays
+somebody else's traffic as a job, and it answers a neighbour's job only if that repeater's own
+access list lets this unit in. A job for a neighbour costs airtime, so the server's own budget
+(two transactions a minute by default) is what paces them.
+
+**What it will not do.** It will not take a server's word about an image: a release is checked six
+ways against the bytes in its own flash, the server's `expectedSha256` is a thing it must *already*
+hold, and whether a flashed image is good is decided by the health check in the box — a `rolledBack`
+is the unit disagreeing with the server, and it is allowed to. It will not do two updates in one
+wake, nor any while its own image is unconfirmed. It will not erase a chip or write UICR for
+anybody (that is a typed command at a bench, `spec/SYSTEM.md` S-5a). And it will not keep a job's
+reply: what the mesh said goes into the job's result and nowhere else — not into the log, not into
+the journal.
+
+**What *asleep* means on the page.** The exit node's page shows a unit *asleep* when the last
+heartbeat said so, with the time it expects to wake. That is the normal state, and *last seen two
+hours ago* on an hourly unit is a healthy unit. A unit is **silent** when it has missed several
+wakes in a row — then read the list below.
+
+**What *Wake it up* costs.** Nothing on the server can wake a sleeping unit: there is no path to
+it. *Wake it up* queues work and shortens the *requested* interval for the next check-in; it takes
+effect at the next wake the battery allows, and the unit will refuse an interval shorter than its
+band's. A person at the mast can shorten it for real — the radio's attention line wakes the LTE box
+at once, which is what the repeater uses when something is wrong.
+
+**How an update reaches it, and what a person sees.** Four steps, each its own job, each visible:
+
+1. **offered** — the server names a release; the unit fetches the manifest and the image in ranges
+   over several wakes if it must, checks all six, and stores it as the **candidate**. The page
+   shows `stored` with the hash and the bytes (`resumed` when a wake took up where another left
+   off). A download that is cut off simply resumes; nothing is reported until it is whole.
+2. **applied** — the server asks for the candidate it named. The unit flashes it, resets the radio,
+   waits for it to come back as itself, and journals every transition.
+3. **committed** — the new image passed its health check and is now the golden one. The page says
+   so, and `rak hello` at the cable says the new version.
+4. **rolled back** — it did not. The golden image goes back, proves itself, and the broken
+   candidate is on a bad list so that nothing tries it again. The page says `rolledBack` **with
+   the journal**, which is where the reason is. This is not a failure of the unit; it is the unit
+   doing the thing it exists for.
+
+A `twinoak.fw.apply` of the *LTE box's own* firmware is the same, one step longer: the board
+reboots into the image being tried, and the result is posted by the **next** wake — after the new
+image has reached its main loop, talked to the radio and been recognised by the server in one
+boot. If any of the three fails, the next boot rolls back.
+
+**When the server says *uplink silent*.** The server has not heard from this unit for several of
+its own expected intervals. In order:
+
+1. **Look at the battery** in the last heartbeat. A unit that reported `saving` or `critical` is
+   working correctly and is simply slower — six hours or a day between wakes, and no modem at all
+   at the floor. Wait a day before worrying.
+2. **Is the repeater still on the air?** If the mesh still sees it, the unit's LoRa box is fine and
+   only the LTE box or its coverage is not — which changes nothing for the mesh and can wait for a
+   visit.
+3. **Coverage.** A modem that cannot attach is the commonest cause and the one nothing can be done
+   about remotely. The unit keeps trying on its own interval, with a backoff, for ever.
+4. **A self-update that went wrong** is the one that would be the unit's own fault — but an image
+   that cannot reach the server is rolled back by the next boot, so a unit that is silent *because*
+   of an update should come back by itself within two wakes. If it does not, it is not the update.
+5. **Then it is a visit**: a cable, `dump`, `journal` and `wake` (*Reading a unit from a cable*).
+   The journal survived whatever happened.
 
 ## When the radio is silent
 
@@ -191,7 +275,8 @@ A unit is provisioned once, at a bench, over the cable, before it goes out
 
 - the APN and, if the card wants one, the SIM's PIN — **typed once and printed by nothing
   afterwards**; `get` says *set* or *unset* and never the value;
-- the server and its token, when there is a server;
+- the server and **this unit's own token**, made once on meshmaster.dk when the unit is
+  registered as an exit node and readable nowhere afterwards;
 - the unit's name and where it is;
 - the check-in interval (`auto` lets the battery choose, which is what a mast wants).
 
@@ -265,5 +350,6 @@ For balance, because the list above is the short one:
 - the LTE box's own firmware, with one boot's trial and automatic rollback;
 - a radio that is hung, confused, or has had its application corrupted — the ladder;
 - a radio whose clock has drifted, every wake;
-- a non-secret setting, over the server once there is one;
+- a non-secret setting of the repeater's, over the server, as a job;
+- a repeater that needs its power cycled, as a job, within the day's caps;
 - a reading of what happened: the journal survives power cuts and is what a person reads first.

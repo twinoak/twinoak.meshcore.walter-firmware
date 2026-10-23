@@ -1,8 +1,8 @@
 # Provisioning a Walter
 
 What a person types to make a Walter theirs: the APN its SIM wants, the SIM's PIN if the card has
-one, the server it will talk to and the token it will use, and a name so that the unit says which
-unit it is. Over the module's USB-C and nothing else — not over the air, not over the box link,
+one, **the server it checks in with and the token it checks in by**, and a name so that the unit
+says which unit it is. Over the module's USB-C and nothing else — not over the air, not over the box link,
 not from a server ([`console.md`](console.md) is every command and every key).
 
 **The session below is a host test.** `host_test/core/console/test_provisioning_doc.cpp` reads this
@@ -19,9 +19,12 @@ is how the lines carrying a time, a count or a version are written.
   (`core/uplink/policy.h`, *The PIN*);
 - the APN the operator wants, or nothing at all: unset is "let the network choose", which is what
   a Danish LTE-M SIM wants;
-- the server's URL, and its token if it has one. There is no backend yet
-  (`spec/SYSTEM.md` §8), so today the server is what a self-update's trial has to reach over TLS
-  and nothing more.
+- **the server's URL and the unit's own token.** The token is made once, by a person, on
+  meshmaster.dk: *Exit nodes -> Register an exit node* (`/exit-nodes/new`) gives this unit its
+  identity on the server and a token nobody can read back afterwards — not from the page and not
+  from this console. Copy it straight into `set server.token`. The same host is what a
+  self-update's trial has to reach over TLS, so a unit with no server still updates itself on two
+  conditions instead of three (`spec/SYSTEM.md` S-6, §8).
 
 Nothing here needs a reboot: every `set` takes effect at once, and what it reaches is the right
 column of [`console.md`](console.md)'s *What happens when one changes*.
@@ -71,10 +74,10 @@ ok lte.pin
 the next uplink sends it; a refused PIN is never sent a second time
 > set server.url https://meshmaster.dk
 ok server.url
-a self-update's trial now has to reach meshmaster.dk:443; the backend call itself is task p3-05's
+a self-update's trial now has to reach meshmaster.dk:443, and the agent's calls go there
 > set server.token mma_hRkQ2x7LpV4nT8yW1sB3dF5gH9jM0cZ
 ok server.token
-kept for the backend call (task p3-05); nothing else reads it
+kept for the agent's calls ('agent probe', and every wake's heartbeat); nothing else reads it
 > get lte.pin
 lte.pin set
 > get server.token
@@ -103,7 +106,7 @@ pins: power on;...
   uart released,...
 images: golden=empty candidate=empty scanner=empty base=empty
 uplink:...
-backend: meshmaster.dk:443, for a self-update's third condition (task p3-05 makes the call)
+backend: meshmaster.dk:443, the agent's server and a self-update's third condition
 this wake: power-on;...
 next wake: at the end of this wake; last band no-reading, wake.interval auto; line armed
 > set server.url http://meshmaster.dk
@@ -138,6 +141,45 @@ it. The four `error:` lines are what a wrong value gets, and nothing is stored b
    (`ARCHITECTURE.md` §11). A **merged** flash of the whole table does not.
 5. `erase confirm` is how a unit is handed on: every setting forgotten, and only the settings —
    the images, the journal, the bad list and the supervisor's counts stay.
+
+## The agent's first call
+
+Once the uplink is up (`lte up`, step 1 above), two lines say whether the token is right — and
+they are the last thing typed at the cable before the unit is left alone.
+
+**This block is a host test too**, replayed by `host_test/agent/test_uplink_console.cpp` against
+the firmware's own console over a scripted meshmaster.dk; it is marked `console-agent` because it
+needs the uplink and a server under the console, and the `...` rule is the same. The agent's
+number and label are the server's, so they are whatever the register says; the milliseconds and
+the bytes are the run's.
+
+```console-agent
+> agent url
+agent url: https://meshmaster.dk
+  X-Agent-Version: ...
+  server.token set
+> agent probe
+agent probe: GET https://meshmaster.dk/agent/v1/config with the token (the chain is verified against this build's roots)
+agent probe: /agent/v1/config -> http 200 ok,...
+  agent 3 "TwinOak Risskov companion", transport native, budget 2/min gap 20 s, poll 3600 s, serverTime 2026-09-23T14:00:01Z
+```
+
+- **`http 200 ok` and a config line** is the token accepted and this unit recognised: the agent's
+  id and label are what `/exit-nodes` shows beside it, `transport native` is meshmaster.dk's word
+  for an exit node that *is* its repeater, and the server's time should be within a few seconds of
+  a watch.
+- **`http 401 not ok`, *the token was refused*** is a token that was mistyped or that belongs to
+  another unit. Nothing of the server's body is printed and the token itself is printed by nothing
+  at all — `dump` afterwards holds no byte of it. Type `set server.token` again.
+- **`error: agent probe: no reply: …` naming the handshake** is TLS: the chain the host offers
+  does not end at a root this build carries (`trust tls`), and the token never went on the wire.
+- Then **look at the page**: `/exit-nodes` shows this unit *last seen* just now, and after the
+  first `agent wake` it shows it asleep with its repeater's key beside it. If the page still says
+  the unit has never been seen, the 200 above was a different unit's token.
+
+What happens next needs no cable: the unit wakes on its own interval, heartbeats, claims the jobs
+the server has for it and sleeps again ([`field.md`](field.md)). `docs/bench.md` §§17–18 is the
+walk that watches it the first time.
 
 ## A factory radio
 

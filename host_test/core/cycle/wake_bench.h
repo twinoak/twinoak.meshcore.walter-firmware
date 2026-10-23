@@ -179,7 +179,30 @@ struct AgentWorld {
   fakes::FakeHeap heap;
   MeshMasterScript server;
   AgentWorld(sim::FakeHttp& http, fakes::FakeClock& clock) : server(http, clock) {}
+  ~AgentWorld() {
+    if (sink_owner == this) sink_owner = nullptr;
+  }
+
+  // Where a line the copied library formatted goes (task p4-06, main/main.cpp's `agentLogLine`):
+  // the console of the life that is running - so that the four kilobytes `dump` prints carry it,
+  // as they do on a board - and a string that outlives every life of the Walter, which is what a
+  // rail about what is written down searches (host_test/rails/test_rail_agent_month.cpp). Before
+  // this task nothing in the bench set the library's sink at all, so no test of a wake could see
+  // what the library logged.
+  core::console::Console* console = nullptr;
+  std::string log;
+  std::uint32_t log_lines = 0;
+  static AgentWorld* sink_owner;
+  static void logLine(const char* line) {
+    AgentWorld* world = sink_owner;
+    if (world == nullptr || line == nullptr) return;
+    ++world->log_lines;
+    world->log += line;
+    if (world->console != nullptr) world->console->agentLine(line);
+  }
 };
+
+inline AgentWorld* AgentWorld::sink_owner = nullptr;
 #endif
 
 struct WakeWorld {
@@ -412,6 +435,12 @@ struct WakeWalter {
                                                cycle.get(), nullptr, &agent->mesh_probe,
                                                &agent->uplink_probe, &agent->identity_probe,
                                                &agent->backend));
+      // main.cpp's own last two lines of wiring (task p4-06): the library's log goes where every
+      // other line of this port goes, at the `log.level` setting. The cast is main.cpp's
+      // `agentLogLevel`, whose static_assert holds the two enumerations' four values together.
+      w.agent->console = console.get();
+      AgentWorld::sink_owner = w.agent.get();
+      agent->platform.beginLog(&AgentWorld::logLine, static_cast<mm::LogLevel>(settings.level()));
       return;
     }
 #endif
@@ -421,7 +450,14 @@ struct WakeWalter {
                                              nullptr, &settings, &server, duty.get(),
                                              cycle.get()));
   }
-  ~WakeWalter() { CHECK(pins.violations.empty()); }
+  ~WakeWalter() {
+    CHECK(pins.violations.empty());
+#if WALTER_AGENT
+    // This life's console is about to go; the library's sink must not reach it afterwards (the
+    // platform's own destructor takes the sink away, but it runs after the console's).
+    if (w.agent) w.agent->console = nullptr;
+#endif
+  }
 
   // What main/ does before the wake: work out why we are awake, arm the bound, one turn of the
   // loop so that the trial's first condition is met.

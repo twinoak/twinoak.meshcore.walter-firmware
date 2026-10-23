@@ -188,8 +188,8 @@ application slots, so that a factory image cannot reach it
 | `lte.apn` | 1 to 63 printable characters | none: the network's default APN is used, which is what a Danish LTE-M SIM wants |
 | `lte.pin` | 4 to 8 digits; **secret**, never printed | none: no PIN is sent, and a card that asks for one is reported `sim-locked` |
 | `lte.psm` | `off`, `on` | `off`: the modem's radio is put down between wakes (task p3-01's own default) |
-| `server.url` | `https://host[:port][/path]`, the scheme required, at most 128 characters | none: no backend call is made, and a self-update's third condition does not apply |
-| `server.token` | printable, at most 160 characters; **secret**, never printed | none: no backend call is made |
+| `server.url` | `https://host[:port][/path]`, the scheme required, at most 128 characters | none: the agent makes no call, and a self-update's third condition does not apply |
+| `server.token` | printable, at most 160 characters; **secret**, never printed | none: the agent makes no call (one comes from `/exit-nodes/new` on meshmaster.dk) |
 | `fetch.url` | `https://host[:port][/path]`, at most 128 characters | none: `fetch` needs a base URL on the line |
 | `wake.interval` | `auto`, or 5 to 10080 minutes | `auto`: the battery chooses the interval (task p3-04) |
 | `wake.radio` | `on`, `off`: may a start bit from the radio wake the Walter | `on` |
@@ -210,8 +210,8 @@ reaches:
 | `lte.apn` | the next time the uplink is brought up ('lte up', or the next wake) — the APN is sent when the packet context is defined, and a modem reset now would lose a card that had just been unlocked |
 | `lte.pin` | at once: a refusal remembered against the old PIN is forgotten, and the next uplink sends the new one. Typing the *same* PIN again changes nothing, which is the point: three refusals block a card, and a refused PIN is never sent a second time (`core/uplink/policy.h`, *The PIN*) |
 | `lte.psm` | the next time the uplink is brought up |
-| `server.url` | at once: the host a self-update's trial must reach; the backend call itself is task p3-05's. A URL with no host this firmware can reach — a port over 65535, say — leaves no server configured, and the trial's third condition does not apply rather than failing |
-| `server.token` | kept for the backend call (task p3-05); nothing else reads it |
+| `server.url` | at once: the host the agent's calls and a self-update's trial must reach. A URL with no host this firmware can reach — a port over 65535, say — leaves no server configured, and the trial's third condition does not apply rather than failing |
+| `server.token` | kept for the agent's calls ('agent probe', and every wake's heartbeat); nothing else reads it |
 | `fetch.url` | the next `fetch` typed with no base URL |
 | `wake.interval` | the next time the interval is chosen, at the end of a wake (task p3-04) |
 | `wake.radio` | the next time the Walter goes to sleep (task p3-04) |
@@ -743,7 +743,7 @@ agent url: https://meshmaster.dk
 ```
 
 `agent url` reads and does not call. The token is never printed: *set* or *unset*, as `get
-server.token` says it. Without a URL it says `server.url unset (no backend call is made)`, and
+server.token` says it. Without a URL it says `server.url unset (the agent makes no call)`, and
 *not configured* until both are there.
 
 ```

@@ -715,7 +715,7 @@ void Console::status() {
     if (server_->serverHost()[0] == 0) {
       print("backend: no server (set server.url); a self-update's third condition does not apply\n");
     } else {
-      printf("backend: %s:%u, for a self-update's third condition (task p3-05 makes the call)\n",
+      printf("backend: %s:%u, the agent's server and a self-update's third condition\n",
              server_->serverHost(), static_cast<unsigned>(server_->serverPort()));
     }
   }
@@ -2844,7 +2844,7 @@ void Console::agentUrl() {
   if (!agentOk()) return;
   const char* url = agent_->url();
   // The URL and the version header, and whether a token is set - never the token (S-12).
-  printf("agent url: %s%s\n", url[0] != 0 ? url : "server.url unset", url[0] != 0 ? "" : " (no backend call is made)");
+  printf("agent url: %s%s\n", url[0] != 0 ? url : "server.url unset", url[0] != 0 ? "" : " (the agent makes no call)");
   printf("  X-Agent-Version: %s\n", agent_->version());
   printf("  server.token %s\n", agent_->tokenSet() ? "set" : "unset");
   if (!agent_->configured()) print("  not configured: both are needed before a call is made\n");
@@ -3224,8 +3224,8 @@ void Console::settingChanged(const settings::KeyDef& key) {
           print("the URL has no host this firmware can reach: no server is configured and a "
                 "self-update's third condition does not apply\n");
         } else {
-          printf("a self-update's trial now has to reach %s:%u; the backend call itself is task "
-                 "p3-05's\n", settings_->serverHost(),
+          printf("a self-update's trial now has to reach %s:%u, and the agent's calls go "
+                 "there\n", settings_->serverHost(),
                  static_cast<unsigned>(settings_->serverPort()));
         }
       }
@@ -3250,7 +3250,7 @@ void Console::settingChanged(const settings::KeyDef& key) {
     case settings::Key::kServerToken:
     case settings::Key::kFetchUrl:
     case settings::Key::kUnitName:
-      // Read where they are used and nowhere kept: the token by p3-05's wake cycle,
+      // Read where they are used and nowhere kept: the token by the agent's uplink,
       // `fetch.url` by the next `fetch`, `unit.name` by `status`. Nothing to tell anybody.
       printf("%s\n", key.effect);
       return;
