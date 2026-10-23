@@ -176,6 +176,15 @@ const CommandDef kCommands[kCommandCount] = {
     {"agent obs [pull]", "agent obs", Group::kUplink,
      "the observation ring: how many adverts wait, how many were dropped, and the last five "
      "without their names. 'agent obs pull' drains the radio's own ring into it first"},
+    {"agent wake", "agent wake", Group::kUplink,
+     "one wake of the agent's loop now - the heartbeat, the offline buffer, the claim, the jobs, "
+     "the observations - each step and the report printed. 'lte up' first; a job can be minutes"},
+    {"agent jobs", "agent jobs", Group::kUplink,
+     "the last ten jobs as the agent's library remembers them: id, type, outcome, transactions, "
+     "whether the result reached the server"},
+    {"agent state", "agent state", Group::kUplink,
+     "the loop's saved state - the backoff, the accepted interval, the budget, a 401, the "
+     "counters - and what the sleep keeps: whether it survived, and the kept image's store"},
 
     // -- sleep and the battery (task p3-04) ----------------------------------------------------
     {"wake", "wake", Group::kDutyCycle,

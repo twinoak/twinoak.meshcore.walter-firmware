@@ -11,13 +11,21 @@
 # no-allocation check reads every file of it), tested on the host against a simulated RAK
 # (host_test/sim/sim_rak.h), a scripted server behind the firmware's own HTTP/1.1
 # (host_test/sim/fake_http.h) and the library's own simulated repeater.
+# Task p4-05: `AgentBackend`, the backend seam as one wake of the library's loop; `FirmwareJobs`,
+# the four `twinoak.*` job types on the image store and the update machines; the kept image's
+# store over a flash window; the trial's third condition as a heartbeat; and a bounded reader of
+# an extension job's payload.
 idf_component_register(
-  SRCS "agent_probe.cpp"
+  SRCS "agent_backend.cpp"
+       "agent_probe.cpp"
+       "firmware_jobs.cpp"
        "identity.cpp"
+       "json_scan.cpp"
        "link_mesh.cpp"
        "mesh_probe.cpp"
        "modem_uplink.cpp"
        "observations.cpp"
+       "region_store.cpp"
        "uplink_probe.cpp"
        "walter_platform.cpp"
   INCLUDE_DIRS "include"

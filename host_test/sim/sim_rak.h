@@ -57,12 +57,19 @@
 namespace sim {
 
 class SimRak final : public interfaces::ByteStream {
+ private:
+  // A radio of this object's own, which `radio` below is unless a bench lends one.
+  ScriptedRadio own_radio_;
+
  public:
   SimRak(fakes::FakeClock& clock, mm::IMesh& repeater);
+  // Over a radio a bench already has (task p4-05: the wake bench's, whose knobs every test of a
+  // wake turns): the same RAK, answering §6 through that radio's `on_request`.
+  SimRak(ScriptedRadio& existing, fakes::FakeClock& clock, mm::IMesh& repeater);
 
   // The link's end, with every knob of task p1-02's radio: `radio.silence`, `radio.deaf`,
   // `radio.caps`, `radio.boot_id`, `radio.requests`, `radio.executions`, ...
-  ScriptedRadio radio;
+  ScriptedRadio& radio;
 
   // ---------------------------------------------------------------- the stream, the Walter's end
   bool open() override { return radio.open(); }

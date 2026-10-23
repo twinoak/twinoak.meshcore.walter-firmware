@@ -20,6 +20,7 @@
 
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
+#include "core/console/agent_loop_probe.h"
 #include "core/console/agent_probe.h"
 #include "core/console/commands.h"
 #include "core/console/log_ring.h"
@@ -100,7 +101,11 @@ class Console {
           // The agent's identity behind `agent id`, `agent heartbeat` and `agent obs` (task
           // p4-04): components/agent/'s, over the box link and the copied library, behind
           // core/console/agent_probe.h. A build without one answers in one line.
-          AgentProbe* identity = nullptr);
+          AgentProbe* identity = nullptr,
+          // The agent's loop behind `agent wake`, `agent jobs` and `agent state` (task p4-05):
+          // components/agent/'s AgentBackend, behind core/console/agent_loop_probe.h. A build
+          // without one - WALTER_AGENT=0, the null backend - answers in one line.
+          AgentLoopProbe* loop = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -287,6 +292,11 @@ class Console {
   void agentId();
   void agentHeartbeat();
   void agentObs(bool pull);
+  // The agent's loop (task p4-05). `agent wake` wants the uplink up, as `agent probe` does.
+  bool loopOk();
+  void agentWake();
+  void agentJobs();
+  void agentState();
 
   // One whole wake (task p3-05).
   bool cycleOk();  // false, with one error line, when this build has no wake cycle
@@ -349,6 +359,7 @@ class Console {
   MeshProbe* mesh_ = nullptr;
   UplinkProbe* agent_ = nullptr;
   AgentProbe* identity_ = nullptr;
+  AgentLoopProbe* loop_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the

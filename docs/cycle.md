@@ -24,7 +24,7 @@ the console are how that person sees what the mast does by itself (`docs/console
 | 5 | `band` | the interval policy with the fresh reading: what the rest of this wake may do (`core/power/interval_policy.h`) | — | 1 s |
 | 6 | `uplink` | the modem, inside this wake's budget; the network's time (`core/uplink/policy.h`) | `band` | the budget |
 | 7 | `clock` | the radio's clock from the network's time, when it is unset, restored, or out by more than a minute (`spec/LINK-PROTOCOL.md` §5.4) | `state`, `uplink` | 10 s |
-| 8 | `backend` | one exchange over the seam, and the settings it asked for (`interfaces/backend.h`) | `uplink` | 60 s |
+| 8 | `backend` | one exchange over the seam, and the settings it asked for (`interfaces/backend.h`) | `uplink` | 20 min |
 | 9 | `update` | **at most one update step**, of one MCU (S-7); a fetch; the ladder when one was asked for | `band` | 20 min |
 | 10 | `sleep` | task p3-04's one way out: the journal, `SLEEP_NOTICE`, the modem down, the pads held, deep sleep | — | 15 s |
 
@@ -107,7 +107,7 @@ mast `journal` is then a page of *what happened*, which is what the task asks it
 The record is written **before** the sleep, because a sleep does not return. A sleep that was then
 refused writes its own entry after it (`core/cycle/sleep.h`), and the two together are the story.
 
-## The budget, and the two things that may hold a wake open
+## The budget, and the things that may hold a wake open
 
 `kWakeBudgetMs` is **two and a half minutes** and is what a wake may spend in all. Each step has
 its own bound and its own *least*: a step is begun only when what is left of the budget is at
@@ -120,14 +120,15 @@ of a wake is seconds, and the **bound on a wake** (`core/cycle/wake_guard.h`) is
 there is twice the budget of margin before the rail that resets a wake, which is what one
 worst-case modem call that comes back late costs.
 
-Two things are allowed to hold a wake open past the budget, each up to its own bound, and both
-**raise the bound on the wake** rather than removing it:
+A few things are allowed to hold a wake open past the budget, each up to its own bound, and every
+one of them **raises the bound on the wake** rather than removing it:
 
 | | Why | Up to |
 |---|---|---:|
 | a climb | the ladder waits 30, 60 and 120 s between rungs, and **the state of a climb does not survive a sleep** — only its counts and a stop do. So a climb runs to its end inside its wake or starts again at rung 1 in the next one, and the caps are what keep that from becoming a loop | 6 min |
 | an update | "a flash may take several wakes' worth of time and is allowed to hold the wake open up to its own bound" (the task). A megabyte over a 100 kHz debug port, a 20 s boot window and a three-minute proving period do not fit in five minutes | 20 min |
 | a trial | this firmware proving itself (S-6) has to finish before the wake may sleep: a deep sleep during a trial is a rollback of the image being tried | 6 min |
+| a backend exchange | step 8's `exchange()` is given an update's own deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 20 min |
 
 The time those take is **outside** the budget, because both machines are already bounded and
 capped by their own rules — and because a wake that spent six minutes on a ladder must still be
@@ -165,12 +166,18 @@ application slot is open, or when this firmware is on trial. The wake then ends 
 
 # The page for the implementer of `Backend`
 
-This is the hand-over to the agent work (`spec/SYSTEM.md` §8, `spec/proposals/01` and `03`;
-the Walter's phase 4). **Nothing in `interfaces/backend.h` names MeshMaster, a URL path, JSON or a
-job**, and the only implementation in this repository does nothing
-(`core/cycle/null_backend.h`): the server side is three accepted proposals and a decision about
-where it will be built, not a protocol, and code written here against a guess would have to be
-found and removed later.
+This is the seam to the agent work (`spec/SYSTEM.md` §8, `spec/proposals/01` and `03`; the Walter's
+phase 4). **Nothing in `interfaces/backend.h` names MeshMaster, a URL path, JSON or a job**: the
+agent lives entirely above the seam, so the wake cycle knows only a plain structure in and a closed
+set of requests back.
+
+Two implementations fill it. `agent::AgentBackend` (`components/agent/agent_backend.h`, task p4-05,
+§13) is the real one — one call to `mm::AgentLoop::wake()`, the MeshMaster agent behind it, built
+when `WALTER_AGENT` is on (the default). `core/cycle/null_backend.h` is the other: it does nothing
+and answers at once, and is what a `WALTER_AGENT=0` build runs — the unit of phases 0–3, the wake
+cycle over a seam that asks for nothing. Both are tested; `tools/verify.sh` runs the wake cycle's
+own tests in each. This page is the contract both honour, so that the cycle never has to know which
+one it is talking to.
 
 ## What you implement
 
@@ -237,24 +244,31 @@ cycle decides the order and what fits.
 | `it was tried and failed` | the journal says what happened |
 | `not an https base url, or too long` | `https://` only, 128 characters |
 
-## What this firmware does **not** offer you, and what an agent will need
+## What the seam does not carry, and where the agent puts it instead
 
-Said plainly, because it is the list phase 4 has to add:
+The seam is deliberately narrow: a job, a login, a lease, a result envelope, a progress report,
+`nextCheckInS` — none of them is in `interfaces/backend.h`. That was never a gap to be filled *at*
+the seam; it is the line between what the wake cycle owns and what the agent owns. Task p4-05 built
+the agent on the other side of that line (§13), so each of these now lives **above** the seam:
 
-- **Nothing of the mesh.** No job, no login, no CLI line over the air, no observation pull — the
-  link client has all of it (phase 1) and the wake cycle calls none of it. A test runs a simulated
-  month of wakes and holds the radio to that.
-- **No job identity.** There is no job id, no lease, no progress report and no result envelope.
-  An ask is carried out or refused inside the wake it arrived in, and what happened is in the next
-  exchange's `known`. A server that needs to correlate a request with a result will have to carry
-  its own id outside this interface — which is exactly the shape `spec/proposals/02` describes
-  (`twinoak.fw.offer` / `.apply` / `.state`) and exactly what should not be guessed at here.
-- **No partial progress during a download.** A fetch that stops on its budget leaves the bytes and
-  resumes at the next wake; nobody is told how far it got until the next exchange. Lease extension
-  and byte-level progress (proposal 02) are above this seam.
-- **No `nextCheckInS` and no `maxTransactionsThisWake`** (proposal 01's B and C). The interval is
-  the battery's and this firmware does not negotiate it; an implementation that wants to tell a
-  server when to expect the unit back has `known.wake.next_interval_s` and may send it.
-- **No console line.** `CLI` over the link exists and is a person's command, not an ask.
-- **No time of day you can rely on.** A unit that has not attached does not know what day it is,
-  and says so (`known.time_known`). It will not guess one.
+- **The mesh.** The job, the login, the CLI line over the air, the observation pull are
+  `agent::LinkMesh` (task p4-02) over the phase-1 link client, which the library drives — not the
+  wake cycle. A job for the unit's *own* repeater goes through the local door and sends nothing on
+  the air. Rail R14 still holds that the wake cycle itself calls no mesh request.
+- **Job identity.** The id, the lease, the result envelope and the extend are the library's and
+  meshmaster.dk's, carried over `agent::ModemUplink` (task p4-03). When a firmware job runs one of
+  this firmware's update machines, the exchange reports it back as the `Ask` the wake *carried out
+  itself* (`BackendAnswer::did`/`carried`), so S-7 and the journal see it like any other update.
+- **Partial progress and lease extension.** `agent::FirmwareJobs` (task p4-05) posts `progress`
+  and asks `extend` as a `twinoak.fw.offer` downloads in resumable ranges; a wake that runs out of
+  download budget stops mid-image, posts no result, and the next wake resumes. This is
+  `spec/proposals/02`'s shape, now built.
+- **`nextCheckInS` and the per-wake budget** (proposal 01's B and C). The library proposes them in
+  the heartbeat; the wake cycle honours an accepted `nextCheckInS` **only when it is longer** than
+  the band's own interval (`BackendAnswer::sleep_at_least_s`), because the battery's say wins. The
+  per-band transaction cap is `agent::identity.h`, a bench placeholder.
+- **The console line.** `CLI` over the link is a person's command, and `agent config.apply`/`cli`
+  jobs for the own repeater reach it through the local door — never as a wake-cycle ask.
+- **The time of day.** A heartbeat's reply may carry the server's time; `AgentBackend` offers it to
+  the `NetworkClock`, which keeps it only when the cellular network has not already given one. A
+  unit that has not attached still says it does not know what day it is (`known.time_known`).

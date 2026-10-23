@@ -6,6 +6,8 @@
 #include <agent/Credentials.h>
 #include <agent/Log.h>
 
+#include "walter_agent/json_scan.h"
+
 namespace agent {
 
 namespace {
@@ -80,6 +82,48 @@ bool isRedirect(std::uint16_t status) { return status >= 300 && status < 400; }
 ModemUplink::ModemUplink(core::net::Client& http, core::settings::Settings& settings, interfaces::Clock& clock,
                          interfaces::WallClock& wall, const char* version)
     : http_(http), settings_(settings), clock_(clock), wall_(wall), version_(version != nullptr ? version : "") {}
+
+// ---------------------------------------------------------------------------- an extension job's payload
+
+void ModemUplink::keepPayloads(const char* claim, std::size_t len) {
+  for (int i = 0; i < mm::kClaimMax; ++i) {
+    payloads_[i].job_id = 0;
+    zeroBytes(payloads_[i].text, sizeof payloads_[i].text);
+  }
+  payload_count_ = 0;
+  const json::Value jobs = json::member(claim, len, "jobs");
+  for (int i = 0; i < mm::kClaimMax; ++i) {
+    const json::Value job = json::element(jobs, i);
+    if (!job.found()) break;
+    // Wide enough for the whole type as the claim carries it - `twinoak.power.cycle` is nineteen
+    // characters, longer than the runner's own `kMaxJobTypeLen` buffer, which truncates it.
+    char type[40] = {};
+    long long id = 0;
+    if (!json::text(json::member(job.at, job.len, "type"), type, sizeof type)) continue;
+    if (!json::integer(json::member(job.at, job.len, "id"), &id)) continue;
+    if (std::strncmp(type, kExtensionTypePrefix, sizeof kExtensionTypePrefix - 1) != 0) continue;
+    KeptPayload& kept = payloads_[payload_count_++];
+    kept.job_id = id;
+    const json::Value payload = json::member(job.at, job.len, "payload");
+    if (payload.found() && payload.len < sizeof kept.text) {
+      std::memcpy(kept.text, payload.at, payload.len);
+      kept.text[payload.len] = 0;
+      counters_.payloads_kept = saturate(counters_.payloads_kept);
+    } else if (payload.found()) {
+      counters_.payloads_too_long = saturate(counters_.payloads_too_long);
+      LOG_W("server: job %lld %s: a payload of %lu bytes is longer than the %lu this firmware keeps",
+            id, type, static_cast<unsigned long>(payload.len),
+            static_cast<unsigned long>(sizeof kept.text - 1));
+    }
+  }
+}
+
+const char* ModemUplink::payloadOf(long long jobId) const {
+  for (int i = 0; i < payload_count_; ++i) {
+    if (payloads_[i].job_id == jobId) return payloads_[i].text;
+  }
+  return nullptr;
+}
 
 // ---------------------------------------------------------------------------- what the owner tells it
 
@@ -419,6 +463,9 @@ bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count) {
     wipeReply();
     return false;
   }
+  // The `twinoak.*` jobs' payloads first, out of the bytes as they arrived (task p4-05): the
+  // library's parser keeps none of an extension type's payload, and it parses in place.
+  keepPayloads(reply_, len);
   // The claim carries a repeater's password: parsed in place, the job keeps the one copy it
   // needs, and the reply's bytes are wiped here whether the parse took or not.
   std::uint32_t server_time = 0;
@@ -440,6 +487,14 @@ bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count) {
 }
 
 bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t len) {
+  if (gate_ != nullptr && gate_->withhold(jobId)) {
+    // The extension left this job to its lease (walter_agent/modem_uplink.h, ResultGate): nothing
+    // goes, and the runner is told the result is taken so that it neither keeps nor re-posts it.
+    counters_.withheld = saturate(counters_.withheld);
+    LOG_I("server: job %lld: no result posted on purpose - the lease is left to expire and the "
+          "next wake's claim continues the job (unit-protocol.md)", jobId);
+    return true;
+  }
   std::size_t reply_len = 0;
   Call c;
   const bool ok = callJob(jobId, "result", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) && c.ok;

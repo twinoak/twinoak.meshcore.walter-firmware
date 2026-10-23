@@ -98,6 +98,38 @@ constexpr std::size_t kMaxEndpointLen = 48;
 constexpr std::size_t kBearerPrefixLen = 7;
 constexpr std::size_t kBearerBytes = kBearerPrefixLen + core::settings::kMaxValueLen + 1;
 
+// -- an extension job's payload (task p4-05) ---------------------------------------------------
+//
+// The copied library reads a claim into `mm::ClaimedJob`, which has named fields for the payloads
+// of its own thirteen types and **no raw payload**: a `twinoak.fw.offer`'s `base`, an apply's
+// `expectedSha256`, a power cycle's `offSeconds` would be gone the moment the claim is parsed
+// (agent/JobEnvelopes.h; reported upstream in tasks/phase-4/reports/05.md). So before the claim's
+// bytes go to the library's parser, the text of each `twinoak.*` job's `payload` object is kept
+// here, by job id, for the extension to read (walter_agent/json_scan.h). The payloads are a few
+// hundred bytes - `FirmwareOfferPayload.json` is 193 - and carry no credential: all four types are
+// credential class `none`, and the claim's `credential` object is a sibling of the payload, never
+// inside it. Wiped with the next claim.
+constexpr std::size_t kExtensionPayloadBytes = 384;
+constexpr const char kExtensionTypePrefix[] = "twinoak.";
+
+struct KeptPayload {
+  long long job_id = 0;
+  char text[kExtensionPayloadBytes] = {};
+};
+
+// Whether a job's result is to be posted at all (task p4-05). The library's runner posts a result
+// for every job it ran and has no way to leave one leased and silent; meshmaster.dk's
+// unit-protocol.md §5 says a wake that ends in the middle of an offer's download posts **no**
+// result and lets the lease expire, which re-queues the job without spending an attempt. The
+// extension names such a job here and the uplink answers the runner's post with "taken" while
+// sending nothing - the one honest reading of a library API that has no "nothing" (the report
+// says so, and asks upstream for the word).
+class ResultGate {
+ public:
+  virtual ~ResultGate() = default;
+  virtual bool withhold(long long jobId) = 0;
+};
+
 // What this object did, for the console and the tests. Saturating.
 struct UplinkCounters {
   std::uint32_t calls = 0;           // every call the library asked for
@@ -113,6 +145,9 @@ struct UplinkCounters {
   std::uint32_t redirected = 0;      // a 3xx, which an agent route never answers
   std::uint32_t cut = 0;             // a 2xx whose body passed the bound
   std::uint32_t unparsed = 0;        // a 2xx the library's parser refused
+  std::uint32_t payloads_kept = 0;   // extension payloads kept out of claims (task p4-05)
+  std::uint32_t payloads_too_long = 0;  // ... and ones that did not fit kExtensionPayloadBytes
+  std::uint32_t withheld = 0;        // results not posted because the extension left the job leased
 };
 
 class ModemUplink final : public mm::IUplink {
@@ -138,6 +173,13 @@ class ModemUplink final : public mm::IUplink {
   // reply and a claim carry is offered to it, as the reference agent does. The heartbeat's is the
   // loop's own business. nullptr is "nobody to tell".
   void setClock(mm::IClock* clock) { agent_clock_ = clock; }
+  // Who may withhold a result (task p4-05): the firmware jobs. nullptr posts every result.
+  void setResultGate(ResultGate* gate) { gate_ = gate; }
+
+  // The payload text of a `twinoak.*` job of the last claim, by id, or nullptr: what the
+  // extension reads its fields from (task p4-05). Empty text is a payload that did not fit.
+  const char* payloadOf(long long jobId) const;
+  int payloadsKept() const { return payload_count_; }
 
   // ------------------------------------------------------------------ what the console reads
 
@@ -185,6 +227,9 @@ class ModemUplink final : public mm::IUplink {
   void offerServerTime(std::uint32_t epoch);
   void wipeSecret();
   void wipeReply();
+  // The `twinoak.*` jobs' payloads out of a claim's bytes, before the library parses them in
+  // place (task p4-05).
+  void keepPayloads(const char* claim, std::size_t len);
 
   core::net::Client& http_;
   core::settings::Settings& settings_;
@@ -196,6 +241,9 @@ class ModemUplink final : public mm::IUplink {
   LinkState link_;
   std::uint64_t deadline_ms_ = 0;
   core::cycle::AgentAttention* attention_ = nullptr;
+  ResultGate* gate_ = nullptr;
+  KeptPayload payloads_[mm::kClaimMax];
+  int payload_count_ = 0;
 
   // The one buffer of this object the token is copied into: `Bearer <token>`, wiped before a
   // call returns. A member and not a stack buffer, so that a test can read it back - and because

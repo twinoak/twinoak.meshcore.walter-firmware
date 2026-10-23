@@ -70,6 +70,9 @@ bool isRadioVerb(Verb verb) {
     case Verb::kAgentHeartbeat:
     case Verb::kAgentObs:
     case Verb::kAgentObsPull:
+    case Verb::kAgentWake:
+    case Verb::kAgentJobs:
+    case Verb::kAgentState:
     // The settings and the rest of the console (task p3-03): about the unit, not a radio.
     case Verb::kGet:
     case Verb::kGetAll:
@@ -133,12 +136,12 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  net::TrustLoader* trust, settings::Settings* settings,
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
-                 AgentProbe* identity)
+                 AgentProbe* identity, AgentLoopProbe* loop)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
-      mesh_(mesh), agent_(agent), identity_(identity), flasher_(pins, clock, slots),
+      mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -495,6 +498,9 @@ void Console::runLine(const char* line) {
     case Verb::kAgentHeartbeat: agentHeartbeat(); return;
     case Verb::kAgentObs: agentObs(false); return;
     case Verb::kAgentObsPull: agentObs(true); return;
+    case Verb::kAgentWake: agentWake(); return;
+    case Verb::kAgentJobs: agentJobs(); return;
+    case Verb::kAgentState: agentState(); return;
     case Verb::kGet: get(*p.command.key); return;
     case Verb::kGetAll: getAll(); return;
     case Verb::kSet: set(*p.command.key, p.command.text); return;
@@ -3002,6 +3008,35 @@ void Console::agentObs(bool pull) {
     if (r.has_position) print(", with a position");
     print("\n");
   }
+}
+
+// ---------------------------------------------------------------------------- the agent's loop
+
+bool Console::loopOk() {
+  if (loop_ != nullptr) return true;
+  print("error: this build has no agent loop: the seam is core/cycle/null_backend.h "
+        "(WALTER_AGENT=0, or nothing was given to the console in main/main.cpp)\n");
+  return false;
+}
+
+void Console::agentWake() {
+  // One wake of the loop, as a wake from sleep runs it at step 8 - over the uplink a person
+  // has brought up, which is what `agent probe` asks for too. What it prints is the
+  // implementation's: the steps as they end, then the report; the token travels in a header
+  // and reaches no line of it (task p4-03).
+  if (!loopOk() || !uplinkUp()) return;
+  print("agent wake: one wake of the loop now (a job can take minutes)\n");
+  if (!loop_->wake(out_)) print("agent wake: the loop did not run\n");
+}
+
+void Console::agentJobs() {
+  if (!loopOk()) return;
+  loop_->jobs(out_);
+}
+
+void Console::agentState() {
+  if (!loopOk()) return;
+  loop_->state(out_);
 }
 
 void Console::fetch(const char* base_url, image::Which which) {

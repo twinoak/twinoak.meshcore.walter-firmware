@@ -1229,12 +1229,21 @@ scratch, len)` hands the loop somewhere to put them and `restoreKept()` reads th
 boot: **one image a wake**, at most about 19.5 kB, written only when it differs from the one the
 store already holds, refused whole when it is torn or foreign and counted when it is. The image
 may hold nothing a result may not — the runner wipes every credential before a result is
-written — and the store is bytes and a capacity, nothing more. No task of this phase was written
-for it (it did not exist when they were); `capacity`/`write`/`read` over a flash region or an NVS
-blob belongs beside `WalterPlatform`, and what it is worth — a week of results and adverts
-surviving the sleeps that would otherwise drop them — is task p4-05's simulated month. **Task
+written — and the store is bytes and a capacity, nothing more. **Task
 p4-04 did not fill it**: it has no caller until the loop exists, a seam nothing drives is a seam
 nothing tests, and the loop is p4-05's.
+
+Task p4-05 fills it with `agent::RegionStore` (`components/agent/region_store.h`): a window of the
+`rakfw` partition **after** the image store's own layout (`core/image/store.h`, `kStoreBytes`),
+when the partition is present and has room, read and written through the same
+`interfaces::FlashRegion` the image store uses. It is a sector-granular `IRetained` that erases
+only to rewrite, verifies the one image it keeps against a length and a checksum, and refuses a
+torn or foreign one whole. `AgentBackend` hands it to `AgentLoop::setRetained(store, scratch, len)`
+before the wake; the scratch is the ~19.5 kB a kept image is built in. A wake whose server was away
+keeps its one result in the image, and the next boot's `restoreKept()` reads it back and posts it
+first, so *no job left leased and silent* now holds **across** a sleep. What it is worth, a week of
+results and adverts surviving the sleeps that would otherwise drop them, is task p4-05's simulated
+month (300 wakes, every rail held).
 
 **The local door** (task p4-02). A job begun for the unit's *own* repeater — the key `IDENTITY`
 answers, which task p4-04 gives `LinkMesh::setOwnKey()` — sends nothing on the mesh: the link has
@@ -1318,9 +1327,50 @@ it asked for and did not get. Each raises a bit of the duty cycle's retained rec
 next wake record carries as a letter and `status` as a sentence; the second is journalled as well.
 Nothing of it wakes the radio.
 
-`AgentBackend : Backend` — the implementation of §10's seam, which is **one call to
-`AgentLoop::wake()`** — and the firmware jobs mapped onto phase 2's image store and update
-machines are task p4-05's.
+### The backend, and the firmware jobs (task p4-05)
+
+`AgentBackend : interfaces::Backend` (`components/agent/agent_backend.h`) is the implementation of
+§10's seam, and `exchange()` is **one call to `mm::AgentLoop::wake(intent, budget)`** with the loop
+wrapped before and after it: the `WakeState` is restored from the key-value store (an NVS blob of
+bytes, hex) before the wake and saved after, so the backoff, the accepted interval and the
+heartbeat's counters survive the deep sleep the wake ends in. The library's `WakeReport` is mapped
+back into the seam's words: a heartbeat the server answered is `kAsked`; nothing to do is
+`kNothing`; a heartbeat that did not come back is `kFailed`. Three things the report carries are the
+wake cycle's business and are handed to it, not acted on here:
+
+- **the sleep.** `report.acceptedIntervalS` is honoured **only when it is longer** than the
+  interval policy's own decision for the band — a server may ask a unit to check in *less* often,
+  never more, because the battery's say is the policy's and a server cannot spend a battery it
+  cannot see. A `report.sleepAtLeastS` (a backoff, a `Retry-After`) lengthens the sleep the same
+  way. Both come back in `BackendAnswer::sleep_at_least_s`, which §10 step 9 caps at a week.
+- **the clock.** A heartbeat's reply may carry the server's own time; `AgentBackend` offers it to
+  the `NetworkClock` (§9), which keeps it only when the cellular network has not already given one.
+- **the asks.** The seam's `asks` are produced from the **extension's** jobs, not from a reply
+  field: when a `twinoak.fw.*` job ran one of the update machines, `exchange()` reports it as the
+  `Ask` the wake carried out itself (`BackendAnswer::did`/`carried`), so S-7's one-update-step rule
+  and the journal see it exactly as they see a console-driven update.
+
+The firmware jobs are `agent::FirmwareJobs : mm::IJobExtension` (`components/agent/firmware_jobs.h`),
+four types the library hands over by name, each mapped onto phase 2's image store and update
+machines and run **for the unit's own repeater through the local door** — no `client_tx`, no packet
+on the air:
+
+| type | what it does | result |
+|---|---|---|
+| `twinoak.fw.offer` | `Fetch` the named image into the candidate slot, in resumable ranges, posting `progress` and asking `extend` as it goes; a wake that runs out of download budget stops mid-image and **posts no result**, leaving the lease to expire, and the next wake resumes from where the bytes stop | `stored`, once the whole image is in the slot and its hash matches |
+| `twinoak.fw.apply` | the radio's `RadioUpdate` or this board's own `SelfUpdate`, in slices, journalled (the journal truncated to 40 entries / 2000 characters for the result); refused by a word (`battery`, `link`, `clock`, `inProgress`, `noGolden`, `badList`, `order`) rather than a silent failure | `committed` or `rolledBack`; **the Walter's own apply result is posted by the *next* boot's wake**, after the trial whose third condition is one heartbeat `ok` |
+| `twinoak.fw.state` | read back the store's records, the running and golden versions, the journal and the supervisor's counts | the state, as bytes |
+| `twinoak.power.cycle` | `RadioPins::killCycle` within the §2 bounds, then a `HELLO` to prove the radio came back | the cycle's outcome |
+
+Telemetry a job needs is read with §5.8's `LPP_GET`, never a chat line. The payloads and results are
+read and written through meshmaster.dk's own fixture bytes (`unit-protocol.md` §5), held to them by
+`host_test/agent/test_firmware_jobs.cpp`.
+
+**A second deviation from p4-04's empty list.** §13's identity note above says the *mesh* job type
+list is not reduced by the local door. The extension's four `twinoak.*` types go further: they are
+advertised in the heartbeat **even before the repeater has a key**, where the mesh list is empty,
+because they concern the unit and its own store rather than a neighbour, and the server routes them
+to it only once it is linked. `host_test/agent/test_agent_backend.cpp` holds both halves.
 
 ### Where it sits in one wake
 
@@ -1341,11 +1391,16 @@ it is a *duration* and not a deadline, because `millis()` restarts at zero after
 
 `mm::JobRunner` is tens of kilobytes of buffers — one scratch area every job shares rather than a
 stack frame — and `mm::AgentLoop` is mostly its 64-entry observation ring. Both must be
-namespace-scope objects, never locals, and task p4-05 is where they are constructed. Until then
-nothing in this firmware calls a line of the library, so `main/agent_anchor.cpp` takes the address
-of five of its functions through a volatile and `app_main` keeps the result: `--gc-sections` would
-otherwise drop every object of it, and the board build would prove the library compiles without
-proving it links. The anchor constructs nothing. Task p4-01's report has the size it adds.
+namespace-scope or static, never stack locals (`docs/library.md` §6). Task p4-05 constructs them in
+`main/app_main`, which is now a real caller of the library — the `main/agent_anchor.cpp` of tasks
+p4-01 to p4-04, which held the code in the image through `--gc-sections` while nothing called it, is
+**gone**. Because the runner is ~64 kB and the kept-image scratch ~20 kB, and this board has no
+PSRAM (`sdkconfig.defaults`) and too little internal DRAM to hold both in the static `.dram0.bss`
+segment beside the update verdict and the console, task p4-05 takes them **from the heap once at
+boot** — never a stack local, never freed, so the whole-run lifetime the library asks for holds —
+and reaches them through a namespace-scope pointer. That leaves ~36 kB of headroom in the segment;
+`xtensa-esp32s3-elf-size -A` on the `.elf` is how a future task checks it still fits. Task p4-01's
+report has the flash and the heap the library adds.
 
 ### The rails the agent inherits
 

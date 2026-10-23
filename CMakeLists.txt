@@ -19,5 +19,11 @@ if(TWINOAK_TRUST_TEST_KEY)
   set(PROJECT_VER "${PROJECT_VER}+TESTKEY")
 endif()
 
+# The MeshMaster agent behind the backend seam (task p4-05, docs/ARCHITECTURE.md §13). Off, the
+# image is phases 0-3's unit: the wake cycle over the null backend, no agent, no copied library
+# in the link. main/CMakeLists.txt reads it; host_test/CMakeLists.txt has the same option for the
+# host build, and tools/verify.sh runs the wake cycle's tests in both configurations.
+option(WALTER_AGENT "the MeshMaster agent behind the backend seam" ON)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(twinoak-walter)
