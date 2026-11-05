@@ -100,7 +100,9 @@ jobs:
             || { echo "::error::$(git rev-parse HEAD) is not a commit of main"; exit 1; }
 
       # Nothing is released whose verification is red or unknown. ci.yml runs `tools/verify.ps1`
-      # on every push to main, so a commit of main has a run of its own to wait for.
+      # on every push to main, so a commit of main has a run of its own to wait for. The wait is
+      # 80 minutes because that run is 25 to 45 (task p7-01 measured 1525 s and 2528 s on two cold
+      # runners): a tag pushed the moment a pull request merged used to be refused for being early.
       - name: Wait for the ci workflow of that commit
         if: github.ref_type == 'tag'
         env:
@@ -108,7 +110,7 @@ jobs:
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 240); do
             run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push --limit 1 --json status,conclusion,url --jq '.[0] // empty')
             status=$(echo "$run" | jq -r '.status // "none"')
             conclusion=$(echo "$run" | jq -r '.conclusion // ""')
@@ -120,7 +122,7 @@ jobs:
             fi
             sleep 20
           done
-          echo "::error::ci has not completed for $SHA (no green push run within 20 minutes). A tag on a commit ci has not passed is refused."
+          echo "::error::ci has not completed for $SHA (no green push run within 80 minutes). A tag on a commit ci has not passed is refused."
           exit 1
 
       # A rehearsal may be run on a branch, where ci ran for the pull request and not for a push.
@@ -143,7 +145,7 @@ jobs:
     name: build ${{ needs.ci-green.outputs.version }}
     needs: ci-green
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90  # the same script as ci.yml's job, and the same measurement (task p7-01)
     steps:
       - uses: actions/checkout@v4
         with:

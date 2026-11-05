@@ -43,13 +43,15 @@ publishes nothing.
 
 ## Releasing
 
-1. `main` is at the commit you want, and its CI run is green.
+1. `main` is at the commit you want. Its CI run does not have to have finished — the first job
+   below waits up to 80 minutes for it — but it has to end **green**, so there is nothing to gain
+   by tagging before you would have looked.
 2. `git tag v0.3.1 <commit> && git push origin v0.3.1`.
 3. `.github/workflows/release.yml` takes it from there:
 
    | Job | What it does, and what stops it |
    |---|---|
-   | `ci is green for this commit` | the commit must be one of `main`'s, and `ci.yml` must have completed **successfully** for it. A red or unknown CI releases nothing |
+   | `ci is green for this commit` | the commit must be one of `main`'s, and `ci.yml` must have completed **successfully** for it — waited for, up to 80 minutes, because that run is 25 to 45. A red CI releases nothing, and so does one that never finishes |
    | `build X.Y.Z+<sha7>` | `tools/verify.ps1 -Version X.Y.Z+<sha7>` — the whole verification, in the pinned image, at the version being released, so that what is published is what was verified. The images become the run's artifact |
    | `publish the release` | `build_release.py` (the files, the manifest, the refusals below), `sign_manifest.py` (the secret), `verify_release.py` (every check of §5 that applies, with the keys a firmware build would trust), then `gh release create` |
 

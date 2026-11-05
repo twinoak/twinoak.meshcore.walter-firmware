@@ -27,7 +27,12 @@ jobs:
   verify:
     name: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 90, measured and not guessed: this script took 1525 s on the cold runner for task p4-06
+    # (23 October) and 2528 s for p7-01 (5 November) with nothing of the suite changed between
+    # them - host-tests under the sanitizers is 409 s on the bench machine and was 2295 s there.
+    # A 45-minute cap was 50 seconds away from cancelling a green run, and a cancelled ci run is
+    # also a tag that cannot be released (release.yml's first job waits for this one).
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
