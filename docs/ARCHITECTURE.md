@@ -282,13 +282,17 @@ tools/                  verify.ps1 and verify.sh (the definition of "verified"),
                         include check); sync-agent-core.ps1 (the agent library's copy and the
                         -Verify of it), upstream-check.ps1 and new-sync-task.ps1 (the watch and
                         the one command for a red bump - docs/upstream.md, task p4-01)
-keys/                   the public halves of the keys a release may be signed with - empty today (task p0-02);
-                        tls/: the TLS roots a server's chain must end at, each with its header (task p3-02)
+keys/                   the public halves of the keys a release may be signed with - one, the
+                        release key, since 2026-10-20 (task p0-02); tls/: the TLS roots a
+                        server's chain must end at, each with its header (task p3-02)
+release-notes/          the hand-written top of each release's body, one file per tag; a tag
+                        without its file is refused (task p7-01)
 spec/                   a copy of the system specification and its fixtures - never edited here
 docs/                   this file; bench.md (the one ordered bench walk and the numbers to bring
                         back); field.md (what a unit on a mast does, for the person who owns it);
-                        release.md, console.md, provisioning.md, update.md, supervisor.md,
-                        power.md, cycle.md, upstream.md (keeping up with the agent core)
+                        release.md, flashing.md (a release onto a module, one page),
+                        console.md, provisioning.md, update.md, supervisor.md, power.md,
+                        cycle.md, upstream.md (keeping up with the agent core)
 tasks/                  the piles; sync/ is the one kind of task a bump of the agent core makes
 ```
 
@@ -793,8 +797,9 @@ test that reads the `rakfw` line of `partitions.csv`.
 **What may enter the store**: only what passed all six checks of `spec/FIRMWARE-MANIFEST.md` §5 —
 the signature by a key compiled into this build, the manifest, the right image for this radio, the
 file's hash, the one descriptor inside it, and the region. The trusted keys are a small table
-(room for three) generated from `keys/release-keys.txt`; a build with none accepts nothing, which
-is the state today because the release key does not exist yet (`keys/README.md`).
+(room for three) generated from `keys/release-keys.txt`, which names the release key
+`73efdd383a957596` and nothing else; a build with none accepts nothing, which was the state
+until that key was made on 20 October 2026 (`keys/README.md`).
 
 **The verdict** (task p2-01, `core/image/verdict.h`): `ImageVerdict` runs the six checks in §5's
 order over a manifest's bytes exactly as delivered, its signature line and one file behind an

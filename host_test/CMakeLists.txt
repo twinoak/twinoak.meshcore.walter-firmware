@@ -53,9 +53,10 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS ${CORE}/*.cpp ${CORE}/*.c)
 
 # The trust table (task p2-01): keys/release-keys.txt -> trust_keys.h, exactly as
 # components/core/CMakeLists.txt makes it for the firmware. The host build's table is the
-# repository's (empty today), so the tests that use the build's own table see what a unit sees;
-# tests that need the test key make tables of their own. TWINOAK_TRUST_TEST_KEY=ON builds the
-# +TESTKEY variant of core for a look, as the firmware's option does.
+# repository's (the release key since 2026-10-20), so the tests that use the build's own table
+# see what a unit sees; tests that need the test key make tables of their own.
+# TWINOAK_TRUST_TEST_KEY=ON builds the +TESTKEY variant of core for a look, as the firmware's
+# option does.
 option(TWINOAK_TRUST_TEST_KEY "trust the specification's public test key (a test build)" OFF)
 set(GENERATED ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(TRUST_HEADER ${GENERATED}/trust_keys.h)

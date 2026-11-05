@@ -21,6 +21,9 @@
 #   partitions    tools/check_partitions.py --self-test, then against the build
 #   release       a dry run of the whole release over the build just made, into out/release/:
 #                 build_release.py, signed with the specification's public test key, then verified
+#                 - except at a release's own version (TWINOAK_VERSION=X.Y.Z+<sha7>, which is what
+#                 the release workflow's build job passes), where the test key may not sign and the
+#                 signature is the workflow's: see step_release
 #
 #   tools/verify.sh            all eight
 #   tools/verify.sh <step>     one of them (verify.ps1 -Only <step>)
@@ -280,7 +283,8 @@ step_release() {
   # A dry run of the release over the build just made, end to end, exactly as
   # .github/workflows/release.yml does it on a tag - except that it signs with the specification's
   # public test key and publishes nothing. The point is that the tag path is not run for the first
-  # time on a tag (S-10: local first).
+  # time on a tag (S-10: local first). At a release's own version the signature is the workflow's
+  # and everything else still runs here; the branch below says why.
   local dir=$BUILD/fw
   if [ ! -f "$dir/$PROJECT_NAME.bin" ]; then
     echo "no build to release ($dir/$PROJECT_NAME.bin); run the build step first"; return 1
@@ -307,16 +311,38 @@ step_release() {
   fi
   python tools/release/build_release.py --version "$VERSION" --commit "$commit" \
          --tag "$RELEASE_TAG" --build-dir "$dir" --out "$RELEASE" --require-descriptor || return 1
-  # The signature. --test-key takes the key pair the specification publishes, so a rehearsal has
-  # no secret anywhere near it and nothing to print; it refuses a release version.
-  python tools/release/sign_manifest.py --test-key "$RELEASE/manifest.json" || return 1
-  # The gate the workflow runs before `gh release create`: all of §5 that applies here.
-  python tools/release/verify_release.py --test-key "$RELEASE" || return 1
-  # And the specification's own tool, by itself, over what was written - the task's acceptance
-  # criterion. The public test key comes from the fixtures, never written down a second time.
-  local public
-  public=$(python -c 'import json;print(json.load(open("spec/fixtures/manifest/index.json"))["test_public_key"])') || return 1
-  python spec/tools/manifestref.py verify "$public" "$RELEASE/manifest.json" || return 1
+  # Whether this run's version is a release's own - X.Y.Z+<sha7>, which is what the release
+  # workflow's build job passes (-Version) and what a person rehearsing a tag types. The shape is
+  # read from the tooling, so there is one definition of it (task p7-01).
+  local is_release=1
+  python -c 'import sys; sys.path.insert(0, "tools/release"); from build_release import RELEASE_VERSION; sys.exit(0 if RELEASE_VERSION.fullmatch(sys.argv[1]) else 1)' \
+         "$VERSION" || is_release=0
+  if [ "$is_release" = 1 ]; then
+    # The one part of the path a laptop cannot walk: the release key is the RELEASE_SIGNING_KEY
+    # secret of the release workflow and is nowhere else (S-8), and the specification's test key
+    # may not sign a release version - sign_manifest.py refuses it, and that refusal is a rail,
+    # not an inconvenience. So at a release's own version this step is the files and every refusal
+    # over them; the signature and the §5 gate are the publish job's, with the secret, immediately
+    # before `gh release create` (.github/workflows/release.yml). At every other version - the
+    # 0.0.0-dev of a plain run and the 0.0.0-dryrun of a rehearsal - the whole path runs below.
+    echo "$VERSION is a release's own version: the files and their refusals are checked here, and"
+    echo "the signature and verify_release.py are the release workflow's, with the secret"
+    if python tools/release/sign_manifest.py --test-key "$RELEASE/manifest.json"; then
+      echo "sign_manifest.py signed a release version with the specification's test key"; return 1
+    fi
+    echo "ok    sign_manifest.py refused the test key for $VERSION, as it must"
+  else
+    # The signature. --test-key takes the key pair the specification publishes, so a rehearsal has
+    # no secret anywhere near it and nothing to print; it refuses a release version.
+    python tools/release/sign_manifest.py --test-key "$RELEASE/manifest.json" || return 1
+    # The gate the workflow runs before `gh release create`: all of §5 that applies here.
+    python tools/release/verify_release.py --test-key "$RELEASE" || return 1
+    # And the specification's own tool, by itself, over what was written - the task's acceptance
+    # criterion. The public test key comes from the fixtures, never written down a second time.
+    local public
+    public=$(python -c 'import json;print(json.load(open("spec/fixtures/manifest/index.json"))["test_public_key"])') || return 1
+    python spec/tools/manifestref.py verify "$public" "$RELEASE/manifest.json" || return 1
+  fi
   local f line
   for f in "$RELEASE/$PROJECT_NAME-$RELEASE_TAG.bin" "$RELEASE/$PROJECT_NAME-$RELEASE_TAG-factory.bin"; do
     line=$(python spec/tools/manifestref.py descriptor "$f") || return 1
@@ -329,10 +355,16 @@ step_release() {
   ls -la "$RELEASE"
   echo "--- manifest.json"
   cat "$RELEASE/manifest.json"
-  echo "--- manifest.json.sig"
-  cat "$RELEASE/manifest.json.sig"
+  if [ -f "$RELEASE/manifest.json.sig" ]; then
+    echo "--- manifest.json.sig"
+    cat "$RELEASE/manifest.json.sig"
+  else
+    echo "--- manifest.json.sig: none here; a release is signed in the workflow, with the secret"
+  fi
   echo "--- SHA256SUMS"
   cat "$RELEASE/SHA256SUMS"
+  echo "--- NOTES.md"
+  cat "$RELEASE/NOTES.md"
 }
 
 run_step() {

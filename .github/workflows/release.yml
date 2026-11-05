@@ -15,11 +15,13 @@
 # rollback. Nothing is published whose ci is red or unknown, and nothing is published that
 # tools/release/verify_release.py has not taken through spec/FIRMWARE-MANIFEST.md §5.
 #
-# **A tag fails today, on purpose.** The release key does not exist yet - it is Thomas's to make,
-# once (spec/SYSTEM.md §10 item 1, keys/README.md). With no RELEASE_SIGNING_KEY secret,
-# sign_manifest.py stops with the instructions; with keys/release-keys.txt empty,
-# verify_release.py stops with them too. Both happen before `gh release create`, so a tag cannot
-# publish something nobody can check. The dry run is unaffected.
+# **What a tag needs, and what stops one.** The release key exists (made 2026-10-20, key id
+# 73efdd383a957596: the public half in keys/release-keys.txt, the private half the
+# RELEASE_SIGNING_KEY secret here and in twinoak.meshcore.repeater-firmware). Were either gone,
+# sign_manifest.py and verify_release.py would stop with the instructions for making it, before
+# `gh release create`, so that a tag cannot publish something nobody can check. A tag also needs
+# release-notes/vX.Y.Z.md, the hand-written top of its body: build_release.py refuses a release
+# without one (task p7-01, release-notes/README.md). A dry run needs neither.
 #
 # The version a release reports is the tag with the commit after it: `X.Y.Z+<sha7>`, passed into
 # the build as PROJECT_VER, which is what core/version.cpp prints, what the 96-byte descriptor
@@ -98,7 +100,9 @@ jobs:
             || { echo "::error::$(git rev-parse HEAD) is not a commit of main"; exit 1; }
 
       # Nothing is released whose verification is red or unknown. ci.yml runs `tools/verify.ps1`
-      # on every push to main, so a commit of main has a run of its own to wait for.
+      # on every push to main, so a commit of main has a run of its own to wait for. The wait is
+      # 80 minutes because that run is 25 to 45 (task p7-01 measured 1525 s and 2528 s on two cold
+      # runners): a tag pushed the moment a pull request merged used to be refused for being early.
       - name: Wait for the ci workflow of that commit
         if: github.ref_type == 'tag'
         env:
@@ -106,7 +110,7 @@ jobs:
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 240); do
             run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push --limit 1 --json status,conclusion,url --jq '.[0] // empty')
             status=$(echo "$run" | jq -r '.status // "none"')
             conclusion=$(echo "$run" | jq -r '.conclusion // ""')
@@ -118,7 +122,7 @@ jobs:
             fi
             sleep 20
           done
-          echo "::error::ci has not completed for $SHA (no green push run within 20 minutes). A tag on a commit ci has not passed is refused."
+          echo "::error::ci has not completed for $SHA (no green push run within 80 minutes). A tag on a commit ci has not passed is refused."
           exit 1
 
       # A rehearsal may be run on a branch, where ci ran for the pull request and not for a push.
@@ -141,15 +145,17 @@ jobs:
     name: build ${{ needs.ci-green.outputs.version }}
     needs: ci-green
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90  # the same script as ci.yml's job, and the same measurement (task p7-01)
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.ci-green.outputs.sha }}
 
       # The whole verification, not only the build: the thing being published is then verified at
-      # its own version, which is not the version ci verified. Its `release` step is a dry run
-      # signed with the test key; the real files are made in the next job, from out/images/.
+      # its own version, which is not the version ci verified. Its `release` step makes the release
+      # files over that build and runs every refusal over them - the hand-written notes among them;
+      # at a release's own version it does not sign, because the test key may not and the secret is
+      # the next job's. The files that are published are made in that job, from out/images/.
       - name: tools/verify.ps1 -Version ${{ needs.ci-green.outputs.version }}
         shell: pwsh
         run: ./tools/verify.ps1 -Version '${{ needs.ci-green.outputs.version }}'
@@ -253,6 +259,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # --latest and no --prerelease, said out loud rather than left to GitHub's own ordering:
+      # Thomas's rule is that a release of his firmware is the one to flash (task p7-01). The body
+      # is NOTES.md, which begins with the hand-written release-notes/<tag>.md.
       - name: Publish
         if: needs.ci-green.outputs.release == 'true'
         env:
@@ -263,6 +272,7 @@ jobs:
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "TwinOak Walter firmware $TAG" \
+            --latest \
             --notes-file out/release/NOTES.md \
             out/release/twinoak-walter-*.bin \
             out/release/manifest.json \
