@@ -1,6 +1,6 @@
 // The spec's manifest fixtures and the generated variants, read from disk for the image tests
 // (task p2-01), and the test key as a trust table of the tests' own - never the build's, which
-// is keys/release-keys.txt's and empty today.
+// is keys/release-keys.txt's, naming the release key.
 #pragma once
 
 #include <doctest.h>

@@ -14,8 +14,9 @@ a field with no settings, or an image nobody can identify, or a signature that p
     esp_app_desc_t names another version or another project;
   * signing a release version with the specification's public test key;
   * signing with no key in the environment, and with the test key *in* the environment;
-  * verifying a release with an empty trust table (keys/release-keys.txt today), and with the
-    wrong key, and after one byte of the manifest changed.
+  * verifying a release with an empty trust table, and with the wrong key, and after one byte of
+    the manifest changed;
+  * publishing a release nobody wrote a word about: no release-notes/vX.Y.Z.md, or an empty one.
 
 The shape of the manifest is held against spec/fixtures/manifest/manifest-walter.json, which
 spec/tools/manifestref.py generated from FIRMWARE-MANIFEST.md: same keys, same order, same types.
@@ -53,6 +54,9 @@ COMMIT = "1a2b3c4" + "d" * 33
 DRYRUN = "0.0.0-dryrun+1a2b3c4"
 RELEASE = "0.3.1+1a2b3c4"
 BUILT_AT = "2026-10-11T12:00:00Z"
+# The hand-written top of a release's body (task p7-01), as every test that is not about it gets
+# one: release-notes/<tag>.md is required for a release version and refused if it is missing.
+HANDWRITTEN = "**What this release is**, in the words of whoever tagged it.\n"
 
 
 def partitions():
@@ -109,6 +113,11 @@ class ReleaseCase(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix="twinoak-release-test-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.out = os.path.join(self.dir, "release")
+        # A release-notes/ of this test's own, so that what the repository's own directory holds
+        # changes nothing here (task p7-01). `build(notes=None)` leaves it empty, which is the
+        # state a tag is refused in.
+        self.notes_dir = os.path.join(self.dir, "release-notes")
+        os.makedirs(self.notes_dir)
 
     def write(self, name, data):
         path = os.path.join(self.dir, name)
@@ -116,14 +125,22 @@ class ReleaseCase(unittest.TestCase):
             fh.write(data)
         return path
 
-    def build(self, version=DRYRUN, tag=None, app=None, factory=None, factory_size=None, **kwargs):
+    def build(self, version=DRYRUN, tag=None, app=None, factory=None, factory_size=None,
+              notes=HANDWRITTEN, **kwargs):
         """One build's two files: the factory image carries the application image, as it does in
-        the real thing (idf.py merge-bin), unless a test deliberately gives another."""
+        the real thing (idf.py merge-bin), unless a test deliberately gives another. `notes` is
+        the hand-written top of the release's body, written into this test's release-notes/ under
+        the tag being built; None writes no such file."""
         blob = app if app is not None else app_image(version=version)
         app_path = self.write("app.bin", blob)
         fac_path = self.write("factory.bin", factory if factory is not None
                               else factory_image(app=blob, size=factory_size))
-        return build_release.build(version, COMMIT, tag or "v" + version.split("+")[0], app_path,
+        tag = tag or "v" + version.split("+")[0]
+        if notes is not None:
+            with open(os.path.join(self.notes_dir, tag + ".md"), "w", encoding="utf-8") as fh:
+                fh.write(notes)
+        kwargs.setdefault("notes_dir", self.notes_dir)
+        return build_release.build(version, COMMIT, tag, app_path,
                                    fac_path, self.out, os.path.join(REPO, "partitions.csv"),
                                    BUILT_AT, **kwargs)
 
@@ -218,6 +235,64 @@ class TheManifest(ReleaseCase):
                 build_release.build(DRYRUN, commit, "v0.0.0-dryrun", app, fac, self.out,
                                     os.path.join(REPO, "partitions.csv"), BUILT_AT)
             self.assertIn("40", str(caught.exception))
+
+
+# ------------------------------------------------------------------ the hand-written notes
+
+
+class TheHandwrittenNotes(ReleaseCase):
+    """Task p7-01: a release's body is a part a person wrote, then the generated part. The file is
+    release-notes/<tag>.md, it is required for a release and refused when it is missing - a tag
+    with no notes is refused the way a tag with no key is."""
+
+    def test_a_release_with_no_handwritten_notes_is_refused(self):
+        with self.assertRaises(Refused) as caught:
+            self.build(version=RELEASE, notes=None)
+        message = str(caught.exception)
+        self.assertIn("release-notes%sv0.3.1.md" % os.sep, message)
+        self.assertIn("is not there", message)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "NOTES.md")))
+
+    def test_a_file_with_only_whitespace_is_no_notes_at_all(self):
+        with self.assertRaises(Refused) as caught:
+            self.build(version=RELEASE, notes="   \n\n")
+        self.assertIn("v0.3.1.md", str(caught.exception))
+
+    def test_the_handwritten_part_comes_first_and_the_generated_part_after_it(self):
+        self.build(version=RELEASE, notes="**The first release.** A sentence a person wrote.\n")
+        with open(os.path.join(self.out, "NOTES.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("**The first release.** A sentence a person wrote.\n"),
+                        text[:120])
+        top, rule, generated = text.partition("\n---\n")
+        self.assertEqual(rule, "\n---\n")
+        self.assertNotIn("esptool", top)
+        self.assertIn("esptool", generated)
+        self.assertIn("TwinOak Walter firmware v0.3.1", generated)
+        self.assertIn("keeps a unit's settings", generated)
+
+    def test_a_dry_run_needs_none_and_gets_the_generated_part_alone(self):
+        result = self.build(version=DRYRUN, notes=None)
+        self.assertIsNone(result["handwritten"])
+        with open(os.path.join(self.out, "NOTES.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("TwinOak Walter firmware v0.0.0-dryrun"), text[:120])
+        self.assertIn("This is a dry run.", text)
+
+    def test_the_repositorys_own_release_notes_are_named_for_a_tag_and_are_not_empty(self):
+        """The real directory. A file named for a version that is not vX.Y.Z would be invisible
+        until a tag was pushed and refused, which is the one moment it must not be found."""
+        for name in sorted(os.listdir(build_release.NOTES_DIR)):
+            path = os.path.join(build_release.NOTES_DIR, name)
+            if name == "README.md":
+                continue
+            self.assertRegex(name, r"^v\d+\.\d+\.\d+\.md$")
+            with open(path, encoding="utf-8") as fh:
+                body = fh.read()
+            self.assertTrue(body.strip(), path)
+            self.assertNotIn("\r", body)
+            tag = name[:-3]
+            self.assertEqual(build_release.handwritten_notes(tag, True), body.strip("\n"))
 
 
 # ------------------------------------------------------------------ the four refusals

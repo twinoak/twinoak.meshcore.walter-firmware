@@ -12,14 +12,17 @@
 # <key id> is the first eight bytes of SHA-256 over the 32-byte public key, 16 lowercase hex
 # characters; tools/release/verify_release.py recomputes it and refuses a line where it is wrong.
 #
-# EMPTY ON PURPOSE. The release key does not exist yet - it is Thomas's to make, once
-# (spec/SYSTEM.md section 10, item 1; the instructions are in keys/README.md). While this file
-# names no key:
+# ONE KEY, the release key Thomas made on 2026-10-20 (spec/SYSTEM.md section 10, item 1), the same
+# one that signs twinoak.meshcore.repeater-firmware's releases. It is the key v0.1.0 and every
+# release after it is signed with, and the one a Walter built from this file will accept a release
+# signed with ("trust" on the console). Do not edit the line below: if this file ever names no key,
+# or names something that is not that key,
 #
 #   * a tag fails in .github/workflows/release.yml, at verify_release.py, before anything is
-#     published, with those instructions;
-#   * the firmware - once phase 2 generates its trust table from this file - accepts no update at
-#     all, which is the safe state (section 3, last bullet).
+#     published, with the instructions for making a key;
+#   * the firmware - whose trust table is generated from this file - accepts no update at all,
+#     which is the safe state (section 3, last bullet) but also a unit that cannot be helped from
+#     a distance.
 #
 # The specification's test key (spec/fixtures/manifest/TEST-KEY.txt) is never added here. It is
 # public, so a build that trusted it would accept anybody's firmware.

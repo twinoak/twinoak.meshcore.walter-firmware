@@ -12,7 +12,10 @@ Writes into --out (spec/FIRMWARE-MANIFEST.md §2):
                                        flashed at 0x0 - `use: factory`, a module out of the box
     manifest.json                      what each of them is, validated before it is written
     SHA256SUMS                         the three of them, for sha256sum -c
-    NOTES.md                           the release notes the workflow publishes
+    NOTES.md                           the release notes the workflow publishes: the hand-written
+                                       release-notes/vX.Y.Z.md of this repository first, then the
+                                       generated part (the version, the commit, the esptool line,
+                                       what a factory flash keeps)
 
 The signature is the next step (sign_manifest.py) and the check before publishing the one after
 (verify_release.py). Nothing here signs, and nothing here publishes.
@@ -32,7 +35,11 @@ tools/release/test_release.py:
   * the manifest does not validate (§2);
   * the build is a test-key build (task p2-01): its version says +TESTKEY, or the bytes of the
     specification's public test key are in an image. Such a build trusts a key everybody has,
-    and is never released (spec/FIRMWARE-MANIFEST.md §3).
+    and is never released (spec/FIRMWARE-MANIFEST.md §3);
+  * a release has no hand-written notes (task p7-01): a version of the shape X.Y.Z+<sha7> needs
+    release-notes/vX.Y.Z.md, a few lines a person wrote about what this release is. A tag without
+    that file is refused the way a tag without a key is - nobody reads a release whose body is
+    only a table.
 """
 
 import argparse
@@ -235,13 +242,53 @@ def modem_version():
 
 # ------------------------------------------------------------------ the notes
 
+# The hand-written top of a release's body, one file per tag, kept in the repository so that it is
+# reviewed with the code it describes and so that a tag cannot publish a body nobody wrote
+# (task p7-01). release-notes/README.md says what belongs in one.
+NOTES_DIR = os.path.join(REPO, "release-notes")
 
-def notes(manifest, files, facts, is_release):
+NO_HANDWRITTEN_NOTES = """%s is not there, and a release's notes are not only generated.
+
+A release of this firmware is read by a person: what it is, what has and has not been on a board,
+and which repeater-firmware release it goes with. That part is hand-written, kept in the
+repository beside the code it describes, and put in front of the generated NOTES.md by this
+script - so a tag with no such file is refused here, before anything is signed or published, the
+way a tag with no release key is.
+
+Write a few lines in %s (release-notes/README.md says what belongs in one),
+commit them on the branch that is tagged, and push the tag again."""
+
+
+def handwritten_notes(tag, is_release, notes_dir=None):
+    """The hand-written part of the body for this tag, or None when there is none to find.
+
+    Required for a release (X.Y.Z+<sha7>): that is the refusal above. A dry run and a local
+    0.0.0-dev build have no such file and want none - their body is the generated part alone,
+    which says in its first paragraph that nothing is published."""
+    path = os.path.join(notes_dir or NOTES_DIR, "%s.md" % tag)
+    where = os.path.relpath(path, REPO) if path.startswith(REPO) else path
+    text = ""
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    if not text.strip():
+        if is_release:
+            raise Refused(NO_HANDWRITTEN_NOTES % (where, where))
+        return None
+    return text.strip("\n")
+
+
+def notes(manifest, files, facts, is_release, handwritten=None):
     version = manifest["version"]
     tag = manifest["tag"]
     factory = next(f for f in files if f["use"] == "factory")
     ota = next(f for f in files if f["use"] == "ota")
-    lines = [
+    lines = []
+    # The hand-written part first, then a rule, then what this script knows: a person reads the
+    # top of a release and a machine reads the rest of it.
+    if handwritten:
+        lines += [handwritten, "", "---", ""]
+    lines += [
         "TwinOak Walter firmware %s, built from `%s` and reporting `%s` on its console and in the "
         "box link's HELLO." % (tag, manifest["commit"][:7], version),
         "",
@@ -303,11 +350,15 @@ def notes(manifest, files, facts, is_release):
 
 
 def build(version, commit, tag, app_path, factory_path, out_dir, table_path, built_at,
-          build_dir=None, require_descriptor=True):
+          build_dir=None, require_descriptor=True, notes_dir=None):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise Refused("--commit must be 40 lowercase hex characters, not %r" % commit)
     if not version:
         raise Refused("--version is required")
+
+    # Before a byte is read: a release needs the notes a person wrote for it (task p7-01).
+    is_release = bool(RELEASE_VERSION.fullmatch(version))
+    handwritten = handwritten_notes(tag, is_release, notes_dir)
 
     load_address, by_name = app_slot_offset(table_path)
     app = read(app_path)
@@ -389,10 +440,11 @@ def build(version, commit, tag, app_path, factory_path, out_dir, table_path, bui
     sums = "".join("%s  %s\n" % (hashlib.sha256(read(os.path.join(out_dir, n))).hexdigest(), n)
                    for n in (names["ota"], names["factory"], "manifest.json"))
     write("SHA256SUMS", sums.encode("ascii"))
-    write("NOTES.md", notes(manifest, files, facts, bool(RELEASE_VERSION.fullmatch(version))).encode("utf-8"))
+    write("NOTES.md", notes(manifest, files, facts, is_release, handwritten).encode("utf-8"))
 
     return {"manifest": manifest, "names": names, "written": written, "descriptors": descriptors,
-            "evidence": evidence, "facts": facts, "load_address": load_address}
+            "evidence": evidence, "facts": facts, "load_address": load_address,
+            "handwritten": handwritten}
 
 
 def main(argv):
@@ -436,6 +488,12 @@ def main(argv):
               % (result["names"][use], offset, fields["role"], fields["board"], fields["band"],
                  fields["version"], fields["link_major"], fields["link_minor"]))
     print("ok    the manifest validates against spec/FIRMWARE-MANIFEST.md section 2")
+    if result["handwritten"]:
+        print("ok    NOTES.md begins with release-notes/%s.md, %d hand-written lines"
+              % (tag, len(result["handwritten"].splitlines())))
+    else:
+        print("      NOTES.md is the generated part alone: %s is not a release, so it needs no "
+              "hand-written notes" % args.version)
     print("%s: %s" % (args.out, ", ".join(result["written"])))
     print("the application image loads at 0x%08X (%s, from %s)"
           % (result["load_address"], check_partitions.APP_SLOTS[0], os.path.relpath(args.partitions, REPO)))

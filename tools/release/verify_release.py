@@ -19,10 +19,10 @@ after signing and before `gh release create`. It is also what the local dry run 
 ends with, so the gate is exercised on every verified commit and not for the first time on a tag.
 
 **The trusted keys.** keys/release-keys.txt is the release's trust table, the file phase 2
-generates the firmware's compiled-in key list from. It is empty today, which means no key is
-trusted, which means a tag cannot be published - and that is correct: the key does not exist yet
-(spec/SYSTEM.md §10 item 1, keys/README.md). --test-key trusts the specification's public test key
-instead, for a rehearsal.
+generates the firmware's compiled-in key list from. It names the release key (73efdd383a957596,
+made 2026-10-20) and nothing else. Were it to name none, no key would be trusted and a tag could
+not be published - which is the safe state rather than a fault (spec/SYSTEM.md §10 item 1,
+keys/README.md). --test-key trusts the specification's public test key instead, for a rehearsal.
 """
 
 import argparse

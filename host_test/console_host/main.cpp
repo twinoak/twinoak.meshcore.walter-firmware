@@ -166,7 +166,7 @@ int main() {
 
   // The trust table: the specification's public test key and nothing else, so that the fixture
   // release this is tested against is accepted. A unit's own table comes from
-  // keys/release-keys.txt at build time and is empty today (task p2-01).
+  // keys/release-keys.txt at build time and names the release key (task p2-01).
   static core::image::TrustedKey keys[1] = {};
   if (!hexToBytes(fixtures::kTestPublicKeyHex, keys[0].key, core::image::kEd25519PublicKeySize)) {
     std::fprintf(stderr, "the fixture test key is not hexadecimal\n");

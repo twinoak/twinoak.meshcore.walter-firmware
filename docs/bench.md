@@ -4,8 +4,10 @@
 rig is brought up (`spec/SYSTEM.md` §7, and the hardware repository's
 `hardware/pcb/BENCH-BREADBOARD.md` §7): the Walter alone, then the UART, the reset line, SWD, the
 first flash, **and only then the kill line** — then images, updates, the supervisor, the modem,
-HTTPS, provisioning, sleep, and a day of it. No board has run this firmware. This file is what
-turns that sentence over.
+HTTPS, provisioning, sleep, and a day of it. A Walter has run a development build of this firmware
+and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`); no board has run a released
+one and no unit has walked this file. This file is what turns that sentence over, and **`v0.1.0`
+is the release it is walked with** ([`flashing.md`](flashing.md), [`release.md`](release.md)).
 
 Walk it in order. A step whose *Needs* are not met is a step that will waste an evening, and a
 number written down in step 2 is one step 16 does not have to guess at.
@@ -146,18 +148,41 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   the console`. Unplug and replug: `boot 1` again and `the boot record starts here` — RTC memory
   does not survive a power cut.
 
-- [ ] **`trust` says no update will be accepted** (task p2-01). On a normal build the console
-  prints `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed, <n> ms` — **write
-  `<n>` down**: it is the first measurement of TweetNaCl's Ed25519 on the ESP32-S3, and a
-  `FAILED` here means the vendored arithmetic is wrong on the board's compiler — then `trust:
-  none: no update will be accepted (keys/release-keys.txt names no key; ...)`, and the boot
-  lines carry no `WARNING`. That is the unit's state until Thomas makes the release key
-  (`spec/SYSTEM.md` §10 item 1, `keys/README.md`); after the key is in `keys/release-keys.txt`
-  and a build is flashed, `trust` prints `1 key this build accepts a release signed with:
-  <key id>` — the id `manifestref.py keygen` printed. If a board on the bench is ever flashed
+- [ ] **`trust` names the release key** (task p2-01; the key was made 2026-10-20). On a normal
+  build the console prints `ed25519 self-test (RFC 8032 test 1, and one bit changed): passed,
+  <n> ms` — **write `<n>` down**: it is the first measurement of TweetNaCl's Ed25519 on the
+  ESP32-S3, and a `FAILED` here means the vendored arithmetic is wrong on the board's compiler —
+  then `trust: 1 key this build accepts a release signed with: 73efdd383a957596`, and the boot
+  lines carry no `WARNING`. `trust: none: no update will be accepted (keys/release-keys.txt names
+  no key; ...)` was the state before the key existed and would be again if that line were lost: a
+  unit that accepts nothing, which is safe and useless. If a board on the bench is ever flashed
   with a test-key build (`tools/verify.ps1 -TestKey`), its banner says `+TESTKEY`, the fourth
   boot line is a `WARNING` and `trust` lists `c17969deb0026955`: never leave such a build on a
   unit that goes out.
+
+- [ ] **The published release, flashed from the files a person downloads** (task p7-01). Not
+  `out/images/` and not a workflow artifact: the five files of
+  [*Releases* → *Latest*](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest),
+  downloaded as anybody would. Before flashing anything, check them where they landed —
+
+  ```
+  sha256sum -c SHA256SUMS
+  python spec/tools/manifestref.py verify dad705e5374be34b9c42528a3b1215cc30deb1d575d2ed19e7645defcae2f1fe manifest.json
+  ```
+
+  (that hex is the public half in `keys/release-keys.txt`, key id `73efdd383a957596`; the same
+  thing with the file rather than the hex is `python tools/release/verify_release.py <the
+  directory>`). Then flash `twinoak-walter-v0.1.0-factory.bin` with the `esptool` line in the
+  release's own body and read three lines: the banner's version is **`0.1.0+<sha7>`** with that
+  commit's seven characters, `self status` says `ota_0` and **`valid`**, and `trust` says
+  **`1 key … 73efdd383a957596`**. That is the whole point of the release: a board flashed by cable
+  with it can take every later one over LTE.
+
+- [ ] **[`flashing.md`](flashing.md) walked by a person, with nothing else open** (task p7-01).
+  The guide is one page and claims to take a module out of its box to a unit checking in. Follow
+  it top to bottom — the Walter, the RAK by cable, provisioning, `agent wake`, the page — and
+  **correct it where it is wrong** rather than working around it: it is the only document here
+  written for somebody who has not read the rest, and a session cannot tell whether it is enough.
 
 ## 2. The pins and the reset line
 
@@ -1323,6 +1348,12 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       against the simulated month's rates, and the day's energy against §16's figure — a day that
       ran real jobs costs more than a quiet one, and *how much more* is the number this item brings
       back.
+- [ ] **The release a unit is running, on the server's page** (task p7-01). After any wake of a
+      board flashed from `v0.1.0`, the exit node's page shows the firmware version it reported —
+      `agentVersion`, this firmware's own string, **`0.1.0+<sha7>`** — beside the heartbeat. It is
+      the one place a person sees which release a unit out there is actually on, and *LTE test
+      node*'s page said `0.0.0-dev` until this one was flashed. Check that the seven characters
+      are the tagged commit's.
 
 ## What to bring back
 

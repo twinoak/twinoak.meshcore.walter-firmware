@@ -12,29 +12,34 @@ green CI run.
 | `manifest.json.sig` | one Ed25519 signature over the manifest's bytes (§3). Because the manifest carries each file's SHA-256, one signature covers the whole release |
 | `SHA256SUMS` | for `sha256sum -c`, over the two images and the manifest |
 
-The release notes are generated with them (`NOTES.md`): the version, the commit, the ESP-IDF and
-modem-library versions, the one `esptool` line, and what a factory flash does and does not touch.
+The notes a release is published with (`NOTES.md`) are two parts: the hand-written
+[`release-notes/vX.Y.Z.md`](../release-notes/README.md) of this repository — what this release is,
+what has and has not been on a board, which repeater-firmware release it goes with — and then the
+generated part: the version, the commit, the ESP-IDF and modem-library versions, the one `esptool`
+line, and what a factory flash does and does not touch.
 
-## The one thing that is missing
+## The two things a tag needs
 
-**The release key does not exist yet.** It is Thomas's to make, once, and the same key signs the
-repeater firmware's releases (`spec/SYSTEM.md` §10 item 1):
+**The release key**, which exists: Thomas made it on 20 October 2026, key id `73efdd383a957596`,
+and the same key signs the repeater firmware's releases (`spec/SYSTEM.md` §10 item 1). Its public
+half is one line of [`keys/release-keys.txt`](../keys/README.md) in both repositories; its private
+half is the repository secret **`RELEASE_SIGNING_KEY`** in both, and lives nowhere else. Were it
+gone, a tag would **fail on purpose**, before anything is published:
+`tools/release/sign_manifest.py` stops at a missing secret and
+`tools/release/verify_release.py` at a trust table that names no key, each printing the
+instructions for making one (`python spec/tools/manifestref.py keygen`). A unit with no key
+compiled in accepts no update at all, which is the same safe state seen from the other end
+(`spec/FIRMWARE-MANIFEST.md` §3).
 
-```powershell
-python spec/tools/manifestref.py keygen
-```
+**The hand-written notes**, `release-notes/vX.Y.Z.md`: `tools/release/build_release.py` puts that
+file in front of the generated notes and **refuses a release that has none** — a release nobody
+wrote a word about is not a release. Write it on the branch that is tagged;
+[`release-notes/README.md`](../release-notes/README.md) says what belongs in one and what the
+generated part already says.
 
-- the `private` line becomes the repository secret **`RELEASE_SIGNING_KEY`**, here and in
-  `twinoak.meshcore.repeater-firmware`, and lives nowhere else;
-- the `public` line and the key id become one line of [`keys/release-keys.txt`](../keys/README.md)
-  in both repositories.
-
-Until then a tag **fails on purpose**, before anything is published:
-`tools/release/sign_manifest.py` stops at the missing secret and
-`tools/release/verify_release.py` stops at the empty trust table, each printing those
-instructions. A unit with no key compiled in accepts no update at all, which is the same safe
-state seen from the other end (`spec/FIRMWARE-MANIFEST.md` §3). A dry run is unaffected: it signs
-and verifies with the key pair the specification publishes on purpose.
+A dry run needs neither: it is version `0.0.0-dryrun+<sha7>`, it signs and verifies with the key
+pair the specification publishes on purpose, its body is the generated part alone, and it
+publishes nothing.
 
 ## Releasing
 
@@ -68,6 +73,12 @@ takes it through `verify_release.py`. So the tag path is never run for the first
 .\tools\verify.ps1 -Version 0.3.1+1a2b3c4     # everything, at the version a release would use
 ```
 
+At a release's own version — `X.Y.Z+<sha7>`, the last line above and what the workflow's build job
+passes — that step makes the files and runs every refusal over them (the hand-written notes among
+them) but **does not sign**: the test key may not sign a release version, which is a rail, and the
+release key is a secret of the workflow. So the signature and the `verify_release.py` gate happen
+once, in the publish job, immediately before `gh release create`. The step says so in its log.
+
 **In the workflow.** *Actions → release → Run workflow*, with `ref` set to the commit to rehearse
 on (empty for the workflow's own ref). The same three jobs run; the version is
 `0.0.0-dryrun+<sha7>`, the files are named `v0.0.0-dryrun`, the manifest is signed with the test
@@ -97,6 +108,9 @@ once, would cost a unit on a mast:
 - **signing a release version with the specification's test key**, and signing with no key in the
   environment — and verifying a release with a trust table that names no key, or one that names
   the test key.
+- **a release with no hand-written notes**: no `release-notes/vX.Y.Z.md`, or an empty one. It is
+  the one refusal that is about a person rather than about bytes, and it is here for the same
+  reason as the rest — a release that nobody explained is one nobody can decide whether to flash.
 - **a test-key build** (task p2-01): a build made with `-DTWINOAK_TRUST_TEST_KEY=1` trusts the
   specification's public test key, so it would accept anybody's firmware. `build_release.py`
   refuses it twice over — by the `+TESTKEY` its version carries, and by the key's own 32 bytes
@@ -110,15 +124,17 @@ once, would cost a unit on a mast:
 | `tools/release/sign_manifest.py` | the signature. The private key comes from `RELEASE_SIGNING_KEY` and from nowhere else — there is no `--key` argument and no key file |
 | `tools/release/verify_release.py` | the gate before publishing: §5, with the trusted keys |
 | `tools/release/test_release.py` | their tests (`tools/verify.ps1 -Only release-tests`) |
-| `keys/` | the public halves, and why the table is empty today |
+| `keys/` | the public halves: one key, `73efdd383a957596`, since 20 October 2026 |
+| `release-notes/` | the hand-written top of each release's body, one file per tag, and what belongs in one |
 | `components/core/image/` | the descriptor: the builder that puts it in this image, and the parser and finder phase 2 reads a radio's images with. Host tests against the spec's fixtures |
 
 ## The same six checks inside the firmware
 
 From phase 2, task 01, the Walter makes the checks of `spec/FIRMWARE-MANIFEST.md` §5 itself
 (`components/core/image/`, `docs/ARCHITECTURE.md` §6): the signature against the trust table
-compiled in from `keys/release-keys.txt` — empty today, so every manifest is refused at check 1
-and `trust` on the console says so — then the manifest, the image for the slot, the file's hash,
+compiled in from `keys/release-keys.txt` — one key, so a manifest signed by anything else is
+refused at check 1 and `trust` on the console says which key is accepted — then the manifest, the
+image for the slot, the file's hash,
 the descriptor inside it, and the region. `tools/release/verify_release.py` remains the gate on
 the release side; the two are written from the same section and tested against the same
 fixtures.

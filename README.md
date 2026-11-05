@@ -24,14 +24,19 @@ interval, runs the jobs the server has for it and sleeps again
 
 ## The state of things
 
-> **No board has run this firmware.** Phases 0 to 5 are built, and everything in them is tested
-> on a host against simulators: a simulated nRF52 down to its flash controller, a flash that loses
-> power at any operation, a scripted repeater, a fake modem that fails in every way a real one
-> does, a scripted HTTPS server, a scripted meshmaster.dk and the agent library's own simulated
-> stock repeater. Nothing has been flashed to a Walter, no pin has been wiggled, no SIM has
-> attached, and no unit has ever checked in with the real server.
-> [`docs/bench.md`](docs/bench.md) is the walk that turns that sentence over, one step at a time,
-> and this line stays here until a unit has walked it.
+> **A board has run a development build of this firmware; none has run a released one, and no unit
+> has walked the bench.** On 23 October 2026 a Walter on `0.0.0-dev` checked in with the real
+> meshmaster.dk — it is *LTE test node* there, and that heartbeat is the one thing on this page
+> that a simulator did not produce: the SIM attached, the chain verified and the server took it.
+> When the first unit was powered up on 5 November its repeater came up on the mesh and its Walter
+> did not. Everything else in phases 0 to 5 is built and tested on a host against simulators: a
+> simulated nRF52 down to its flash controller, a flash that loses power at any operation, a
+> scripted repeater, a fake modem that fails in every way a real one does, a scripted HTTPS server,
+> a scripted meshmaster.dk and the agent library's own simulated stock repeater. No pin has been
+> wiggled on a real RAK, no radio has been reflashed over SWD, and nothing has been flashed from a
+> release. [`docs/bench.md`](docs/bench.md) is the walk that turns that sentence over, one step at
+> a time, `v0.1.0` is the release it is walked with
+> ([`docs/flashing.md`](docs/flashing.md)), and this line stays here until a unit has walked it.
 
 | Phase | What | |
 |---|---|---|
@@ -41,11 +46,15 @@ interval, runs the jobs the server has for it and sleeps again
 | 3 | the uplink and staying alive: the modem, verified HTTPS, settings and the console, the duty cycle, the wake cycle | built |
 | 4 | **the agent**: the exit-node firmware's job logic as a library at a pin, the mesh over the link, the uplink over the modem, the platform and the identity, the firmware jobs on the update machines | built; needs **meshmaster.dk 4.14 or newer** deployed to talk to |
 | 5 | the radio's base (S-5a): the `provision` file in the store, the CTRL-AP and UICR behind one door, `rak provision` | built |
-| later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
+| 7 | **the first release**: a flashing guide, release notes a person reads, and `v0.1.0` published | released |
+| 6, later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
 
-Also not done, and not hidden: **no release key exists yet**, so a unit accepts no update at all
-(`trust` on the console says so, and that is the correct state —
-[`keys/README.md`](keys/README.md)).
+**A release exists: [`v0.1.0`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)**,
+the first, signed with the release key Thomas made on 20 October 2026 — key id `73efdd383a957596`,
+its public half in [`keys/release-keys.txt`](keys/README.md) and its private half a secret of the
+release workflow. So a build of this firmware trusts one key (`trust` on the console says which),
+and a Walter flashed by cable with that release can take every later one over LTE.
+[`docs/flashing.md`](docs/flashing.md) is how it gets onto a module.
 
 ## What it does
 
@@ -162,13 +171,18 @@ findings go into each phase's `FOLLOWUPS.md`, tagged with the task that must pic
 
 ## Flashing a Walter
 
-Over the module's USB-C, which is the ESP32-S3's own USB (`pip install esptool`; hold BOOT while
-plugging in if the port does not appear):
+**[`docs/flashing.md`](docs/flashing.md) is the guide** — one page, from a module out of its box to
+a unit checking in with meshmaster.dk, with the release's files, the three lines to look at on the
+console and the first three things to try when it does not come up. The short of it, over the
+module's USB-C, which is the ESP32-S3's own USB (`pip install esptool`; hold BOOT while plugging in
+if the port does not appear):
 
 ```
 esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 out/images/twinoak-walter-factory.bin
 ```
 
+That is the image of a local build; a release's is `twinoak-walter-vX.Y.Z-factory.bin`, from
+[*Releases*](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest).
 Then open the port (any baud; USB Serial/JTAG ignores it) and press reset. The console prints the
 banner, which slot it is running from, what the descriptor inside the image says it is, why it
 booted, whether the radio's UART came up, and a `>` prompt. **A boot that finds a USB host stays
@@ -197,8 +211,11 @@ over the bytes as they lie in the unit's own flash, never over what a sender sai
 server delivers; it is not trusted.
 
 `tools/verify.ps1` rehearses the whole release path on every verified commit, signed with the
-specification's *public* test key, so the tag path is never run for the first time on a tag. A tag
-fails until the release key exists ([`keys/README.md`](keys/README.md)).
+specification's *public* test key, so the tag path is never run for the first time on a tag. Two
+things a tag needs and a rehearsal does not: the release key, which exists
+([`keys/README.md`](keys/README.md)), and the hand-written top of its notes,
+[`release-notes/vX.Y.Z.md`](release-notes/README.md) — a tag without either is refused before
+anything is published.
 
 ## The rails
 

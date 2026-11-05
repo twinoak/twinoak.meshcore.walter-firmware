@@ -7,12 +7,12 @@ this repository's release workflow (`spec/FIRMWARE-MANIFEST.md` §3).
 
 | | |
 |---|---|
-| `release-keys.txt` | the trust table: the keys a release may be signed with, and that a Walter build will trust. **Empty today.** |
+| `release-keys.txt` | the trust table: the keys a release may be signed with, and that a Walter build will trust. **One key**, `73efdd383a957596`, since 20 October 2026. |
 
-## Why it is empty, and why that is right
+## The key that is in it
 
-The key does not exist yet. It is Thomas's to make, once, and it is the same key that signs the
-repeater firmware's releases (`spec/SYSTEM.md` §10, item 1):
+Thomas made it once, on 20 October 2026, and it is the same key that signs the repeater firmware's
+releases (`spec/SYSTEM.md` §10, item 1):
 
 ```
 python spec/tools/manifestref.py keygen
@@ -33,15 +33,21 @@ Three things come out of that: `private`, `public` and `key id`.
 
 - Nothing goes into a commit message, an issue or a report.
 
-Until that line is there:
+That line is there, so:
 
-- `tools/release/verify_release.py` refuses a release, because it has no key to verify the
-  signature with — so `.github/workflows/release.yml` fails on a tag, before `gh release create`,
-  with those instructions. A *Run workflow* dry run is unaffected: it signs and verifies with the
-  specification's public test key and publishes nothing.
-- the firmware, when phase 2 compiles this table into it, trusts no key and therefore **accepts no
-  update at all**. That is the safe state, and the one the project is in until a person decides
-  otherwise (`spec/FIRMWARE-MANIFEST.md` §3, last bullet).
+- a tag publishes: `tools/release/sign_manifest.py` signs with the secret and
+  `tools/release/verify_release.py` verifies the signature against this table before
+  `.github/workflows/release.yml` creates the release. `v0.1.0` is the first one it made.
+- the firmware compiles this table in and **accepts an update signed with that key and no other**.
+  `trust` on the console prints `1 key this build accepts a release signed with:
+  73efdd383a957596`.
+
+**Were the line to go** — deleted, or edited to something that is not the key — the project would
+go back to its safe state rather than to a dangerous one: `verify_release.py` would refuse a
+release because it had no key to verify the signature with, so a tag would fail before
+`gh release create`, and a build of the firmware would accept **no update at all**
+(`spec/FIRMWARE-MANIFEST.md` §3, last bullet). A *Run workflow* dry run is unaffected either way:
+it signs and verifies with the specification's public test key and publishes nothing.
 
 ## The test key is not in here
 

@@ -41,15 +41,16 @@ ENV_VAR = "RELEASE_SIGNING_KEY"
 NO_KEY = """no signing key: %s is not set in the environment.
 
 A release of this firmware is signed where it is built (spec/SYSTEM.md S-8) with the one private
-key that also signs the repeater firmware's releases. It does not exist yet - it is Thomas's to
-make, once (spec/SYSTEM.md section 10, item 1):
+key that also signs the repeater firmware's releases. That key was made on 2026-10-20; if the
+secret has gone, make a new one the same way (spec/SYSTEM.md section 10, item 1) and replace the
+public half in keys/release-keys.txt in both repositories:
 
     python spec/tools/manifestref.py keygen
 
 Store the printed `private` half as the secret %s of this repository and of
 twinoak.meshcore.repeater-firmware, and put the `public` half in keys/release-keys.txt in both.
-It is never committed, logged or pasted anywhere else. Until it exists, a tag fails here and no
-unit accepts an update, which is the safe state.
+It is never committed, logged or pasted anywhere else. Until the secret is set, a tag fails here
+and no unit accepts an update signed with anything else, which is the safe state.
 
 A rehearsal that publishes nothing needs no secret: --test-key.""" % (ENV_VAR, ENV_VAR)
 
