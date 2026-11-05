@@ -91,13 +91,22 @@ interfaces::TlsRecv WalterTlsSocket::receive(std::uint8_t* out, std::size_t max,
   const std::size_t want = max > kSocketReceiveMax ? kSocketReceiveMax : max;
   for (;;) {
     if (!before(deadline_ms)) return interfaces::TlsRecv::kTimeout;
-    // Ask. `+SQNSRECV: 1,<n>` with n = 0 is "nothing buffered"; the ring flag is only a cue.
+    // Ask. The ring flag is only a cue. "Nothing buffered" comes back in one of two ways:
+    // `+SQNSRECV: 1,0`, or - what the GM02SP on the first board answered every time (23 October
+    // 2026, the library's own trace) - `+CME ERROR: 4`, *operation not supported*, to an
+    // `AT+SQNSRECV` sent before the server's first byte had arrived. Read as an error, it made this
+    // loop hang up 10 ms after every request, before any server could answer. So that one code is
+    // "not yet", like n = 0; any other error is an error, and a closed socket with nothing left to
+    // read is the end.
     g_ring = false;
     WalterModemRsp rsp = {};
     if (!WalterModem::socketReceive(kSocketId, out, want, &rsp)) {
-      return g_closed ? interfaces::TlsRecv::kClosed : interfaces::TlsRecv::kError;
-    }
-    if (rsp.type == WALTER_MODEM_RSP_DATA_TYPE_SOCKET && rsp.data.socketResponse.bytesReceived > 0) {
+      if (g_closed) return interfaces::TlsRecv::kClosed;
+      const bool not_yet = rsp.type == WALTER_MODEM_RSP_DATA_TYPE_CME_ERROR &&
+                           rsp.data.cmeError == WALTER_MODEM_CME_OPERATION_NOT_SUPPORTED;
+      if (!not_yet) return interfaces::TlsRecv::kError;
+    } else if (rsp.type == WALTER_MODEM_RSP_DATA_TYPE_SOCKET &&
+               rsp.data.socketResponse.bytesReceived > 0) {
       std::size_t n = rsp.data.socketResponse.bytesReceived;
       if (n > want) n = want;  // the library copies what the modem said; never more than asked
       *got = n;

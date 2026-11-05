@@ -121,21 +121,29 @@ TrustOutcome TrustLoader::ensure(std::uint64_t deadline_ms) {
   if (!begun_) return TrustOutcome::kNotBegun;
   bool wrote = false;
   for (std::uint8_t root = 0; root < tlsRootCount(); ++root) {
-    if (statusOf(root).matches) continue;
-    const TlsRoot* r = tlsRoot(root);
-    if (clock_.nowMs() >= deadline_ms) return TrustOutcome::kFailed;
-    if (!store_.writeRoot(certificateSlotOf(root), r->pem, deadline_ms)) return TrustOutcome::kFailed;
-    if (!store_.configureProfile(tlsProfileOf(root), certificateSlotOf(root), deadline_ms)) {
-      return TrustOutcome::kFailed;
-    }
-    // Both took: record it, so that the next boot writes nothing for this root.
-    std::memcpy(record_.written[root], want_[root], image::kSha256Size);
-    if (record_.count < root + 1) record_.count = static_cast<std::uint8_t>(root + 1);
-    save();
-    ++writes_;
-    wrote = true;
+    const TrustOutcome one = ensureRoot(root, deadline_ms);
+    if (one == TrustOutcome::kFailed || one == TrustOutcome::kNotBegun) return one;
+    if (one == TrustOutcome::kWritten) wrote = true;
   }
   return wrote ? TrustOutcome::kWritten : TrustOutcome::kUpToDate;
+}
+
+TrustOutcome TrustLoader::ensureRoot(std::uint8_t root, std::uint64_t deadline_ms) {
+  if (!begun_) return TrustOutcome::kNotBegun;
+  if (root >= tlsRootCount()) return TrustOutcome::kFailed;
+  if (statusOf(root).matches) return TrustOutcome::kUpToDate;
+  const TlsRoot* r = tlsRoot(root);
+  if (clock_.nowMs() >= deadline_ms) return TrustOutcome::kFailed;
+  if (!store_.writeRoot(certificateSlotOf(root), r->pem, deadline_ms)) return TrustOutcome::kFailed;
+  if (!store_.configureProfile(tlsProfileOf(root), certificateSlotOf(root), deadline_ms)) {
+    return TrustOutcome::kFailed;
+  }
+  // Both took: record it, so that the next boot writes nothing for this root.
+  std::memcpy(record_.written[root], want_[root], image::kSha256Size);
+  if (record_.count < root + 1) record_.count = static_cast<std::uint8_t>(root + 1);
+  save();
+  ++writes_;
+  return TrustOutcome::kWritten;
 }
 
 void TrustLoader::forget() {

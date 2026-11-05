@@ -188,9 +188,17 @@ mm::LogLevel agentLogLevel(core::settings::Level level) {
 // beside the console and the update verdict. So they are taken from the heap once at boot - never
 // a local, never freed, so the whole-run lifetime the library asks for still holds - and reached
 // through a namespace-scope pointer. See tasks/phase-4/reports/05.md, decisions.
-mm::JobRunner* g_agent_jobs = nullptr;
+//
+// *When* they are taken matters as much as where. The runner is one block of ~66 kB, and only the
+// heap region right after `.bss` (~94 kB) can hold it. ESP-IDF takes the main task's stack from the
+// same heap when it creates the task, which is after the static initialisers and before app_main.
+// Taken in app_main, they found the stack already there: with the stack at 16 kB
+// (sdkconfig.defaults) the runner no longer fit, and the boot ended in `abort()` inside `operator
+// new` (23 October 2026, the first board). Taken here, in the initialisers, the heap is still
+// whole: both blocks come first, and the stack goes to a region that has room for it.
+mm::JobRunner* g_agent_jobs = new mm::JobRunner();
 mm::AgentLoop g_agent_loop;
-std::uint8_t* g_kept_scratch = nullptr;
+std::uint8_t* g_kept_scratch = new std::uint8_t[agent::kKeptScratchBytes]();
 #endif
 
 }  // namespace
@@ -542,10 +550,8 @@ extern "C" void app_main() {
                                          g_rakfw.size() - core::image::kStoreBytes);
     if (kept_store.usable()) kept = &kept_store;
   }
-  // The runner and the kept-image scratch from the heap, once, at the top of this boot (see their
-  // declaration): a deep sleep is a full reboot, so app_main runs again and takes them again.
-  if (g_agent_jobs == nullptr) g_agent_jobs = new mm::JobRunner();
-  if (g_kept_scratch == nullptr) g_kept_scratch = new std::uint8_t[agent::kKeptScratchBytes]();
+  // The runner and the kept-image scratch were taken from the heap before this task existed (see
+  // their declaration): a deep sleep is a full reboot, so they are taken again at every boot.
   agent::AgentBackend::Parts agent_parts;
   agent_parts.mesh = &mesh;
   agent_parts.server = &server;

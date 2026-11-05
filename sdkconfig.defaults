@@ -57,6 +57,12 @@ CONFIG_ESP_BROWNOUT_DET=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+# The main task's stack. Everything this firmware does runs in the main task: the console, the
+# uplink's AT sequence, the agent's wake and every job. No task of ours is created. ESP-IDF's
+# default of 3584 bytes overflowed at the first `lte up` on a board (23 October 2026: "A stack
+# overflow in task main has been detected", then a panic reset and a core dump), which no host test
+# can see. 16 KB until a measured high-water mark says otherwise; the ESP32-S3 has the RAM for it.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # Logging at info: what the bench reads. A task that needs debug output raises it locally.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y

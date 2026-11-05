@@ -57,9 +57,10 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
     return;
   }
 
-  // The roots, once per boot in practice (core/net/trust.h).
+  // The root this request is verified against, once per boot in practice (core/net/trust.h,
+  // ensureRoot: another host's root that will not load is no reason to refuse this one).
   if (trust_ != nullptr) {
-    const TrustOutcome t = trust_->ensure(deadline);
+    const TrustOutcome t = trust_->ensureRoot(request.root, deadline);
     if (t == TrustOutcome::kFailed || t == TrustOutcome::kNotBegun) {
       finish(interfaces::HttpOutcome::kTrustFailed);
       return;

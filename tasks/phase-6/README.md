@@ -20,7 +20,9 @@ walk).
   built locally (`docs/release.md` there) — for task 03;
 - meshmaster.dk's pile 4.16 deployed (a unit registered before its repeater) — for task 04;
 - **the rig, on this machine, as `bench.local.json` says** (task 01 writes its shape): the unit
-  assembled, powered as in the field (bench supply on connector B's J7 or the battery, SW1 on), the
+  assembled, powered from the bench supply on connector B's J7 with SW1 on — **not the battery** until
+  U3 on the Walter adapter is reworked (the hardware repository's `hardware/pcb/BRING-UP.md` step 6:
+  on the boards of 2026-10-10 the Walter's USB 5 V reaches the battery rail) — the
   Walter's USB-C to this machine, an antenna on the LTE port, and on the LoRa port **a dummy load**
   for any task that puts a repeater image on the radio (task 03: the repeater firmware's rule, which
   this tool keeps — a repeater on an antenna on a desk is a stranger on the Danish mesh);

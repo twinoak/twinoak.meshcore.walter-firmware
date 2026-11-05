@@ -187,12 +187,35 @@ bool WalterUplink::resetModem(std::uint64_t deadline_ms) {
   return ok;
 }
 
+// How long between two `AT+CPIN?` while the card is still being read.
+constexpr std::uint32_t kSimPollMs = 500;
+
+// The card is powered and read when the operational state leaves MINIMUM, and that takes the modem
+// a moment. Until it has finished, `AT+CPIN?` answers *not inserted* or *busy*, the same words as a
+// slot that really is empty. The first board said `no-sim` with a card in its holder, its one
+// `AT+CPIN?` sent within milliseconds of `AT+CFUN=4` (23 October 2026). So the answer is asked for
+// until it is a definite one - ready, a PIN, a PUK - or the deadline the policy gave
+// (core/uplink/policy.h, kSimDeadlineMs) has passed. An empty slot still ends as `no-sim`, only
+// later. Asking costs the card nothing: no PIN is sent here.
 interfaces::SimState WalterUplink::sim(std::uint64_t deadline_ms) {
-  if (!before(deadline_ms)) return interfaces::SimState::kUnknown;
-  WalterModemRsp rsp = {};
-  if (!WalterModem::getSIMState(&rsp)) return fromCmeError(rsp);
-  if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_SIM_STATE) return interfaces::SimState::kUnknown;
-  return fromSimState(rsp.data.simState);
+  interfaces::SimState last = interfaces::SimState::kUnknown;
+  while (before(deadline_ms)) {
+    WalterModemRsp rsp = {};
+    if (!WalterModem::getSIMState(&rsp)) {
+      last = fromCmeError(rsp);
+    } else if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_SIM_STATE) {
+      last = interfaces::SimState::kUnknown;
+    } else {
+      last = fromSimState(rsp.data.simState);
+    }
+    if (last == interfaces::SimState::kReady || last == interfaces::SimState::kPinRequired ||
+        last == interfaces::SimState::kBlocked) {
+      return last;
+    }
+    if (!before(deadline_ms)) break;
+    clock_.delayMs(kSimPollMs);
+  }
+  return last;
 }
 
 interfaces::SimUnlock WalterUplink::unlockSim(const char* pin, std::uint64_t deadline_ms) {
@@ -276,9 +299,18 @@ bool WalterUplink::definePdp(const char* apn, std::uint64_t deadline_ms) {
   return WalterModem::definePDPContext(1, apn != nullptr ? apn : "");
 }
 
+// On LTE the attach is part of the registration: once the radio is on with automatic operator
+// selection (opState(kFull) above), the modem attaches by itself, and the registration poll that
+// follows (core/uplink/policy.cpp, step 9) is what says whether it did. QuickSpot's own examples
+// send no `AT+CGATT` at all. This firmware sent `AT+CGATT=1` here and failed the bring-up when it was
+// refused, and on the first board (23 October 2026) it was refused within about a second of the
+// radio going on, while the modem was still searching, every time - `not-registered` at *attach*
+// with a SIM that has worked on this module before. So nothing is sent here, which is the sequence
+// that SIM and this module are known to work with (`AT+CFUN=1`, `AT+COPS=0`, then wait for
+// `+CEREG`). The attach state is not persistent across a `CFUN` cycle, so nothing from a previous
+// life can be left behind that this would have undone.
 bool WalterUplink::attach(std::uint64_t deadline_ms) {
-  if (!before(deadline_ms)) return false;
-  return WalterModem::setNetworkAttachmentState(true);
+  return before(deadline_ms);
 }
 
 interfaces::Registration WalterUplink::registration() {

@@ -141,6 +141,12 @@ class TrustLoader {
   // after the first successful one it compares a few hashes and returns kUpToDate.
   TrustOutcome ensure(std::uint64_t deadline_ms);
 
+  // The same for one root: the one a connection is about to be verified against. A request needs
+  // its own root and no other, so a root the modem refuses blocks only the hosts that use it
+  // (core/net/http_over_tls.cpp). On the first board (23 October 2026) root 1 would not load while
+  // root 0 had, and with ensure() in front of every request no request to any host got through.
+  TrustOutcome ensureRoot(std::uint8_t root, std::uint64_t deadline_ms);
+
   RootStatus statusOf(std::uint8_t root) const;
   std::uint32_t writesThisBoot() const { return writes_; }
   bool recordLost() const { return record_lost_; }
