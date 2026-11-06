@@ -76,7 +76,40 @@ def run_push(console, release, which="candidate", extra=()):
     return done
 
 
+def check_undo_crlf():
+    """--undo-crlf is the exact inverse of a 0.1.0 Walter's LF -> CR LF, whatever the bytes and
+    however the reads split them (tasks/phase-6/FOLLOWUPS.md)."""
+    import random
+    sys.path.insert(0, HERE)
+    import walterctl
+
+    class Canned:
+        name = "canned"
+
+        def __init__(self, pieces):
+            self.pieces = list(pieces)
+
+        def read(self, timeout):
+            return self.pieces.pop(0) if self.pieces else b""
+
+    rng = random.Random(20261106)
+    alphabet = bytes([0x00, 0x0A, 0x0D, 0x41, 0xFF])
+    exact = True
+    for _ in range(2000):
+        sent = bytes(rng.choice(alphabet) for _ in range(rng.randint(0, 40)))
+        wire = sent.replace(b"\n", b"\r\n")
+        cuts = sorted(rng.sample(range(len(wire) + 1), min(len(wire) + 1, rng.randint(0, 4))))
+        pieces = [wire[a:b] for a, b in zip([0] + cuts, cuts + [len(wire)])]
+        undo = walterctl.UndoCrlf(Canned(pieces))
+        got = b"".join(undo.read(0) for _ in range(len(pieces)))
+        if undo.held_cr:
+            got += b"\r"  # a 0x0D at the very end waits for a byte that never comes
+        exact = exact and got == sent
+    check(exact, "--undo-crlf restores 2000 random byte strings through split reads exactly")
+
+
 def main(argv):
+    check_undo_crlf()
     parser = argparse.ArgumentParser()
     parser.add_argument("--console", required=True, help="the console host binary")
     parser.add_argument("--generated", help="host_test's generated manifest fixtures (the Walter's own images)")

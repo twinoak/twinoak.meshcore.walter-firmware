@@ -7,6 +7,7 @@ which is the bench's stand-in for a server until phase 3 gives the Walter an upl
     walterctl.py push --port COM7 --as candidate <release-dir> [--image <id>] [--slot 0]
     walterctl.py push --console ./walter_console --as candidate <release-dir>
     walterctl.py push --port COM7 --as base <release-dir>
+    walterctl.py push --port COM7 --undo-crlf --as candidate <release-dir>   (a Walter at 0.1.0)
 
 A <release-dir> is what tools/release/build_release.py writes and a GitHub Release carries:
 `manifest.json`, `manifest.json.sig` and the image files the manifest names. The three things that
@@ -106,11 +107,57 @@ class SerialPort:
         self.port.flush()
 
     def read(self, timeout):
+        # What has arrived, as soon as anything has. `read(4096)` alone waits out the whole timeout
+        # unless 4096 bytes come (pyserial's rule), which made every acknowledgement of a lock-step
+        # transfer cost REPLY_TIMEOUT: 1700 chunks, two and a half hours (first board, 6 November).
         self.port.timeout = timeout
-        return self.port.read(4096) or b""
+        first = self.port.read(1)
+        if not first:
+            return b""
+        waiting = self.port.in_waiting
+        return first + (self.port.read(waiting) if waiting else b"")
 
     def close(self):
         self.port.close()
+
+
+class UndoCrlf:
+    """A Walter at 0.1.0 or older sends the transfer's answers through its console's text output,
+    which turns every 0x0A into 0x0D 0x0A (`platform::UsbConsole::write`), so an answer that holds
+    a 0x0A - the one to chunk 9, which names chunk 10, always - arrives corrupted
+    (tasks/phase-6/FOLLOWUPS.md). That conversion has an exact inverse: every 0x0D 0x0A back to
+    0x0A, left to right; a genuine 0x0D 0x0A arrived as 0x0D 0x0D 0x0A and comes out right.
+    Only for such a Walter: against one that sends its frames raw, this would break a frame that
+    holds a genuine 0x0D 0x0A, which is why it is a flag and never the default."""
+
+    def __init__(self, transport):
+        self.transport = transport
+        self.name = transport.name
+        self.held_cr = False  # a 0x0D at the end of the last read, until the next byte says what it was
+
+    def undo(self, data):
+        out = bytearray()
+        for byte in data:
+            if self.held_cr:
+                self.held_cr = False
+                if byte == 0x0A:
+                    out.append(0x0A)
+                    continue
+                out.append(0x0D)
+            if byte == 0x0D:
+                self.held_cr = True
+            else:
+                out.append(byte)
+        return bytes(out)
+
+    def write(self, data):
+        self.transport.write(data)
+
+    def read(self, timeout):
+        return self.undo(self.transport.read(timeout))
+
+    def close(self):
+        self.transport.close()
 
 
 class ConsoleProcess:
@@ -266,7 +313,11 @@ class Transfer:
                      % (name, start, len(data)))
         seq = 0
         at = start
+        tenth = 0  # progress: a line at every tenth of a file larger than a few chunks
         while at < len(data):
+            if len(data) > 16 * CHUNK and at * 10 // len(data) > tenth:
+                tenth = at * 10 // len(data)
+                self.say("  %s: %d of %d bytes" % (name, at, len(data)))
             piece = data[at:at + CHUNK]
             status, next_seq, _, reply = self.request(T_DATA, seq, piece)
             if status == ST_REFUSED:
@@ -361,6 +412,8 @@ def push(args):
         transport = ConsoleProcess([args.console])
     else:
         transport = SerialPort(args.port)
+    if args.undo_crlf:
+        transport = UndoCrlf(transport)
     transfer = Transfer(transport, verbose=not args.quiet)
     try:
         if args.which == "self":
@@ -432,6 +485,9 @@ def main(argv):
                        help="a program to talk to over its standard input and output instead of a "
                             "serial port (host_test/console_host/, for testing this tool)")
     p.add_argument("--quiet", action="store_true", help="only the result")
+    p.add_argument("--undo-crlf", action="store_true",
+                   help="for a Walter at 0.1.0 or older, whose console turns every 0x0A it sends "
+                        "into CR LF and so corrupts the transfer's answers; never for a fixed one")
     args = parser.parse_args(argv[1:])
     if args.command == "push":
         try:
