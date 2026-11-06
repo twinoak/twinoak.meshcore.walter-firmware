@@ -24,6 +24,7 @@
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
 #include "core/console/console.h"
+#include "core/console/crlf.h"
 #include "core/health/health.h"
 #include "core/image/choose.h"
 #include "core/image/receive.h"
@@ -118,10 +119,22 @@ class HostRestart final : public interfaces::Restart {
 };
 
 // stdout, unbuffered: the laptop on the other end of the pipe is waiting for frames.
+//
+// Text goes through the same LF -> CR LF as a board's console (core/console/crlf.h), because a
+// pipe that wrote text verbatim is what hid task p8-02's fault: `walterctl.py push` worked here
+// and could not finish on a board. Bytes go out as they are, which is what a frame needs.
 class StdOut final : public interfaces::TextOut {
  public:
   void write(const char* text, std::size_t length) override {
-    std::fwrite(text, 1, length, stdout);
+    char buffer[core::console::kCrlfBuffer];
+    std::size_t at = 0;
+    while (at < length) {
+      const core::console::CrlfRun run =
+          core::console::toCrlf(text + at, length - at, buffer, sizeof buffer);
+      if (run.put == 0) break;
+      std::fwrite(buffer, 1, run.put, stdout);
+      at += run.taken;
+    }
     std::fflush(stdout);
   }
 };

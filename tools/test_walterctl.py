@@ -10,7 +10,9 @@ and runs this file as a ctest, so `tools/verify.ps1 -Only host-tests` covers it.
 
 The release pushed is made here out of `spec/fixtures/manifest/`: the specification's repeater
 manifest, its signature by the test key, and the image file under the name the manifest gives it -
-which is what a real release directory looks like.
+which is what a real release directory looks like. `--generated` is host_test's own fixtures
+(fixtures/gen_manifest_fixtures.py, signed with the same test key through spec/tools/manifestref.py):
+the 20 480-byte image of the 86-chunk push and the Walter's own `ota` image.
 """
 
 import argparse
@@ -68,6 +70,24 @@ def make_release(directory, manifest_name="manifest-repeater.json",
     return manifest, entry
 
 
+def make_generated_release(directory, generated, name, use):
+    """A release directory out of one of host_test's generated fixtures (gen_manifest_fixtures.py,
+    the spec's test key through spec/tools/manifestref.py): <name>.json as manifest.json, its .sig,
+    and <name>.bin under the name that manifest gives the file of `use`."""
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(generated, name + ".json"), "rb") as fh:
+        manifest_bytes = fh.read()
+    with open(os.path.join(directory, "manifest.json"), "wb") as fh:
+        fh.write(manifest_bytes)
+    shutil.copyfile(os.path.join(generated, name + ".json.sig"),
+                    os.path.join(directory, "manifest.json.sig"))
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    entry = next(f for img in manifest["images"] for f in img["files"] if f["use"] == use)
+    shutil.copyfile(os.path.join(generated, name + ".bin"),
+                    os.path.join(directory, entry["name"]))
+    return manifest, entry
+
+
 def run_push(console, release, which="candidate", extra=()):
     command = [sys.executable, WALTERCTL, "push", release, "--as", which]
     command += list(extra)
@@ -112,7 +132,9 @@ def main(argv):
     check_undo_crlf()
     parser = argparse.ArgumentParser()
     parser.add_argument("--console", required=True, help="the console host binary")
-    parser.add_argument("--generated", help="host_test's generated manifest fixtures (the Walter's own images)")
+    parser.add_argument("--generated", required=True,
+                        help="host_test's generated manifest fixtures (the big push's image and "
+                             "the Walter's own); host_test/CMakeLists.txt always passes it")
     args = parser.parse_args(argv[1:])
     if not os.path.isfile(args.console):
         print("no console host at %s" % args.console)
@@ -130,6 +152,24 @@ def main(argv):
         check("stored as the candidate image" in done.stdout, "it says the image was stored")
         check(entry["name"] in done.stdout, "it names the file it sent")
         check(str(entry["size"]) in done.stdout, "it says how many bytes")
+
+        # 1a. A push of more than ten chunks (task p8-02): host_test's generated store-a, 20 480
+        #     bytes, 86 chunks. Three kinds of answer carry a 0x0A here and so are the ones a
+        #     0.1.0 Walter corrupted (tasks/phase-6/FOLLOWUPS.md): the one that names chunk 10,
+        #     the one whose byte count is 2 640 (0x0A50) and whichever ones have a 0x0A in their
+        #     CRC. With the conversion in the console host and the fix out, this step fails at
+        #     chunk 9 exactly as the board did on 6 November.
+        big = os.path.join(work, "big")
+        manifest, entry = make_generated_release(big, args.generated, "store-a", "swd")
+        chunks = (entry["size"] + 239) // 240
+        check(chunks > 10, "the big push is more than ten chunks (%d of %d bytes)"
+              % (chunks, entry["size"]))
+        done = run_push(args.console, big)
+        print(done.stdout)
+        if done.returncode != 0:
+            print(done.stderr)
+        check(done.returncode == 0, "a push of %d chunks against the console: exit 0" % chunks)
+        check("stored as the candidate image" in done.stdout, "and the image was stored")
 
         # 2. The golden image of a fresh unit: allowed once (a unit's first provisioning).
         done = run_push(args.console, release, which="golden")
@@ -222,24 +262,15 @@ def main(argv):
         check("does not have the SHA-256 the manifest gives" in done.stderr, "and it says which")
 
         # 9. A Walter image that fits: the generated fixture self-a, loading at ota_0's offset.
-        if args.generated:
-            own = os.path.join(work, "self")
-            os.makedirs(own)
-            with open(os.path.join(args.generated, "self-a.json"), "rb") as fh:
-                own_manifest = fh.read()
-            with open(os.path.join(own, "manifest.json"), "wb") as fh:
-                fh.write(own_manifest)
-            shutil.copyfile(os.path.join(args.generated, "self-a.json.sig"), os.path.join(own, "manifest.json.sig"))
-            ota = next(f for img in json.loads(own_manifest.decode("utf-8"))["images"] for f in img["files"]
-                       if f["use"] == "ota")
-            shutil.copyfile(os.path.join(args.generated, "self-a.bin"), os.path.join(own, ota["name"]))
-            done = run_push(args.console, own, which="self")
-            print(done.stdout)
-            if done.returncode != 0:
-                print(done.stderr)
-            check(done.returncode == 0, "walterctl push --as self against the console: exit 0")
-            check("stored in the Walter's other application slot" in done.stdout, "it says where it went")
-            check("`self switch` makes it the next to boot" in done.stdout, "and what comes next")
+        own = os.path.join(work, "self")
+        make_generated_release(own, args.generated, "self-a", "ota")
+        done = run_push(args.console, own, which="self")
+        print(done.stdout)
+        if done.returncode != 0:
+            print(done.stderr)
+        check(done.returncode == 0, "walterctl push --as self against the console: exit 0")
+        check("stored in the Walter's other application slot" in done.stdout, "it says where it went")
+        check("`self switch` makes it the next to boot" in done.stdout, "and what comes next")
 
     print("\n%d checks, %d failed" % (checks, len(failures)))
     for failure in failures:
