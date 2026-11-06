@@ -1908,8 +1908,13 @@ void Console::imageReceive(image::Which which) {
   const image::SlotNeeds& needs = receiver_->needs();
   // One printf a line: Console::printf writes into a 200-byte buffer and cuts what does not fit.
   const bool base = which == image::Which::kBase;
-  printf("image receive: slot %u's %s; this port is now a framed binary transfer\n",
-         static_cast<unsigned>(slot_.index), base ? "base" : image::name(which));
+  // The protocol's version in the ready line, in text, before a frame has been sent: it is how
+  // walterctl decides whether it is talking to a Walter at 0.1.0 - whose answers came through
+  // this very conversion and could be corrupted, the hello's own among them - without having to
+  // guess from a frame it may not be able to read (task p8-02, tools/walterctl.py).
+  printf("image receive: slot %u's %s; this port is now a framed binary transfer (protocol %u)\n",
+         static_cast<unsigned>(slot_.index), base ? "base" : image::name(which),
+         static_cast<unsigned>(image::transfer::kVersion));
   print("  (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,\n");
   printf("  then the file: tools/walterctl.py push --as %s\n", image::name(which));
   printf("  what will be accepted: role %s, board %s, band %s, and %s of\n", needs.role,
@@ -1930,6 +1935,13 @@ void Console::transferEnded() {
          static_cast<unsigned long>(receiver_->duplicates()),
          static_cast<unsigned long>(receiver_->outOfOrder()),
          static_cast<unsigned long>(receiver_->droppedFrames()));
+  // An answer the port would not take whole (task p8-02). Said only when it happened, because it
+  // never should: to the laptop such an answer is a lost one, and this line is what tells a
+  // person at the bench that the port, and not the cable or the tool, is where it went.
+  if (receiver_->cutShort() != 0) {
+    printf("  %lu answers the port would not take whole\n",
+           static_cast<unsigned long>(receiver_->cutShort()));
+  }
   if (receiver_->stored()) {
     print(self ? "  'self status' shows it; 'self switch' makes it the next to boot and restarts\n"
                : "  'image list' shows it; 'image verify' reads it back\n");
@@ -2277,8 +2289,10 @@ void Console::selfReceive() {
   const image::SlotNeeds& needs = self_->needs();
   interfaces::OwnSlot other;
   (void)self_->otherSlot(&other);
-  printf("self receive: this Walter's other application slot (%u); this port is now a framed binary transfer\n",
-         static_cast<unsigned>(other.index));
+  // The protocol's version, as `image receive` says it (above).
+  printf("self receive: this Walter's other application slot (%u); this port is now a framed "
+         "binary transfer (protocol %u)\n",
+         static_cast<unsigned>(other.index), static_cast<unsigned>(image::transfer::kVersion));
   print("  (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,\n");
   print("  then the ota file: tools/walterctl.py push --as self\n");
   printf("  what will be accepted: role %s, board %s, band %s, an ota file that fits the slot,\n",

@@ -15,6 +15,9 @@ idf_component_register(
        "console/commands.cpp"
        "console/console.cpp"
        "console/log_ring.cpp"
+       # The terminal's LF -> CR LF, in one place (task p8-02): the platform's console and the
+       # console host of host_test/ both convert through it, so a test sees a board's bytes.
+       "console/crlf.cpp"
        "link/codec/cobs.cpp"
        "link/codec/packet.cpp"
        "link/codec/frame.cpp"

@@ -41,7 +41,10 @@ struct Reply {
 // came back.
 struct Laptop {
   StoreBench b;
-  fakes::CaptureOut out;
+  // The board's console and not a verbatim one (task p8-02): text through the terminal's
+  // LF -> CR LF, bytes as they are. Every test in this file now reads the answers out of the
+  // output a board produces, which is what the 6 November fault needed to be visible.
+  fakes::TerminalOut out;
   Receiver receiver{b.store, b.verdict, out, b.clock};
   core::link::FrameReceiver rx;
 
@@ -153,7 +156,7 @@ TEST_CASE("a whole transfer: the manifest, its signature, the image, and the rec
   REQUIRE(hello.got);
   CHECK(hello.type == (transfer::kHello | transfer::kResponseBit));
   CHECK(hello.status == transfer::kOk);
-  CHECK(hello.text.find("walter image receive 1") == 0);
+  CHECK(hello.text.find("walter image receive 2") == 0);  // the version: task p8-02's bytes
   CHECK(hello.text.find("candidate") != std::string::npos);
 
   laptop.sendManifestAndSignature(a);
@@ -300,6 +303,62 @@ TEST_CASE("a frame with a bad checksum is dropped and counted, and bytes that ar
   // The frame again, correct this time.
   const Reply reply = laptop.send(transfer::kFile, 0, payload);
   CHECK(reply.status == transfer::kOk);
+}
+
+// -------------------------------------------------------------- the answers are bytes (p8-02)
+
+TEST_CASE("an answer that holds a 0x0A comes out byte for byte through a converting console") {
+  Laptop laptop;
+  REQUIRE(laptop.begin(Which::kCandidate));
+
+  // Ten chunks of a manifest. The answer to the tenth (seq 9) says the next one wanted is 10,
+  // which is 0x0A, and that is the answer the first unit's console turned into CR LF on
+  // 6 November: walterctl could not parse it and sent chunk 9 again, four times, for ever
+  // (tasks/phase-6/FOLLOWUPS.md). laptop.out converts text exactly as a board does.
+  const std::size_t chunk = 240;
+  const std::size_t count = 10;
+  std::vector<std::uint8_t> manifest(chunk * count, 'x');
+  Reply reply = laptop.send(transfer::kFile, 0,
+                            Laptop::fileHeader(transfer::kKindManifest,
+                                               static_cast<std::uint32_t>(manifest.size())));
+  REQUIRE(reply.status == transfer::kOk);
+  for (std::size_t i = 0; i < count; ++i) {
+    reply = laptop.send(transfer::kData, static_cast<std::uint8_t>(i),
+                        manifest.data() + i * chunk, chunk);
+    REQUIRE(reply.got);
+    REQUIRE(reply.status == transfer::kOk);
+  }
+  CHECK(reply.next_seq == 10);
+
+  // And the bytes themselves: §2's leading 0x00 and the frame, nothing else, not a byte added.
+  // `out` holds only the last answer (send() clears it), so this is the whole of it.
+  std::uint8_t payload[6] = {transfer::kOk, 10, 0, 0, 0, 0};  // status, next_seq, committed u32
+  std::uint8_t expected[core::link::kMaxWrite];
+  expected[0] = 0;
+  const std::size_t frame = core::link::buildFrame(
+      static_cast<std::uint8_t>(transfer::kData | transfer::kResponseBit), 9,
+      core::link::bytes(payload, sizeof payload), expected + 1, sizeof expected - 1);
+  REQUIRE(frame > 0);
+  const std::string want(reinterpret_cast<const char*>(expected), frame + 1);
+  CHECK(laptop.out.text == want);
+  const bool holds_lf = laptop.out.text.find('\n') != std::string::npos;
+  CHECK(holds_lf);  // the byte the conversion would have doubled is in there
+  CHECK(laptop.receiver.cutShort() == 0);
+}
+
+TEST_CASE("a port that will not take a whole answer: the Walter counts it") {
+  Laptop laptop;
+  REQUIRE(laptop.begin(Which::kCandidate));
+  // The port takes four bytes of the next answer and no more: to the laptop that is an answer
+  // that never came, and the Walter counts it rather than believing it was sent.
+  laptop.out.clear();
+  laptop.out.cut_at = 4;
+  const Reply reply = laptop.send(transfer::kHello, 0);
+  CHECK_FALSE(reply.got);
+  CHECK(laptop.out.text.size() == 4);
+  CHECK(laptop.receiver.cutShort() == 1);
+  // The transfer is untouched by it: the hello was answered, badly, and the laptop asks again.
+  CHECK(laptop.receiver.active());
 }
 
 TEST_CASE("a manifest larger than this firmware reads is refused before it is buffered") {

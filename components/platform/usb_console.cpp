@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "core/console/crlf.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_vfs_common.h"
@@ -10,7 +11,15 @@
 namespace platform {
 
 namespace {
+// Text: a few ticks, and what a port nobody reads will not take is dropped (text_out.h).
 constexpr TickType_t kWriteTimeout = pdMS_TO_TICKS(20);
+// Bytes: a frame goes out whole or not at all, so this waits far longer than the 20 ms above -
+// a frame is at most 247 bytes (core/link/codec/wire.h, kMaxWrite) into a 1 KB transmit buffer,
+// so a host that is reading at all never comes near this, and a host that is not gets one
+// second of patience and a false. walterctl waits 5 s for an answer (tools/walterctl.py,
+// REPLY_TIMEOUT) and the transfer gives up after 20 s of silence, so a second of blocking here
+// costs a retry at worst.
+constexpr TickType_t kBytesTimeout = pdMS_TO_TICKS(1000);
 }
 
 bool UsbConsole::begin() {
@@ -26,14 +35,38 @@ bool UsbConsole::begin() {
 }
 
 void UsbConsole::write(const char* text, std::size_t length) {
-  std::size_t start = 0;
-  for (std::size_t i = 0; i < length; ++i) {
-    if (text[i] != '\n') continue;
-    if (i > start) usb_serial_jtag_write_bytes(text + start, i - start, kWriteTimeout);
-    usb_serial_jtag_write_bytes("\r\n", 2, kWriteTimeout);
-    start = i + 1;
+  // The conversion is core/console/crlf.h's, so that host_test/console_host/ can do the same one
+  // and a test sees the bytes this board sends (task p8-02). The write itself stays as it was:
+  // one call a converted piece, a few ticks each, and what does not fit is dropped.
+  char buffer[core::console::kCrlfBuffer];
+  std::size_t at = 0;
+  while (at < length) {
+    const core::console::CrlfRun run =
+        core::console::toCrlf(text + at, length - at, buffer, sizeof buffer);
+    if (run.put == 0) return;  // the buffer is 128 bytes: this cannot happen
+    usb_serial_jtag_write_bytes(buffer, run.put, kWriteTimeout);
+    at += run.taken;
   }
-  if (length > start) usb_serial_jtag_write_bytes(text + start, length - start, kWriteTimeout);
+}
+
+bool UsbConsole::writeBytes(const std::uint8_t* bytes, std::size_t count) {
+  if (bytes == nullptr) return count == 0;
+  // Verbatim, and whole: the driver takes what fits in its transmit buffer and returns how much
+  // that was, so a frame larger than the room left needs more than one call. The loop keeps the
+  // remaining ticks itself (an unsigned difference, so a tick-count wrap is still right) rather
+  // than comparing against a deadline.
+  std::size_t at = 0;
+  TickType_t left = kBytesTimeout;
+  TickType_t last = xTaskGetTickCount();
+  while (at < count && left > 0) {
+    const int wrote = usb_serial_jtag_write_bytes(bytes + at, count - at, left);
+    if (wrote > 0) at += static_cast<std::size_t>(wrote);
+    const TickType_t now = xTaskGetTickCount();
+    const TickType_t spent = now - last;
+    last = now;
+    left = spent >= left ? 0 : static_cast<TickType_t>(left - spent);
+  }
+  return at == count;
 }
 
 int UsbConsole::readByte(std::uint32_t timeout_ms) {

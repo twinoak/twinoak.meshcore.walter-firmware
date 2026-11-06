@@ -65,8 +65,21 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   jumpy), then **8 mA** for the whole unit on the lab supply at 3.7 V: the repeater listening, the
   Walter in deep sleep with the modem at `CFUN=0`, and connector B. §16's microamp walk splits that
   between the boxes.
-- [ ] **[p8-02] `walterctl.py push` cannot finish on a board: the transfer's answers go
-  through the console's LF -> CR LF conversion.** First tried 6 November, repeater v0.1.0 as the
+- [x] **[p8-02] `walterctl.py push` cannot finish on a board: the transfer's answers go
+  through the console's LF -> CR LF conversion.** *Fixed by task p8-02
+  (`tasks/phase-8/reports/02.md`): `interfaces::TextOut::writeBytes` (verbatim, looping to a
+  one-second bound on the platform, false rather than a frame cut short),
+  `Receiver::respond` through it with §2's leading 0x00 in the same write, and the conversion in
+  `core/console/crlf.h` which `host_test/console_host/`'s TextOut now calls too - so the host
+  tests run against the output a board produces. The transfer's hello and the console's ready line
+  say `protocol 2`, and `walterctl` reads the version off that ready line and undoes the
+  conversion only for a `protocol 1` Walter over a serial port; `--undo-crlf` stays as a forced
+  override and the hello's version word refuses it against a fixed Walter.
+  `tools/test_walterctl.py` pushes 86 chunks (host_test's generated store-a, 20 480 bytes), tests
+  `SerialPort.read` against a port that answers short, and holds the version choice; with the
+  conversion in and the fix out it failed exactly as the board did, `no answer to type 0x03 seq 9`
+  four times. The reviewer's `SerialPort.read` and progress lines were reviewed and kept. Still to
+  be seen on the board: `docs/bench.md` §8 (a whole release pushed, timed) and §10.* First tried 6 November, repeater v0.1.0 as the
   candidate into a Walter running v0.1.0: the hello and the first frames went through, then
   `no answer to type 0x03 seq 9` four times, and the console printed what walterctl could not read
   (`again` among the bytes). `Receiver::respond` (`components/core/image/receive.cpp`) writes its
