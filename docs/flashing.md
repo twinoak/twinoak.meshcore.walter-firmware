@@ -91,6 +91,30 @@ Two ways in, and the first time it is always the cable:
 The repeater needs none of this to repeat: it boots, repeats and answers mesh administration with
 the Walter asleep, dead or absent ([`field.md`](field.md)).
 
+### Pushing a repeater image in over the cable
+
+With a release of the repeater firmware on the laptop, its image goes into this Walter's store over
+the same USB cable, and `rak update` takes it from there
+([`console.md`](console.md), *Loading a radio image over USB*):
+
+```
+python tools/walterctl.py push --port COM7 --as candidate <release-dir>
+```
+
+The release's `swd` file is 400 kB and more — about 1,740 chunks, a progress line every tenth of
+the file, then `stored as the candidate image`. Expect **seconds, not hours**: until 6 November the
+laptop's end waited out its whole 5 s reply timeout for every acknowledgement, which was two and a
+half hours for one radio image ([`bench.md`](bench.md) §8 has the figure to write down). Then
+`rak update`, or `rak update --first-install` on a radio that has no golden image yet.
+
+**A Walter at 0.1.0 needs nothing typed.** Its console turned the transfer's answers into CR LF and
+no push of more than nine chunks could finish (task p8-02; the ready line of such a Walter says no
+protocol). `walterctl` reads the version off that ready line and puts the conversion back out of
+the answers by itself, saying so in one line — *a Walter at 0.1.0 or older: taking its console's
+CR LF back out of its answers*. It is slower than a 0.1.1 push and it finishes. `--undo-crlf` is
+the same thing forced, for a Walter whose ready line cannot be read at all; it is never needed
+against 0.1.1 or newer, and the hello's version word refuses it there.
+
 ## Checking in
 
 A provisioned unit is an **exit node** on meshmaster.dk — the uplink of its repeater. Register it

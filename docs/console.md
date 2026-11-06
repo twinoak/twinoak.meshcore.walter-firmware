@@ -331,8 +331,9 @@ A `<release-dir>` is what `tools/release/build_release.py` writes and a GitHub R
 What happens on the Walter, in this order:
 
 1. `image receive candidate` prints what the transfer will accept — **role, board and band**, so
-   that a mistake is visible before any bytes move — and then **the port is no longer a console**:
-   the bytes are frames, nothing is echoed and there is no prompt.
+   that a mistake is visible before any bytes move — and **which version of the transfer it
+   speaks**, `(protocol 2)`, and then **the port is no longer a console**: the bytes are frames,
+   nothing is echoed and there is no prompt.
 2. The framing is the box link's own (`spec/LINK-PROTOCOL.md` §2: COBS, CRC-16, a type, a sequence
    number, one `0x00` ending a frame). One chunk, one acknowledgement. A chunk that arrives twice is
    acknowledged again and written once; one out of order is answered with the number wanted; a frame
@@ -349,7 +350,22 @@ What happens on the Walter, in this order:
    is the record written, by one small final write. For a base it is **checks 4 and 5p**: a base
    carries no descriptor, so §4a's seven rules stand in place of checks 5 and 6.
 6. The console comes back with one line saying what happened — `image receive: stored`, or the
-   number of the check that refused it and why — the chunk counters, and a prompt.
+   number of the check that refused it and why — the chunk counters, and a prompt. A second
+   counting line appears only when something went wrong with the port itself: *`N` answers the
+   port would not take whole*, which to the laptop looked like answers that never came.
+
+**The transfer's version, and a Walter at 0.1.0** (task p8-02). The answers are frames and go out
+as bytes, verbatim: that is **protocol 2**, which the ready line and the transfer's hello both say
+(`walter image receive 2`). Up to 0.1.0 they went out through the console's text output, which
+turns every `0x0A` into CR LF for a terminal — and the answer that names chunk 10 carries `0x0A`,
+as does a byte count of 2,640 and one CRC in 128. So a push of more than nine chunks into a Walter
+at 0.1.0 could not finish: `no answer to type 0x03 seq 9`, for ever
+([`tasks/phase-6/FOLLOWUPS.md`](../tasks/phase-6/FOLLOWUPS.md), 6 November). `walterctl` reads the
+version off the ready line, before it sends a frame, and puts that conversion back out of the
+answers when — and only when — the Walter says `protocol 1` over a serial port; it then holds the
+hello's own version word against that and stops if the two disagree. **Nothing needs to be typed**:
+`--undo-crlf` forces the same thing for a Walter whose ready line cannot be read, and the hello's
+word stops it being used against a Walter that does not need it.
 
 A transfer whose other end goes away ends by itself after 20 seconds of silence, so a Walter whose
 cable was pulled mid-push is a console again rather than mute. A push that was cut short is
@@ -561,7 +577,7 @@ board's two application slots and take no slot.
 | Command | What it does |
 |---|---|
 | `self status` | `running: slot 1 at 0x310000 (3072 KB): valid (confirmed), version 0.4.0+w1` and the same for the other slot; then `on trial for 42 s of 300: main loop met; radio met (1 HELLO); uplink failed, trying again (2 attempts)` while a trial runs, or `the running image is confirmed` (or the bootloader's word for its state); then `received: <version> in slot N (<bytes>), waiting for 'self switch'` when an image is; then `the last self-update's story (N entries):` with one line per journal entry — *received*, *switching to … from …*, *on trial*, *confirmed*, *rolled back: <reason>*. On a fresh unit: `self status: no self-update has been journalled on this unit` |
-| `self receive` | `self receive: this Walter's other application slot (1); this port is now a framed binary transfer` and what will be accepted (role manager, board walter, band lte-m, an ota file that fits the slot); the transfer ends with `self receive: stored` or `self receive: <refusal>`. Refused in one `error:` line when the running image is on trial, a radio update is in progress (S-7) or a transfer is open |
+| `self receive` | `self receive: this Walter's other application slot (1); this port is now a framed binary transfer (protocol 2)` and what will be accepted (role manager, board walter, band lte-m, an ota file that fits the slot); the transfer ends with `self receive: stored` or `self receive: <refusal>`. Refused in one `error:` line when the running image is on trial, a radio update is in progress (S-7) or a transfer is open |
 | `self switch [radio-down]` | `self switch: making <version> (slot N) the next to boot, from <version>; the radio is told and the Walter restarts`, then the restart. Refused in one `error:` line for the battery, a radio update in progress, the running image unconfirmed, nothing received, the other slot changed, or the radio silent without `radio-down` |
 | `self confirm` | `self confirm: the running image is confirmed (valid); the trial is over` |
 | `self reject` | `self reject: the running image is rejected; restarting into the previous image` |

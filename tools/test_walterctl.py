@@ -128,8 +128,124 @@ def check_undo_crlf():
     check(exact, "--undo-crlf restores 2000 random byte strings through split reads exactly")
 
 
+def check_serial_read():
+    """SerialPort.read returns what has arrived as soon as anything has (the reviewer's change of
+    6 November): `read(4096)` alone waits out the whole reply timeout unless 4096 bytes come, which
+    cost REPLY_TIMEOUT an acknowledgement - about 2.5 hours for one radio image. A board is the
+    only real test of a port, so this holds the method against a port object that answers short."""
+    sys.path.insert(0, HERE)
+    import walterctl
+
+    class FakeSerial:
+        """Enough of pyserial's Serial: `arrivals` are the pieces the OS buffer gets, one per
+        read that finds nothing waiting; `reads` records how many bytes each read asked for."""
+
+        def __init__(self, arrivals):
+            self.arrivals = list(arrivals)
+            self.pending = bytearray()
+            self.timeout = None
+            self.reads = []
+            self.waited = 0.0
+
+        @property
+        def in_waiting(self):
+            return len(self.pending)
+
+        def read(self, size=1):
+            self.reads.append(size)
+            if not self.pending:
+                if not self.arrivals:
+                    self.waited += self.timeout or 0.0  # a read that found nothing burns the timeout
+                    return b""
+                self.pending += self.arrivals.pop(0)
+            took = bytes(self.pending[:size])
+            del self.pending[:size]
+            return took
+
+        def close(self):
+            pass
+
+    def port(arrivals):
+        fake = FakeSerial(arrivals)
+        return walterctl.SerialPort("fake", open_port=fake), fake
+
+    # A whole answer waiting: one byte, then everything else in one go - and never a read for
+    # 4096 bytes, which is what made it wait.
+    tube, fake = port([b"\x00\x81\x00abc\x00"])
+    check(tube.read(5.0) == b"\x00\x81\x00abc\x00", "SerialPort.read gives back the whole answer")
+    check(fake.reads == [1, 6], "and it reads one byte, then exactly what is waiting")
+    check(fake.waited == 0.0, "and it does not wait out the timeout when bytes are there")
+    check(fake.timeout == 5.0, "and the timeout it was given is the port's")
+
+    # One byte and nothing more: no second read, so nothing is waited for twice.
+    tube, fake = port([b"A"])
+    check(tube.read(1.0) == b"A", "one byte alone comes straight back")
+    check(fake.reads == [1], "with no second read")
+
+    # Nothing at all: b"" after the timeout, and the caller's deadline is what ends the wait.
+    tube, fake = port([])
+    check(tube.read(0.25) == b"", "a silent port gives back nothing")
+    check(fake.waited == 0.25, "having waited the timeout it was given, once")
+
+
+def check_protocol_choice():
+    """Which transfer the Walter speaks comes from the console's own ready line, and the undo
+    follows from that and from the transport (task p8-02)."""
+    sys.path.insert(0, HERE)
+    import walterctl
+
+    class Canned:
+        """A transport that hands back pieces of what a console said, one piece a read."""
+        name = "canned"
+
+        def __init__(self, pieces):
+            self.pieces = list(pieces)
+
+        def write(self, data):
+            pass
+
+        def read(self, timeout):
+            return self.pieces.pop(0) if self.pieces else b""
+
+        def close(self):
+            pass
+
+    def version_of(pieces):
+        return walterctl.Transfer(Canned(pieces), verbose=False).protocol_version(timeout=0.3)
+
+    # A Walter at 0.1.0: the ready line names no protocol, and its text comes with CR LF.
+    old = (b"image receive: slot 0's candidate; this port is now a framed binary transfer\r\n"
+           b"  (COBS and CRC-16, the box link's own framing).\r\n")
+    check(version_of([old]) == 1, "a ready line with no protocol word is protocol 1")
+    # From 0.1.1, and in pieces: a read that stops in the middle of the line must not be read as
+    # a 1 - the words come before the version, so the whole line has to arrive first.
+    new = (b"image receive: slot 0's candidate; this port is now a framed binary transfer "
+           b"(protocol 2)\r\n  (COBS and CRC-16, the box link's own framing).\r\n")
+    check(version_of([new]) == 2, "a ready line that names protocol 2 is protocol 2")
+    cut = new.index(b"transfer") + len(b"transfer")
+    check(version_of([new[:cut], new[cut:]]) == 2,
+          "and still 2 when the read stops right after the words")
+    check(version_of([new[:cut], b"", b"", new[cut:]]) == 2, "and when empty reads come between")
+    # A console that says something else - `error: image receive: ...`, a prompt - is not a
+    # transfer: nothing is sent into it.
+    refused = b"error: image receive: a transfer is already running\r\n> "
+    try:
+        version_of([refused])
+        check(False, "a console that did not open a transfer is a refusal")
+    except walterctl.Fault as fault:
+        check("did not say it was ready" in str(fault),
+              "a console that did not open a transfer is a refusal")
+    # And the undo follows from the version and the transport, and from nothing else.
+    check(walterctl.undo_crlf_needed(1, True), "protocol 1 over a serial port: the undo goes on")
+    check(not walterctl.undo_crlf_needed(1, False), "protocol 1 over a pipe: it does not")
+    check(not walterctl.undo_crlf_needed(2, True), "protocol 2 over a serial port: it does not")
+    check(not walterctl.undo_crlf_needed(2, False), "protocol 2 over a pipe: it does not")
+
+
 def main(argv):
     check_undo_crlf()
+    check_serial_read()
+    check_protocol_choice()
     parser = argparse.ArgumentParser()
     parser.add_argument("--console", required=True, help="the console host binary")
     parser.add_argument("--generated", required=True,

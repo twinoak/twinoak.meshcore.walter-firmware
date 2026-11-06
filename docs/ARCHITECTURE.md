@@ -108,7 +108,10 @@ components/
                         raises a flag at the unit's own firmware (a halted loop, a refused token)
                         without touching the radio, carried by the wake record
   interfaces/           the interfaces core/ needs: pins, a clock, retained storage (whose slots the
-                        board, health and the supervisor hold a record each in), text out, a restart
+                        board, health and the supervisor hold a record each in), text out - two
+                        ways, text whose newline the implementation turns into what a terminal
+                        wants and bytes written verbatim and whole, because the port carries
+                        the image transfer's frames as well as its lines (task p8-02) - a restart
                         (task p0-03); a byte stream and the time of day (task p1-02); a flash
                         region (task p2-02); the Walter's own two application slots and their
                         rollback states (task p2-04); the uplink - the steps of getting onto the

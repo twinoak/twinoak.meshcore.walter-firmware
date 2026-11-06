@@ -7,7 +7,6 @@ which is the bench's stand-in for a server until phase 3 gives the Walter an upl
     walterctl.py push --port COM7 --as candidate <release-dir> [--image <id>] [--slot 0]
     walterctl.py push --console ./walter_console --as candidate <release-dir>
     walterctl.py push --port COM7 --as base <release-dir>
-    walterctl.py push --port COM7 --undo-crlf --as candidate <release-dir>   (a Walter at 0.1.0)
 
 A <release-dir> is what tools/release/build_release.py writes and a GitHub Release carries:
 `manifest.json`, `manifest.json.sig` and the image files the manifest names. The three things that
@@ -33,6 +32,16 @@ This end is strictly lock-step: one chunk, one acknowledgement, and the same chu
 comes. The Walter tolerates more than that - a duplicate, a gap, a chunk out of order - and says
 which chunk it wants; being simple here means that whatever it says, this program is right to
 send that one again.
+
+**Two versions of the transfer** (task p8-02). A Walter at 0.1.0 or older sent its answers through
+the console's text output, which turns every 0x0A into 0x0D 0x0A for the terminal, so the answer
+that names chunk 10 - and any whose byte count or CRC holds a 0x0A - arrived corrupted and a push
+of more than nine chunks could not finish (tasks/phase-6/FOLLOWUPS.md). From 0.1.1 the answers are
+bytes, written verbatim. This program is told which it is talking to by the console's **ready
+line**, in text, before a frame is sent: `... framed binary transfer (protocol 2)`, and a line
+without that word is protocol 1. For protocol 1 over a serial port it puts the conversion back
+(UndoCrlf), and never otherwise - the hello's own answer can be one of the corrupted ones, so the
+choice cannot wait for it; the hello's version word is then checked against the choice.
 """
 
 import argparse
@@ -40,6 +49,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -83,18 +93,40 @@ WHICH = ("golden", "candidate", "scanner", "base", "self")
 # What `--as` takes out of the release: the manifest `use` of the file to send.
 USE_OF = {"golden": "swd", "candidate": "swd", "scanner": "swd", "base": "provision",
           "self": "ota"}
-PROTOCOL = "walter image receive 1"
+
+# The hello's answer, and the console's ready line that comes before it (core/image/receive.h,
+# `kVersion`; core/console/console.cpp, `imageReceive`). Version 1 is a Walter at 0.1.0 or older,
+# whose ready line names no protocol at all.
+PROTOCOL = "walter image receive"
+SPEAKS = (1, 2)
+READY = "framed binary transfer"
+READY_TIMEOUT = 3.0  # the console prints the ready line at once; this is for a port that does not
 
 
 class Fault(Exception):
     """Something the Walter said, or something this program will not do."""
 
 
+def undo_crlf_needed(version, on_a_port):
+    """Whether the console's LF -> CR LF has to be taken back out of this Walter's answers: a
+    Walter at 0.1.0 or older (protocol 1), and only over a serial port. Nothing else converts - a
+    pipe to host_test/console_host/ converts text and not frames, as a board does from 0.1.1 - and
+    undoing a conversion that is not there breaks any frame holding a genuine 0x0D 0x0A."""
+    return version == 1 and on_a_port
+
+
 # ----------------------------------------------------------------------------- the two transports
 
 
 class SerialPort:
-    def __init__(self, port, baud=115200):
+    def __init__(self, port, baud=115200, open_port=None):
+        # `open_port` is an already-open port object (read, in_waiting, timeout, close): the seam
+        # tools/test_walterctl.py holds read() to against a port that answers in short pieces,
+        # since a test has no board and this method's loop is the thing worth testing.
+        if open_port is not None:
+            self.port = open_port
+            self.name = port
+            return
         try:
             import serial  # pyserial
         except ImportError:
@@ -128,7 +160,8 @@ class UndoCrlf:
     (tasks/phase-6/FOLLOWUPS.md). That conversion has an exact inverse: every 0x0D 0x0A back to
     0x0A, left to right; a genuine 0x0D 0x0A arrived as 0x0D 0x0D 0x0A and comes out right.
     Only for such a Walter: against one that sends its frames raw, this would break a frame that
-    holds a genuine 0x0D 0x0A, which is why it is a flag and never the default."""
+    holds a genuine 0x0D 0x0A, which is why `protocol_version` below decides it from the console's
+    own ready line and `--undo-crlf` forces it only when a person says so."""
 
     def __init__(self, transport):
         self.transport = transport
@@ -226,6 +259,32 @@ class Transfer:
     def send_line(self, line):
         self.transport.write((line + "\n").encode("ascii"))
 
+    def console_text(self):
+        """Everything that has come back and is not a frame: the console's own lines, including
+        whatever has arrived but not yet been split on a 0x00 (the console's text holds none)."""
+        return (bytes(self.text) + bytes(self.buffer)).decode("utf-8", "replace")
+
+    def protocol_version(self, timeout=READY_TIMEOUT):
+        """Which version of the transfer this Walter speaks, from the console's ready line - text,
+        before a frame has been sent, so the conversion of a Walter at 0.1.0 cannot make it
+        ambiguous. A ready line with no `(protocol N)` is a Walter at 0.1.0 or older: version 1."""
+        deadline = time.monotonic() + timeout
+        while True:
+            text = self.console_text()
+            at = text.rfind(READY)
+            # The whole line, not the first sight of the words: `(protocol N)` is at the end of it
+            # and a read can arrive in the middle, which would read a version 2 Walter as a 1.
+            end = text.find("\n", at) if at >= 0 else -1
+            if end > 0:
+                said = re.search(r"\(protocol (\d+)\)", text[at:end])
+                return int(said.group(1)) if said else 1
+            if time.monotonic() >= deadline:
+                raise Fault("the console did not say it was ready for a transfer: no %r line in "
+                            "what it sent back" % READY)
+            data = self.transport.read(max(0.05, deadline - time.monotonic()))
+            if data:
+                self.buffer += data
+
     def frames(self, deadline):
         """Every complete frame that arrives before the deadline, decoded. Bytes that are not a
         frame - the console's prompt, its ready line, noise - are kept for a message and ignored."""
@@ -286,13 +345,24 @@ class Transfer:
                         % (STATUS_NAMES.get(status, status), what or "a frame", text))
         return status, next_seq, committed, text
 
-    def hello(self):
+    def hello(self, expect_version):
+        """The hello, and the version in its own words held against what the ready line said. The
+        two disagreeing means the ready line was misread, and this program would then be undoing a
+        conversion that is not there (or not undoing one that is): it stops instead of pushing
+        half a file."""
         status, _, _, text = self.request(T_HELLO, 0, timeout=HELLO_TIMEOUT)
         if status != ST_OK:
             raise Fault("the Walter would not say hello: %s" % text)
-        if not text.startswith(PROTOCOL):
+        said = re.match(re.escape(PROTOCOL) + r" (\d+)", text)
+        if not said:
             raise Fault("the Walter speaks another version of this transfer: %r (this tool "
-                        "speaks %r)" % (text, PROTOCOL))
+                        "speaks %r, versions %s)"
+                        % (text, PROTOCOL, " and ".join(str(v) for v in SPEAKS)))
+        version = int(said.group(1))
+        if version != expect_version:
+            raise Fault("this push was set up for protocol %d and the hello says %d: the ready "
+                        "line was misread, or --undo-crlf was used against a Walter that does not "
+                        "need it" % (expect_version, version))
         return text
 
     def file_header(self, kind, size):
@@ -412,8 +482,7 @@ def push(args):
         transport = ConsoleProcess([args.console])
     else:
         transport = SerialPort(args.port)
-    if args.undo_crlf:
-        transport = UndoCrlf(transport)
+    on_a_port = not args.console
     transfer = Transfer(transport, verbose=not args.quiet)
     try:
         if args.which == "self":
@@ -424,7 +493,28 @@ def push(args):
                 line += " @%d" % args.slot
         transfer.send_line(line)
         transfer.say("sent: %s" % line)
-        hello = transfer.hello()
+
+        # Which transfer this Walter speaks, from its ready line, before a frame goes either way;
+        # then whether its answers have to be put back through undo_crlf_needed above.
+        if args.undo_crlf:
+            # The override: no question asked, for a Walter whose ready line cannot be read at
+            # all. The hello's version word below still catches it being used on a fixed Walter.
+            version = 1
+            transfer.transport = UndoCrlf(transfer.transport)
+            transfer.say("--undo-crlf: taking this to be a Walter at 0.1.0 (protocol 1) and its "
+                         "console's CR LF back out of its answers")
+        else:
+            version = transfer.protocol_version()
+            if version not in SPEAKS:
+                raise Fault("the Walter's console says protocol %d and this tool speaks %s: "
+                            "update walterctl"
+                            % (version, " and ".join(str(v) for v in SPEAKS)))
+            transfer.say("the console: protocol %d" % version)
+            if undo_crlf_needed(version, on_a_port):
+                transfer.transport = UndoCrlf(transfer.transport)
+                transfer.say("a Walter at 0.1.0 or older: taking its console's CR LF back out of "
+                             "its answers")
+        hello = transfer.hello(version)
         transfer.say("the Walter: %s" % hello)
 
         transfer.send_file(KIND_MANIFEST, manifest_bytes, "manifest.json")
@@ -449,9 +539,9 @@ def push(args):
         return 0
     except Fault as fault:
         print("walterctl: %s" % fault, file=sys.stderr)
-        if transfer.text:
-            tail = bytes(transfer.text[-400:]).decode("utf-8", "replace")
-            print("the console also said: %s" % tail.strip(), file=sys.stderr)
+        said = transfer.console_text()
+        if said:
+            print("the console also said: %s" % said[-400:].strip(), file=sys.stderr)
         try:
             transfer.request(T_ABORT, 0, timeout=1.0, tries=1)
         except Fault:
@@ -486,8 +576,12 @@ def main(argv):
                             "serial port (host_test/console_host/, for testing this tool)")
     p.add_argument("--quiet", action="store_true", help="only the result")
     p.add_argument("--undo-crlf", action="store_true",
-                   help="for a Walter at 0.1.0 or older, whose console turns every 0x0A it sends "
-                        "into CR LF and so corrupts the transfer's answers; never for a fixed one")
+                   help="take this to be a Walter at 0.1.0 or older (protocol 1), whose console "
+                        "turns every 0x0A it sends into CR LF, without asking its console which "
+                        "it is. Not needed: the console's ready line says which protocol it "
+                        "speaks and this tool reads it. For a Walter whose ready line cannot be "
+                        "read; never for one at 0.1.1 or newer, and the hello's version word "
+                        "stops that")
     args = parser.parse_args(argv[1:])
     if args.command == "push":
         try:

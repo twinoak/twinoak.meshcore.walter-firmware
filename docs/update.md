@@ -408,7 +408,7 @@ the radio's update also reads for S-7:
 
 ```
 > self receive
-self receive: this Walter's other application slot (1); this port is now a framed binary transfer
+self receive: this Walter's other application slot (1); this port is now a framed binary transfer (protocol 2)
   (COBS and CRC-16, the box link's own framing). Send manifest.json, then its .sig,
   then the ota file: tools/walterctl.py push --as self
   what will be accepted: role manager, board walter, band lte-m, an ota file that fits the slot,

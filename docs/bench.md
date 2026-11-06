@@ -656,6 +656,33 @@ below.
   radio, so slot 0 is the only one*, and nothing on the port changes. The areas for slot 1 are in
   the partition all the same, which is what `image list`'s last lines say.
 
+- [ ] **A whole repeater release pushed in, timed** (task p8-02; the **release** build of v0.1.1 or
+  later, which is where the fix is). This is the item v0.1.0 failed on 6 November: the transfer's
+  answers went out through the console's LF → CR LF, so the answer naming chunk 10 arrived
+  corrupted and the push stopped at `no answer to type 0x03 seq 9`, four times. Push a real
+  repeater release's `swd` file — 400 kB and more, **about 1,740 chunks**:
+
+  ```
+  python tools/walterctl.py push --port COM7 --as candidate <release-dir>
+  ```
+
+  Expected: `the console: protocol 2` on the second line, then a progress line every tenth of the
+  file, then `stored as the candidate image`. **Write down the wall-clock time of the whole push**
+  and the file's size: it is lock-step, one 240-byte chunk and one acknowledgement at a time, and
+  the laptop's end waited out its whole 5 s reply timeout for every one of them until 6 November —
+  two and a half hours for one image. **Seconds, not hours** is the answer this item is for; a push
+  that takes minutes means the laptop is waiting on something and the figure is worth bringing back
+  either way. Then `image verify candidate` passes.
+
+- [ ] **The same push into a Walter still at 0.1.0, with nothing typed** (task p8-02; needs a
+  second Walter, or this one re-flashed to v0.1.0 by cable and then back — only worth doing if a
+  0.1.0 unit is at hand). `walterctl` reads the version off the console's ready line, which on
+  0.1.0 names no protocol, and says *a Walter at 0.1.0 or older: taking its console's CR LF back
+  out of its answers*. Expected: the push **finishes**, more slowly, and `image verify candidate`
+  passes. `--undo-crlf` must not be needed; if it is, the ready line could not be read and that is
+  worth knowing. Against a v0.1.1 Walter, `--undo-crlf` must be **refused**: *this push was set up
+  for protocol 1 and the hello says 2*.
+
 - [ ] **`walterctl.py push --as base` of a real release, over the cable** (task p5-01;
   `spec/FIRMWARE-MANIFEST.md` §4a, `spec/SYSTEM.md` S-5a). With a repeater release that carries a
   `provision` file — the real base: the MBR, SoftDevice S140 6.1.1 and the bootloader, ~450 KB of
@@ -791,6 +818,9 @@ bootloader's rules; only a board shows that ESP-IDF's otadata and `esp_ota_*` be
   Walter's other application slot`. `self status` shows `received: 0.0.1 in slot 1 (N bytes),
   waiting for 'self switch'` and the story's first line. **Write down how long the push of a
   ~400 KB image took**: lock-step 240-byte frames over USB Serial/JTAG, the first measurement.
+  The ready line says `(protocol 2)` and `walterctl` says `the console: protocol 2`; `self
+  receive` is the same transfer as §8's and was broken in the same way until v0.1.1 (task p8-02),
+  so a push that stops at `no answer to type 0x03 seq 9` is this board running 0.1.0.
   Then `self switch`: the line `self switch: making 0.0.1 (slot 1) the next to boot, from
   0.0.0-dev; the radio is told and the Walter restarts`, and the board restarts. Among the boot
   lines: `boot N: software reset, the Walter's own update, switching to the other slot`,

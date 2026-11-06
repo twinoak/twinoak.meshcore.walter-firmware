@@ -75,9 +75,15 @@ constexpr std::uint8_t kResend = 1;   // not the chunk wanted; next_seq says whi
 constexpr std::uint8_t kRefused = 2;  // the transfer is over and nothing was stored
 constexpr std::uint8_t kDone = 3;     // stored
 
-// The protocol's own version, in the kHello response, so that a laptop with an older walterctl
-// is told rather than left to guess.
-constexpr std::uint8_t kVersion = 1;
+// The protocol's own version, in the kHello response and in the console's ready line, so that a
+// laptop with an older walterctl is told rather than left to guess.
+//
+//   1  up to 0.1.0: the answers went out through the console's text output, so an answer holding
+//      a 0x0A arrived as CR LF and corrupted (tasks/phase-6/FOLLOWUPS.md). walterctl undoes that
+//      conversion when it is told 1 over a serial port, and only then.
+//   2  from 0.1.1 (task p8-02): the answers are bytes, written verbatim and whole
+//      (interfaces::TextOut::writeBytes). Nothing else of the transfer changed.
+constexpr std::uint8_t kVersion = 2;
 
 // The manifest this firmware will read over the wire. The specification's own manifests are
 // 1.0 to 1.6 KB; a manifest filled to the parser's bounds (eight images of six files) is about
@@ -214,6 +220,9 @@ class Receiver {
   std::uint32_t duplicates() const { return duplicates_; }
   std::uint32_t outOfOrder() const { return out_of_order_; }
   std::uint32_t droppedFrames() const { return rx_.dropped(); }
+  // Answers the port would not take whole (task p8-02): the console says so when the transfer
+  // ends, because a frame that went out in part looks to the laptop like one that was lost.
+  std::uint32_t cutShort() const { return cut_short_; }
 
   // What this transfer will accept, for the console's ready line.
   const SlotNeeds& needs() const { return target_->needs(); }
@@ -263,6 +272,7 @@ class Receiver {
   std::uint32_t chunks_ = 0;
   std::uint32_t duplicates_ = 0;
   std::uint32_t out_of_order_ = 0;
+  std::uint32_t cut_short_ = 0;
 
   std::uint8_t manifest_[transfer::kMaxManifestBytes];
   std::size_t manifest_size_ = 0;
@@ -274,6 +284,8 @@ class Receiver {
   bool signature_done_ = false;
   std::uint32_t image_promised_ = 0;
 
+  // The answer's bytes: §2's leading 0x00 in frame_[0] and the frame after it, which is what
+  // kMaxWrite is (core/link/codec/wire.h: one frame plus the idle terminator).
   std::uint8_t frame_[link::kMaxWrite];
 };
 

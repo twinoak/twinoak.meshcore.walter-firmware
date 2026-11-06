@@ -172,15 +172,22 @@ void Receiver::respond(std::uint8_t type, std::uint8_t seq, std::uint8_t status,
     std::memcpy(payload + size, parts[p], n);
     size += n;
   }
+  // §2's one 0x00 in front of a frame: always, here, and in frame_[0] so that the terminator and
+  // the frame go out in one write. The console's port is not a link whose idle time this object
+  // measures, and a leading terminator is an empty frame, which §2 says a receiver ignores.
+  frame_[0] = 0;
   const std::size_t wrote = link::buildFrame(static_cast<std::uint8_t>(type | transfer::kResponseBit),
-                                             seq, link::bytes(payload, size), frame_, sizeof frame_);
+                                             seq, link::bytes(payload, size), frame_ + 1,
+                                             sizeof frame_ - 1);
   if (wrote == 0) return;
-  // §2's one 0x00 in front of a frame: always, here. The console's port is not a link whose idle
-  // time this object measures, and a leading terminator is an empty frame, which §2 says a
-  // receiver ignores.
-  const char zero = 0;
-  out_.write(&zero, 1);
-  out_.write(reinterpret_cast<const char*>(frame_), wrote);
+  // writeBytes and not write (task p8-02): an answer is a frame, and the console's text output
+  // turns every 0x0A into CR LF for the terminal. The answer that names chunk 10 carries 0x0A in
+  // its `expect_seq`, a byte count of 2 640 carries one, a CRC carries one one time in 128 - so
+  // through write() this answer is corrupted and the laptop sends the same chunk for ever, which
+  // is what the first unit did on 6 November (tasks/phase-6/FOLLOWUPS.md). A short write is
+  // counted: nothing can be done about it here - the laptop's timeout is the recovery, as for a
+  // dropped frame - but the console says so when the transfer ends.
+  if (!out_.writeBytes(frame_, wrote + 1)) ++cut_short_;
 }
 
 void Receiver::refuse(std::uint8_t type, std::uint8_t seq, const char* text, const char* more) {
@@ -201,8 +208,11 @@ void Receiver::handle(const link::Packet& packet) {
     case transfer::kHello:
       // What this is and what it is about to take, so that a laptop speaking another version of
       // this protocol is told rather than left to guess. walterctl holds the text to what it
-      // knows and stops if it does not recognise it (tools/walterctl.py).
-      respond(packet.type, packet.seq, transfer::kOk, "walter image receive 1", target_->name());
+      // knows and stops if it does not recognise it (tools/walterctl.py). The version is
+      // transfer::kVersion, written out because core/image/ holds no formatting; the
+      // static_assert keeps the two together.
+      static_assert(transfer::kVersion == 2, "the hello's text spells the version out");
+      respond(packet.type, packet.seq, transfer::kOk, "walter image receive 2", target_->name());
       return;
     case transfer::kFile: onFile(packet); return;
     case transfer::kData: onData(packet); return;

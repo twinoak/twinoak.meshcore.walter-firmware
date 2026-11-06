@@ -137,6 +137,12 @@ class StdOut final : public interfaces::TextOut {
     }
     std::fflush(stdout);
   }
+
+  bool writeBytes(const std::uint8_t* bytes, std::size_t count) override {
+    const std::size_t put = std::fwrite(bytes, 1, count, stdout);
+    std::fflush(stdout);
+    return put == count;
+  }
 };
 
 // There is no radio: the stream will not open, and the link client says the link is down.
