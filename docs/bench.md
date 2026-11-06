@@ -425,6 +425,17 @@ every factory state, every refusal with nothing written, a power cut at every op
   names it by its device id (the port is open); typing that line erases the application and its
   identity with the radio, which is what naming an open radio consents to. Only if the radio is
   disposable (`bench.local.json`, phase 6).
+- [ ] **No watchdog reset anywhere in the run, and `boot` says so afterwards** (task p8-01; the
+  **release** build of v0.1.1 or later, and a spare radio — there is nothing to see here on a
+  radio already provisioned). Steps 5 and 6 are about a minute of unbroken SWD traffic with a
+  real ~180 KB base, and before v0.1.1 nothing on that path let the idle task of the core run:
+  the task watchdog (30 s, panic) would have reset the Walter in the middle, exactly as it did to
+  `rak update --first-install` on 6 November. So: watch the seven step lines come out **with no
+  reboot between them**, and then run `boot` — it must say `power-on` or `software`, never
+  `watchdog`. **Write down the time of steps 5 and 6 again here**, beside the base's size: the
+  pauses cost about 10 ms per kilobyte of base written and the same again verifying (the
+  simulated figure is 0.5 s of pause on a 48 KB base), so the measured write should be a few per
+  cent slower than task p5-03's prediction and no more.
 - [ ] **A power cut in the middle, if a radio can be spared:** pull the Walter's USB during step 5.
   Expected afterwards: `rak provision check` says *protection: CLOSED* on an `AAF0` part (something
   is in flash, `UICR.APPROTECT` is not `0x5A` yet) and `next: rak provision locked confirm`; that
@@ -732,6 +743,21 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   golden image to return to*); with `--first-install` the candidate is flashed, proved and becomes
   golden. Do not try the broken candidate this way unless you mean to see *stuck: no image to
   return to*.
+- [ ] **A whole image flashed with no watchdog reset, timed** (task p8-01; the **release** build
+  of v0.1.1 or later, which is where the fix is). This is the item v0.1.0 failed on 6 November:
+  a full repeater image is about seven minutes of SWD traffic at 125 kHz, and nothing on that
+  path blocked, so the task watchdog (30 s, panic) reset the Walter twelve times over. Push a
+  full repeater release `--as candidate` and run `rak update --first-install` (or `rak update`
+  with a golden image). Expected: the flasher's page lines run through the scan, the pages and
+  the read-back **without a reboot in the middle**, and the run reaches `-> booting` and then
+  *done*. **Write down the wall-clock time of the whole flash and the image's size**: the
+  simulated figure is 413 s for 417,284 bytes at 125 kHz, of which about 5 s is the pauses this
+  task added. A reboot during the flash with the lines `boot N: watchdog reset` and `update: the
+  journal says a run was in progress …; resuming at flashing-candidate` is this fault back.
+- [ ] **`boot` afterwards says `power-on` or `software`, never `watchdog`** (task p8-01). Run
+  `boot` (the reset-reason line, `docs/console.md`) right after the flash finishes, and again
+  after the proving period. A `watchdog` there - even one, even with the update *done* - means
+  some stretch of the run still monopolises the CPU for 30 s and is a finding against this task.
 - [ ] **The numbers.** Against the lines above, `docs/update.md`'s table: the boot window (how long
   a real repeater takes from reset to `HELLO`; the window must be comfortably more), the proving
   period (long enough to catch a build that restarts itself after its first advert; short enough

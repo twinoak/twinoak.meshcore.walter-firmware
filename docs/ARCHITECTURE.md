@@ -706,6 +706,21 @@ too, from the bootloader's `dfu_types.h`. Built against the simulated chip, as b
 7. A system reset through the debug port, the power-up withdrawn, the pins released to the safe
    state, and `RadioPins` told the radio was reset so that the next pulse waits out the spacing.
 
+**The idle task runs between transfers** (task p8-01, `core/swd/idle_pause.h`). Nothing on the SWD
+path blocks: the wire's half-bit waits are busy waits, and on the board so is `delayMs(1)` — below
+one tick (10 ms at `CONFIG_FREERTOS_HZ = 100`) `platform/clock.cpp` busy-waits rather than call
+`vTaskDelay`. A whole image is minutes of that, and the task watchdog (30 s, panic, the idle tasks
+of both cores subscribed) reset the first unit twelve times over on 6 November 2026 rather than let
+one finish. So a **tick of real blocking** sits in front of each of the two long things this
+flasher does — a page read (2048 transfers, about 0.9 s at 125 kHz) and a page's erase-and-write
+(about 0.46 s) — and in front of each run of the base's write and verify (`core/provision/`). It is
+always *between* transfers, after the eight idle cycles that let the clock stop (§4, B4.1.1) and
+never inside one, where f_SWDCLK's minimum applies. The watchdog's timeout is not raised and the
+watchdog is never fed from here: a firmware that really hangs must still be reset. The cost is
+about 1 % of a flash — 5 s of pause on the 413 s a 417 KB image takes at 125 kHz — and
+`host_test/core/flasher/test_flasher_watchdog.cpp` holds the longest stretch with no blocking delay
+in it to two seconds, over a full image, the hash pass and `rak provision`'s base.
+
 **Why the settings page is invalidated before step 4 and validated after step 6.** The stock
 bootloader since 0.11.0 starts an application with an *erased* settings page when its first two
 words look like a vector table; every bootloader starts one whose `bank_0` is valid with the CRC
