@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "core/flasher/board_profile.h"
+#include "core/swd/idle_pause.h"
 
 namespace core {
 namespace provision {
@@ -399,6 +400,11 @@ bool Provision::erase(Session& s, Result* r) {
 // bootloader up (the door refuses anything else), UICR for the words above 0x10001000.
 bool Provision::flushRun(Session& s, Result* r, std::uint64_t at, std::size_t n) {
   if (n == 0) return true;
+  // A tick of real blocking before each run, between transfers and never inside one (task
+  // p8-01, core/swd/idle_pause.h). A run of kRunWords is a tenth of a second at 125 kHz and a
+  // base is a hundred and eighty of them, so without this the whole write - and then the whole
+  // verify after it - is one unbroken stretch of busy waiting, which the task watchdog ends.
+  swd::letIdleTaskRun(clock_);
   const std::uint32_t addr = static_cast<std::uint32_t>(at);
   const bool uicr = at >= image::kUicrFirst;
   const nrf52::DoorResult d = uicr ? s.door.writeUicr(addr, run_, n) : s.door.writeFlash(addr, run_, n);
@@ -453,6 +459,7 @@ bool Provision::writeBase(Session& s, Result* r) {
 
 bool Provision::compareRun(Session& s, Result* r, std::uint64_t at, std::size_t n) {
   if (n == 0) return true;
+  swd::letIdleTaskRun(clock_);  // task p8-01: the verify is as long as the write
   const std::uint32_t addr = static_cast<std::uint32_t>(at);
   const nrf52::Result read = s.nrf.read(addr, back_, n);
   if (!read.ok()) {

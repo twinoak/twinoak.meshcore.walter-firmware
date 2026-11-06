@@ -2,6 +2,7 @@
 
 #include "core/link/codec/crc16.h"
 #include "core/nrf52/regs.h"
+#include "core/swd/idle_pause.h"
 
 namespace core {
 namespace flasher {
@@ -120,7 +121,16 @@ bool Flasher::loadPage(const Plan& plan, std::uint32_t page_addr) {
   return true;
 }
 
+// A page off the chip. Everything long this flasher does is built out of this and out of the
+// erase-and-write below, and each of the two is bounded: a page read is 2048 SWD transfers (DRW
+// then RDBUFF for every word), about 0.9 s at 125 kHz, and an erase with a whole page written
+// after it is about 0.55 s. So the blocking pause that lets the idle task run (task p8-01,
+// core/swd/idle_pause.h) goes in front of each of them, and no stretch of a flash - of any
+// length of image, through any of the three entry points - is longer than one of those two.
+// Before the read, not inside it: the pause falls between one transfer's last bit and the next
+// one's first.
 Result Flasher::readPage(std::uint32_t page_addr) {
+  swd::letIdleTaskRun(clock_);
   const nrf52::Result r = nrf_.read(page_addr, have_, kPageWords);
   if (!r.ok()) return failed(Step::kScan, r, page_addr);
   counters_.words_read += kPageWords;
@@ -279,6 +289,9 @@ Result Flasher::programPage(Plan* plan, std::uint32_t page_addr, Step step) {
   }
   for (unsigned attempt = 0; attempt < 2; ++attempt) {
     if (attempt == 1) counters_.retries++;
+    // The second of this page's two long stretches: the erase and the page's words. The read
+    // above and the read below have their own pause in readPage() (task p8-01).
+    swd::letIdleTaskRun(clock_);
     if (in_place && attempt == 0) {
       r = writeRuns(plan->pages_region, page_addr, want_, have_, true);
       if (!r.ok()) return r;
