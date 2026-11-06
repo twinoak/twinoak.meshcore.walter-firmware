@@ -96,8 +96,14 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   suggests otherwise). Either the state brings `HELLO`'s band too (if the link carries one; otherwise
   the descriptor of what the radio runs, read over SWD), or meshmaster.dk says on the canary page
   that a unit with no golden image takes its first install over the cable.
-- [ ] **[p8-01] The SWD flasher starves the task watchdog: no radio image can be
-  flashed.** 6 November, the first `rak update --first-install` on a board (repeater v0.1.0, 417 kB,
+- [x] **[p8-01] The SWD flasher starves the task watchdog: no radio image can be
+  flashed.** *Fixed by task p8-01 (`tasks/phase-8/reports/01.md`): `core/swd/idle_pause.h`, a tick
+  of real blocking in front of each page read and each page's erase-and-write and in front of each
+  run of the base's write and verify, with `host_test/core/flasher/test_flasher_watchdog.cpp`
+  holding the longest stretch with no blocking delay in it to 2 s over a full image, the hash pass
+  and the base. The loop the item puts in `provision_door.cpp` is in
+  `core/provision/provision.cpp` (`flushRun`, `compareRun`); the door's own loops are
+  milliseconds. Still to be seen on the board: `docs/bench.md` §4a and §9.* 6 November, the first `rak update --first-install` on a board (repeater v0.1.0, 417 kB,
   SWD at 125 kHz): `boot 19: watchdog reset`, the journal resumed *flashing-candidate* at every boot,
   and after twelve watchdog wakes in a row the run ended `STUCK: no image to return to`. The
   flasher's page loop (`components/core/flasher/flasher.cpp`: read, erase, write, read back, a page

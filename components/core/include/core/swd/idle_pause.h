@@ -13,10 +13,13 @@
 //
 // So every loop of this firmware that drives SWD for more than a second calls `letIdleTaskRun()`
 // between one transfer's last bit and the next one's first. The watchdog itself is never fed from
-// the flasher: a firmware that really hangs must still be reset, and the idle task running is
-// exactly the thing the watchdog is there to notice the absence of (ESP-IDF v5.5,
-// `api-reference/system/wdts.rst`: the idle tasks are what the task watchdog watches by default,
-// and they reset it on behalf of each core).
+// the flasher, and its timeout is not raised - ESP-IDF v5.5's
+// `docs/en/api-reference/system/wdts.rst` offers both for exactly this case ("Erasing large flash
+// areas can be time consuming and can cause a task to run continuously, thus triggering a TWDT
+// timeout"), and both would hide a real hang. What the watchdog is there to detect is "tasks
+// running without yielding for a prolonged period", and it detects it through the idle tasks,
+// which `esp_task_wdt_init` subscribes and which feed it when they run. Letting them run is
+// therefore the fix; feeding the watchdog from here would be the bug.
 //
 // **Never inside a transfer.** The nRF52840 gives SWDCLK a minimum - Product Specification,
 // "Debug and trace > Electrical specification > Control access port", f_SWDCLK min 0.125 MHz
