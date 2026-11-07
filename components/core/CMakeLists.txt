@@ -82,6 +82,9 @@ idf_component_register(
        "net/url.cpp"
        "net/http1.cpp"
        "net/http_over_tls.cpp"
+       # Which socket a connection uses and whose events it believes (task p8-03): the rule the
+       # second HTTPS request of a wake failed on, with no modem in it.
+       "net/socket_rotation.cpp"
        "net/trust.cpp"
        "net/client.cpp"
        "net/download.cpp"
