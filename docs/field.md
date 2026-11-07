@@ -8,11 +8,12 @@ the firmware's own map is
 [`console.md`](console.md), putting a release on a module is [`flashing.md`](flashing.md) and
 the first bring-up of a unit is [`bench.md`](bench.md).
 
-> **No unit has run this yet.** One Walter on a development build checked in with the real
-> meshmaster.dk once, on 23 October 2026; everything else below is built and tested on a host
-> against simulators, and none of it has been on a mast. The first unit to run it is the first
-> unit, and [`bench.md`](bench.md) is the walk that proves each of these sentences one at a time —
-> with `v0.1.0`, the first release ([`flashing.md`](flashing.md)).
+> **No unit has run this on a mast yet.** One Walter on a development build checked in with the
+> real meshmaster.dk on 23 October 2026, and the first unit ran `v0.1.0` on a desk on 6 November
+> — which is where the five faults `v0.1.1` fixes come from (README, *The state of things*).
+> Everything else below is built and tested on a host against simulators, and none of it has been
+> on a mast. [`bench.md`](bench.md) is the walk that proves each of these sentences one at a time,
+> with `v0.1.1` ([`flashing.md`](flashing.md)).
 
 ## The two boxes
 

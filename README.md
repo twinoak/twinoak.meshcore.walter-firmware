@@ -24,19 +24,35 @@ interval, runs the jobs the server has for it and sleeps again
 
 ## The state of things
 
-> **A board has run a development build of this firmware; none has run a released one, and no unit
-> has walked the bench.** On 23 October 2026 a Walter on `0.0.0-dev` checked in with the real
-> meshmaster.dk — it is *LTE test node* there, and that heartbeat is the one thing on this page
-> that a simulator did not produce: the SIM attached, the chain verified and the server took it.
-> When the first unit was powered up on 5 November its repeater came up on the mesh and its Walter
-> did not. Everything else in phases 0 to 5 is built and tested on a host against simulators: a
+> **The first unit has run a release, and it found five faults; no unit has walked the bench.** On
+> 23 October 2026 a Walter on `0.0.0-dev` checked in with the real meshmaster.dk — it is *LTE test
+> node* there: the SIM attached, the chain verified and the server took it. On 6 November `v0.1.0`
+> went onto the first unit's Walter from the published files and Thomas tried to give its radio its
+> first image. **What a board has shown since:** the release boots and its console works; the SWD
+> flasher really does write an nRF52's application region, and the radio came back over its own
+> USB-C from the repeater firmware's `.uf2` **with its identity**, which is the one promise that
+> region boundary exists for; the modem attached on band 20 and one whole check-in with
+> meshmaster.dk — config, heartbeat, a claimed job and its result — went through. **And what it
+> showed:** the flasher starved the task watchdog, so no image could be flashed; a push over USB
+> could not finish; the second HTTPS request of a wake failed; a job for the unit's own repeater
+> went out on the air; and the server could pick no image for a radio with no golden image.
+> [`v0.1.1`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest) is those
+> five, each with the fake that hid it taught the board's behaviour
+> ([`tasks/phase-8/`](tasks/phase-8/README.md)). **Everything else is still simulators**: a
 > simulated nRF52 down to its flash controller, a flash that loses power at any operation, a
 > scripted repeater, a fake modem that fails in every way a real one does, a scripted HTTPS server,
-> a scripted meshmaster.dk and the agent library's own simulated stock repeater. No pin has been
-> wiggled on a real RAK, no radio has been reflashed over SWD, and nothing has been flashed from a
-> release. [`docs/bench.md`](docs/bench.md) is the walk that turns that sentence over, one step at
-> a time, `v0.1.0` is the release it is walked with
-> ([`docs/flashing.md`](docs/flashing.md)), and this line stays here until a unit has walked it.
+> a scripted meshmaster.dk and the agent library's own simulated stock repeater.
+> [`docs/bench.md`](docs/bench.md) is the walk that turns that over one step at a time, `v0.1.1` is
+> the release it is walked with ([`docs/flashing.md`](docs/flashing.md)), and this line stays here
+> until a unit has walked it.
+
+**Still unverified on a board** ([`docs/bench.md`](docs/bench.md), the six it marks ★): §5 the
+first whole flash, with the power pulled half-way through; §9 a deliberately broken candidate that
+must fail its health check and bring the golden image back; §15 a scope on the radio's reset line
+across sleep and wake, where there must be no edge at all; and §18's three — the first heartbeat
+recognised as *this* unit, an offer that resumes after the cable is pulled, and an apply that rolls
+back when the server asked for it. Nor has anything yet walked a radio install end to end, timed a
+push, run twenty pairs of HTTPS requests, or seen `rak provision` give a factory radio its base.
 
 | Phase | What | |
 |---|---|---|
@@ -47,14 +63,16 @@ interval, runs the jobs the server has for it and sleeps again
 | 4 | **the agent**: the exit-node firmware's job logic as a library at a pin, the mesh over the link, the uplink over the modem, the platform and the identity, the firmware jobs on the update machines | built; needs **meshmaster.dk 4.14 or newer** deployed to talk to |
 | 5 | the radio's base (S-5a): the `provision` file in the store, the CTRL-AP and UICR behind one door, `rak provision` | built |
 | 7 | **the first release**: a flashing guide, release notes a person reads, and `v0.1.0` published | released |
+| 8 | **what the first unit showed** (6 November): the flasher's watchdog, the transfer in bytes, one connection one socket, the radio known before a job, link 1.1 and the band — published as `v0.1.1` | released |
 | 6, later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
 
-**A release exists: [`v0.1.0`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)**,
-the first, signed with the release key Thomas made on 20 October 2026 — key id `73efdd383a957596`,
-its public half in [`keys/release-keys.txt`](keys/README.md) and its private half a secret of the
-release workflow. So a build of this firmware trusts one key (`trust` on the console says which),
-and a Walter flashed by cable with that release can take every later one over LTE.
-[`docs/flashing.md`](docs/flashing.md) is how it gets onto a module.
+**The release is [`v0.1.1`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)**
+(`v0.1.0` was the first, on 5 November), signed with the release key Thomas made on 20 October
+2026 — key id `73efdd383a957596`, its public half in [`keys/release-keys.txt`](keys/README.md) and
+its private half a secret of the release workflow. So a build of this firmware trusts one key
+(`trust` on the console says which), and a Walter flashed by cable with a release can take every
+later one over LTE. A unit already running `v0.1.0` takes this one **by cable**, and
+[`docs/flashing.md`](docs/flashing.md) has the section for it.
 
 ## What it does
 
