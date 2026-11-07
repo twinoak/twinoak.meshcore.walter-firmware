@@ -369,12 +369,30 @@ TEST_CASE("rak hello prints the version, role, slot and capabilities") {
   CHECK(contains(text, "hello: protocol 1.0, role 1 (repeater), slot 0, max payload 240"));
   CHECK(contains(text, "firmware 0.1.0+abc1234, board rak4630-single, "
                        "upstream repeater-v1.17.1+d9296435\n"));
+  // §5.1: the fixtures' radio answers a 1.0 body, which carries no band - what repeater v0.1.0 on
+  // the bench does.
+  CHECK(contains(text, "band: not said (a 1.0 radio)\n"));
   CHECK(contains(text, "capabilities 0x3f: cli, power, env, mesh-client, observations, attention"));
   // §5.4: a boot_id this end has not seen means the radio's clock wants setting.
   CHECK(contains(text, "its clock has not been set since it booted"));
   const std::string after = rig.run("status");
   CHECK(contains(after, "link: frames (protocol 1.0); retries 0"));
-  CHECK(contains(after, "radio: repeater 0.1.0+abc1234, slot 0, link 1.0"));
+  CHECK(contains(after, "radio: repeater 0.1.0+abc1234, slot 0, band not said, link 1.0"));
+}
+
+TEST_CASE("rak hello and status print a 1.1 radio's band") {
+  // The repeater firmware's pile 3.8 answers HELLO in 1.1, whose body ends with the band the
+  // running image was built for (§5.1). It is the third of the three words an image is chosen by
+  // (spec/FIRMWARE-MANIFEST.md §5 check 3), so a person at the console can read it off the radio
+  // before there is a golden image to read it off.
+  Rig rig;
+  rig.rak.band = "868";
+  const std::string text = rig.run("rak hello");
+  CHECK(contains(text, "hello: protocol 1.1, role 1 (repeater), slot 0, max payload 240"));
+  CHECK(contains(text, "band 868\n"));
+  CHECK_FALSE(contains(text, "not said"));
+  const std::string after = rig.run("status");
+  CHECK(contains(after, "radio: repeater 0.1.0+abc1234, slot 0, band 868, link 1.1"));
 }
 
 TEST_CASE("rak ping, rak status, rak id, rak time, rak power, rak env in words") {

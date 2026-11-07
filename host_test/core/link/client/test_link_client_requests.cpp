@@ -383,10 +383,17 @@ TEST_CASE("every request case: the call puts the fixture's payload on the wire")
     const sim::ScriptedRadio::Seen& seen = bench.radio.requests.back();
     CHECK(seen.type == type);
     if (type == link::type::kHello) {
-      // §5.1's `fw_version` is this firmware's own, not the fixture's: the first four bytes are
-      // the fixture's and the str8 that follows is core::version().
+      // Two of the four head bytes are this firmware's own rather than the case's: §5.1,
+      // *Versions*, says a Walter asks for the highest minor **it** knows, so the minor is
+      // kProtoMinor whatever minor the case was written by (1.0's file has the 1.0 Walter's
+      // request; the bytes this firmware's own HELLO is are the 1.1 case's, held against it in
+      // test_link_client_session.cpp). `fw_version` is this build's and not the fixture's, so the
+      // str8 after the head is core::version().
       REQUIRE(seen.payload.size() >= 5);
-      CHECK(fixtures::toHex(seen.payload.data(), 4) == fixtures::toHex(payload.data(), 4));
+      CHECK(seen.payload[0] == u8(fields, "proto_major"));
+      CHECK(seen.payload[1] == link::kProtoMinor);
+      CHECK(seen.payload[2] == u8(fields, "peer_kind"));
+      CHECK(seen.payload[3] == u8(fields, "max_payload"));
       const std::string version(seen.payload.begin() + 5, seen.payload.end());
       CHECK(static_cast<std::size_t>(seen.payload[4]) == version.size());
       CHECK(version == std::string(core::version()));

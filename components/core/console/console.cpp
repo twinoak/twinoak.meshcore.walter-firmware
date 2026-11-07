@@ -619,8 +619,11 @@ void Console::status() {
   // The radio: is it there, what is it, what does it think the time is, and the link's counters.
   const link::client::Session& session = radio_.session();
   if (session.up) {
-    printf("radio: %s %s, slot %u, link %u.%u\n", link::client::roleName(session.role),
+    // The band where the `unit:` line above shows this firmware's own: what the radio's image was
+    // built for (§5.1, 1.1), or *not said* from a 1.0 radio.
+    printf("radio: %s %s, slot %u, band %s, link %u.%u\n", link::client::roleName(session.role),
            session.fw_version, static_cast<unsigned>(session.slot),
+           session.band[0] != 0 ? session.band : "not said",
            static_cast<unsigned>(session.proto_major), static_cast<unsigned>(session.proto_minor));
   } else {
     print("radio: no session (nothing has been asked of it since this boot: try 'rak hello')\n");
@@ -905,6 +908,15 @@ void Console::rakHello() {
          static_cast<unsigned>(s.role), lc::roleName(s.role), static_cast<unsigned>(s.slot),
          static_cast<unsigned>(s.max_payload), static_cast<unsigned long>(s.boot_id));
   printf("  firmware %s, board %s, upstream %s\n", s.fw_version, s.board, s.upstream);
+  // §5.1's `band`, which 1.1 added: with the role and the board it is what an image is chosen by
+  // (spec/FIRMWARE-MANIFEST.md §5 check 3), and a 1.0 radio does not say it. Its own line, so
+  // that the sentence for a radio that says none has room to be a sentence.
+  if (s.band[0] != 0) {
+    printf("  band %s\n", s.band);
+  } else {
+    printf("  band: not said (a %u.%u radio)\n", static_cast<unsigned>(s.proto_major),
+           static_cast<unsigned>(s.proto_minor));
+  }
   printf("  capabilities 0x%lx: %s\n", static_cast<unsigned long>(s.caps), caps);
   if (radio_.timePending()) {
     print("  its clock has not been set since it booted: the next request sets it\n");

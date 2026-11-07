@@ -32,7 +32,7 @@
 //
 // **A decoded answer's variable-length fields are views** into this object's own response buffer
 // (codec/view.h), valid until the next call on this client. Whoever keeps one copies it; the
-// session copies the three strings of HELLO itself, which is why it has lengths of its own.
+// session copies HELLO's strings itself, which is why it has lengths of its own.
 //
 // Nothing here blocks longer than one response timeout, and it listens in slices of kPollMs so
 // that the task it runs in is never away for longer than a tick. It is logic: no ESP-IDF include,
@@ -82,6 +82,12 @@ constexpr std::size_t kTextRing = 3;
 // truncated and counted rather than refused, because a version string is not a protocol error.
 constexpr std::size_t kVersionMax = 48;
 
+// §5.1's `band`, added by 1.1: the band word of the running image's descriptor, which
+// spec/FIRMWARE-MANIFEST.md §4 gives eight bytes including its terminator (`868`, `lte-m`).
+// Sixteen leaves room for a word the manifest does not have yet; a longer one is truncated and
+// counted with the versions.
+constexpr std::size_t kBandMax = 16;
+
 // Why a call has no decoded answer. kNone is the only one that means there is one.
 enum class Fault : std::uint8_t {
   kNone,         // the response is there and decoded
@@ -99,7 +105,7 @@ enum class Fault : std::uint8_t {
 // What this client believes it is talking to (§9). Never two of these at once.
 enum class Mode : std::uint8_t {
   kUnknown,  // nothing has answered yet, or the radio was reset: try HELLO
-  kFrames,   // a HELLO was answered: protocol 1.0, frames
+  kFrames,   // a HELLO was answered: the box link's frames
   kText,     // NoiseScope: NDJSON lines, no frames in either direction
 };
 
@@ -119,6 +125,10 @@ struct Session {
   char fw_version[kVersionMax] = {};
   char board[kVersionMax] = {};
   char upstream[kVersionMax] = {};
+  // 1.1 (§5.1): the band the radio's running image was built for. **Empty when the radio speaks
+  // 1.0**, which says nothing about the band and is not a fault - `proto_minor` is how a reader
+  // tells "a 1.0 radio" from "a 1.1 radio that said nothing".
+  char band[kBandMax] = {};
 };
 
 // The call's answer: the decoded message, or why there is none. `status` carries the radio's own
@@ -186,7 +196,7 @@ struct Counters {
   std::uint32_t text_lines = 0;      // NDJSON lines seen (§9)
   std::uint32_t text_truncated = 0;  // of those, lines longer than kTextLineMax
   std::uint32_t text_dropped = 0;    // lines the ring had no room for
-  std::uint32_t long_versions = 0;    // HELLO strings longer than kVersionMax, kept truncated
+  std::uint32_t long_versions = 0;    // HELLO strings longer than the session keeps, truncated
   std::uint32_t restarts = 0;        // restarts of the radio noticed
   std::uint32_t time_sets = 0;       // TIME_SETs the client sent of its own accord
 };

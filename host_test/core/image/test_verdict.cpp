@@ -11,6 +11,7 @@
 
 #include "core/flasher/board_profile.h"
 #include "core/flasher/image_source.h"
+#include "core/image/this_image.h"
 #include "core/image/verdict.h"
 #include "fixtures/manifest_files.h"
 
@@ -132,6 +133,23 @@ TEST_CASE("the fixture images are accepted against their manifests: the repeater
     MESSAGE("accepted: " << std::string(f.name) << " for " << std::string(accepted.image().id) << ", descriptor at " << accepted.descriptorOffset()
                          << ", signed by " << fixtures::toHex(accepted.keyId(), 8));
   }
+}
+
+TEST_CASE("a repeater image built against link 1.0 is accepted by this 1.1 Walter") {
+  // §5's check 3 (`requires.link_major`, the manifest's `link.major`) and check 5 (the descriptor
+  // against the entry) compare the **major** and never the minor: within a major a minor only
+  // adds things (spec/LINK-PROTOCOL.md, *Versions*). So the day this firmware's own minor moved
+  // to 1 (task p8-05) a 1.0 radio image had to stay acceptable - the unit on the bench runs
+  // repeater v0.1.0 - and this is that, over all six checks and with the token read back.
+  REQUIRE(core::image::kLinkMinor >= 1);
+  Bench b;
+  b.spec("manifest-repeater.json", "manifest-repeater.json.sig", "image-repeater.bin");
+  const Outcome o = b.judge(repeaterSlot(), Use::kSwd, &core::flasher::kRak4630Single);
+  REQUIRE_MESSAGE(o.ok(), core::image::describe(o.failed) << ": " << o.why);
+  const AcceptedImage accepted = b.token();
+  CHECK(accepted.linkMajor() == core::image::kLinkMajor);
+  CHECK(accepted.linkMinor() == 0);
+  CHECK(accepted.linkMinor() != core::image::kLinkMinor);
 }
 
 TEST_CASE("with no key at all - a Walter before the release key existed - everything is refused at check 1") {

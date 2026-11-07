@@ -36,7 +36,7 @@ A unit out of the factory, before anything is set:
 ```
 twinoak-walter 0.0.0-dev
 running from ota_0 at 0x010000 (3072 KB), ota state valid
-image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.0
+image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.1
 settings: nvs namespace 'walter', 11 keys; 'get' prints them, 'set <key> <value>' changes one
 settings: NOT encrypted - flash encryption is the owner's choice and is not assumed: a person with this board and a cable can read lte.pin and server.token out of it (docs/console.md)
 uplink: the modem on UART2 behind interfaces::Uplink; not started yet ('lte', 'lte up')
@@ -96,7 +96,7 @@ log.level unset (info)
 unit.name Window at Grenaa
 > status
 twinoak-walter...
-unit: Window at Grenaa; role manager, board walter, band lte-m, link 1.0
+unit: Window at Grenaa; role manager, board walter, band lte-m, link 1.1
 booted: power-on reset; uptime...
 radio: no session (nothing has been asked of it since this boot: try 'rak hello')
 radio health:...

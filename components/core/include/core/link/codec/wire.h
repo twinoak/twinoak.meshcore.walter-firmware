@@ -1,4 +1,4 @@
-// The box link's numbers, protocol 1.0: spec/LINK-PROTOCOL.md §2-§8 as one header. Nothing here
+// The box link's numbers, protocol 1.1: spec/LINK-PROTOCOL.md §2-§8 as one header. Nothing here
 // is a decision - every constant is a cell of one of that document's tables, with the section it
 // comes from beside it, so that a reader can hold the two side by side. spec/tools/linkref.py is
 // the same numbers as Python and the fixtures it generates are what the tests check them against.
@@ -18,7 +18,12 @@ namespace link {
 // The version this firmware speaks (§5.1). A RAK that does not speak this major answers
 // ERR_UNSUPPORTED; within a major, a minor only adds things.
 constexpr std::uint8_t kProtoMajor = 1;
-constexpr std::uint8_t kProtoMinor = 0;
+constexpr std::uint8_t kProtoMinor = 1;
+
+// §5.1, *Versions* and *The band, and why it is here*: 1.1 added `band` at the end of HELLO's
+// response body (which EV_BOOT carries too). A body says its own minor, so this is read off the
+// body and never off what was asked for - a 1.0 RAK answers a 1.1 request without a band.
+constexpr std::uint8_t kBandMinor = 1;
 
 // §2, the shape of a packet and of a frame.
 //

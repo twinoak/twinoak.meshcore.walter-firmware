@@ -28,7 +28,7 @@ a provisioned unit, line by line, and it is replayed by a host test so that it c
 ```
 twinoak-walter 0.0.0-dev
 running from ota_0 at 0x010000 (3072 KB), ota state valid
-image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.0
+image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.1
 settings: nvs namespace 'walter', 11 keys; 'get' prints them, 'set <key> <value>' changes one
 settings: NOT encrypted - flash encryption is the owner's choice and is not assumed: a person with this board and a cable can read lte.pin and server.token out of it (docs/console.md)
 uplink: the modem on UART2 behind interfaces::Uplink; not started yet ('lte', 'lte up')
@@ -70,7 +70,7 @@ supervisor's stop is printed at every level.
 | Command | What it does |
 |---|---|
 | `help` | the commands, one line each, and the settings keys |
-| `status` | one screen: this firmware and what its descriptor says it is; the unit's name; why this boot happened, the uptime and the boot count; the radio's session, health and clock; the battery as the radio last reported it; the link's counters; the pins in one line; the images the store holds; this firmware's own slot and trial; the uplink's last attempt and when the next one is allowed; the backend; the next wake. **No secret and no IMEI** — the subscription's identity is `lte id` and nowhere else |
+| `status` | one screen: this firmware and what its descriptor says it is; the unit's name; why this boot happened, the uptime and the boot count; the radio's session - its role, version, slot, **band** (`not said` from a 1.0 radio) and link version - its health and clock; the battery as the radio last reported it; the link's counters; the pins in one line; the images the store holds; this firmware's own slot and trial; the uplink's last attempt and when the next one is allowed; the backend; the next wake. **No secret and no IMEI** — the subscription's identity is `lte id` and nowhere else |
 | `get [key]` | one setting, or every setting in the order of the table below. A secret prints `set` or `unset` and never its value; an unset key shows its fallback in brackets (`log.level unset (info)`) |
 | `set <key> <value>` | store a setting. The value is the rest of the line, trimmed, so a value with spaces is fine; it is validated against the table below before it is stored, and a refusal stores nothing. The reply is `ok <key>` — the value is never echoed back, which is what makes a secret's reply the same as anything else's |
 | `erase confirm` | forget every setting and **only** the settings: the images, the journal, the bad list and the supervisor's counts are in other partitions and in RTC memory and are not touched. Without the word it refuses and says what the word is. The fallbacks are in force at once, and the PIN's generation moves so that a refusal recorded against the PIN just forgotten is not applied to the next one |
@@ -85,7 +85,7 @@ supervisor's stop is printed at every level.
 | `pins` | the seven pins, one line each: net, D-sub pin, GPIO, mode as this firmware configured it, the level read from the pad, and what it is in use for (`released`, `uart`, `swd`, `reset`, `kill`); then the radio's power |
 | `rak reset` | one reset pulse: nRESET open-drain low for 100 ms, then released. If the last reset ended less than a second ago the command says how long it waits and waits; it never pulses early (two resets inside half a second put the radio into its UF2 bootloader). The first reset after a boot waits a full second, because the Walter's own power-up may have reset the radio just before |
 | `rak kill <seconds> [confirm]` | the LoRa 3.3 V rail off for that long: every other radio-facing pin released first (the UART and SWD taken back from whoever held them), the kill line driven high, held, released (never driven low), then the settle time, then the safe state. Whole seconds, 1 to 30 — the bounds are placeholders until the bench measures the rail (`bench.md` §6). **Over 5 seconds it wants the word `confirm` after the number**: a repeater off the air for half a minute is a decision, not a typo. The console is busy for the duration |
-| `rak hello` | HELLO: the version, role, slot and capabilities the radio answers with |
+| `rak hello` | HELLO: the version, role, slot, band and capabilities the radio answers with |
 | `rak ping` | PING, with the round trip |
 | `rak status` | STATUS: its uptime, why it booted, its clock, its flags and counters |
 | `rak id` | IDENTITY: the node's public key and advert name. The name is printed and not logged (S-12) |
@@ -295,7 +295,7 @@ are sent* (§9), or *the UART is not ours* (the rail is off, or a `rak kill` too
 
 | Command | What it does |
 |---|---|
-| `rak hello` | `HELLO`: the protocol version agreed, the role, the slot, the largest payload, `boot_id`, the firmware, board and upstream versions, and the capability bits by name. Says so when the radio's clock has not been set since it booted |
+| `rak hello` | `HELLO`: the protocol version agreed, the role, the slot, the largest payload, `boot_id`, the firmware, board and upstream versions, then the **band** on a line of its own - `band 868` from a radio that speaks link 1.1, `band: not said (a 1.0 radio)` from one that does not (`spec/LINK-PROTOCOL.md` §5.1; the band is the third of the three words an image is chosen by) - and the capability bits by name. Says so when the radio's clock has not been set since it booted |
 | `rak ping` | `PING` with a nonce made from this board's clock; prints whether it came back, the radio's uptime, the round trip and how many attempts it took |
 | `rak status` | `STATUS`: uptime, why it booted, its clock and time state, its flags by name, the observations waiting and lost, the frames its receiver dropped, and any pending attention |
 | `rak id` | `IDENTITY`: the node's MeshCore public key and its advert name |

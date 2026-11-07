@@ -298,8 +298,11 @@ radio it has no known-good image for. So, at the bench, with the radio on the ca
    firmware that erases a chip, which is why it is typed, naming the radio, and never automatic
    (`spec/SYSTEM.md` S-5a; [`provisioning.md`](provisioning.md), *A factory radio*);
 2. a signed release of the repeater's firmware is put into the store as the **candidate** — over
-   the cable with `tools/walterctl.py push --as candidate`, or over the air by the unit itself
-   once a server exists;
+   the cable with `tools/walterctl.py push --as candidate`, or over the air by the unit itself.
+   For the over-the-air half the server has to be able to pick an image, which it does by role,
+   board **and** band; with no golden image yet those three come from `HELLO`, so the radio must
+   speak box link **1.1** (repeater v0.1.1 or newer, task p8-05). A radio on a 1.0 image says no
+   band and takes its first install over the cable;
 3. the radio is flashed from it with `rak update --first-install` (the radio has no application of
    its own, and until this commits the LTE box leaves the silent radio alone), and the image that
    passes its health check becomes **golden**;

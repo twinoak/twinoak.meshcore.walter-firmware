@@ -982,6 +982,14 @@ std::size_t FirmwareJobs::writeStateResult() {
     w.string(lc::roleName(session.role));
     w.key("board");
     w.string(session.board);
+    // The band too, when the radio said one: §5.1's `band`, which link 1.1 added, and which
+    // `FirmwareRollout.PickImage` needs with the other two before it can pick a release's image
+    // (the 6 November fault, phase-6/FOLLOWUPS.md). A 1.0 radio says none, and then the key is
+    // left out rather than written empty: *absent* is what the slot has never been told.
+    if (session.band[0] != 0) {
+      w.key("band");
+      w.string(session.band);
+    }
   }
   if (session.up) {
     w.key("running");

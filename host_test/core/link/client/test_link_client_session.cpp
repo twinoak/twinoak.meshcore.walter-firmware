@@ -51,7 +51,11 @@ TEST_CASE("hello brings the session, and the request carries this firmware's own
   CHECK(session.up);
   CHECK(bench.client.mode() == lc::Mode::kFrames);
   CHECK(session.proto_major == link::kProtoMajor);
-  CHECK(session.proto_minor == link::kProtoMinor);
+  // The scripted radio answers the 1.0 fixtures' body, which is what repeater v0.1.0 on the bench
+  // does: the session says the minor **the radio** chose and not the one this end asked for, and
+  // a 1.0 radio therefore says no band (§5.1, *Versions*).
+  CHECK(session.proto_minor == 0);
+  CHECK(std::string(session.band).empty());
   CHECK(session.role == link::role::kRepeater);
   CHECK(session.slot == 0);
   CHECK(session.max_payload == link::kMaxPayload);
@@ -65,6 +69,104 @@ TEST_CASE("hello brings the session, and the request carries this firmware's own
   CHECK_FALSE(bench.client.hasCapability(link::cap::kTimePersist));
   // §5.1's `fw_version` in the request is the sender's own, which here is the build's.
   CHECK(fixtures::asString(bench.client.firmwareVersion()) == std::string(core::version()));
+}
+
+TEST_CASE("the HELLO this firmware sends asks for the minor it speaks, byte for byte") {
+  // §5.1, *Versions*: a Walter asks for the highest minor it knows. The head of the request it
+  // puts on the wire is the fixtures' case of that minor - 1.1's, as of 6 November - and the
+  // str8 after it is this build's own version and not the fixture's.
+  sim::LinkBench bench;
+  REQUIRE(bench.client.hello().ok());
+  REQUIRE(bench.radio.requests.size() == 1);
+  const std::vector<std::uint8_t>& sent = bench.radio.requests.back().payload;
+  const jsonfix::Value* asked =
+      fixtures::linkCaseIn(fixtures::linkFixture11(), "hello request, 1.1");
+  REQUIRE(asked != nullptr);
+  const std::vector<std::uint8_t> want = fixtures::hexOf(*asked, "payload");
+  REQUIRE(sent.size() >= 4);
+  REQUIRE(want.size() >= 4);
+  CHECK(fixtures::toHex(sent.data(), 4) == fixtures::toHex(want.data(), 4));
+  CHECK(sent[1] == link::kProtoMinor);
+  const jsonfix::Value& fields = (*asked)["fields"];
+  CHECK(fixtures::u8(fields, "proto_minor") == link::kProtoMinor);
+  CHECK(fixtures::u8(fields, "proto_major") == link::kProtoMajor);
+  CHECK(fixtures::u8(fields, "peer_kind") == link::peer_kind::kWalter);
+  CHECK(fixtures::u8(fields, "max_payload") == link::kMaxPayload);
+  // The one field of the request that is this build's own and not the fixture's.
+  CHECK(fixtures::textOf(fields, "fw_version") != std::string(core::version()));
+  const std::string version(sent.begin() + 5, sent.end());
+  CHECK(version == std::string(core::version()));
+}
+
+TEST_CASE("a 1.1 radio's band reaches the session, and is the fixtures' own bytes") {
+  // The repeater firmware's pile 3.8: `HELLO`'s answer ends with the band the running image was
+  // built for. A scripted radio given a `band` answers 1.1's body - and set up to be the 1.1
+  // radio the fixtures describe, what it puts on the wire is the fixtures' *hello response, 1.1:
+  // the band at the end* byte for byte. That is what makes this a test of the specification and
+  // not of the fake.
+  const jsonfix::Value* answered =
+      fixtures::linkCaseIn(fixtures::linkFixture11(), "hello response, 1.1: the band at the end");
+  REQUIRE(answered != nullptr);
+  const jsonfix::Value& said = (*answered)["fields"];
+
+  sim::LinkBench bench;
+  bench.radio.caps = fixtures::u32(said, "caps");
+  bench.radio.boot_id = fixtures::u32(said, "boot_id");
+  bench.radio.fw_version = fixtures::textOf(said, "fw_version");
+  bench.radio.band = fixtures::textOf(said, "band");
+  REQUIRE(bench.client.hello().ok());
+
+  REQUIRE(bench.radio.requests.size() == 1);
+  CHECK(fixtures::toHex(bench.radio.requests.back().response) ==
+        fixtures::toHex(fixtures::hexOf(*answered, "payload")));
+
+  const lc::Session& session = bench.client.session();
+  CHECK(session.proto_minor == link::kBandMinor);
+  CHECK(session.proto_minor == fixtures::u8(said, "proto_minor"));
+  CHECK(std::string(session.band) == fixtures::textOf(said, "band"));
+  CHECK(std::string(session.fw_version) == fixtures::textOf(said, "fw_version"));
+  CHECK(std::string(session.board) == fixtures::textOf(said, "board"));
+  CHECK(session.caps == fixtures::u32(said, "caps"));
+  CHECK(session.boot_id == fixtures::u32(said, "boot_id"));
+}
+
+TEST_CASE("a 1.1 radio's EV_BOOT carries the band too") {
+  // §5.1: EV_BOOT is the HELLO body behind a reset reason, so a Walter learns the band from it
+  // without asking - which is the first install's own case, a radio that comes up as a 1.1 image
+  // where a 1.0 one was.
+  sim::LinkBench bench;
+  REQUIRE(bench.client.hello().ok());
+  REQUIRE(std::string(bench.client.session().band).empty());
+  const std::size_t asked = bench.radio.requests.size();
+  bench.radio.band = "868";
+  bench.radio.restart();  // with its EV_BOOT, which is the default
+  bench.client.poll();
+  CHECK(std::string(bench.client.session().band) == "868");
+  CHECK(bench.client.session().proto_minor == link::kBandMinor);
+  CHECK(bench.radio.requests.size() == asked);  // learned from the event: nothing was asked
+}
+
+TEST_CASE("a band longer than the session keeps is truncated and counted") {
+  sim::LinkBench bench;
+  bench.radio.band = std::string(lc::kBandMax + 4, '8');
+  REQUIRE(bench.client.hello().ok());
+  CHECK(std::string(bench.client.session().band).size() == lc::kBandMax - 1);
+  CHECK(bench.client.counters().long_versions == 1);
+  CHECK(bench.client.session().up);
+}
+
+TEST_CASE("a restart into a 1.0 image leaves no band behind") {
+  // A radio that is flashed back to a 1.0 image must not leave the band of the 1.1 one in the
+  // session: the band belongs to the image that is running, and §5.1 gives a 1.0 body none.
+  sim::LinkBench bench;
+  bench.radio.band = "868";
+  REQUIRE(bench.client.hello().ok());
+  REQUIRE(std::string(bench.client.session().band) == "868");
+  bench.radio.band.clear();
+  bench.radio.restart();
+  REQUIRE(bench.client.hello().ok());
+  CHECK(bench.client.session().proto_minor == 0);
+  CHECK(std::string(bench.client.session().band).empty());
 }
 
 TEST_CASE("a version string longer than the session keeps is truncated and counted") {

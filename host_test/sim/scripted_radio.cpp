@@ -330,13 +330,16 @@ std::vector<std::uint8_t> ScriptedRadio::helloBody(const std::vector<std::uint8_
   out[at + 2] = role;
   putU32(out, at + 5, caps);
   putU32(out, at + 9, boot_id);
-  if (fw_version.empty() && board.empty()) {
-    return out;
+  if (fw_version.empty() && board.empty() && band.empty()) {
+    return out;  // the fixture's own 1.0 body: a radio that speaks 1.0 and says no band
   }
-  // The three str8s again, with this radio's own strings where it has them. A str8 is a length and
-  // that many bytes (§2), so the tail is rebuilt rather than patched in place.
+  // The str8s again, with this radio's own strings where it has them. A str8 is a length and that
+  // many bytes (§2), so the tail is rebuilt rather than patched in place. The fixture's body is
+  // 1.0's and holds three; a radio with a `band` answers 1.1's four, and says minor 1 so that a
+  // reader knows to look for the fourth (§5.1, *Versions* - the band is read off the body's own
+  // minor and off nothing else).
   std::size_t read_at = at + 13;
-  std::string strings[3];
+  std::string strings[4];
   for (std::size_t i = 0; i < 3; ++i) {
     REQUIRE(read_at < out.size());
     const std::size_t length = out[read_at++];
@@ -350,11 +353,17 @@ std::vector<std::uint8_t> ScriptedRadio::helloBody(const std::vector<std::uint8_
   if (!board.empty()) {
     strings[1] = board;
   }
+  std::size_t count = 3;
+  if (!band.empty()) {
+    out[at + 1] = core::link::kBandMinor;
+    strings[3] = band;
+    count = 4;
+  }
   std::vector<std::uint8_t> rebuilt(out.begin(), out.begin() + static_cast<long>(at) + 13);
-  for (const std::string& one : strings) {
-    REQUIRE(one.size() <= 0xFF);
-    rebuilt.push_back(static_cast<std::uint8_t>(one.size()));
-    rebuilt.insert(rebuilt.end(), one.begin(), one.end());
+  for (std::size_t i = 0; i < count; ++i) {
+    REQUIRE(strings[i].size() <= 0xFF);
+    rebuilt.push_back(static_cast<std::uint8_t>(strings[i].size()));
+    rebuilt.insert(rebuilt.end(), strings[i].begin(), strings[i].end());
   }
   REQUIRE(rebuilt.size() <= core::link::kMaxPayload);
   return rebuilt;

@@ -366,15 +366,17 @@ def main(argv):
     # store's door.
     store_images = []
 
-    def store_image(name, size, about, role="repeater", version=None, band="868", seed=1):
+    def store_image(name, size, about, role="repeater", version=None, band="868", seed=1,
+                    link_minor=0):
         version = version or ("0.3.0+" + name.replace("-", "")[:7])
-        desc = manifestref.make_descriptor(role, version, "rak4630-single", band, 1, 0)
+        desc = manifestref.make_descriptor(role, version, "rak4630-single", band, 1, link_minor)
         # The descriptor sits on a 4-byte boundary, past the vector table a real image starts
         # with; 0x400 is where the spec's own fixture images carry theirs.
         blob = manifestref.fake_image(desc, size, 0x400 if size > 0x400 + 96 else 0, seed)
         m = json.loads(json.dumps(repeater))
         m["version"] = version
         m["tag"] = "v" + version.split("+")[0]
+        m["link"]["minor"] = link_minor
         img = m["images"][0]
         img["role"] = role
         img["band"] = band
@@ -407,6 +409,13 @@ def main(argv):
                 version="0.3.0+golden0", seed=77)
     store_image("update-candidate", 4096, "one page: the candidate of the update tests",
                 version="0.3.1+candid0", seed=88)
+    # A repeater built against box link 1.1 (the repeater firmware's pile 3.8): the only fixture
+    # image whose descriptor says so, and therefore the only radio that answers HELLO with a band
+    # (spec/LINK-PROTOCOL.md §5.1, and host_test/core/update/chip_radio.h's radioBoots). Every
+    # other image here is a 1.0 one, which is what the first unit's radio runs.
+    store_image("update-golden-link-1-1", 4096,
+                "one page, box link 1.1: the radio that answers HELLO with its band",
+                version="0.3.2+golden1", seed=99, link_minor=1)
 
     # ---- the Walter's own images (task p2-04) ---------------------------------------------------
     # An `ota` file of this firmware's own product - role manager, board walter, band lte-m - with
