@@ -81,6 +81,14 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // health check - the version an image was supposed to have been flashed with.
   std::string fw_version;
   std::string board;
+  // §5.1's `band`, which link 1.1 added at the end of the body. **Empty by default, and then this
+  // radio is a 1.0 one**: it answers the fixture's 1.0 body, says minor 0 and no band - which is
+  // what repeater v0.1.0 on the bench does, and what every radio did until the repeater
+  // firmware's pile 3.8. Set it (`"868"`) and the radio answers a 1.1 body: minor
+  // core::link::kBandMinor and the band at the end, byte for byte the fixtures' *hello response,
+  // 1.1: the band at the end* (host_test/core/link/client/test_link_client_session.cpp holds the
+  // two against each other).
+  std::string band;
 
   // The event seq the next event carries (§3: the radio counts from 0 and wraps). Public so that a
   // test can skip one and make a gap.

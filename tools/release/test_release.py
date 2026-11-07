@@ -64,7 +64,8 @@ def partitions():
         return {p.name: p for p in check_partitions.parse_csv(fh.read())}
 
 
-def descriptor(version=DRYRUN, role="manager", board="walter", band="lte-m", major=1, minor=0):
+def descriptor(version=DRYRUN, role="manager", board="walter", band="lte-m",
+               major=build_release.LINK["major"], minor=build_release.LINK["minor"]):
     return manifestref.make_descriptor(role, version, board, band, major, minor)
 
 
@@ -166,7 +167,7 @@ class TheManifest(ReleaseCase):
         self.assertEqual(manifest["tag"], "v0.0.0-dryrun")
         self.assertEqual(manifest["commit"], COMMIT)
         self.assertEqual(manifest["built_at"], BUILT_AT)
-        self.assertEqual(manifest["link"], {"major": 1, "minor": 0})
+        self.assertEqual(manifest["link"], {"major": 1, "minor": 1})  # spec/LINK-PROTOCOL.md
         self.assertEqual([i["id"] for i in manifest["images"]], ["manager.walter.lte-m"])
         self.assertEqual(sorted(result["written"]),
                          sorted(["NOTES.md", "SHA256SUMS", "manifest.json",
@@ -220,7 +221,7 @@ class TheManifest(ReleaseCase):
         # The ESP-IDF the image says it was built with, and the pinned modem library.
         self.assertIn("v5.5.5", text)
         self.assertIn("walter-modem", text)
-        self.assertIn("1.0 (`spec/LINK-PROTOCOL.md`)", text)
+        self.assertIn("1.1 (`spec/LINK-PROTOCOL.md`)", text)  # the box link this build speaks
 
     def test_a_release_versions_notes_do_not_say_dry_run(self):
         self.build(version=RELEASE)

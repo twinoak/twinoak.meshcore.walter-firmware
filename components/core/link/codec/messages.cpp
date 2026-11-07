@@ -1,6 +1,7 @@
-// The payloads of protocol 1.0, spec/LINK-PROTOCOL.md §5-§8. spec/tools/linkref.py's encode()
-// and decode() are the reference and every case of spec/fixtures/link/link-v1.json is held
-// against this file by host_test/core/link/codec/test_link_fixtures.cpp - in both directions it
+// The payloads of protocol 1.1, spec/LINK-PROTOCOL.md §5-§8. spec/tools/linkref.py's encode()
+// and decode() are the reference and every case of spec/fixtures/link/link-v1.json and of
+// link-v1.1.json is held against this file by
+// host_test/core/link/codec/test_link_fixtures.cpp - in both directions it
 // implements: a request's fields become its payload, a response's or an event's payload becomes
 // its fields.
 #include "core/link/codec/messages.h"
@@ -73,10 +74,22 @@ bool takePath(Reader& r, Path* path) {
 }
 
 bool takeHelloBody(Reader& r, HelloBody* body) {
-  return r.u8(&body->proto_major) && r.u8(&body->proto_minor) && r.u8(&body->role) &&
-         r.u8(&body->slot) && r.u8(&body->max_payload) && r.u32(&body->caps) &&
-         r.u32(&body->boot_id) && r.str8(&body->fw_version) && r.str8(&body->board) &&
-         r.str8(&body->upstream);
+  const bool through_1_0 = r.u8(&body->proto_major) && r.u8(&body->proto_minor) &&
+                           r.u8(&body->role) && r.u8(&body->slot) && r.u8(&body->max_payload) &&
+                           r.u32(&body->caps) && r.u32(&body->boot_id) &&
+                           r.str8(&body->fw_version) && r.str8(&body->board) &&
+                           r.str8(&body->upstream);
+  if (!through_1_0) {
+    return false;
+  }
+  // §5.1: 1.1 put `band` at the end of the body, and what decides whether it is there is the
+  // **body's own** `proto_minor` and not what this end asked for - a 1.0 RAK answers a 1.1
+  // request with a 1.0 body. A minor beyond this one still ends with the fields it knows
+  // (*Versions*), so anything past the band is left where it is and ignored.
+  if (body->proto_minor < kBandMinor) {
+    return true;
+  }
+  return r.str8(&body->band);
 }
 
 // §6.3. `state` selects the layout of the rest, so a state this firmware does not know is

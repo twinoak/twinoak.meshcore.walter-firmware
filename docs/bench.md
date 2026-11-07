@@ -97,7 +97,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   Open the port at any baud (USB Serial/JTAG ignores it). After a reset the console prints
   `twinoak-walter 0.0.0-dev` on its own line, then `running from ota_0 at 0x010000 (3072 KB), ota
   state undefined (...)`, then `image descriptor at <address>: role manager, board walter, band
-  lte-m, version 0.0.0-dev, link 1.0` (task p0-02), then `boot 1: power-on reset`, `the boot
+  lte-m, version 0.0.0-dev, link 1.1` (task p0-02), then `boot 1: power-on reset`, `the boot
   record starts here (a power cut, or the first boot)`, `type 'help' for the commands` and a `> `
   prompt (task p0-03; until it, the last line was `console on USB; nothing to do yet - idling`).
   `--flash-mode dio` is esptool's way in; the image's header says QIO and the bootloader
@@ -129,7 +129,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   ```
 
   The console's third line is `image descriptor at <address>: role manager, board walter, band
-  lte-m, version <the manifest's version>, link 1.0` — the same role, board, band and version the
+  lte-m, version <the manifest's version>, link 1.1` — the same role, board, band and version the
   descriptor and `manifest.json` give. Everything here is checked on every build except that a
   board flashed with the released file boots and prints it: that is what only a Walter on a desk
   shows.
@@ -228,10 +228,13 @@ RAK's on its own. The firmware's side is `components/core/link/client/`, the pro
 This is the first time either firmware's codec meets the other's: until now both have only passed
 the same fixtures.
 
-- [ ] **`rak hello`** (task p1-02). Prints `protocol 1.0`, `role 1 (repeater)`, `slot 0`, `max
-  payload 240`, a `boot_id`, the RAK's firmware, board and upstream versions, and its capability
-  bits by name. Hold them against what the RAK's own console says (`stats-core`, its banner): the
-  same version, the same board. Then `rak ping` — the nonce comes back, the uptime grows between
+- [ ] **`rak hello`** (task p1-02). Prints `protocol 1.0` from a repeater built against link 1.0
+  and `protocol 1.1` from one built against 1.1 - the minor the **RAK** chose, which is the
+  highest both ends know (§5.1) - then `role 1 (repeater)`, `slot 0`, `max payload 240`, a
+  `boot_id`, the RAK's firmware, board and upstream versions, the band on its own line (task
+  p8-05: `band 868`, or `band: not said (a 1.0 radio)`), and its capability bits by name. Hold
+  them against what the RAK's own console says (`stats-core`, its banner): the same version, the
+  same board. Then `rak ping` — the nonce comes back, the uptime grows between
   two of them, `1 attempt` — and `rak status`: its uptime, why it booted, its clock, its flags and
   `link errors 0`.
 
@@ -1467,6 +1470,20 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       the one place a person sees which release a unit out there is actually on, and *LTE test
       node*'s page said `0.0.0-dev` until this one was flashed. Check that the seven characters
       are the tagged commit's.
+- [ ] **The band a 1.0 radio does not say** (task p8-05). With **repeater v0.1.0** on the radio -
+      the unit's own state this morning - `rak hello` says `band: not said (a 1.0 radio)` on the
+      line after the firmware and the board, and `status`'s radio line says `band not said`. Everything else about the
+      session is as before: this is the 1.1 Walter talking to a 1.0 radio, which is the pairing
+      the whole phase has to keep working.
+- [ ] ★ **The band a 1.1 radio does say, and the state read without a golden image** (task p8-05).
+      With **repeater v0.1.1** on the radio (the repeater firmware's pile 3.8) `rak hello` says
+      `band 868` and `status` says `band 868, link 1.1`. Then, **before** `rak update
+      --first-install` has made anything golden, run *Read the unit's state* on meshmaster.dk: the
+      slot must report `role repeater`, `board rak4630-single` **and** `band 868`, and *Mark
+      canary* must offer the release instead of saying *Read the unit's state first*. This is the
+      item job 20990 failed on 6 November, and the band is the only one of the three words that
+      was missing. **If the slot still reports no band** while `rak hello` says one, the state
+      report is not reading the session - stop and report it.
 
 ## What to bring back
 

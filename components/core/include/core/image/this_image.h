@@ -11,15 +11,19 @@
 #pragma once
 
 #include "core/image/descriptor.h"
+#include "core/link/codec/wire.h"
 
 namespace core {
 namespace image {
 
-// The box link this firmware speaks: spec/LINK-PROTOCOL.md is "protocol 1.0". The same two numbers
-// go into the descriptor's `link_major`/`link_minor`, into the manifest's `link` object, and into
-// the link client's HELLO when phase 1 writes it.
-constexpr std::uint8_t kLinkMajor = 1;
-constexpr std::uint8_t kLinkMinor = 0;
+// The box link this firmware speaks: spec/LINK-PROTOCOL.md, "protocol 1.1" since 6 November. The
+// same two numbers go into the descriptor's `link_major`/`link_minor`, into the manifest's `link`
+// object (tools/release/build_release.py's LINK, which the release holds against the descriptor it
+// finds in the built image) and into the HELLO the link client sends - so they are **the codec's
+// own**, not a second copy of them: a firmware whose descriptor said one version while its HELLO
+// asked for another is the one thing this cannot be.
+constexpr std::uint8_t kLinkMajor = link::kProtoMajor;
+constexpr std::uint8_t kLinkMinor = link::kProtoMinor;
 
 // The bytes in the image. Declared `extern` so that it has external linkage and main/ can
 // reference it; defined, aligned and built in image/this_image.cpp.

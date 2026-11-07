@@ -425,9 +425,23 @@ numbers. A decoded message's variable-length fields are *views* into the receive
 until the next frame is read, so keeping one means copying it. A decoder refuses a value that
 selects the layout of what follows it (`path_mode`, a reply record's `state`) and passes on one
 that is only data (a status, a role, a capability bit), because §5.1 says a minor version adds
-those and that unknown ones are ignored. It is tested against `spec/fixtures/link/link-v1.json`,
-which the radio firmware's own codec is tested against too; neither sees the other's source, and
-if both pass every case they agree on the wire.
+those and that unknown ones are ignored. It is tested against `spec/fixtures/link/link-v1.json`
+and `link-v1.1.json`, which the radio firmware's own codec is tested against too; neither sees the
+other's source, and if both pass every case they agree on the wire.
+
+**Link 1.1, and the band** (6 November, task p8-05). `HELLO`'s answer and `EV_BOOT` end with
+`band`, the band the running image was built for, and a `HELLO` from this firmware asks for minor
+1 (`codec/wire.h`'s `kProtoMinor`, which is also the descriptor's `link_minor` and the release
+manifest's `link` - one version, not three copies of it). The band is read off **the body's own
+`proto_minor`** and off nothing else: a 1.0 radio answers a 1.1 request with a 1.0 body and no
+band, and the session then says none rather than the last image's. Why it is there: with the role
+and the board it is what a release's image is chosen by (`spec/FIRMWARE-MANIFEST.md` §5 check 3,
+and meshmaster.dk's `FirmwareRollout.PickImage`), and until a first install through the Walter
+commits there is no golden image to read the three words off - which is why job 20990 on 6
+November reported `{"slot": 0}` and the server could never offer that radio its first image. What
+is **not** compared is the minor: a 1.1 Walter accepts, flashes and talks to a 1.0 repeater image
+(only the major is, in `image/choose.cpp`, `image/file_check.cpp` and the update's health check),
+because the unit on the bench runs repeater v0.1.0.
 
 **The client** (`core/link/client/`, task p1-02) owns the UART (115200 8N1 on GPIO7/8) and gives
 the rest of the firmware typed calls: *hello*, *ping*, *status*, *set time*, *run this console
@@ -1348,7 +1362,7 @@ job. Per core type:
 | `reboot` | `CLI reboot`: no answer, the expected silence (§5.7) | served, *ok as sent* |
 | `config.read` | `CLI` lines; the access list silent | served, without the ACL |
 | `discover` | the UART is the direct path: the synthetic login teaches it | served, zero hops |
-| `status`, `neighbours` | no request of §5 yields the bytes the job parses | `failed` — link 1.1 |
+| `status`, `neighbours` | no request of §5 yields the bytes the job parses | `failed` — a later link minor |
 | `trace` | a radio cannot trace a round trip to itself | `failed` |
 
 ### The identity: who this exit node says it is (task p4-04)
@@ -1461,7 +1475,7 @@ on the air:
 |---|---|---|
 | `twinoak.fw.offer` | `Fetch` the named image into the candidate slot, in resumable ranges, posting `progress` and asking `extend` as it goes; a wake that runs out of download budget stops mid-image and **posts no result**, leaving the lease to expire, and the next wake resumes from where the bytes stop | `stored`, once the whole image is in the slot and its hash matches |
 | `twinoak.fw.apply` | the radio's `RadioUpdate` or this board's own `SelfUpdate`, in slices, journalled (the journal truncated to 40 entries / 2000 characters for the result); refused by a word (`battery`, `link`, `clock`, `inProgress`, `noGolden`, `badList`, `order`) rather than a silent failure | `committed` or `rolledBack`; **the Walter's own apply result is posted by the *next* boot's wake**, after the trial whose third condition is one heartbeat `ok` |
-| `twinoak.fw.state` | read back the store's records, the running and golden versions, the journal and the supervisor's counts | the state, as bytes |
+| `twinoak.fw.state` | read back the store's records, the running and golden versions, the journal and the supervisor's counts | the state, as bytes. The slot's `role`, `board` and `band` - the three words the server picks an image by - come from the **golden image's descriptor** when there is one, and from `HELLO` when there is none, which is every radio before its first install through the Walter commits; `band` is left out when the radio speaks link 1.0 and says none (task p8-05) |
 | `twinoak.power.cycle` | `RadioPins::killCycle` within the §2 bounds, then a `HELLO` to prove the radio came back | the cycle's outcome |
 
 Telemetry a job needs is read with §5.8's `LPP_GET`, never a chat line. The payloads and results are

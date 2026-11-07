@@ -69,6 +69,61 @@ TEST_CASE("twinoak.fw.state: the store, the running image, the Walter's slots an
   CHECK(bench::member(bench::objectOf(data, "supervisor"), "incidents") == "0");
 }
 
+TEST_CASE("twinoak.fw.state with no golden image: HELLO's role, board and band, and no band from a 1.0 radio") {
+  // 6 November, job 20990: with no golden image the state came back `{"slot": 0}` and nothing
+  // else, so meshmaster.dk - which picks an image by role, board **and** band
+  // (FirmwareRollout.PickImage) - could never offer that radio its first image over LTE
+  // (phase-6/FOLLOWUPS.md). Link 1.1 ends HELLO with the band, and this is the slot reporting it
+  // from a radio alone: the image runs on the chip, the store holds nothing.
+  SUBCASE("a 1.1 radio says its band, and the slot reports all three") {
+    AgentBench bench;
+    const Candidate running("update-golden-link-1-1");
+    bench.world.chip->installOnChip(running);
+    bench.world.chip->radioBoots();
+    bench.modemWorks();
+    REQUIRE_FALSE(bench.world.images.read(Which::kGolden).present);
+    bench.server().queue(bench::ownJob(1, agent::kStateType, "{}").json());
+    const Pass& pass = bench.oneWake();
+    CHECK(pass.outcomeOf(Step::kBackend) == Outcome::kDone);
+    const std::string slots = bench::objectOf(bench.lastData(1), "slots");
+    const std::string slot = slots.substr(1, slots.size() - 2);
+    CHECK(bench::topKeys(slot) == std::vector<std::string>{"slot", "role", "board", "band", "running"});
+    CHECK(bench::member(slot, "role") == "repeater");
+    CHECK(bench::member(slot, "board") == "rak4630-single");
+    CHECK(bench::member(slot, "band") == running.band);
+    CHECK(bench::member(bench::objectOf(slot, "running"), "version") == running.version);
+  }
+
+  SUBCASE("a 1.0 radio says none, and the slot reports the two it has") {
+    AgentBench bench;
+    const Candidate running("update-golden");  // a link 1.0 image: repeater v0.1.0's case
+    bench.world.chip->installOnChip(running);
+    bench.world.chip->radioBoots();
+    bench.modemWorks();
+    bench.server().queue(bench::ownJob(1, agent::kStateType, "{}").json());
+    const Pass& pass = bench.oneWake();
+    CHECK(pass.outcomeOf(Step::kBackend) == Outcome::kDone);
+    const std::string slots = bench::objectOf(bench.lastData(1), "slots");
+    const std::string slot = slots.substr(1, slots.size() - 2);
+    CHECK(bench::topKeys(slot) == std::vector<std::string>{"slot", "role", "board", "running"});
+    CHECK(bench::member(slot, "role") == "repeater");
+    CHECK(bench::member(slot, "board") == "rak4630-single");
+    CHECK(bench::member(slot, "band").empty());
+  }
+
+  SUBCASE("a silent radio says nothing at all, as before") {
+    AgentBench bench;
+    bench.world.chip->radioBoots();  // a blank chip: nothing answers HELLO
+    bench.modemWorks();
+    bench.server().queue(bench::ownJob(1, agent::kStateType, "{}").json());
+    const Pass& pass = bench.oneWake();
+    CHECK(pass.outcomeOf(Step::kBackend) == Outcome::kDone);
+    const std::string slots = bench::objectOf(bench.lastData(1), "slots");
+    const std::string slot = slots.substr(1, slots.size() - 2);
+    CHECK(bench::topKeys(slot) == std::vector<std::string>{"slot"});
+  }
+}
+
 TEST_CASE("twinoak.fw.offer: the budget ends the wake mid-download with no result, the next wake resumes and finishes") {
   AgentBench bench;
   const Candidate golden("update-golden");

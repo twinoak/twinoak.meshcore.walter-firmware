@@ -15,6 +15,7 @@
 
 #include "core/image/descriptor.h"
 #include "core/image/this_image.h"
+#include "core/link/codec/wire.h"
 #include "descriptor_fixtures.h"
 
 namespace {
@@ -292,6 +293,10 @@ TEST_CASE("this firmware's own descriptor says what the manifest will say about 
   CHECK(self.slot == core::image::kAnySlot);
   CHECK(self.link_major == core::image::kLinkMajor);
   CHECK(self.link_minor == core::image::kLinkMinor);
+  // One version, said once: the descriptor's two bytes are the codec's own constants, so an image
+  // whose HELLO asked for a minor its descriptor did not claim cannot be built (task p8-05).
+  CHECK(self.link_major == core::link::kProtoMajor);
+  CHECK(self.link_minor == core::link::kProtoMinor);
   CHECK(self.flags == 0);
   // The one version string: the console's banner, the descriptor's field and the manifest's.
   CHECK(std::string(self.version) == TWINOAK_VERSION);

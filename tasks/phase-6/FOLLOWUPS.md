@@ -99,8 +99,19 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   (`read(4096)` returns early only at 4096 bytes): about 2.5 hours for one radio image. Fixed in the
   tool (`SerialPort.read` returns what has arrived), with a progress line per tenth of a file; the
   console host's pipe never showed it, so a test against a real port is the bench's.
-- [ ] **[p8-05] A unit with no golden image cannot be offered a radio release over LTE.**
-  Without a golden image, `twinoak.fw.state` (`FirmwareJobs::writeStateResult`,
+- [x] **[p8-05] A unit with no golden image cannot be offered a radio release over LTE.**
+  *Fixed by task p8-05 (`tasks/phase-8/reports/05.md`), by the first of the two the item offers:
+  the state brings `HELLO`'s band too, because the link now carries one. Link **1.1** ends
+  `HELLO`'s answer and `EV_BOOT` with `band` (`spec/LINK-PROTOCOL.md` §5.1); the codec reads it off
+  the body's own `proto_minor`, `Session::band` keeps it, `rak hello` and `status` print it, and
+  `FirmwareJobs::writeStateResult` reports `role`, `board` and `band` from the session when there
+  is no golden image - the key left out when the radio speaks 1.0 and says none. This firmware's
+  descriptor and its release manifest say link 1.1, and only the **major** is ever compared, so a
+  1.0 repeater image is still accepted, flashed and talked to: the unit on the bench runs repeater
+  v0.1.0 and `rak hello` there says `band: not said (a 1.0 radio)`. Nothing of meshmaster.dk's
+  second option was needed. Still to be seen on the board: `docs/bench.md` §18, the two new lines
+  at its end - the band a 1.1 radio says, and *read the unit's state* reporting it with no golden
+  image.* Without a golden image, `twinoak.fw.state` (`FirmwareJobs::writeStateResult`,
   `components/agent/firmware_jobs.cpp`) reports a slot's role and board from `HELLO`, and only when a
   link session is up, and never its band. meshmaster.dk picks the image by role, board **and** band
   (`FirmwareRollout.PickImage`), so the canary picker and the offer both say *Read the unit's state

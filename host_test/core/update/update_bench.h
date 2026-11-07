@@ -187,12 +187,18 @@ struct UpdateWorld {
       radio.deaf = true;  // in its bootloader: nothing answers on the link
       radio_runs = false;
       running_version.clear();
+      radio.band.clear();
       return;
     }
     radio_runs = true;
     running_version = f.version;
     radio.fw_version = f.version;
     radio.board = f.board;
+    // §5.1's `band`, which link 1.1 added: a radio says it only if the image it runs speaks 1.1,
+    // and the descriptor it runs is where both facts are (spec/FIRMWARE-MANIFEST.md §4's
+    // `link_minor` and `band`). So a repeater built against link 1.0 - which is every fixture
+    // image but `update-golden-link-1-1`, and the v0.1.0 on the bench - says none.
+    radio.band = f.link_minor >= core::link::kBandMinor ? f.band : "";
     radio.role = static_cast<std::uint8_t>(f.role);
     radio.deaf = false;
     if (f.role == core::image::Role::kScanner) {

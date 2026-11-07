@@ -1,4 +1,4 @@
-// One struct per payload of protocol 1.0, and the functions the Walter's end needs: an encoder
+// One struct per payload of protocol 1.1, and the functions the Walter's end needs: an encoder
 // for every request it sends, a decoder for every response and every event it receives
 // (spec/LINK-PROTOCOL.md §5-§8). The other two directions - decoding a request, encoding a
 // response - are the radio firmware's and are not here; the fixtures are the only thing the two
@@ -67,6 +67,10 @@ struct HelloBody {
   Text fw_version;
   Text board;
   Text upstream;
+  // 1.1, and read only off a body whose own `proto_minor` is kBandMinor or more: the band the
+  // running image was built for, as its descriptor says it (`868`). Empty from a 1.0 RAK, which
+  // is what every radio is until the repeater firmware's 1.1 reaches it.
+  Text band;
 };
 
 // §6.3, a reply record. Which of the last four groups is filled in depends on `state`.

@@ -503,6 +503,10 @@ void Client::sessionFromBody(const HelloBody& body) {
   bool whole = copyText(body.fw_version, here().session.fw_version, sizeof here().session.fw_version);
   whole = copyText(body.board, here().session.board, sizeof here().session.board) && whole;
   whole = copyText(body.upstream, here().session.upstream, sizeof here().session.upstream) && whole;
+  // §5.1, 1.1: the band, or - from a 1.0 body, whose decoded `band` is empty - nothing, which
+  // empties the session's. A session that kept a band across a restart into a 1.0 image would
+  // report a band the radio has stopped saying it has.
+  whole = copyText(body.band, here().session.band, sizeof here().session.band) && whole;
   if (!whole) {
     counters_.long_versions = saturate(counters_.long_versions);
   }
