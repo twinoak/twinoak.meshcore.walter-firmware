@@ -48,6 +48,26 @@ class FakeMesh : public FakeMeshRepeater {
     holdCountersEqual("at the end of the test");
   }
 
+  // The exit node's own key. On a Walter the unit *is* its repeater (spec/SYSTEM.md S-1) and
+  // this key comes from §5.6 IDENTITY, which every wake reads before it claims (task p8-04);
+  // `LinkMesh::supports()` carries no mesh job until it has one, because without it a job for
+  // the unit's own repeater cannot be told from a stranger's. The library's scenarios hand the
+  // key over with this call, so the shim arms the link's own key from the same one - the
+  // scenarios themselves are unchanged. A job for the *target* repeater stays a mesh job: the
+  // two keys differ, which is what a Heltec's arrangement models on a Walter's wire.
+  void setSelfKey(const std::string& hex64) {
+    FakeMeshRepeater::setSelfKey(hex64);
+    uint8_t key[32];
+    if (hex64.size() != 64) return;
+    for (size_t i = 0; i < 32; i++) {
+      const int high = hexNibble(hex64[2 * i]);
+      const int low = hexNibble(hex64[2 * i + 1]);
+      if (high < 0 || low < 0) return;
+      key[i] = static_cast<uint8_t>((high << 4) | low);
+    }
+    world_.mesh.setOwnKey(key);
+  }
+
   // The link under the runner, for the tests of components/agent/ that want its knobs.
   sim::MeshWorld& world() { return world_; }
   agent::LinkMesh& link() { return world_.mesh; }
@@ -109,6 +129,13 @@ class FakeMesh : public FakeMeshRepeater {
   const mm::MeshReply& reply() const override { return world_.mesh.reply(); }
 
  private:
+  static int hexNibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  }
+
   // The repeater's own IMesh, reached without the overrides above: what the RAK drives.
   class Inner final : public mm::IMesh {
    public:

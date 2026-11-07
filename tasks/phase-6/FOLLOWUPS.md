@@ -130,7 +130,7 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   few seconds of flashing without such a pause. Until then **no `rak update` and no `rak provision`
   on 0.1.0**: the radio is recovered over its own USB-C (double-tap reset, the release's `.uf2`),
   which writes the application region only, so the node's identity stays.
-- [ ] **[p8-04; meshmaster.dk 4.25; Thomas] A unit's own repeater, read through its own Walter.** 6 November:
+- [x] **[p8-04; meshmaster.dk 4.25; Thomas] A unit's own repeater, read through its own Walter.** 6 November:
   *Read now* on the unit's repeater was refused (a guest read, no guest password stored, no guest
   pair), the advice was to pair LTE test node with its own repeater at the guest door, and the
   pairing's discover then went out on the air from the radio to itself. Three things, one per place:
@@ -146,6 +146,19 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   link (`link_mesh.h`: *Failed* for a local job), so the unit cannot read its own repeater's status
   through the Walter at all yet; telemetry (LPP_GET) and CLI lines can. Decide whether the link gets
   a request for them or the CLI's stats lines stand in.
+  *Part (1) is done in task p8-04, both halves of it: every wake - timer or console - calls
+  `Identity::open()` before it claims anything (one `HELLO` when there is no session, then §5.6,
+  then the key handed to the local door; a timer wake, whose step 2 opened the session, asks
+  nothing extra), **and** `LinkMesh::supports()` now needs the own key as well as the session's
+  MESH_CLIENT bit, so a unit that cannot yet tell a local job from a stranger's advertises no mesh
+  type and the server routes none - a job is never claimed and then refused. One line of the log
+  says which of the two the wake was. The host tests are
+  `host_test/agent/test_radio_before_a_job.cpp`, and the scripted meshmaster.dk was taught to route
+  a claim by the heartbeat's own `jobTypes`, because until then the fake handed over whatever a
+  test queued. Still to be seen on the board: `docs/bench.md` §18, the two p8-04 lines. Parts (2)
+  and (3) are not this task's: (2) is meshmaster.dk's pile 4.25, and (3) - a link request for
+  status, neighbours and owner-info, or the CLI's stats lines standing in - is a decision of
+  Thomas's that task p8-04 declares out of scope.*
 - [x] **[p8-03; meshmaster.dk 4.25] A response body that stalls, and the job it orphans.** 6 November, after the evening's
   nineteen watchdog boots: heartbeat 200 (143 bytes, 4.5 s), then `/agent/v1/jobs/claim` -> `http 200
   but the body did not arrive whole` after 31 s with the library's `Command time-out (TX) Attempt 1 of

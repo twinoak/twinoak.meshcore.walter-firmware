@@ -147,11 +147,23 @@ void Identity::forget() {
   identity_.radio = mm::RadioParameters{};
 }
 
+bool Identity::open() {
+  // A session first when there is none (task p8-04): one HELLO, the link client's own three
+  // tries, and then whatever refresh() has to read. A radio that does not answer leaves this
+  // unit with no key, which is what shuts the local door and - because `LinkMesh::supports()`
+  // asks for the key - takes every mesh job out of the heartbeat's list for this wake.
+  if (!radio_client_.session().up) {
+    ++counters_.sessions_asked;
+    if (!radio_client_.hello().ok()) ++counters_.no_session;
+  }
+  return refresh();
+}
+
 bool Identity::refresh() {
   const lc::Session& session = radio_client_.session();
   if (!session.up) {
     // No session: nothing is known and nothing is asked. Opening one is `HELLO`, and that is
-    // whoever runs the wake's (the supervisor's check at step 2, or `rak hello`).
+    // whoever runs the wake's (the supervisor's check at step 2, `open()` above, or `rak hello`).
     if (boot_seen_) forget();
     return false;
   }

@@ -7,6 +7,15 @@
 // job JSON a test built with the library's own `fake::Job`, every result, extend and progress
 // recorded by job id, an observation batch counted, and a release served as files with ranges.
 //
+// **It routes by the heartbeat's `jobTypes`, as the server does** (task p8-04): the server sends
+// a unit only the types its last heartbeat advertised - "routing requires the type advertised"
+// (agent/AgentLoop.cpp's `buildHeartbeat`, meshmaster.dk's task p3-53) - so a queued job of a type
+// this unit did not offer is neither counted in `jobsWaiting` nor handed over by a claim; it stays
+// queued and `jobs_not_routed` counts the times it was passed over. Before this the fake handed
+// over whatever a test queued, which is how a wake that offered no mesh type could still be seen
+// running a mesh job. `route_by_job_types = false` is the old behaviour, for a test that wants the
+// server to misbehave.
+//
 // What a test turns: `away(true)` is a server nobody reaches (every handshake fails, which is
 // what a week without coverage or a deploy looks like from an LTE-M modem); `accept(seconds)`
 // pins the interval the next heartbeat reply accepts; `queue(job)` is one claim's worth. What it
@@ -84,6 +93,18 @@ class MeshMasterScript {
     result_fail_status_ = status;
     result_fail_count_ = count;
   }
+  // Whether a claim is held to the types the last heartbeat advertised. True is the server.
+  bool route_by_job_types = true;
+  // The types the last heartbeat offered, in order.
+  const std::vector<std::string>& advertised() const { return advertised_; }
+  bool offers(const std::string& type) const {
+    if (!route_by_job_types) return true;
+    if (advertised_.empty()) return true;  // no heartbeat yet: nothing to route by
+    for (const std::string& one : advertised_) {
+      if (one == type) return true;
+    }
+    return false;
+  }
 
   // -- what happened -----------------------------------------------------------------------------
 
@@ -98,6 +119,7 @@ class MeshMasterScript {
   int claims = 0;
   int withheld_claims = 0;  // claims answered with nothing queued
   int results_refused = 0;  // result posts answered with the scripted failure
+  int jobs_not_routed = 0;  // queued jobs a claim passed over: the unit does not offer the type
 
   // The last `nextCheckInS` a heartbeat carried, and what was accepted of it.
   std::uint32_t lastProposed() const { return last_proposed_; }
@@ -151,6 +173,41 @@ class MeshMasterScript {
     if (at == std::string::npos) return 0;
     return static_cast<std::uint32_t>(std::strtoul(body.c_str() + at + needle.size(), nullptr, 10));
   }
+  // The job types the heartbeat offered: the strings of its `jobTypes` array, in order.
+  static std::vector<std::string> jobTypesOf(const std::string& body) {
+    std::vector<std::string> types;
+    const std::size_t at = body.find("\"jobTypes\":[");
+    if (at == std::string::npos) return types;
+    std::size_t i = at + 12;
+    while (i < body.size() && body[i] != ']') {
+      if (body[i] != '"') {
+        ++i;
+        continue;
+      }
+      const std::size_t end = body.find('"', i + 1);
+      if (end == std::string::npos) break;
+      types.push_back(body.substr(i + 1, end - i - 1));
+      i = end + 1;
+    }
+    return types;
+  }
+  // One job's `type`, as the claim's JSON carries it.
+  static std::string typeOf(const std::string& job) {
+    const std::size_t at = job.find("\"type\":\"");
+    if (at == std::string::npos) return "";
+    const std::size_t begin = at + 8;
+    const std::size_t end = job.find('"', begin);
+    return end == std::string::npos ? std::string() : job.substr(begin, end - begin);
+  }
+  // How many queued jobs this unit offers a type for: what `jobsWaiting` means to the server.
+  int routableQueued() const {
+    int n = 0;
+    for (const std::vector<std::string>& batch : queued_) {
+      for (const std::string& job : batch) n += offers(typeOf(job)) ? 1 : 0;
+    }
+    return n;
+  }
+
   static int countItems(const std::string& batch) {
     int n = 0;
     std::size_t at = 0;
@@ -184,6 +241,7 @@ class MeshMasterScript {
     }
     if (path == "/agent/v1/heartbeat") {
       heartbeats.push_back(request.body);
+      advertised_ = jobTypesOf(request.body);
       last_proposed_ = numberAfter(request.body, "nextCheckInS");
       // What was accepted: the unit's own proposal clamped to 60..86 400, or what the test pinned.
       std::uint32_t accepted = accepted_ != 0 ? accepted_ : last_proposed_;
@@ -196,7 +254,7 @@ class MeshMasterScript {
                     "{\"serverTime\":\"%s\",\"budget\":{\"maxTransactionsPerMinute\":%d,\"minGapSeconds\":%d},"
                     "\"pollIntervalS\":%lu,\"jobsWaiting\":%s}",
                     iso(server_time).c_str(), max_per_minute_, gap_seconds_,
-                    static_cast<unsigned long>(accepted), queued_.empty() ? "false" : "true");
+                    static_cast<unsigned long>(accepted), routableQueued() > 0 ? "true" : "false");
       reply->body = json;
       return true;
     }
@@ -212,10 +270,19 @@ class MeshMasterScript {
       claim_maxes.push_back(max);
       std::vector<std::string> batch;
       if (!queued_.empty()) {
+        // Only the types the last heartbeat offered, up to `max`; the rest stay queued, which is
+        // the server keeping a job for a unit that cannot do it yet rather than leasing it out.
         std::vector<std::string>& front = queued_.front();
-        const std::size_t take = static_cast<std::size_t>(max) < front.size() ? static_cast<std::size_t>(max) : front.size();
-        batch.assign(front.begin(), front.begin() + static_cast<long>(take));
-        front.erase(front.begin(), front.begin() + static_cast<long>(take));
+        for (std::size_t i = 0; i < front.size();) {
+          if (static_cast<int>(batch.size()) >= max) break;
+          if (!offers(typeOf(front[i]))) {
+            ++jobs_not_routed;
+            ++i;
+            continue;
+          }
+          batch.push_back(front[i]);
+          front.erase(front.begin() + static_cast<long>(i));
+        }
         if (front.empty()) queued_.erase(queued_.begin());
       } else {
         ++withheld_claims;
@@ -265,6 +332,7 @@ class MeshMasterScript {
   fakes::FakeClock& clock_;
   std::string config_;
   std::vector<std::vector<std::string>> queued_;
+  std::vector<std::string> advertised_;  // the last heartbeat's `jobTypes`
   std::uint32_t accepted_ = 0;
   std::uint32_t last_proposed_ = 0;
   std::uint32_t last_accepted_ = 0;

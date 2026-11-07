@@ -65,6 +65,14 @@ bool IdentityProbe::identity(core::console::AgentIdentityView* out) {
   if (out == nullptr) return false;
   *out = core::console::AgentIdentityView{};
   const bool known = identity_.refresh();
+  // The local door follows the identity wherever it is read (task p8-04): `LinkMesh::supports()`
+  // carries no mesh job until this end knows which repeater is its own, so a line that printed
+  // the thirteen types while the door was still shut would be a line the next heartbeat
+  // contradicts. `AgentBackend` hands the key over the same way before every wake; this is the
+  // console's own read of the radio, and `rak hello` then `agent id` is one of the two ways it
+  // first appears.
+  mesh_.setOwnKey(identity_.publicKey());
+  observations_.useOwnKey(identity_.publicKey());
   out->known = known;
   out->session = identity_.sessionUp();
   copyInto(out->public_key, sizeof out->public_key,

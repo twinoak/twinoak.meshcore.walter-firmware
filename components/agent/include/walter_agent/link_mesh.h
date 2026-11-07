@@ -24,7 +24,8 @@
 //     or last read with PATH_GET, refreshed after every reply to a flooded send, because a
 //     returned path changes it (§6.3) and that is how the route a flood discovered is learned.
 //   - **the local door.** A job begun for the unit's own repeater (setOwnKey(); task p4-04
-//     supplies it from IDENTITY) sends nothing on the mesh: the login is answered by this end
+//     supplies it from IDENTITY, and since task p8-04 every wake does so before it claims)
+//     sends nothing on the mesh: the login is answered by this end
 //     with a synthetic admin reply (the link has console privileges, §5.7), a CLI line is §5.7's
 //     CLI request, a telemetry request is §5.8's LPP_GET at an admin's permissions, the access
 //     list is answered with silence (the library reads that as *no ACL, no evidence either way*),
@@ -112,7 +113,10 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // ------------------------------------------------------------------ the unit's own repeater
 
   // The key IDENTITY answers (§5.6), 32 bytes: a job begun for it goes through the local door.
-  // Until it is set, every job is a mesh job. Task p4-04 sets it.
+  // Until it is set, **no mesh job is carried at all** - `supports()` is false for every type, so
+  // the heartbeat advertises none and the server routes none (task p8-04): a job this end cannot
+  // tell is its own repeater's would be addressed over the air to the radio holding the
+  // conversation. Task p4-04 sets it, from IDENTITY, before every claim.
   void setOwnKey(const std::uint8_t* key);
   void clearOwnKey();
   bool hasOwnKey() const { return own_key_known_; }
@@ -148,6 +152,9 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // *this transport cannot see chat* (docs/library.md §3.2). A specification gap, in the report.
   std::uint32_t overheard() const override { return 0; }
   void loop() override;
+  // The same answer for all thirteen: a session that carries MESH_CLIENT **and** an own key, so
+  // that a wake which cannot yet tell a local job from a stranger's advertises no mesh type at
+  // all (task p8-04; `setOwnKey` above).
   bool supports(const char* jobType) const override;
 
   bool beginJob(const char* publicKeyHex, const std::uint8_t* pathHashes, std::uint8_t hopCount,
