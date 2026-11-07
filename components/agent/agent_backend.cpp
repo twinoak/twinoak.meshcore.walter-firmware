@@ -80,9 +80,62 @@ void AgentBackend::begin(void (*pump)()) {
 
 void AgentBackend::refreshIdentity() {
   (void)p_.identity->refresh();
+  handOverIdentity();
+}
+
+// Before a wake claims anything: the radio known (task p8-04). `Identity::open()` is one HELLO
+// when there is no session and then the §5.6 read, so a timer wake - whose step 2 opened the
+// session - asks nothing extra here, and the console's `agent wake`, which runs no step 2, gets
+// its session here instead of needing a `rak hello` typed first. What follows from the key is
+// the whole point: the local door is armed (`setOwnKey`), and `LinkMesh::supports()` answers for
+// every mesh type, which is the list the heartbeat carries and the only thing that decides what
+// a claim may hand over.
+bool AgentBackend::knowTheRadio() {
+  const bool known = p_.identity->open();
+  handOverIdentity();
+  return known;
+}
+
+void AgentBackend::handOverIdentity() {
   p_.loop->setIdentity(p_.identity->publicKeyHex());
   p_.mesh->setOwnKey(p_.identity->publicKey());
   if (p_.observations != nullptr) p_.observations->useOwnKey(p_.identity->publicKey());
+}
+
+// **One line says which of the two this wake is, and why** (task p8-04). It goes to the library's
+// log, which on a board is this firmware's own console port and the four kilobytes `dump` prints
+// (main/main.cpp), so a timer wake records it and `agent wake` prints it where a person is
+// looking. The key itself is never a line's argument (spec/SYSTEM.md S-12): the boot id is what
+// identifies the session.
+void AgentBackend::sayRadio(bool radio_known, bool radio_up) const {
+  if (radio_known) {
+    LOG_I("agent: the radio is known (boot 0x%08lx): a job for this unit's own repeater goes "
+          "through the local door, and every job type this unit serves is offered",
+          static_cast<unsigned long>(p_.identity->bootId()));
+    return;
+  }
+  // What is left to offer: the extension's own types, which need no key - a firmware job is about
+  // this unit's store and its two MCUs, and a power cycle is exactly for a radio that is silent.
+  char types[128];
+  std::size_t at = 0;
+  const int count = p_.firmware != nullptr ? p_.firmware->typeCount() : 0;
+  for (int i = 0; i < count && at + 1 < sizeof types; ++i) {
+    const int n = std::snprintf(types + at, sizeof types - at, "%s%s", at == 0 ? "" : ", ",
+                                p_.firmware->type(i));
+    if (n <= 0) break;
+    at += static_cast<std::size_t>(n);
+    if (at >= sizeof types) {
+      at = sizeof types - 1;
+      break;
+    }
+  }
+  types[at] = 0;
+  // Inside the library's own 239-character line (agent/Log.cpp), with the longest of the two
+  // reasons and the four types in it: a line that said why and was cut off would say neither.
+  LOG_I("agent: %s: only this unit's own job types are claimed (%s); a mesh job this end cannot "
+        "tell is its own is not claimed",
+        radio_up ? "the radio answered but has made no identity yet" : "the radio did not answer a HELLO",
+        at == 0 ? "none in this build" : types);
 }
 
 // -- the state across a sleep ----------------------------------------------------------------------
@@ -149,10 +202,13 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   }
   const core::power::Band band = static_cast<core::power::Band>(known.wake.band);
 
-  // Before the wake: who this unit is (a radio that got its identity between two wakes reports
-  // it now), the uplink's state and deadline, what the jobs may do, and §7's ring drained into
-  // the loop's own so the batch goes with this wake.
-  refreshIdentity();
+  // Before the wake: who this unit is - a session opened if there is none, and the identity read
+  // (a radio that got one between two wakes reports it now) - the uplink's state and deadline,
+  // what the jobs may do, and §7's ring drained into the loop's own so the batch goes with this
+  // wake.
+  const bool radio_known = knowTheRadio();
+  const bool radio_up = p_.identity->sessionUp();
+  sayRadio(radio_known, radio_up);
   p_.server->setLinkUp(known.uplink.up);
   p_.server->setDeadline(deadline_ms);
   if (p_.firmware != nullptr) {
@@ -162,14 +218,19 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
     context.may = core::power::allowanceFor(band);
     context.on_trial = known.wake.on_trial;
     context.update_running = known.wake.update_running;
-    context.radio_silent = static_cast<core::supervisor::Health>(known.wake.radio) == core::supervisor::Health::kSilent;
+    // A radio that did not answer the HELLO above is silent whatever the wake's own record says:
+    // the console's `agent wake` runs no step 2 and has no health to carry.
+    context.radio_silent = !radio_up || static_cast<core::supervisor::Health>(known.wake.radio) ==
+                                            core::supervisor::Health::kSilent;
     context.battery_known = known.battery_known;
     context.battery_mv = known.battery_mv;
     context.deadline_ms = deadline_ms;
     context.download_bytes = download_bytes_;
     p_.firmware->beginWake(context);
   }
-  if (p_.observations != nullptr && known.radio.known) {
+  // §7's drain needs a session, and the one above is the freshest word on whether there is one
+  // (`known.radio.known` is what step 2 found, a step earlier).
+  if (p_.observations != nullptr && radio_up) {
     counters_.observations_drained += static_cast<std::uint32_t>(p_.observations->drain(p_.platform->millis()));
   }
 
@@ -288,7 +349,9 @@ bool AgentBackend::wake(interfaces::TextOut& out) {
   }
   // What the console has of a wake's knowledge: the uplink the console found up, the band the
   // duty cycle last decided (or the one it ended the last wake in), that band's own interval,
-  // and S-7's state from the two machines.
+  // and S-7's state from the two machines. The radio's line is what the console knows **before**
+  // the wake: `agent wake` runs no step 2, so `run()` opens the session itself and reads the
+  // identity from there (task p8-04), and what it found is what the wake acted on.
   console_known_ = interfaces::BackendKnowledge{};
   console_answer_ = interfaces::BackendAnswer{};
   console_known_.uplink.up = true;

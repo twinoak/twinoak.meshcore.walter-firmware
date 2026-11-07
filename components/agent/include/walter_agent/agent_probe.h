@@ -4,7 +4,9 @@
 //
 // It is the one thing in this task that **reads the radio from the console**, and it reads the
 // least it can: `identity()` refreshes, which asks §5.6 once a boot and §5.7's `get radio` once
-// after that (and nothing at all when both are known and the radio has not restarted).
+// after that (and nothing at all when both are known and the radio has not restarted) - and
+// hands the key it found to the local door and the §7 drain, as `AgentBackend` does before every
+// wake (task p8-04), so that the job types this line prints are the ones the mesh can carry.
 // `heartbeat()` and `observations()` ask the radio nothing; `pull()` is §7 and is the bench's
 // way to put records in the ring before task p4-05's wake drives the drain itself.
 #pragma once

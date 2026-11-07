@@ -6,8 +6,12 @@
 // library heartbeats, claims, runs and reports; this object is what stands between it and the
 // wake cycle, and it does five things:
 //
-//   before the wake   the identity read again where it has to be (a radio that got its key
-//                     between two wakes), the uplink told the modem is up and what the deadline
+//   before the wake   **the radio known before anything is claimed** (task p8-04): a session
+//                     opened if there is none and the identity read again where it has to be (a
+//                     radio that got its key between two wakes), so the local door is armed and
+//                     `LinkMesh::supports()` can answer - without the key no mesh type is
+//                     advertised and the server routes none, and one line says which of the two
+//                     this wake was. Then the uplink told the modem is up and what the deadline
 //                     is, the jobs told what this wake knows (the band's say, S-7's state), §7's
 //                     ring drained into the loop's own, the intent and the budget built:
 //                     `WakeIntent` from the band and the interval policy's own interval (task
@@ -170,6 +174,11 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   interfaces::Exchanged run(const interfaces::BackendKnowledge& known, std::uint64_t deadline_ms,
                             interfaces::BackendAnswer* out, interfaces::TextOut* say);
   void refreshIdentity();
+  // The radio known before a wake claims anything (task p8-04): a session if there is none, then
+  // the identity, then the local door armed and the mesh's job types with it.
+  bool knowTheRadio();
+  void handOverIdentity();
+  void sayRadio(bool radio_known, bool radio_up) const;
   bool saveState();
   bool loadState();
   void printReport(interfaces::TextOut& out) const;

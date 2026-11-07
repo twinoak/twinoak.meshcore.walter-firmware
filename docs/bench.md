@@ -1387,6 +1387,34 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       unit, then `agent wake`. Both go through the local door: **`client_tx` does not move** and no
       packet is on the air (a sniffer sees nothing), yet both post a result — the telemetry's LPP
       channels, the config without the access list. This is the seam's own §13 table, walked.
+- [ ] ★ **The radio read before the claim, with no `rak hello` typed** (task p8-04). This is the
+      item v0.1.0 failed on 6 November: `agent wake` with no session ran a job for the unit's own
+      repeater as an ordinary mesh job, and the association's discover went out on the air from the
+      radio to itself. **Power-cycle the unit** so that nothing has asked the radio anything — the
+      boot line says `agent: no identity read yet` — then, without typing `rak hello`:
+
+      ```
+      lte up
+      agent wake
+      ```
+
+      Expected, in this order, before the claim: one line `agent: the radio is known (boot
+      0x…): a job for this unit's own repeater goes through the local door, and every job type
+      this unit serves is offered`, and then the config, the heartbeat and the claim. Queue a
+      `telemetry` for *this* unit first and it must go through the local door in that same wake —
+      **`client_tx` unmoved** — where on 0.1.0 it would have flooded. `agent id` afterwards shows
+      the key and `job types (13)` without a `rak hello` of its own. **If the line says the radio
+      was not known** while `rak hello` by hand works, the wake is not opening the session and
+      this is the 6 November fault again.
+- [ ] **A silent radio, and the unit still answering for itself** (task p8-04). Pull the radio's
+      jumper (or leave the slot empty, as §2 does it), then `lte up` and `agent wake`. Expected:
+      one line `agent: the radio did not answer a HELLO: only this unit's own job types are
+      claimed (twinoak.fw.offer, twinoak.fw.apply, twinoak.fw.state, twinoak.power.cycle)`, a
+      heartbeat that goes out all the same with **no `companionPublicKey` and no mesh job type**,
+      and — with a `twinoak.fw.state` queued — that job claimed, run and answered. **A mesh job
+      queued for this unit must not be claimed in that wake**: the server's job page still shows it
+      waiting, with no lease, and it is claimed at the next wake once the radio answers again. A
+      power cycle queued as `twinoak.power.cycle` is the one job meant for exactly this state.
 - [ ] ★ **An offer, in resumable ranges — and the cable pulled in the middle.** Queue a
       `twinoak.fw.offer` for a Repeater release larger than one wake's download budget, then
       `agent wake` twice. The first wake downloads part of the image, posts `progress`, and

@@ -616,9 +616,10 @@ extern "C" void app_main() {
                 "types ('agent id')\n");
   } else {
     // Nothing has been asked of the radio in this boot, so there is no session to read an
-    // identity out of; the wake's step 2 opens one and `agent id` reads it then.
+    // identity out of. The wake's step 2 opens one - and so does every wake of the agent, the
+    // console's `agent wake` included, before it claims anything (task p8-04).
     std::printf("agent: no identity read yet (the radio has not been asked anything in this "
-                "boot); 'agent id'\n");
+                "boot); the next wake asks, or 'rak hello' then 'agent id'\n");
   }
   std::printf("agent: the loop's state %s the last sleep; the kept image's store %s\n",
               backend.stateSurvived() ? "survived" : "did not survive",

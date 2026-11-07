@@ -550,6 +550,27 @@ TEST_F(LinkMeshTest, EveryCoreTypeIsCarriedWithASessionAndNoneWithout) {
   world().client.hello();
 }
 
+// Task p8-04: the second condition. A session that carries MESH_CLIENT is not enough - until this
+// end knows its own key, `beginJob` cannot tell a job for the unit's own repeater from one for a
+// stranger, and a job for the own repeater would be addressed over the air to the radio holding
+// the conversation (the 6 November fault). So nothing is advertised, and the server routes
+// nothing, rather than a job being claimed and then refused.
+TEST_F(LinkMeshTest, NoCoreTypeIsCarriedUntilThisEndKnowsItsOwnKey) {
+  ASSERT_TRUE(link().hasOwnKey()) << "the harness hands the key over, as a wake does";
+  link().clearOwnKey();
+  ASSERT_TRUE(world().client.hasCapability(link::cap::kMeshClient)) << "the session still carries it";
+  for (int i = 0; i < mm::kJobTypeCount; i++) {
+    EXPECT_FALSE(mesh.supports(mm::kJobTypes[i])) << mm::kJobTypes[i];
+  }
+  // And with the key back, all thirteen again - a stranger's job is carried as it always was.
+  uint8_t key[32];
+  ASSERT_TRUE(keyBytes(self(), key));
+  link().setOwnKey(key);
+  for (int i = 0; i < mm::kJobTypeCount; i++) {
+    EXPECT_TRUE(mesh.supports(mm::kJobTypes[i])) << mm::kJobTypes[i];
+  }
+}
+
 TEST_F(LinkMeshTest, OverheardIsZeroBecauseTheLinkCarriesNoSuchCount) {
   EXPECT_EQ(mesh.overheard(), 0u);  // §6.4: a specification gap, in the report
   mesh.grant(self(), mm::kPermReadOnly);

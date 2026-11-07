@@ -177,7 +177,20 @@ void LinkMesh::loop() {
 // for a unit whose radio has no identity yet is the truth (tasks/phase-4/FOLLOWUPS.md, [04]).
 bool LinkMesh::supports(const char* jobType) const {
   (void)jobType;
-  return client_.hasCapability(link::cap::kMeshClient);
+  // Two conditions, and the list in the heartbeat is what the server may route by, so this is
+  // also "what a claim may hand over" (agent/AgentLoop.cpp's `buildHeartbeat`):
+  //
+  //   the session carries MESH_CLIENT   a radio that cannot put a packet on the air carries no
+  //                                     mesh job, and a radio with no session carries nothing;
+  //   this end knows its own key        task p8-04. Until `setOwnKey` has it, `beginJob` cannot
+  //                                     tell a job for the unit's own repeater from one for a
+  //                                     stranger, and the local door below stays shut: the job
+  //                                     would be addressed **over the air to the radio holding
+  //                                     the conversation**, which is what happened on
+  //                                     6 November (tasks/phase-6/FOLLOWUPS.md). A type not
+  //                                     advertised is a job the server does not send, which is
+  //                                     better than one claimed and then refused.
+  return client_.hasCapability(link::cap::kMeshClient) && own_key_known_;
 }
 
 // ---------------------------------------------------------------------------- the job

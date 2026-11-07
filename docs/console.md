@@ -143,7 +143,7 @@ supervisor's stop is printed at every level.
 | `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
 | `agent heartbeat` | (task p4-04) the body `POST /agent/v1/heartbeat` would carry, built and **not sent**: the bench's way to compare it with meshmaster.dk's contract fixture by eye. It asks the radio nothing |
 | `agent obs [pull]` | (task p4-04) the observation ring the agent posts from: how many adverts wait, how many were heard, how many were dropped (the figure the heartbeat carries), what the radio's own ring has lost and how much is still in it, and the last five - the key, how long ago, the hops, the signal and the role, and **never the name** a stranger chose (`spec/LINK-PROTOCOL.md` §7). `agent obs pull` drains the radio's ring into it first (§7's `OBS_PULL`, as many pages as it answers) |
-| `agent wake` | (task p4-05) one wake of the agent's loop now, through the backend seam the wake cycle's step 8 runs: the offline buffer flushed first, one heartbeat with this wake's intent, the claim, and the jobs the claim handed over - a neighbour's over the mesh, the unit's own through the local door, a firmware job into a slot or onto the chip. It restores the loop's retained state before the wake and saves it after, as a real wake across a sleep does. The uplink must be up (`lte up` first). See *The agent behind the seam* |
+| `agent wake` | (task p4-05) one wake of the agent's loop now, through the backend seam the wake cycle's step 8 runs: **the radio asked who it is first** - a `HELLO` when there is no session and then `IDENTITY`, so that a job for the unit's own repeater can be told from a neighbour's (task p8-04) - then the offline buffer flushed, one heartbeat with this wake's intent, the claim, and the jobs the claim handed over: a neighbour's over the mesh, the unit's own through the local door, a firmware job into a slot or onto the chip. It restores the loop's retained state before the wake and saves it after, as a real wake across a sleep does. The uplink must be up (`lte up` first); **no `rak hello` is needed before it**, and a radio that does not answer one leaves the wake claiming only this unit's own `twinoak.*` job types, which one line says. See *The agent's identity* |
 | `agent jobs` | (task p4-05) the last ten jobs as the agent's library remembers them: the id, the type, the outcome, how many transactions each took and how long, and whether a result is still waiting in the offline buffer for the next wake to post. It reads; it runs nothing |
 | `agent state` | (task p4-05) the loop's retained state as it stands: whether it has ever heartbeated, the poll interval it will sleep by, any hold a server asked for, the counters the heartbeat carries, and whether a kept image is waiting in the agent's flash window. It reads; it runs nothing |
 
@@ -806,6 +806,22 @@ or after a `set` line has crossed the link for the unit's own repeater. **A radi
 yet** - a RAK with no application, or one turned into a scanner - is not a failure: the unit still
 checks in, and the line says that the heartbeat will carry no key, no radio block and no job types,
 which is how a unit registered before its repeater says *radio not identified*.
+
+**Every wake reads this before it claims anything** (task p8-04). A timer wake's step 2 opens the
+session; `agent wake` has no step 2 and opens one itself, so neither needs a `rak hello` typed
+first, and one line of the log says which of the two happened:
+
+```
+agent: the radio is known (boot 0x1a2b3c4d): a job for this unit's own repeater goes through the local door, and every job type this unit serves is offered
+agent: the radio did not answer a HELLO: only this unit's own job types are claimed (twinoak.fw.offer, twinoak.fw.apply, twinoak.fw.state, twinoak.power.cycle); a mesh job this end cannot tell is its own is not claimed
+```
+
+Until the key is there the job type list is **empty of mesh types**, and the server routes by that
+list - so a radio that is silent, or one that has made no identity yet, leaves the unit claiming
+only its own `twinoak.*` jobs rather than claiming a mesh job it would then have to refuse. `agent
+id` asks nothing of a radio with no session, so it is still `rak hello` or a wake that gives it
+one. The key is never written to the log: the boot id is what identifies the session
+(`spec/SYSTEM.md` S-12).
 
 ```
 > agent heartbeat

@@ -176,6 +176,8 @@ struct IdentityCounters {
   std::uint32_t boot_changes = 0;    // a new boot_id: everything read again
   std::uint32_t unreadable = 0;      // a `get radio` reply these four numbers are not in
   std::uint32_t no_identity = 0;     // IDENTITY answered with a key of all zeros, or did not
+  std::uint32_t sessions_asked = 0;  // open() found no session and sent a HELLO
+  std::uint32_t no_session = 0;      // of those, the ones the radio did not answer
 };
 
 class Identity {
@@ -184,11 +186,24 @@ class Identity {
   Identity(lc::Client& radio, const char* version);
 
   // Read what has to be read, and no more. Nothing is asked of a radio with no session - opening
-  // one is `HELLO`, and that belongs to whoever runs the wake (the supervisor's check, step 2) -
-  // so this is free when there is nothing to do: the key and the version are asked for once a
-  // boot and again when `boot_id` changes, and the radio block again after that or after a
-  // `set` line crossed the local door. True when this unit has a radio identity afterwards.
+  // one is `HELLO` - so this is free when there is nothing to do: the key and the version are
+  // asked for once a boot and again when `boot_id` changes, and the radio block again after that
+  // or after a `set` line crossed the local door. True when this unit has a radio identity
+  // afterwards.
   bool refresh();
+
+  // The same, with a session first when there is none: **one** `HELLO`, and then `refresh()`.
+  // This is what a wake calls before it claims anything (task p8-04): until the key is known the
+  // local door is shut (`LinkMesh::setOwnKey`) and a job for the unit's own repeater would be
+  // addressed over the air to the radio that is holding the conversation. A timer wake's step 2
+  // has opened the session already and this costs nothing there; the console's `agent wake` has
+  // not, and this is where it asks.
+  //
+  // **A HELLO and no more.** A radio that does not answer is *silent*, which is an outcome and
+  // not an incident: classifying a silence and climbing the ladder are the supervisor's
+  // (core/supervisor/supervisor.h), and no wake that wanted to talk to a server may reset or
+  // power-cycle a radio as a side effect. True when this unit has a radio identity afterwards.
+  bool open();
 
   // The repeater's settings may have changed: the block is read again at the next refresh().
   // Called when a `set ...` line went through the local door for the unit's own repeater (a

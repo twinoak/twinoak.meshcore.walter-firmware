@@ -183,6 +183,10 @@ struct FirmwareRig : Rig {
     rak.fw_version = "v1.17.1";
     REQUIRE(client.hello().ok());
     REQUIRE(identity.refresh());
+    // The key handed to the mesh, as `AgentBackend` hands it over before every wake (task
+    // p8-04): `LinkMesh::supports()` carries no mesh job until this end knows which repeater is
+    // its own, so the thirteen types below are a heartbeat of a unit whose radio *is* identified.
+    mesh.setOwnKey(identity.publicKey());
   }
 };
 
@@ -323,17 +327,22 @@ TEST_CASE("the identity appearing between two wakes: the next heartbeat carries 
   };
   REQUIRE(rig.client.hello().ok());
   CHECK_FALSE(rig.identity.refresh());
+  rig.mesh.setOwnKey(rig.identity.publicKey());
 
   const mm::WakeIntent intent = agent::intentFor(power::Band::kNormal, power::kNormalMinutes * 60u);
   char first[2048] = {};
   REQUIRE(rig.identity.writeHeartbeat(&rig.mesh, nullptr, extrasAt(kEpoch), intent, first,
                                       sizeof first) != 0);
   CHECK(std::string(first).find("companionPublicKey") == std::string::npos);
+  // And no mesh type either, even though this radio's HELLO carries MESH_CLIENT: a unit that
+  // cannot tell a job for its own repeater from a stranger's offers none (task p8-04).
+  CHECK(std::string(first).find("\"jobTypes\":[]") != std::string::npos);
 
   // The radio has a key now - a person provisioned the base and the application between two
   // wakes, which is the whole point of registering a unit before its repeater.
   no_key = false;
   CHECK(rig.identity.refresh());
+  rig.mesh.setOwnKey(rig.identity.publicKey());
   char second[2048] = {};
   REQUIRE(rig.identity.writeHeartbeat(&rig.mesh, nullptr, extrasAt(kEpoch), intent, second,
                                       sizeof second) != 0);
