@@ -27,9 +27,13 @@
 //     change is that `kOneTickMs` is 1, because `CONFIG_FREERTOS_HZ` is 1000 and a millisecond is
 //     a tick.
 //
-// With `kOneTickMs` back at 10 - the code of 7 November - the stretch measured here is **39,999
-// ms**, thirteen hundred times the budget below and 1.33 times the watchdog (report p9-01, *What
-// it measured*). The two seconds are p8-01's figure, fifteen times inside the watchdog's thirty.
+// With `kOneTickMs` back at 10 - the code of 7 November - the stretch measured here is
+// **1,020,000 ms**: the whole read is one stretch, seventeen minutes of simulated time with
+// fifteen blocking delays in it and none of them inside the job, thirty-four times the watchdog's
+// thirty seconds. The board died in the first 40 s wait of it; the simulation runs on past the
+// point the Walter rebooted, which is why the figure is the read and not the wait. After, it is
+// **0 ms** with 1,020,015 blocking delays - every millisecond of the waiting is a yield. The two
+// seconds are p8-01's figure, fifteen times inside the watchdog's thirty.
 #include <gtest/gtest.h>
 
 #include <cstdint>

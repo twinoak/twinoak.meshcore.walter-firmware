@@ -798,8 +798,10 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   with a golden image). Expected: the flasher's page lines run through the scan, the pages and
   the read-back **without a reboot in the middle**, and the run reaches `-> booting` and then
   *done*. **Write down the wall-clock time of the whole flash and the image's size**: the
-  simulated figure is 413 s for 417,284 bytes at 125 kHz, of which about 5 s is the pauses this
-  task added. A reboot during the flash with the lines `boot N: watchdog reset` and `update: the
+  simulated figure is 413 s for 417,284 bytes at 125 kHz, of which about 5.5 s is the pauses this
+  task added — 548 of them at 10 to 11 ms each since task p9-01 made a millisecond a FreeRTOS
+  tick, where at 100 Hz they were 511 at 10 to 20 ms and so 5.1 to 10.2 s. A reboot during the
+  flash with the lines `boot N: watchdog reset` and `update: the
   journal says a run was in progress …; resuming at flashing-candidate` is this fault back.
 - [ ] **The first install the 6 November failure left behind** (task p8-06; the unit's own radio,
   whose slot the journal says is *stuck*). The run that the watchdog ended also put its
@@ -1419,6 +1421,28 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       unit, then `agent wake`. Both go through the local door: **`client_tx` does not move** and no
       packet is on the air (a sniffer sees nothing), yet both post a result — the telemetry's LPP
       channels, the config without the access list. This is the seam's own §13 table, walked.
+- [ ] **A `config.read` of the unit's own repeater, at the budget as it is** (task p9-01; the
+      **release** build of v0.1.2 or later, which is where the fix is). This is the item v0.1.1
+      failed on 7 November: job 22032, the scheduled daily read of the unit's own repeater — the
+      server's full key list, 34 lines through the local door — reset the Walter with
+      `task_wdt: … IDLE0 (CPU 0) … CPU 0: main … Aborting` and a core dump, because agent-core
+      waits out the airtime budget with `delayMs(1)` in a loop and a millisecond was not a tick.
+      **Change nothing about the budget first**: on meshmaster.dk the unit's is *2 a minute, gap
+      20 s*, which is what makes some of those waits 40 s, past the 30 s watchdog. Turn the
+      repeater's scheduled config read back on (or *Read config* on its page), `lte up`, then
+      `agent wake`. Expected: the wake's output walks the read a line at a time with
+      `waiting 20 s for the airtime budget` / `waiting 40 s …` between them, **no reboot**, and the
+      result posted `ok` with the values on the repeater's Configuration tab. **Write down how long
+      the whole job took**: the simulated figure is about **17 minutes** of budget waiting for
+      35 transactions, so this is a job that outlives several wake bounds and the thing to watch is
+      that it is *slow* and not *fatal*. (Task 05 of this phase takes the waiting away for a local
+      job, which is the other half of the fix; this item is about the clock.)
+- [ ] **`boot` after it says `power-on` or `software`, never `watchdog`** (task p9-01). Run `boot`
+      (the reset-reason line, `docs/console.md`) right after the read finishes. A `watchdog` there
+      — even one, even with the job posted `ok` — means some stretch of the wake still holds CPU 0
+      for 30 s and is a finding against this task. `journal` must show no `faults_in_a_row` from
+      the wake either: nineteen resumed watchdog boots is what 6 November looked like from inside
+      the journal.
 - [ ] ★ **The radio read before the claim, with no `rak hello` typed** (task p8-04). This is the
       item v0.1.0 failed on 6 November: `agent wake` with no session ran a job for the unit's own
       repeater as an ordinary mesh job, and the association's discover went out on the air from the
