@@ -190,7 +190,7 @@ An independent read of the code and tests against the task files; nothing built,
     `advert.request`, `acl.set`, `password.set`) is `admin`-class.
   - **Fix:** skip the material check for a job the local door will answer. Then meshmaster.dk drops
     its exception and hands nothing at any class.
-- [ ] **[next Walter pile, FIRST] A busy wait below one tick still starves the watchdog: a config read
+- [x] **[p9-01 did fix 1 and fix 3; fix 2 is p9-05's] A busy wait below one tick still starves the watchdog: a config read
   resets the Walter.** 7 November, 19:12 UTC, Walter 0.1.1, `agent wake` with job 22032
   (`config.read`, the unit's own repeater 41, 34 lines through the local door):
   `task_wdt: … IDLE0 (CPU 0) … CPU 0: main … Aborting`, a core dump to flash, a reboot.
@@ -220,4 +220,16 @@ An independent read of the code and tests against the task files; nothing built,
   - **Until it is released:** no `config.read` or `config.apply` of a unit's own repeater (on
     meshmaster.dk: cancel the job, and turn the repeater's scheduled config off). A queued one is
     retried at each wake, and resets the Walter each time.
+  - **Done by task p9-01** (PR of `task/p9-01-a-delay-that-yields`), in the order the fix was
+    written in:
+    - **fix 1:** `CONFIG_FREERTOS_HZ=1000`, so a millisecond is a tick and `EspClock::delayMs(n ≥ 1)`
+      is always a `vTaskDelay`. The alternative - a `vTaskDelay(1)` floor at 100 Hz - was not taken,
+      because it would have multiplied four poll-counted timeouts by ten; report p9-01 has the
+      choice and its costs. A `static_assert` in `platform/clock.cpp` holds the tick rate.
+    - **fix 3:** `host_test/agent-backend/test_agent_watchdog.cpp` - the 34-line local
+      `config.read` at *2 a minute, gap 20 s* through the real `JobRunner` and the real `LinkMesh`.
+      It measured **1,020,000 ms** without a blocking wait before the fix and **0** after.
+    - **fix 2 is not done here** and is still the thing that would have saved this job: it is the
+      exit-node firmware's task 40 and this phase's task 05.
+    - The watchdog is unchanged (30 s, panic, both idle tasks).
 

@@ -2,10 +2,13 @@
 // p8-01).
 //
 // Nothing on the SWD path blocks. The wire's half-bit waits are `delayUs`, which on the board is
-// `esp_rom_delay_us`; and `EspClock::delayMs(1)` - what the NVMC's READY poll and the DHCSR poll
-// wait - is a busy wait too, because below one tick (10 ms at `CONFIG_FREERTOS_HZ=100`)
-// `platform/clock.cpp` busy-waits rather than call `vTaskDelay`. A whole radio image is minutes
-// of that: the idle task of the core never runs, and the task watchdog (`sdkconfig.defaults`:
+// `esp_rom_delay_us` and still is. (`EspClock::delayMs(1)` - what the NVMC's READY poll and the
+// DHCSR poll wait - was a busy wait too when this was written, because below one tick, 10 ms at
+// `CONFIG_FREERTOS_HZ=100`, `platform/clock.cpp` busy-waited rather than call `vTaskDelay`. Task
+// p9-01 ended that: the tick is 1 ms and every `delayMs` blocks, so those three polls now yield
+// of their own accord. The half-bits do not, and a page read is 2048 transfers of them.) A whole
+// radio image is minutes of that: the idle task of the core never runs, and the task watchdog
+// (`sdkconfig.defaults`:
 // `CONFIG_ESP_TASK_WDT_TIMEOUT_S=30`, panic on, the idle tasks of both cores subscribed) resets
 // the Walter. That is what happened to the first unit on 6 November 2026 - twelve watchdog boots
 // and a radio left with half an application (`tasks/phase-6/FOLLOWUPS.md`, *The SWD flasher
@@ -37,9 +40,11 @@
 namespace core {
 namespace swd {
 
-// One FreeRTOS tick at `CONFIG_FREERTOS_HZ = 100` (`sdkconfig.defaults`). `delayMs` keeps its
-// promise - never shorter than asked - so `EspClock` turns this into `vTaskDelay(2)`: 10 to 20 ms
-// of real blocking, and the idle task needs one scheduling slot of it.
+// Ten FreeRTOS ticks at `CONFIG_FREERTOS_HZ = 1000` (`sdkconfig.defaults`; it was one tick of the
+// 100 Hz this was written against, and task p9-01 changed the rate and not this figure). `delayMs`
+// keeps its promise - never shorter than asked - so `EspClock` turns this into `vTaskDelay(11)`:
+// 10 to 11 ms of real blocking rather than the 10 to 20 ms of 100 Hz, which halves the worst case
+// of what these pauses add to a flash. The idle task needs one scheduling slot of it.
 constexpr std::uint32_t kIdlePauseMs = 10;
 
 inline void letIdleTaskRun(interfaces::Clock& clock) { clock.delayMs(kIdlePauseMs); }
