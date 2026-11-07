@@ -1557,6 +1557,13 @@ LTE-M.
 | `kDefaultTotalMs` | `60000` | |
 | `kDefaultPieceMs` | `15000` | |
 
+**`net/socket_rotation.h`** (1) - **§13** measures how long a close an id still owes takes to
+arrive, which is what a connection waits for before it goes ahead without it (task p8-03).
+
+| Constant | Now | Measured |
+|---|---:|---|
+| `kOwedCloseWaitMs` | `250` | |
+
 **`net/trust.h`** (1) - **§13** measures how long the modem takes to take two roots into its
 slots.
 

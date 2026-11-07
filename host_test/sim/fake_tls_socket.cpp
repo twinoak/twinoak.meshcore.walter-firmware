@@ -18,6 +18,75 @@ bool FakeTlsSocket::spend(std::uint32_t cost, std::uint64_t deadline) {
   return true;
 }
 
+// -- the socket layer (task p8-03) -------------------------------------------------------------
+// The fake's half of core/net/socket_rotation.h: a connection is on an id, a close is an event on
+// that id, and the event can be late. The refusals in open() happen before any of it, so a host
+// that cannot be reached costs no connection and no close - which is also why every test written
+// before this task behaves exactly as it did.
+
+int FakeTlsSocket::beginConnection(std::uint64_t deadline_ms) {
+  ++connections_;
+  if (as_v0_1_0) {
+    // v0.1.0: one socket, and the one close flag cleared before the dial.
+    v010_closed_ = false;
+    return kFirstSocketId;
+  }
+  return rotation_.begin(rotation_.nextId(), deadline_ms);
+}
+
+bool FakeTlsSocket::closedNow() const {
+  return as_v0_1_0 ? v010_closed_ : rotation_.closedSeen();
+}
+
+void FakeTlsSocket::deliverClose(int id) {
+  if (as_v0_1_0) {
+    v010_closed_ = true;  // one flag, whatever the id named
+    return;
+  }
+  rotation_.onClose(id);
+}
+
+void FakeTlsSocket::theServerClosed() {
+  // A drop in the middle of a body is the close arriving while the body is being read, not the
+  // race between a Content-Length and a FIN: it is never held back.
+  const int late = dropped_ ? 0 : close_event_lateness;
+  if (late <= 0) {
+    deliverClose(socket_id_);
+    return;
+  }
+  if (kept_count_ >= kKeptCloses) return;
+  kept_[kept_count_].id = socket_id_;
+  kept_[kept_count_].due = connections_ + static_cast<std::uint32_t>(late);
+  ++kept_count_;
+}
+
+void FakeTlsSocket::deliverDueCloses() {
+  std::size_t kept = 0;
+  for (std::size_t i = 0; i < kept_count_; ++i) {
+    if (kept_[i].due <= connections_) {
+      deliverClose(kept_[i].id);
+      ++late_closes;
+    } else {
+      kept_[kept++] = kept_[i];
+    }
+  }
+  kept_count_ = kept;
+}
+
+void FakeTlsSocket::endConnection() {
+  if (as_v0_1_0) return;
+  // The scripted server closes *after* it answers. A connection it never answered - a handshake
+  // on its own (core/update/tls_check.h), a stall, a request that went nowhere - has no close on
+  // its way, so nothing is owed. The board cannot tell the two apart and owes one either way
+  // (components/modem/walter_tls.cpp, close()); what that costs is in socket_rotation.h, and
+  // test_socket_rotation.cpp is where it is made to happen.
+  if (!answered_) {
+    rotation_.cancel();
+    return;
+  }
+  rotation_.end();
+}
+
 interfaces::TlsOpen FakeTlsSocket::open(const char* host, std::uint16_t, std::uint8_t root,
                                         std::uint64_t deadline_ms) {
   ++opens;
@@ -38,6 +107,11 @@ interfaces::TlsOpen FakeTlsSocket::open(const char* host, std::uint16_t, std::ui
     ++tls_failures;
     return dial_opaque ? interfaces::TlsOpen::kDialRefused : interfaces::TlsOpen::kTlsFailed;
   }
+  socket_id_ = beginConnection(deadline_ms);
+  socket_ids.push_back(socket_id_);
+  // And now the events the library had not got round to: *after* the flags were cleared, which
+  // is the board's race and the harshest moment for them to land.
+  deliverDueCloses();
   open_ = true;
   request_.clear();
   response_.clear();
@@ -50,6 +124,8 @@ interfaces::TlsOpen FakeTlsSocket::open(const char* host, std::uint16_t, std::ui
 
 bool FakeTlsSocket::send(const std::uint8_t* data, std::size_t size, std::uint64_t deadline_ms) {
   if (!open_ || data == nullptr) return false;
+  // The board, when a late close had set the flag: `send` stops and the request never goes out.
+  if (closedNow()) return false;
   if (!spend(piece_ms, deadline_ms)) return false;
   request_.append(reinterpret_cast<const char*>(data), size);
   if (!answered_ && requestComplete()) answer();
@@ -96,6 +172,9 @@ void FakeTlsSocket::answer() {
       }
     }
   }
+  // The scripted server answers and closes (`Connection: close`), so its close is on its way the
+  // moment the response is: delivered now, or at a later connection (close_event_lateness).
+  theServerClosed();
 }
 
 interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, std::size_t* got,
@@ -109,8 +188,14 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
   }
   if (read_ >= cut_at_) {
     // Everything there was: the server closes after its response (Connection: close), and a
-    // dropped connection looks exactly the same from here.
-    return interfaces::TlsRecv::kClosed;
+    // dropped connection looks exactly the same from here - *once the close has been delivered*.
+    if (closedNow()) return interfaces::TlsRecv::kClosed;
+    // It has not been (close_event_lateness). To the modem this is a socket with nothing
+    // buffered and no close seen, and the board's receive loop waits for one or the other. A
+    // request that ends on its Content-Length never gets here, which is why the first request of
+    // every wake worked and the second did not.
+    spend(0xFFFFFFFFu, deadline_ms);
+    return interfaces::TlsRecv::kTimeout;
   }
   if (!spend(piece_ms, deadline_ms)) return interfaces::TlsRecv::kTimeout;
   std::size_t n = cut_at_ - read_;
@@ -124,8 +209,10 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
 }
 
 void FakeTlsSocket::close() {
-  if (open_) ++closes;
+  if (!open_) return;  // a refused open costs no connection and settles nothing
+  ++closes;
   open_ = false;
+  endConnection();
 }
 
 }  // namespace sim

@@ -31,6 +31,7 @@ const char* const kNetIncludes[] = {
     "core/net/download.h",
     "core/net/http1.h",
     "core/net/http_over_tls.h",
+    "core/net/socket_rotation.h",
     "core/net/trust.h",
     "core/net/url.h",
     "core/version.h",
