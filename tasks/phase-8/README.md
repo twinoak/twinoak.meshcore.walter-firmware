@@ -62,11 +62,15 @@ waits for the others.
 
 1. The unit's Walter: flash the v0.1.1 **release** build by cable (`docs/flashing.md`). A factory
    flash keeps `nvs`, `journal` and `rakfw`, so the stored candidate and the *stuck* mark survive.
-2. `rak hello`, then `rak update --first-install`. It flashes the stored repeater v0.1.0 (or push the
-   repeater's v0.1.1 first, without `--undo-crlf`), proves it and makes it golden. That ends the stuck
-   mark.
-3. `http get https://meshmaster.dk/` twice in a row, then `agent wake`: config, heartbeat, claim and
-   observations all `done`.
+2. `rak update status` and `image bad` first: the failed first install of 6 November put the stored
+   v0.1.0 candidate on the bad list before it entered *stuck* (`RadioUpdate::fail`), so it is never
+   flashed again (corrected 7 November by the review; `docs/flashing.md` has it right). Push the
+   repeater's **v0.1.1** as the candidate (no `--undo-crlf`: a 0.1.1 Walter says protocol 2), then
+   `rak hello` and `rak update --first-install`. It proves the image and makes it golden, which ends
+   the stuck mark.
+3. `lte up`, then `http get https://meshmaster.dk/` twice in a row, then `agent wake`: config,
+   heartbeat, claim and observations all `done`. Note every request's time: about 250 ms extra on the
+   second request, or on every request from the third on, is review finding S2 below.
 4. On meshmaster.dk: *Read the unit's state*. With a golden image, or a 1.1 radio, the slot reports
    its band and *Mark canary* works.
 
