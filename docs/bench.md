@@ -5,9 +5,11 @@ rig is brought up (`spec/SYSTEM.md` §7, and the hardware repository's
 `hardware/pcb/BENCH-BREADBOARD.md` §7): the Walter alone, then the UART, the reset line, SWD, the
 first flash, **and only then the kill line** — then images, updates, the supervisor, the modem,
 HTTPS, provisioning, sleep, and a day of it. A Walter has run a development build of this firmware
-and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`); no board has run a released
-one and no unit has walked this file. This file is what turns that sentence over, and **`v0.1.0`
-is the release it is walked with** ([`flashing.md`](flashing.md), [`release.md`](release.md)).
+and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`), and the first unit ran
+`v0.1.0` at a desk on 6 November — half an hour that found five faults and walked none of the items
+below. **No unit has walked this file.** It is what turns that sentence over, and **`v0.1.1` is the
+release it is walked with** ([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item
+added by this phase's tasks needs that release or later, and says so.
 
 Walk it in order. A step whose *Needs* are not met is a step that will waste an evening, and a
 number written down in step 2 is one step 16 does not have to guess at.
@@ -172,8 +174,8 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
 
   (that hex is the public half in `keys/release-keys.txt`, key id `73efdd383a957596`; the same
   thing with the file rather than the hex is `python tools/release/verify_release.py <the
-  directory>`). Then flash `twinoak-walter-v0.1.0-factory.bin` with the `esptool` line in the
-  release's own body and read three lines: the banner's version is **`0.1.0+<sha7>`** with that
+  directory>`). Then flash `twinoak-walter-v0.1.1-factory.bin` with the `esptool` line in the
+  release's own body and read three lines: the banner's version is **`0.1.1+<sha7>`** with that
   commit's seven characters, `self status` says `ota_0` and **`valid`**, and `trust` says
   **`1 key … 73efdd383a957596`**. That is the whole point of the release: a board flashed by cable
   with it can take every later one over LTE.
@@ -183,6 +185,21 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   it top to bottom — the Walter, the RAK by cable, provisioning, `agent wake`, the page — and
   **correct it where it is wrong** rather than working around it: it is the only document here
   written for somebody who has not read the rest, and a session cannot tell whether it is enough.
+
+- [ ] **A release taken over an older one by cable, on a unit that is already a unit** (task
+  p8-06; the first unit, which is at `v0.1.0`). This is the item that says a factory flash is
+  **safe on a unit in service**, which every sentence about updating by cable rests on. Before:
+  `get` (how many of the keys are set), `image list` (what the store holds, with the candidate's
+  hash), `rak update status` (the 6 November story and its last state), `image bad`. Then the
+  `esptool` line of [*Releases* → *Latest*](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)'s
+  `-factory.bin` ([`flashing.md`](flashing.md), *A unit at 0.1.0*), and afterwards:
+  the banner says **`0.1.1+<sha7>`**, `self status` says `ota_0` and `valid`, and **all four
+  readings above are unchanged** — the same keys set (a secret still answers `set`, never its
+  value), the same images in the store with the same hashes, the same journal with the same last
+  state, the same bad list. One key lost, one image gone or one journal entry missing is a finding
+  against the partition table and against `tools/check_partitions.py`, which is the check that
+  allows the file to be published at all. Nothing about this can be seen on a host: the promise is
+  about where the flash tool stops writing.
 
 ## 2. The pins and the reset line
 
@@ -784,6 +801,18 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   simulated figure is 413 s for 417,284 bytes at 125 kHz, of which about 5 s is the pauses this
   task added. A reboot during the flash with the lines `boot N: watchdog reset` and `update: the
   journal says a run was in progress …; resuming at flashing-candidate` is this fault back.
+- [ ] **The first install the 6 November failure left behind** (task p8-06; the unit's own radio,
+  whose slot the journal says is *stuck*). The run that the watchdog ended also put its
+  candidate's hash on the bad list, before it entered *stuck* — `RadioUpdate::fail` marks the
+  image first and only then decides there is nothing to return to — so **the image that failed is
+  refused and cannot even be pushed back in**. Expected, in order: `image bad` names that hash;
+  `rak update --first-install` on it is refused with *this image failed a health check once and is
+  never tried again*, **with nothing on the SWD lines**; a push of the repeater's `v0.1.1`
+  (a different file, a different hash) is accepted as the candidate; and `rak update
+  --first-install` then runs to `-> done`, which makes that image **golden** and is the last word
+  on a slot the journal had left *stuck* (`rak update status`, `image list`, `rak hello`). If the
+  bad list is *empty* instead, the mark never reached flash on 6 November — say so, because then
+  the stored `v0.1.0` candidate is usable and the refusal above will not appear.
 - [ ] **`boot` afterwards says `power-on` or `software`, never `watchdog`** (task p8-01). Run
   `boot` (the reset-reason line, `docs/console.md`) right after the flash finishes, and again
   after the proving period. A `watchdog` there - even one, even with the update *done* - means
@@ -1465,8 +1494,8 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       ran real jobs costs more than a quiet one, and *how much more* is the number this item brings
       back.
 - [ ] **The release a unit is running, on the server's page** (task p7-01). After any wake of a
-      board flashed from `v0.1.0`, the exit node's page shows the firmware version it reported —
-      `agentVersion`, this firmware's own string, **`0.1.0+<sha7>`** — beside the heartbeat. It is
+      board flashed from `v0.1.1`, the exit node's page shows the firmware version it reported —
+      `agentVersion`, this firmware's own string, **`0.1.1+<sha7>`** — beside the heartbeat. It is
       the one place a person sees which release a unit out there is actually on, and *LTE test
       node*'s page said `0.0.0-dev` until this one was flashed. Check that the seven characters
       are the tagged commit's.

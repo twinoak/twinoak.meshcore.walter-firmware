@@ -1,7 +1,8 @@
 # Flashing a unit, with the unit on a desk
 
 From a module out of its box to a unit that checks in with meshmaster.dk. One page: the Walter,
-then the RAK, then what *checking in* looks like, then the three things to look at when it does
+then the RAK, then *[a unit at 0.1.0](#a-unit-at-010)* — the one that already exists — then what
+*checking in* looks like, and the three things to look at when it does
 not. [`bench.md`](bench.md) is the long walk that proves each of these one at a time;
 [`provisioning.md`](provisioning.md) is the session that gives a unit its SIM, its server and its
 name; [`console.md`](console.md) is every command.
@@ -21,7 +22,7 @@ The module's USB-C **is** the ESP32-S3's own USB, so there is no adapter and no 
    partition table and the OTA data with it:
 
    ```
-   esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.0-factory.bin
+   esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.1-factory.bin
    ```
 
    `--flash-mode dio` is esptool's way in; the image's own header says QIO and the bootloader
@@ -44,9 +45,9 @@ After a reset the port prints a dozen lines and a `>` prompt
 ([`console.md`](console.md), *What the port prints at boot*, has them all):
 
 ```
-twinoak-walter 0.1.0+<sha7>
+twinoak-walter 0.1.1+<sha7>
 running from ota_0 at 0x010000 (3072 KB), ota state valid
-image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.0+<sha7>, link 1.1
+image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.1+<sha7>, link 1.1
 ...
 type 'help' for the commands
 >
@@ -75,9 +76,10 @@ Two ways in, and the first time it is always the cable:
 - **By cable, at a desk.** Its own repository is the guide (its `README.md`, *Building it*, and its
   `docs/bench.md` §1): double-tap the reset button on the adapter's USB-C, the bootloader's drive
   appears, and `firmware.uf2` is copied onto it — or
-  `adafruit-nrfutil dfu serial -pkg firmware.zip -p COMx -b 115200`. That repository has no release
-  of its own yet, so the images come from a build of its `main`; when it has one, its own
-  `docs/flashing.md` is the page to follow and this release's notes name the release it goes with.
+  `adafruit-nrfutil dfu serial -pkg firmware.zip -p COMx -b 115200`. Its own
+  [`docs/flashing.md`](https://github.com/twinoak/twinoak.meshcore.repeater-firmware/blob/main/docs/flashing.md)
+  is the page to follow, and its *Releases → Latest* is where the files come from; this release's
+  notes name the release of it this one goes with.
 - **Later, through this Walter**, which is why the LTE box exists: `rak update` on this console
   flashes the stored candidate image over the debug port, proves it, and puts the golden image back
   if it is not healthy ([`update.md`](update.md)). A `fetch` on the console or a
@@ -115,6 +117,90 @@ CR LF back out of its answers*. It is slower than a 0.1.1 push and it finishes. 
 the same thing forced, for a Walter whose ready line cannot be read at all; it is never needed
 against 0.1.1 or newer, and the hello's version word refuses it there.
 
+## A unit at 0.1.0
+
+The first unit ran `v0.1.0` on 6 November 2026 and could not finish a radio install: the flasher
+never let the idle task run, so the task watchdog reset the Walter at every attempt, and the run
+ended `STUCK: no image to return to`. Four more faults came out of the same evening. `v0.1.1` is
+all five, and taking a unit there is three things in this order — the Walter, then the radio's
+first install, then the server.
+
+### The Walter's own update goes by cable
+
+The same one `esptool` line as a module out of the box, with **this release's** `-factory.bin`:
+
+```
+esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.1-factory.bin
+```
+
+**What it keeps:** `nvs` (the settings — the APN, the SIM's PIN, the server's URL and token, the
+unit's name), `journal` (the update journal, which is where the *stuck* mark on a radio slot lives:
+`rak update status` says *the last update ended: stuck*) and `rakfw` (the image store — the stored
+candidate, any golden image, the base). All three are above the two application slots and a factory
+image ends where the application ends, so a provisioned unit stays provisioned and comes back with
+the same radio images and the same journal it had (*What a factory flash keeps*, above).
+
+**Not over LTE** — but not for the reason it looks like. A unit's own image **never comes from
+github.com**: the only path to it over the air is a `twinoak.fw.offer` job whose product is the
+Walter's, and that fetch is `{server.url}/…` — meshmaster.dk — which this firmware holds to **ISRG
+Root X1**, the root that loaded and matched on the first board on 23 October
+(`core/net/trust.cpp`: `github.com` is the one host held to USERTrust ECC, the root that modem
+refused, and every other host — meshmaster.dk, and the `githubusercontent` host a GitHub download
+redirects to — falls to ISRG Root X1). The console's `fetch <base-url>` is what reaches github.com,
+and it only ever writes a **radio** image into the store. So a 0.1.0 unit could in principle be
+offered `v0.1.1` over LTE, and from `v0.1.1` onwards that is the way: *Offer a release* on the
+unit's page, then an apply, whose result the **next** wake posts ([`field.md`](field.md)).
+
+Why the cable all the same, for this one unit:
+
+- **0.1.0 cannot be relied on to carry its own download.** An offer is many HTTPS connections in
+  one wake — the config, the heartbeat, the claim, then the manifest, its signature and a range of
+  the image per wake budget — and on 0.1.0 the *second* connection of a wake was the one that
+  failed: `the request did not go out`, three wakes in a row on 6 November. That is the fault
+  `v0.1.1` fixes, and it is the firmware that would have to do the fetching.
+- **The radio needs a cable in this session anyway** (below), so the Walter's own flash costs
+  nothing extra; a 752 kB application over LTE-M on a metered SIM across several wakes is not free.
+
+### Then the radio's first install
+
+1. **`rak hello`** — the radio's session: its firmware version, its board, its slot, and with a
+   repeater at `v0.1.1` its `band 868` (a `v0.1.0` radio says `band: not said (a 1.0 radio)`, which
+   is a radio this Walter still talks to, flashes and proves). No answer at all is
+   [`bench.md`](bench.md) §3, not an update.
+2. **The candidate the unit holds may not be the one to use.** `image list` says what is in the
+   store and `image bad` lists the hashes of candidates that failed. **A first install that failed
+   put its candidate's hash on the bad list before it entered *stuck*** (`RadioUpdate::fail`: the
+   hash first, then *no image to return to*), and such an image is refused before a sector is
+   erased — `error: rak update: refused at check: this image failed a health check once and is
+   never tried again` — and cannot be pushed back in either. So on the unit of 6 November, push the
+   repeater's **`v0.1.1`**, which is a different file and a different hash:
+
+   ```
+   python tools/walterctl.py push --port COM7 --as candidate <release-dir>
+   ```
+
+   Nothing has to be typed about the conversion: `walterctl` reads the protocol off the console's
+   ready line and takes a 0.1.0 Walter's CR LF back out of its answers by itself (*Pushing a
+   repeater image in over the cable*, above). Against a Walter already at `v0.1.1` it says
+   `protocol 2` and sends the frames as they are.
+3. **`rak update --first-install`** — the run with no golden image to return to, a person's command
+   only. Expect the flasher's page lines through the scan, the pages and the read-back **with no
+   reboot in the middle** (that reboot was the fault), then the reset, the health check and
+   `rak update: done: <version> (sha256 …) is the golden image`. Seven minutes or so for a whole
+   image at 125 kHz is the order to expect.
+
+A committed first install is what makes that image **golden**: it ends the slot's *awaiting its
+first install* and it is the last word on a slot the journal had left *stuck*. From then on the
+radio has a proved application to go back to, and every later image is an ordinary `rak update`.
+
+### Then meshmaster.dk
+
+*Read the unit's state* on the unit's page. With a golden image the slot's role, board and band
+come from the image's own descriptor; with a `v0.1.1` radio and no golden image they come from the
+session's `HELLO`, which now ends with the band — the one word that was missing on 6 November and
+the reason the server could pick no image. Either way *Mark canary* can offer this release, and the
+unit's repeater can be offered a release from then on with no cable at all.
+
 ## Checking in
 
 A provisioned unit is an **exit node** on meshmaster.dk — the uplink of its repeater. Register it
@@ -133,7 +219,7 @@ On the exit node's page, after that wake:
   once a minute has passed: a repeater-v2 unit tells the server when it will be back, and the
   server judges it against that promise rather than calling it quiet between wakes;
 - **the firmware version** — `agentVersion`, which is this firmware's own version string,
-  `0.1.0+<sha7>` for this release. It is the one place a person sees which release a unit out there
+  `0.1.1+<sha7>` for this release. It is the one place a person sees which release a unit out there
   is actually running;
 - **the repeater** — the unit's heartbeat reports its radio's public key, and the first heartbeat
   carrying a key the server knows links the exit node to that repeater by itself.
