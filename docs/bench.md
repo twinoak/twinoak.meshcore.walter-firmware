@@ -1111,6 +1111,84 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
   of the result, all inside the one `agent wake`, and the job on the server showing a result and
   not an expired lease. This is the expensive half of the 6 November fault: the claim's answer was
   lost after the server had leased job 21026, so the job died with its one attempt.
+- [ ] **The rotation's own lines, read once** (task p9-02). After the pairs above, `lte`:
+
+  ```
+    sockets: ids 1 and 6, turn and turn about; 42 connections in this boot
+      the last few: 1 6 1 6 1 6 1 6
+      owed closes: 0 waited for, 0 timed out, 0 written off; 41 discounted; 0 events for an id not in the rotation
+  ```
+
+  **Write the whole block down.** It settles three things no host test can:
+  - **whether the second socket id was granted at all.** `ids 1 and 6` is the good case;
+    `id 1 alone (the library gave out no second one)` is the degraded one, and then every pair
+    above is a quarter of a second slower in its second half.
+  - **whether the modem answers `+SQNSH` for a close this end asked for.** `discounted` about
+    equal to the number of connections means every close arrives one connection late, which is
+    what the rule is for; `written off` other than 0 means closes are being lost, and
+    `owed closes: N waited for` is N quarter-seconds spent.
+  - **`events for an id not in the rotation`** other than 0 means the modem is ringing on a socket
+    this firmware never dialled, which would be a reading of the library worth having.
+- [ ] **The sixth connection** (task p9-02; the fault of 7 November, twice). On one boot, with
+  `lte` read **between each step** and its socket block written down:
+
+  ```
+  http get https://meshmaster.dk/
+  http get https://meshmaster.dk/
+  lte
+  agent wake
+  lte
+  agent wake
+  lte
+  ```
+
+  On 7 November the stall came after five good connections, twice: *`WalterModem: Command time-out
+  (TX) Attempt 1 of 1`* and then, 30.9 s and 31.1 s in, *no reply: the connection closed before the
+  body was complete*. Since task p9-02 those two sentences are told apart - a modem that stopped
+  answering now says **the modem stopped answering for this socket before the body was complete**,
+  and *the connection closed...* means a close really arrived - so the first thing to write down is
+  **which of the two sentences it is**. Then, from the `lte` block: **which id the stalled
+  connection was on** (count forward from `the last few`), **whether that id owed a close** and
+  **whether anything had been written off**. If `agent wake` goes through twice, say so: five
+  connections in a wake with the new rule and no stall is the result.
+- [ ] **The trace build, if it stalls again.** The stall is one AT command that got no answer for
+  the library's whole 30 s command timeout (`CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS`, and
+  `CONFIG_WALTER_MODEM_DEFAULT_CMD_ATTEMPTS` is 1, so there is no retransmission). The only thing
+  that names the command is the library's own TX/RX trace, which is `ESP_LOGD` and so needs a
+  build with the log at debug - the same build as 23 October (`tasks/phase-6/FOLLOWUPS.md`, *Five
+  fixes from the first hand-run*):
+
+  ```powershell
+  # not a release build, never flashed to a unit in service
+  .	oolserify.ps1 -Shell
+  # in the container: add to sdkconfig.defaults, build, flash by cable
+  #   CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+  #   CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+  ```
+
+  Then `agent wake` until it stalls, and keep the **whole** paste. What it must show, in order:
+  1. the last `TX:` line before the 30 s gap - **the command that was not answered**. The reading
+     from the code is `AT+SQNSRECV=<id>,<n>`: the request went out (a failed `send` would have
+     said *the request did not go out* instead), the first byte of the response had not arrived
+     (`r.status == 0`: no status line at all), and the 30 935 ms is the command timeout plus the
+     connect;
+  2. whether an `RX:` line came at all in those 30 s, and whether it was `+CME ERROR: 4` (which
+     this firmware reads as *nothing buffered yet*), `+SQNSRECV: <id>,<n>` with a length, or
+     nothing;
+  3. whether a `+SQNSRECV: <id>,<n>` **before** the gap declared more bytes than followed it: the
+     library's parser then counts the rest of the UART as that payload (`_receivingPayload`,
+     `_receivedPayloadSize`) and swallows the next answer whole - and the command timeout is the
+     only thing that clears it (`_processModemCMD` sets `_receivingPayload = false`), which would
+     explain why the connection after the stall went through in 3.7 s;
+  4. `+SQNSH:` lines, with their ids and their timing against our own `AT+SQNSH`: whether the
+     modem reports a close for a socket this end closed, and how long after.
+- [ ] **A dial refused on an id the modem may still hold** (task p9-02, the third shape of
+  7 November: a result's `POST` refused at the dial after 12 532 ms, on the third connection of the
+  wake, with the next connection going through in 3.7 s). Watch for
+  *the modem refused the connection* on a connection whose id the `lte` block shows as having been
+  used two connections earlier, and write down the seconds. If the trace shows `AT+SQNSD` answered
+  `ERROR` on an id whose `+SQNSH` had not come, the dial needs that close first and the rotation's
+  wait is the place for it - which is a change this task would not make without the trace.
 - [ ] **The numbers.** Against the lines above: `kDefaultTotalMs`, `kDefaultPieceMs`
   (`core/net/http_over_tls.h`), `kRangeBytes`, `kRangeTotalMs`, `kRangePieceMs`, `kRangeTries`,
   `kRetryPauseMs`, `kDefaultBudgetBytes`, `kDefaultBudgetS` (`core/net/download.h`),

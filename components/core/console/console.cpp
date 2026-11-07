@@ -136,12 +136,13 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  net::TrustLoader* trust, settings::Settings* settings,
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
-                 AgentProbe* identity, AgentLoopProbe* loop)
+                 AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
-      mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), flasher_(pins, clock, slots),
+      mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets),
+      flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -2664,6 +2665,10 @@ void Console::lte() {
     print("  the backoff's record was gone at this boot (a first boot, or a power cut: RTC\n");
     print("  memory does not survive one), so the count began again from zero\n");
   }
+  // The sockets the HTTPS connections of this boot were made on (task p9-02): `lte` is where a
+  // person looks after a request that stalled, and the rotation's accounting is the half of that
+  // story the console could not tell.
+  printSockets(0, false);
 }
 
 void Console::lteUp() {
@@ -2796,6 +2801,53 @@ constexpr std::uint64_t kHttpGetBound = 1024;
 
 }  // namespace
 
+// The rotation's counters (task p9-02, core/net/socket_rotation.h). Two stalls on the first unit
+// on 7 November could not be read because nothing printed which socket id a connection had taken
+// or whether a close was owed on it; this is that, on the two commands a person uses when the
+// uplink misbehaves. It prints the ids of the connections made since `from` - the request's own
+// for `http get`, the last few of the boot for `lte` - and then the whole boot's accounting.
+void Console::printSockets(std::uint32_t from, bool one_request) {
+  if (sockets_ == nullptr) return;
+  const net::SocketRotation& s = *sockets_;
+  const std::uint32_t total = s.connections();
+  if (s.idCount() == 2) {
+    printf("  sockets: ids %d and %d, turn and turn about; %lu connection%s in this boot\n",
+           s.firstId(), s.secondId(), static_cast<unsigned long>(total), total == 1 ? "" : "s");
+  } else {
+    printf("  sockets: id %d alone (the library gave out no second one); %lu connection%s in this "
+           "boot\n",
+           s.firstId(), static_cast<unsigned long>(total), total == 1 ? "" : "s");
+  }
+  // Which id each connection used, as far back as the rotation keeps them.
+  const std::uint32_t kept = static_cast<std::uint32_t>(s.recentCount());
+  const std::uint32_t oldest = total - kept;
+  const std::uint32_t at = from > oldest ? from : oldest;
+  if (at < total) {
+    printf("    %s", one_request ? "this request: " : "the last few: ");
+    for (std::uint32_t n = at; n < total; ++n) {
+      printf("%s%d", n == at ? "" : " ", s.recentId(static_cast<std::size_t>(n - oldest)));
+    }
+    print("\n");
+  }
+  printf("    owed closes: %lu waited for, %lu timed out, %lu written off; %lu discounted; "
+         "%lu event%s for an id not in the rotation\n",
+         static_cast<unsigned long>(s.owedWaits()), static_cast<unsigned long>(s.owedTimeouts()),
+         static_cast<unsigned long>(s.writeOffs()),
+         static_cast<unsigned long>(s.discountedCloses()),
+         static_cast<unsigned long>(s.otherIdEvents()), s.otherIdEvents() == 1 ? "" : "s");
+  for (int which = 0; which < 2; ++which) {
+    const int id = which == 0 ? s.firstId() : s.secondId();
+    if (id == 0) continue;
+    if (s.isQuiet(id)) {
+      printf("    id %d expects no close: one was owed and written off, and none has arrived "
+             "since\n", id);
+    } else if (s.owes(id)) {
+      printf("    id %d owes a close: the next connection on it waits %lu ms for it\n", id,
+             static_cast<unsigned long>(net::kOwedCloseWaitMs));
+    }
+  }
+}
+
 void Console::httpGet(const char* url) {
   if (!httpOk() || !uplinkUp()) return;
   // The headers worth naming on a bench: the type and the length, the two validators the
@@ -2823,6 +2875,9 @@ void Console::httpGet(const char* url) {
   options.bound = kHttpGetBound;
   PeekSink body;
   printf("http get: %s (the chain is verified against this build's roots)\n", url);
+  // The rotation's count before this request, so that the lines below name this request's own
+  // connections (a redirect makes two) and not the boot's.
+  const std::uint32_t sockets_before = sockets_ != nullptr ? sockets_->connections() : 0;
   http_->setTrace(&out_);
   const net::Result r = http_->get(url, options, body);
   http_->setTrace(nullptr);
@@ -2832,6 +2887,9 @@ void Console::httpGet(const char* url) {
   }
   if (r.status == 0) {
     printf("error: http get: no response: %s\n", r.why);
+    // Above all here: a request with no response is the one whose socket id and owed close are
+    // worth knowing (task p9-02).
+    printSockets(sockets_before, true);
     return;
   }
   printf("http get: %u %s%s%s\n", static_cast<unsigned>(r.status), net::describe(r.verdict),
@@ -2856,6 +2914,7 @@ void Console::httpGet(const char* url) {
          r.verdict == net::Verdict::kTooLarge ? " (cut off: a console line reads 1 KB at most)" : "",
          static_cast<unsigned long>(r.elapsed_ms));
   if (r.authorization_dropped) print("  (an Authorization header was not carried past the first host)\n");
+  printSockets(sockets_before, true);
 }
 
 // ---------------------------------------------------------------------------- the agent's uplink

@@ -252,7 +252,8 @@ Result Client::run(interfaces::HttpMethod method, const char* url, const std::ui
     if (options.follow_redirects && isRedirect(response.status) &&
         (response.outcome == interfaces::HttpOutcome::kOk ||
          response.outcome == interfaces::HttpOutcome::kSinkStopped ||
-         response.outcome == interfaces::HttpOutcome::kClosed)) {
+         response.outcome == interfaces::HttpOutcome::kClosed ||
+         response.outcome == interfaces::HttpOutcome::kSocketFailed)) {
       if (hop >= kMaxRedirects) {
         result.verdict = Verdict::kFailed;
         result.why = "more redirects than this firmware follows (three)";

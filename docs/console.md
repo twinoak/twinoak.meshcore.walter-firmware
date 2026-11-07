@@ -131,12 +131,12 @@ supervisor's stop is printed at every level.
 
 | Command | What it does |
 |---|---|
-| `lte` | (task p3-01) the uplink: what the modem is, what the last attempt did and how far it got, when the backoff allows the next one, whether a SIM PIN is set and whether it was refused, the last signal reading, the last time, and what power saving the network granted. **It only reads** — it does not start the modem |
+| `lte` | (task p3-01) the uplink: what the modem is, what the last attempt did and how far it got, when the backoff allows the next one, whether a SIM PIN is set and whether it was refused, the last signal reading, the last time, and what power saving the network granted. Since task p9-02 it ends with the socket rotation's own lines: the two socket ids the HTTPS connections take turn and turn about, how many connections this boot has made and which id the last few were on, and the close accounting — see *HTTPS*. **It only reads** — it does not start the modem |
 | `lte up` | bring the uplink up now: the whole sequence inside one wake's budget. **Minutes** — an attach from cold is slow — and it goes ahead even when the backoff would have waited, because a person asked |
 | `lte down` | the modem's radio off (`AT+CFUN=0`); the context goes with it |
 | `lte time` | the network's time, or a refusal in words when the modem answered with its own default |
 | `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. **The only place this firmware prints them**, and they are in no log line, no journal entry and no `status` |
-| `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time; the response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
+| `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time, and (task p9-02) the socket id each of this request's connections took and what the close accounting did. The response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
 | `agent url` | (task p4-03) the server the agent's uplink is configured for (`server.url` as it is used, a trailing slash off), whether `server.token` is set, and the `X-Agent-Version` header every call to it carries - this firmware's own version. It reads; it does not call |
 | `agent probe` | (task p4-03) one `GET /agent/v1/config` now, with the token: the status, `Retry-After` and `X-RateLimit-Remaining` when the answer carried them, and the config the server answered (the agent's id and label, its transport, the budget, the poll interval, the server's time). The bench's first look at a server; the uplink must be up (`lte up` first). See *The agent's uplink* |
@@ -683,7 +683,30 @@ http get: 200 the response is larger than the bound: cut off there
   Transfer-Encoding: chunked
   first 32 bytes: 3c21444f43545950452068746d6c3e0a3c68746d6c206c616e673d22656e223e
   1024 bytes (cut off: a console line reads 1 KB at most) in 2831 ms
+  sockets: ids 1 and 6, turn and turn about; 7 connections in this boot
+    this request: 1
+    owed closes: 0 waited for, 0 timed out, 0 written off; 0 discounted; 0 events for an id not in the rotation
 ```
+
+**The last three lines are the socket rotation's** (task p9-02,
+`components/core/net/socket_rotation.h`). Consecutive connections take two of the modem's socket
+ids turn and turn about, because a close belonging to the connection before this one arrives after
+this one has been opened; these lines say which id each connection of this request took, how many
+connections the boot has made, and what the close accounting did. `lte` prints the same block for
+the whole boot (`the last few: 1 6 1 6`), which is where a person looks after a request that
+stalled. What each figure means:
+
+| Figure | What it says |
+|---|---|
+| `ids 1 and 6` | the two the rotation holds. `id 1 alone (the library gave out no second one)` is the degraded case: the library would not reserve a second socket, so every connection is on one id and the owed-close rule carries it alone (`components/modem/walter_tls.h`) |
+| `this request: 1 6` | the id of each connection this one line made, in order. A redirect makes two |
+| `waited for` / `timed out` | connections that began on an id still owing a close: how many waited for it, and how many of those gave up after 250 ms |
+| `written off` | debts that were still unpaid when the connection that waited had finished: the modem never reported that close. The id is then one *whose closes do not come* and costs nothing more until one arrives, which is the bound task p9-02 put on the review's S2 |
+| `discounted` | late closes that paid a debt instead of ending the connection in progress. These are the 6 November fault being caught rather than happening |
+| `events for an id not in the rotation` | a `+SQNSRING` or `+SQNSH` naming a socket this firmware is not using. Should be zero |
+
+A line follows for an id that owes a close (*the next connection on it waits 250 ms for it*) or
+that expects none (*one was owed and written off, and none has arrived since*).
 
 A redirect is followed (at most three, only to `https://`) and the last host named: `http get: 200
 ok after a redirect to release-assets.githubusercontent.com`. A refusal is one `error:` line: *only
@@ -692,6 +715,14 @@ connect - *no response: the modem refused the connection: the host was unreachab
 handshake failed (the library does not say which)*. That last wording is honest about the modem
 library at 1.5.0, which answers one `ERROR` for a name that does not resolve and for a chain it
 cannot verify; `docs/bench.md` §13 is where the two are told apart on a desk, by choosing hosts.
+
+Two more refusals are worth telling apart, and since task p9-02 the console does: *the connection
+closed before the body was complete* means a close really arrived before the response was whole -
+the other end hung up - while *the modem stopped answering for this socket before the body was
+complete* means it did not: the modem answered an error to a receive, or nothing at all before the
+library's own 30 s command timeout (`WalterModem: Command time-out (TX)` on the line above it).
+Both were the first sentence until v0.1.1, which is why the two stalls of 7 November read as a
+server hanging up when they were one AT command going unanswered.
 
 ```
 > fetch https://github.com/twinoak/twinoak.meshcore.repeater-firmware/releases/download/v0.3.0

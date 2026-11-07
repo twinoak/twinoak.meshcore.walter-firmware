@@ -153,7 +153,10 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
         finish(interfaces::HttpOutcome::kTimeout);
         return;
       case interfaces::TlsRecv::kError:
-        finish(interfaces::HttpOutcome::kClosed);
+        // Not kClosed: the other end did not hang up, the socket did (interfaces/http.h,
+        // kSocketFailed). On the board this is the modem answering an error to a receive, or not
+        // answering it at all inside the library's 30 s command timeout.
+        finish(interfaces::HttpOutcome::kSocketFailed);
         return;
     }
   }

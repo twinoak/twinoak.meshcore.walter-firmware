@@ -92,7 +92,7 @@ An independent read of the code and tests against the task files; nothing built,
   - It also marks the radio's condition *not applicable* in a self-switch confirmation
     (`self_update.cpp`, about lines 218 and 464–467).
   - Untested. It does not affect this morning.
-- [ ] **[next Walter pile] S2 · A close that never comes leaves a socket id one close behind for the
+- [x] **[done by p9-02] S2 · A close that never comes leaves a socket id one close behind for the
   modem's life.** If the modem sends no `+SQNSH` after our own `AT+SQNSH`, and our close goes out before
   the server's FIN, `close()` → `end()` leaves a debt nobody pays. Every later connection on that id then:
   - waits 250 ms for nothing;
@@ -100,10 +100,29 @@ An independent read of the code and tests against the task files; nothing built,
 
   The counters (`owedTimeouts`, `discountedCloses`, `otherIdEvents`) are printed nowhere; show them in
   `http get` or `lte`. `kOwedCloseWaitMs` is still *TO BE SET ON THE BENCH* (`docs/bench.md`).
-- [ ] **[next Walter pile] S3 · A check-then-set race in `SocketRotation`.** `end()` (main task) and
+  - **Done by task p9-02.** A debt now lives for **one connection**: if it is still unpaid when the
+    connection that waited for it has finished its exchange, it is written off and that id is
+    marked as one whose closes do not come - nothing is owed on it and nothing is discounted until
+    a close actually arrives, and when one does the rule comes back. So the whole cost of a lost
+    `+SQNSH` is one 250 ms wait and one write-off, per id, once. The second half of the finding -
+    a real early close discounted, so a dropped body reads as a stall - cannot happen after the
+    write-off. `host_test/core/net/test_late_close.cpp`, *a modem that never answers a close*, is
+    eight connections through a socket layer that reports none: two waits, two write-offs, nothing
+    after. The counters, `writeOffs` among them, are on `http get` and `lte`.
+  - `kOwedCloseWaitMs` is still 250 ms and still *TO BE SET ON THE BENCH*; report p9-02 has what
+    the library says it has to cover (the event task dispatches one event per ~20 ms).
+- [x] **[done by p9-02] S3 · A check-then-set race in `SocketRotation`.** `end()` (main task) and
   `onClose()` (the library's event task) read and set flags without a lock. One interleaving leaves both
   set, which is S2's permanent debt. The window is narrow; *nothing to tear* covers torn writes, not
   this. A critical section.
+  - **Done by task p9-02**, and not with a lock: the two flags became **one value** per id
+    (`CloseState`, `core/net/socket_rotation.h`) and each of `begin()`, `end()`, `cancel()` and
+    `onClose()` applies exactly one transition of it with a compare-exchange. There is nothing
+    left between a read and a write to interleave, "both set" is not a state the value has, and a
+    `static_assert` holds the value to one the hardware changes in a single instruction. The table
+    of transitions is a `constexpr` function the test reads in full, and the interleaving the
+    finding describes is in it both ways round: *every transition of the rule, and both orders of
+    the two tasks' steps* (`host_test/core/net/test_socket_rotation.cpp`).
 - [ ] **[Thomas] S4 · Any failure bans an image for ever.**
   - `fail()` marks the image bad for any reason, an SWD flash failure included.
   - The console then says *failed a health check*, and no command clears the eight-entry list.
@@ -113,11 +132,17 @@ An independent read of the code and tests against the task files; nothing built,
     to clear one hash?
 - Nits:
   - p8-01's *before* figures are only in its report (`out/experiments/p8-01-before.txt` is not on disk).
-  - `fake_tls_socket.cpp`'s `endConnection` comment is stale.
+  - `fake_tls_socket.cpp`'s `endConnection` comment is stale. (Corrected by task p9-02.)
   - Report 06 lists three of the five files' hashes: the `.sig` is 0c7aa12f…ff69, `SHA256SUMS`
     5d2c9840…53e3.
   - `docs/bench.md` §9 says *the run that the watchdog ended*; it ended on `kFlashFailed`.
   - 03 relies on the library's unchecked `_socketGet(id)->state` (`WalterModem.cpp`, about line 3205).
+    (Read again for p9-02: `_socketGet` matches on the id **alone** at 1.5.0, and that is
+    deliberate upstream - QuickSpot/walter-arduino#109 was a panic when it also required the
+    state not to be FREE, and #110 removed the state test. So the entry is found whatever the
+    `+SQNSH` handler has done to its state, and the null dereference needs an id no entry carries,
+    which this firmware cannot dial. The trace in #109 is the 7 November sequence in miniature:
+    `AT+SQNSRECV=1,318`, then `+SQNSH: 1`, then `+SQNSRECV: 1,318`.)
 - [x] **[settled by meshmaster.dk's 173: the restore is gated on the level the claim carries, and the unit is now handed none] No `setperm` after a local job.** The review
   of meshmaster.dk's 4.25 found agent-core's `restoreAcl` (`components/agent-core/src/JobRunner.cpp`,
   about lines 404–450) sending `setperm <own key> 1` to the unit's own repeater after every `acl` job:
@@ -140,7 +165,7 @@ An independent read of the code and tests against the task files; nothing built,
   modem*.** The modem has been in since phase 3. The check was skipped because the uplink was not up in
   this boot, so there was no network time to give. Say that, and say that `lte up` before a
   `rak update` lets the check run. Or have the update ask the uplink for the time when it can.
-- [ ] **[next Walter pile; with 03's S2/S3] The fifth connection of a wake still stalled.** 7 November,
+- [x] **[read by p9-02; what is left is on the bench] The fifth connection of a wake still stalled.** 7 November,
   Walter 0.1.1 on the first unit, `agent wake`:
   - config, heartbeat, claim and the job's result all went through (four connections, about 1.1–1.3 s
     each);
@@ -160,14 +185,39 @@ An independent read of the code and tests against the task files; nothing built,
 
   So twice the stall has come on the connection after five good ones. Check whether that is the
   count (the ids alternate, so the sixth reuses the third's) or the second batch in a row.
+  - **Read by task p9-02, as far as the code can settle it.** The stall is **one AT command that
+    got no answer for the library's whole 30 s command timeout**, and from the shape of the
+    failure that command is `AT+SQNSRECV`: a send that had failed would have said *the request did
+    not go out*, and `r.status == 0` says not one byte of the response had arrived. 30 935 ms is
+    that timeout plus the connect. **Which id it was on cannot be read from the console lines
+    there were**, which is why the rotation's counters are now printed. Two things were fixed on
+    the way: the sentence (*the connection closed before the body was complete* was printed for a
+    modem that had stopped answering, which is a different fault and now says so -
+    `HttpOutcome::kSocketFailed`), and the two ways a socket id can go wrong that the review had
+    named (S2 and S3 above), either of which could have put a connection on an id with a close
+    owed on it.
+  - **What is left is the trace**, and `docs/bench.md` §13 has the build, the three things the
+    trace must show and the lines that get them. Report p9-02 has the reading of the library
+    behind them: the event queue is eight deep and drops what does not fit, the event task
+    dispatches one event per ~20 ms, and a `+SQNSRECV: <id>,<n>` whose declared length exceeds the
+    bytes that follow it leaves the library's parser counting the rest of the UART as that payload
+    until the command timeout clears it - which would explain a single 30 s gap with the next
+    connection going through in 3.7 s.
 - [ ] **[next Walter pile / agent-core] A local job is paced like the air.** 7 November: `telemetry` for
   the unit's own repeater went through the local door, `ok after 2 transaction(s)`, and took 20 s,
   which is the server's `gap 20 s` between two transactions. Neither went on the air (the local login
   and `LPP_GET`). The airtime budget is the mesh's, so a local job should neither spend it nor wait
   for it.
-- [ ] **[next Walter pile] `DEPRECATION: Use socketConfig(socket_id, pdp_ctx_id, mtu, exchange_timeout,
+- [x] **[done by p9-02] `DEPRECATION: Use socketConfig(socket_id, pdp_ctx_id, mtu, exchange_timeout,
   conn_timeout, send_delay_ms, rsp, cb, args) instead`** on the first connection of a boot. Move
   `walter_tls.cpp` to the library's current signature.
+  - **It already is.** Every `socketConfig` this firmware makes is the current overload; the line
+    comes from the **one** deprecated call it makes on purpose - the overload with no id, which is
+    the only public way to `_socketReserve()` and so the only way to a second socket id at 1.5.0
+    (`components/modem/include/modem/walter_tls.h` has the short reading, report p8-03 the long
+    one). Nothing else of the library's deprecated surface is called.
+  - **Done by task p9-02:** `walter_tls.cpp` silences the library's `DEPRECATION` tag where that
+    reserve is made, with the reason beside it. The line goes; the second id stays.
 - [ ] **[next Walter pile] The local door's counters are printed nowhere.** `LinkMesh::linkCounters()`
   (`local_jobs`, `local_silent`, `local_requests`, `local_unserved`) is not on the console. On
   7 November a telemetry job for the unit's own repeater came back *unreachable after 2

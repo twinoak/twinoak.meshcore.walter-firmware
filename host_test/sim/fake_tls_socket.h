@@ -72,6 +72,14 @@ class FakeTlsSocket final : public interfaces::TlsSocket {
   // no owed closes. The second request then fails exactly as it did on the first unit on
   // 6 November 2026 - `the request did not go out`.
   bool as_v0_1_0 = false;
+  // A modem that never reports a close at all: the `+SQNSH` of every connection the firmware
+  // closed itself is lost. The library queues socket events eight deep with no wait and drops
+  // what does not fit, and its event task takes one event per 20 ms
+  // (core/net/socket_rotation.h), so a response that rings often enough loses one - and if the
+  // one lost is the close, that id is owed a close that is never coming. The review's S2, and
+  // what task p9-02 bounds. A drop in the middle of a body is still delivered: that close *is*
+  // the connection ending, not this race.
+  bool close_event_lost = false;
 
   // -- what happened -------------------------------------------------------------------------
   int opens = 0;

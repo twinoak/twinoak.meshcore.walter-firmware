@@ -1,5 +1,7 @@
 #include "modem/walter_tls.h"
 
+#include "esp_log.h"
+
 #include "WalterModem.h"
 
 #include "core/net/trust.h"
@@ -37,6 +39,15 @@ void WalterTlsSocket::askForASecondSocket(std::uint64_t deadline_ms) {
   // the only thing that gives an entry of the library's set an id other than 1 (walter_tls.h).
   // Deprecated and warned about since 1.5.0; there is no supported call that does this, and
   // without it consecutive connections could only share socket 1.
+  //
+  // The overload also logs `DEPRECATION: Use socketConfig(socket_id, pdp_ctx_id, mtu,
+  // exchange_timeout, conn_timeout, send_delay_ms, rsp, cb, args) instead` at warning level
+  // (WalterSocket.cpp), which is what the first unit's console printed on the first connection of
+  // a boot and what the review of phase 8 asked about: it reads as a mistake and is not one -
+  // every socketConfig this firmware makes **is** the current signature, and this one call is a
+  // reserve and not a config. Every other deprecated call of the library is one this firmware
+  // does not make, so the tag can go, for the right reason and in the place that has it.
+  esp_log_level_set("DEPRECATION", ESP_LOG_NONE);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   const bool reserved =
@@ -186,9 +197,10 @@ void WalterTlsSocket::close() {
   // And it is owed only when the other end answered. A response arrives under `Connection:
   // close` and the server's FIN follows the last byte of it, so a connection that gave us bytes
   // has a close on its way; a handshake with no request behind it (core/update/tls_check.h) is
-  // closed by this end alone and has none, and a debt nobody pays would be taken out of the
-  // next connection's own close for the rest of the modem's life
-  // (core/net/socket_rotation.h, *What a debt nobody pays costs*).
+  // closed by this end alone and has none, so owing one for it would be a debt nobody can pay.
+  // A debt that is never paid now costs one wait and one write-off and no more
+  // (core/net/socket_rotation.h, *A debt lives for one connection*), but not making it in the
+  // first place is still better than bounding it.
   if (received_) {
     rotation_.end();
   } else {

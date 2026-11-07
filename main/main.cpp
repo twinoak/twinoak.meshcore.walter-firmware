@@ -595,7 +595,7 @@ extern "C" void app_main() {
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, &mesh_probe, &agent_probe, &identity_probe,
-                                        &backend);
+                                        &backend, &tls_socket.rotation());
   // The library's log goes where every other line of this port goes: the console's print(), and
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
@@ -629,7 +629,8 @@ extern "C" void app_main() {
                                         slots, g_store, g_receiver, g_update, g_journal,
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
-                                        &battery);
+                                        &battery, nullptr, nullptr, nullptr, nullptr,
+                                        &tls_socket.rotation());
 #endif
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop

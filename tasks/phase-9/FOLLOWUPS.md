@@ -23,3 +23,40 @@ is written.
   failures. The journal keeps only wakes with news (`WakeCycle::journalWake`), so a quiet wake leaves
   nothing but its length. One letter per wake would have said it: modem up, backend reached, jobs
   run.
+
+## Found while doing 02 (7 November)
+
+- [ ] **[Thomas, on the bench] The 30-second stall is still one unanswered AT command.** Task 02
+  fixed the two ways a socket id can go wrong (the review's S2 and S3), printed the rotation's
+  counters so that the next stall says which id it was on, and told *the connection closed before
+  the body was complete* apart from *the modem stopped answering for this socket*. It did **not**
+  settle why `AT+SQNSRECV` went unanswered for the library's whole 30 s command timeout, twice on
+  7 November. That needs the library's TX/RX trace: `docs/bench.md` §13 has the build, the four
+  things the trace must show and the lines that get them, and report 02 has the three mechanisms
+  the code allows. **A fix without that trace would be a guess**, which is why task 02 made none.
+
+- [ ] **[later] The library drops socket events, and nothing of ours would know.** The event queue
+  is `WALTER_MODEM_EVENT_QUEUE_MAX_ITEMS` = 8, filled with `xQueueSend(..., 0)` - a full queue
+  drops the event silently - and the event task takes **one event per loop**, each loop a
+  `vTaskDelay(10)` plus another 10 ms before the dispatch
+  (`managed_components/dptechnics__walter-modem/src/WalterModem.cpp`,
+  `_eventProcessingTask`). So a response that rings more than eight times inside ~160 ms loses
+  events, and one of them can be the `+SQNSH` that a socket id is then owed for ever - which is
+  what task 02 bounded rather than prevented. Two things could be read when there is a figure for
+  how often the GM02SP rings: whether `AT+SQNSCFGEXT`'s ring mode 0 (a bare `+SQNSRING: <id>`,
+  with no data amount) would make this firmware cheaper in events - it only uses the ring as a
+  cue and polls anyway (`components/modem/walter_tls.cpp`, `receive`) - and whether a later
+  library has a deeper queue or a blocking send. Neither is worth doing from a reading alone.
+
+- [ ] **[later] The GM02SP's AT manual is still unread in prose.** The document the socket work
+  rests on is QuickSpot's copy of the Monarch 2 LR 8.2 AT Commands Reference
+  (`https://quickspot.io/docs/file/gm02s_at_commands.pdf`, 20 MB). Task 02 read its **examples and
+  syntax lines** - six sockets (`+SQNSH: (1-6)`), `+SQNSRECV: (1-6),(1-1500)`, TLS per socket
+  (`+SQNSSCFG:(1-6),(0-1),(1-6)`, and the query lists an enable flag and a profile for each of the
+  six), and `+SQNSCFG: (1-6),(0-5),(0-1500),(0-65535),(0,10-1200),(0-255)`, which is the range
+  every parameter `walter_tls.h` sets is inside - but **not its prose**: the pages use subset fonts
+  with no extractable encoding, and the file is over the fetch tool's limit. So the two questions
+  the task asked of the manual are still open: whether a TLS session (or a session cache) is tied
+  to a socket id and inherited when the id is reused, and what `AT+SQNSD` answers on an id the
+  modem still holds open or closing. A machine with a PDF reader, or Sequans' own portal, settles
+  both in ten minutes.

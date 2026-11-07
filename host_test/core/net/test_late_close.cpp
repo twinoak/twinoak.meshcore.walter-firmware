@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "core/net/socket_rotation.h"
 #include "core/net/trust.h"
 #include "net_bench.h"
 
@@ -176,6 +177,62 @@ TEST_CASE("one socket id and nothing else: the debt rule alone carries a wake") 
   CHECK(b.socket().rotation().owedWaits() == 1);
   CHECK(b.socket().rotation().owedTimeouts() == 1);
   CHECK(b.socket().rotation().discountedCloses() == 1);
+}
+
+TEST_CASE("a modem that never answers a close: the debt is written off, once per id") {
+  // The review's S2, bounded by task p9-02. The modem reports no close for a connection this end
+  // closed itself, ever - the `+SQNSH` was queued into the library's eight-deep event queue and
+  // dropped. Before p9-02 each id was then one close behind for the modem's life: every
+  // connection on it waited kOwedCloseWaitMs in vain and had its own close discounted. Now the
+  // whole cost is one wait and one write-off per id.
+  NetBench b;
+  b.server().serve("/one", {'1'});
+  b.socket().close_event_lost = true;
+
+  std::uint32_t spent[8] = {};
+  for (int i = 0; i < 8; ++i) {
+    MemorySink body;
+    const Result r = b.client.get("https://server.example/one", Options{}, body);
+    CHECK(r.verdict == Verdict::kOk);
+    CHECK(r.status == 200);
+    CHECK(body.text() == "1");
+    spent[i] = r.elapsed_ms;
+  }
+  REQUIRE(b.socket().socket_ids.size() == 8);
+
+  // Two ids, so two debts and two waits - and no more, however many connections follow. The
+  // released rule would have waited on connections 3, 5 and 7 of each id: six waits of 250 ms
+  // in eight connections, and growing for as long as the modem is up.
+  CHECK(b.socket().rotation().owedWaits() == 2);
+  CHECK(b.socket().rotation().owedTimeouts() == 2);
+  CHECK(b.socket().rotation().writeOffs() == 2);
+  CHECK(b.socket().rotation().discountedCloses() == 0);
+  CHECK(b.socket().rotation().isQuiet(b.socket().socket_ids[0]));
+  CHECK(b.socket().rotation().isQuiet(b.socket().socket_ids[1]));
+  // And what it cost, request by request: the third and the fourth - the first time each id came
+  // round again - paid the wait, and the four after them paid nothing. Under the released rule
+  // the fifth, sixth, seventh and eighth would each have paid it too.
+  CHECK(spent[2] == spent[0] + core::net::kOwedCloseWaitMs);
+  CHECK(spent[3] == spent[1] + core::net::kOwedCloseWaitMs);
+  CHECK(spent[4] == spent[0]);
+  CHECK(spent[5] == spent[0]);
+  CHECK(spent[6] == spent[0]);
+  CHECK(spent[7] == spent[0]);
+
+  // And a quiet id still reports a real early close: the half of S2 that cost a reading of the
+  // board, because a dropped body read as a stall. The drop's close is the connection ending and
+  // is delivered whatever else is lost.
+  b.server().serve("/big", bench::patternBytes(4000));
+  b.socket().drop_at_request = 8;
+  b.socket().drop_after_body_bytes = 500;
+  MemorySink cut;
+  const Result dropped = b.client.get("https://server.example/big", Options{}, cut);
+  CHECK(dropped.verdict == Verdict::kFailed);
+  CHECK(dropped.outcome == HttpOutcome::kClosed);
+  CHECK(std::string(dropped.why) == "the connection closed before the body was complete");
+  CHECK(cut.bytes.size() == 500);
+  CHECK(b.socket().rotation().discountedCloses() == 0);  // nothing of it was discounted
+  CHECK(b.socket().rotation().owedWaits() == 2);         // and nothing more was waited for
 }
 
 TEST_CASE("a genuine early close is still an early close, with the rotation in play") {
