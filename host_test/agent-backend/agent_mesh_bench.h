@@ -94,12 +94,68 @@ inline fake::Job ownConfigRead(long long id) {
       .asDirectNeighbour();
 }
 
+// ---- the read the server really sends, and the 34 lines of it (task p9-01) -------------------
+//
+// `ConfigKeys.ReadListFor(null)` in meshmaster.dk at c9732682
+// (src/MeshMaster.Core/Configuration/ConfigKeys.cs): every row of the key table that has a
+// `ReadOrder`, in that order, with one of `dutycycle` / `af` and not both - thirty keys, "every
+// key the Configuration tab shows". Since its task p4.9-102 every `config.read` the server makes
+// carries this list, so the sixteen of `mm::kDefaultConfigKeys` are only what an older claim falls
+// back to. Thirty is under the thirty-two a claim may carry (`agent/ConfigRead.h`,
+// `kMaxConfigKeys`).
+//
+// **It is 34 transactions**, which is the "34-line local config.read" of
+// tasks/phase-8/FOLLOWUPS.md: the login, `region` and `region default`, twenty-eight `get`s (the
+// thirty less `regions` and `acl`, which are not `get`s), `ver`, `board`, and the binary
+// access-list request. 1 + 2 + 28 + 2 + 1. The server prices the same read at
+// `transactionsFor("config.read", …, 30)` + `kTransactionsForLogin` = 30 + 2 + 1 + 1.
+constexpr int kServerReadKeyCount = 30;
+inline const char* const* serverReadKeys() {
+  static const char* const keys[kServerReadKeyCount] = {
+      "name", "lat", "lon", "advert.interval", "flood.advert.interval", "repeat", "dutycycle",
+      "flood.max", "flood.max.unscoped", "tx", "path.hash.mode", "multi.acks", "allow.read.only",
+      "agc.reset.interval", "regions", "acl", "owner.info", "flood.max.advert", "loop.detect",
+      "txdelay", "direct.txdelay", "rxdelay", "int.thresh", "cad", "radio", "radio.rxgain",
+      "radio.fem.rxgain", "radio.fem.txgain", "powersaving", "guest.password"};
+  return keys;
+}
+
+// The same job as `ownConfigRead`, with that list: the scheduled daily read of the unit's own
+// repeater, which is what job 22032 was on 7 November 2026.
+inline fake::Job ownConfigReadServerList(long long id) {
+  std::string payload = "{\"keys\":[";
+  for (int i = 0; i < kServerReadKeyCount; ++i) {
+    if (i > 0) payload += ",";
+    payload += "\"";
+    payload += serverReadKeys()[i];
+    payload += "\"";
+  }
+  payload += "]}";
+  return fake::Job(id, "config.read")
+      .forRepeater(17, kOwnName, kOwnKeyHex)
+      .atClass("admin")
+      .leasedUntil(0)
+      .withAdminPassword("adm1n-pass")
+      .withPayload(payload)
+      .asDirectNeighbour();
+}
+
 // The unit's own repeater's console, as the local door reaches it (§5.7): what a stock repeater
 // answers `get`, `set`, `ver`, `board`, `region`.
+// The keys are every one `serverReadKeys()` asks a `get` for, so that the daily read is thirty
+// answers and not fourteen `??:` lines (which would overflow `kMaxConfigRawLines` and make the
+// read about the overflow note instead). The values are a stock repeater's defaults at d9296435;
+// only `name` is asserted anywhere, and the read's cost does not depend on any of them.
 inline bool ownConsole(const std::string& line, std::string* reply) {
   static std::map<std::string, std::string> config = {
       {"name", "TwinOak Risskov"}, {"advert.interval", "240"}, {"flood.max", "64"}, {"freq", "869.618"},
       {"radio", "869.618,62.5,8,8"}, {"lat", "56.4167"}, {"lon", "10.8833"}, {"repeat", "on"},
+      {"flood.advert.interval", "12"}, {"dutycycle", "10.0%"}, {"flood.max.unscoped", "3"},
+      {"tx", "22"}, {"path.hash.mode", "1"}, {"multi.acks", "0"}, {"allow.read.only", "off"},
+      {"agc.reset.interval", "0"}, {"owner.info", ""}, {"flood.max.advert", "3"},
+      {"loop.detect", "on"}, {"txdelay", "0"}, {"direct.txdelay", "500"}, {"rxdelay", "0"},
+      {"int.thresh", "0"}, {"cad", "off"}, {"radio.rxgain", "0"}, {"radio.fem.rxgain", "0"},
+      {"radio.fem.txgain", "0"}, {"powersaving", "off"}, {"guest.password", ""},
   };
   if (line.rfind("reboot", 0) == 0) return false;
   if (line.rfind("get ", 0) == 0) {

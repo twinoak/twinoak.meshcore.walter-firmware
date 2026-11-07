@@ -41,8 +41,30 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE blocks). The firmware confirms an image only after it has
 # booted, spoken to the radio and reached the server (docs/ARCHITECTURE.md §7).
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# The FreeRTOS tick: a thousand a second, so that **a millisecond is a tick** (task p9-01). This is
+# not a timing preference, it is what makes `interfaces::Clock::delayMs` a yield at every length a
+# caller asks for: `vTaskDelay(pdMS_TO_TICKS(ms))` is a no-op below one tick, so at the default of
+# 100 Hz `platform/clock.cpp` had to busy-wait for anything under 10 ms. On 7 November 2026 that
+# reset the first unit - agent-core's `JobRunner::idle` waits out the airtime budget with
+# `delayMs(1)` in a loop, a 34-line `config.read` at *2 a minute, gap 20 s* made one of those waits
+# about 40 s, and 40 s of `esp_rom_delay_us(1000)` starved IDLE0 past the 30 s task watchdog below
+# (`tasks/phase-8/FOLLOWUPS.md`, *A busy wait below one tick still starves the watchdog*).
+# `platform/clock.cpp` holds this line with a `static_assert`: lower it and the build stops.
+# Allowed and recommended: the option's range is 1 to 1000 ($IDF_PATH/components/freertos/Kconfig,
+# `config FREERTOS_HZ`), and every recommended configuration in ESP-IDF v5.5's
+# docs/en/api-guides/low-power-mode/low-power-mode-soc.rst - DFS, auto light sleep, each of the
+# chip's low-power modes - sets it to 1000, because finer scheduling is what lets a sleepy system
+# drop its clock again sooner. What it costs is 900 more timer interrupts a second **while the
+# Walter is awake**; deep sleep has no FreeRTOS tick at all, and this unit is asleep for all but a
+# minute or two of each wake interval. Every tick-counted timeout in this firmware and in
+# walter-modem 1.5.0 is written `pdMS_TO_TICKS(...)`, so all of them mean the same number of
+# milliseconds at 1000 Hz as at 100; what changes is that they round to 1 ms instead of 10 (report
+# p9-01 names the four places that is visible in).
+CONFIG_FREERTOS_HZ=1000
 # The task watchdog: on, started at boot, watching both idle tasks, and a panic (so a reset and a
 # core dump) when it fires. A Walter wedged in a task is a radio without its supervisor.
+# Unchanged by p9-01: 30 s, panic, both idle tasks. The watchdog is what found the fault above and
+# raising it would have hidden the next one.
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_PANIC=y

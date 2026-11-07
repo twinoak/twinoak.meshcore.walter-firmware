@@ -99,7 +99,9 @@ std::uint32_t WalterPlatform::millis() {
 // A yield and never a busy spin: the library calls this with 1 in the idle loop inside a job's
 // reply wait. The pump is what must not stop while the agent waits - the link client's receive
 // side and the console's byte - and it runs **before** the delay, so a wait of one millisecond
-// still pumps once.
+// still pumps once. The yield is the clock's to keep and since task p9-01 it keeps it at every
+// length, 1 included (interfaces/clock.h, platform/clock.cpp); this method adds nothing to it,
+// which is why a one-line change in platform/ was the whole fix for the 7 November reset.
 void WalterPlatform::delayMs(std::uint32_t ms) {
   ++delays_;
   if (pump_ != nullptr) {

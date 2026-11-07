@@ -13,6 +13,15 @@
 //     pump is a plain function pointer the owner sets, because that is what the library's own
 //     `JobRunner::begin` takes and the two should be the same function
 //     (docs/library.md §6 step 3).
+//
+//     This sentence was a wish until task p9-01. The library idles with `delayMs(1)`
+//     (`JobRunner::idle`), and `EspClock::delayMs(1)` was `esp_rom_delay_us(1000)` below the
+//     10 ms tick of `CONFIG_FREERTOS_HZ=100` - so a job that waited out the airtime budget, up to
+//     about 40 s of it, held the CPU for all of it and the 30 s task watchdog reset the first unit
+//     on 7 November 2026 inside a `config.read`. Nothing is different here: the tick is a
+//     millisecond now (`sdkconfig.defaults`, held by a `static_assert` in `platform/clock.cpp`),
+//     so what this class promises is what the clock under it does. The pump still runs **before**
+//     the delay, so a wait of one millisecond pumps once.
 //   - **`rebootForHealth(why)` does not restart this board.** The supervisor and the wake cycle
 //     own restarts (spec/SYSTEM.md §9, core/cycle/wake_guard.h), so the request is journalled,
 //     the Walter's own attention is raised for the wake record and `status`

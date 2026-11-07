@@ -4,11 +4,13 @@
 //
 // It also models the one thing about the board's delays that is not "time passes" (task p8-01):
 // whether a delay **blocks**, so that the idle task of the core runs and the task watchdog is
-// reset. On the board (platform/clock.cpp) that depends on the length: CONFIG_FREERTOS_HZ is
-// 100, so pdMS_TO_TICKS(ms) is zero below 10 ms and EspClock busy-waits with esp_rom_delay_us;
-// at 10 ms and above it calls vTaskDelay and the scheduler runs something else. delayUs() is
-// always a busy wait. The fake answers to both rules and keeps the longest stretch of simulated
-// time it has run without a blocking delay - which is what the 30 s task watchdog sees.
+// reset. On the board (platform/clock.cpp) that depends on the length, and since task p9-01 the
+// board's rule is the simplest one there is: CONFIG_FREERTOS_HZ is 1000, so a millisecond is a
+// tick, pdMS_TO_TICKS(ms) is never zero for ms >= 1, and every delayMs(ms >= 1) is a vTaskDelay.
+// delayUs() is still always a busy wait. The fake answers to both rules and keeps the longest
+// stretch of simulated time it has run without a blocking delay - which is what the 30 s task
+// watchdog sees. Until p9-01 this constant was 10, the tick of 100 Hz, and that is what the
+// 7 November reset was made of: agent-core's JobRunner::idle waits with delayMs(1).
 #pragma once
 
 #include <cstdint>
@@ -18,9 +20,12 @@
 
 namespace fakes {
 
-// One FreeRTOS tick at CONFIG_FREERTOS_HZ = 100 (sdkconfig.defaults): the shortest delay the
-// board turns into a vTaskDelay rather than a busy wait.
-constexpr std::uint32_t kOneTickMs = 10;
+// One FreeRTOS tick at CONFIG_FREERTOS_HZ = 1000 (sdkconfig.defaults, task p9-01): the shortest
+// delay the board turns into a vTaskDelay rather than a busy wait. A millisecond is a tick, so
+// this is 1 and every delayMs a test can reach blocks - which is the whole point of the change,
+// and the reason the local config read of host_test/agent-backend/test_agent_watchdog.cpp no
+// longer runs 40 s of simulated time without yielding.
+constexpr std::uint32_t kOneTickMs = 1;
 
 class FakeClock final : public interfaces::Clock {
  public:
