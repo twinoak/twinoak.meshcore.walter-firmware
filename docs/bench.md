@@ -1049,10 +1049,39 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
   and before a byte of the image: `fetch: refused at check 1, the signature: the key id names no
   key this build trusts; nothing stored, the slot is empty`. The state every unit is in until the
   release key exists (`keys/README.md`).
+- [ ] **`http get https://meshmaster.dk/` twice in a row, twenty times** (task p8-03; the
+  **release** build of v0.1.1 or later, which is where the fix is). This is the item v0.1.0 failed
+  on 6 November: every connection was socket 1, so the first connection's close landed on the
+  second and the second request answered *no reply: the request did not go out* or *http 200 but
+  the body did not arrive whole*. Type the two lines back to back, twenty times over:
+
+  ```
+  http get https://meshmaster.dk/
+  http get https://meshmaster.dk/
+  ```
+
+  Expected: **forty answers of 200**, none of them *did not go out* and none *closed before the
+  body was complete*. The pairs are the point - a single request always worked, on 0.1.0 too - and
+  twenty of them because the fault was a race and some wakes got through. **Write down the two
+  times of each pair.** With two sockets no connection should ever wait for a close another one
+  owes; if the second of each pair comes out reliably slower than the first by about a quarter of a
+  second, that wait is being spent every time - `kOwedCloseWaitMs` in
+  `core/net/socket_rotation.h`, and a sign that the second socket id was not granted and the
+  firmware is running on one (the report of task p8-03 says how that can happen).
+- [ ] **`agent wake` with config, heartbeat, claim and observations all `done`** (task p8-03).
+  Four requests in one wake, four connections, alternating between two socket ids. Expected: four
+  trace lines with a status each and no step reported as *no reply*; `agent status` afterwards
+  showing the wake as a whole. On 6 November the second step of the wake failed every time.
+- [ ] **A job claimed, run and its result posted in one wake** (task p8-03; needs a job queued on
+  meshmaster.dk for this unit - §18 is where that is set up). Expected: `claim` → the job → `POST`
+  of the result, all inside the one `agent wake`, and the job on the server showing a result and
+  not an expired lease. This is the expensive half of the 6 November fault: the claim's answer was
+  lost after the server had leased job 21026, so the job died with its one attempt.
 - [ ] **The numbers.** Against the lines above: `kDefaultTotalMs`, `kDefaultPieceMs`
   (`core/net/http_over_tls.h`), `kRangeBytes`, `kRangeTotalMs`, `kRangePieceMs`, `kRangeTries`,
   `kRetryPauseMs`, `kDefaultBudgetBytes`, `kDefaultBudgetS` (`core/net/download.h`),
   `kManifestRequestMs` (`core/update/fetch.h`), `kTrustWriteDeadlineMs` (`core/net/trust.h`),
+  `kOwedCloseWaitMs` (`core/net/socket_rotation.h`),
   `kHandshakeDeadlineMs` (`core/update/tls_check.h`), and the socket's `kSocketConnectTimeoutS`
   and `kReceivePollMs` (`components/modem/walter_tls.h`). Each is a constant with a sentence;
   change the number and the sentence together.

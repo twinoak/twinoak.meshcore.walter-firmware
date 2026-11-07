@@ -146,7 +146,7 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   link (`link_mesh.h`: *Failed* for a local job), so the unit cannot read its own repeater's status
   through the Walter at all yet; telemetry (LPP_GET) and CLI lines can. Decide whether the link gets
   a request for them or the CLI's stats lines stand in.
-- [ ] **[p8-03; meshmaster.dk 4.25] A response body that stalls, and the job it orphans.** 6 November, after the evening's
+- [x] **[p8-03; meshmaster.dk 4.25] A response body that stalls, and the job it orphans.** 6 November, after the evening's
   nineteen watchdog boots: heartbeat 200 (143 bytes, 4.5 s), then `/agent/v1/jobs/claim` -> `http 200
   but the body did not arrive whole` after 31 s with the library's `Command time-out (TX) Attempt 1 of
   1`, and `/agent/v1/observations` the same after 46 s. The server had leased the claimed job
@@ -167,3 +167,11 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   delivers the previous connection's close after the next dial. For meshmaster.dk: a claim
   whose answer is lost leaves a one-attempt job dead; a read-only type (`twinoak.fw.state`) could be
   given a second attempt after an expired lease with nothing reported.
+  *Done in task p8-03 for this end: `core/net/socket_rotation.h` is the rule - consecutive
+  connections on different socket ids, the flags per id, and a close an id still owes waited for
+  and then discounted - and `components/modem/walter_tls.cpp` is the thin caller that asks
+  walter-modem for the second id (the deprecated reserve is the only door; the report says why).
+  The host tests make the fake deliver a close one and two connections late and fail before the
+  fix. Still to be seen on the board: `docs/bench.md` §13, the three p8-03 lines. The
+  meshmaster.dk half - a second attempt for a read-only job whose lease expired with nothing
+  reported - is that repository's pile 4.25 and is not this task's.*

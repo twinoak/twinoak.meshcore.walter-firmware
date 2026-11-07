@@ -1045,6 +1045,30 @@ implementation is `AT+SQNSD` in command mode with `AT+SQNSSCFG` naming a TLS pro
 request is one connection (`Connection: close`); a received `+SQNSRECV: <id>,<len>` is followed by
 exactly `len` raw bytes, which the library reads by count, so the path is binary-safe.
 
+**One connection, one socket** (task p8-03). A request ends when its Content-Length has been read,
+which is *before* the server's close reaches the modem; that close arrives as a `+SQNSH: <id>` the
+library turns into a queued event and dispatches a moment later. Until v0.1.1 every connection was
+socket 1 and `open()` cleared the one close flag before it dialled, so the previous connection's
+close landed on the next one: `send` stopped (*the request did not go out*) or `receive` ended
+early (*the connection closed before the body was complete*). It took the second HTTPS request of
+three wakes in a row on the first unit, 6 November 2026, and with it a job meshmaster.dk had
+already leased. The rule is now `core/net/socket_rotation.h`, with no modem in it: consecutive
+connections take **different socket ids**, turn and turn about, with the ring and close flags per
+id; and a connection whose id has not yet seen the close of an earlier connection on that id
+*owes* one - it waits `kOwedCloseWaitMs` (250 ms, in blocking steps so the task that delivers the
+event can run) and then discounts the first close it gets. A close one connection late therefore
+names an id nothing is using, and one two connections late is discounted by the id it belongs to.
+A close that is owed and never comes would leave that id one behind for the modem's life, which
+costs the wait and nothing of a response (the parser, not the close, ends one), so the modem layer
+owes a close only for a connection the other end **answered**. Getting a second socket id out of
+`walter-modem` 1.5.0 is not free: all six entries of its `_socketSet` carry `id = 1` and
+`_socketGet` matches the first of them, so `socketConfig(2..6)` find nothing, and the only thing
+that renumbers an entry is the private `_socketReserve()` behind the **deprecated**
+`socketConfig(rsp, ...)` overload. `components/modem/walter_tls.cpp` asks it once per modem start
+and finds which id it got by asking for 6 down to 2 (the response structure is zeroed before the
+command goes out, so it cannot be read back); when the library gives none, the rotation runs on
+one id and the owed-close rule alone.
+
 **The chain is verified, and nothing in this firmware can ask otherwise.** The roots
 (`keys/tls/*.pem`, ISRG Root X1 and USERTrust ECC; each with its subject, fingerprint, expiry,
 source and the chains observed, held to the certificate at build time) are written into the modem's
