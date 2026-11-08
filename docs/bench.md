@@ -1501,22 +1501,22 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       unit, then `agent wake`. Both go through the local door: **`client_tx` does not move** and no
       packet is on the air (a sniffer sees nothing), yet both post a result — the telemetry's LPP
       channels, the config without the access list. This is the seam's own §13 table, walked.
-- [ ] **A `config.read` of the unit's own repeater, at the budget as it is** (task p9-01; the
-      **release** build of v0.1.2 or later, which is where the fix is). This is the item v0.1.1
-      failed on 7 November: job 22032, the scheduled daily read of the unit's own repeater — the
-      server's full key list, 34 lines through the local door — reset the Walter with
-      `task_wdt: … IDLE0 (CPU 0) … CPU 0: main … Aborting` and a core dump, because agent-core
-      waits out the airtime budget with `delayMs(1)` in a loop and a millisecond was not a tick.
-      **Change nothing about the budget first**: on meshmaster.dk the unit's is *2 a minute, gap
-      20 s*, which is what makes some of those waits 40 s, past the 30 s watchdog. Turn the
-      repeater's scheduled config read back on (or *Read config* on its page), `lte up`, then
-      `agent wake`. Expected: the wake's output walks the read a line at a time with
-      `waiting 20 s for the airtime budget` / `waiting 40 s …` between them, **no reboot**, and the
-      result posted `ok` with the values on the repeater's Configuration tab. **Write down how long
-      the whole job took**: the simulated figure is about **17 minutes** of budget waiting for
-      35 transactions, so this is a job that outlives several wake bounds and the thing to watch is
-      that it is *slow* and not *fatal*. (Task 05 of this phase takes the waiting away for a local
-      job, which is the other half of the fix; this item is about the clock.)
+- [ ] ★ **A `config.read` of the unit's own repeater, at the budget as it is** (tasks p9-01 and
+      p9-05; the **release** build of v0.1.2 or later, which is where both halves of the fix are).
+      This is the item v0.1.1 failed on 7 November: job 22032, the scheduled daily read of the
+      unit's own repeater — the server's full key list, 34 lines through the local door — reset
+      the Walter with `task_wdt: … IDLE0 (CPU 0) … CPU 0: main … Aborting` and a core dump,
+      because agent-core waited out the airtime budget with `delayMs(1)` in a loop and a
+      millisecond was not a tick. **Change nothing about the budget first**: on meshmaster.dk the
+      unit's is *2 a minute, gap 20 s*, which is what made some of those waits 40 s, past the
+      30 s watchdog. Turn the repeater's scheduled config read back on (or *Read config* on its
+      page), `lte up`, then `agent wake`. **Expected now: seconds, not minutes** — the read walks
+      its 34 lines with **no** `waiting … for the airtime budget` line anywhere in it, no reboot,
+      the result posted `ok` with the values on the repeater's Configuration tab, and `agent jobs`
+      showing the job at **0 transactions**. The simulated figure is **3.4 s**, where the same
+      job was 983 s of budget waiting before task p9-05; so **write down how long it took**, and a
+      read that still takes minutes means `answersLocally()` is not answering for this radio —
+      check `agent id`'s `local door: open` line and the key beside it.
 - [ ] **`boot` after it says `power-on` or `software`, never `watchdog`** (task p9-01). Run `boot`
       (the reset-reason line, `docs/console.md`) right after the read finishes. A `watchdog` there
       — even one, even with the job posted `ok` — means some stretch of the wake still holds CPU 0
@@ -1652,6 +1652,31 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       A job for a **neighbour** (§18's second item) must read *the mesh; NOT this radio's key
       …* with both keys shortened, which is the line that would have explained 7 November's
       telemetry job in one glance instead of the server's audit log.
+- [ ] ★ **An admin job of the unit's own repeater with no password stored anywhere** (task p9-05).
+      This is the refusal of 7 November: job 22016, a scheduled `config.read` of a repeater whose
+      settings had been lost, so its admin password is a random one nobody knows (S-13) —
+      meshmaster.dk refused the claim with *no admin password stored* and the job never left the
+      server. On the repeater's Access tab, **clear the stored admin password** for this unit's own
+      repeater; its sentence must then read *This repeater's own unit needs no admin password for
+      its own jobs, but Wake it up and the exit nodes reaching it over the mesh still do.* Queue a
+      `cli ver` (or *Read config*) for it, `lte up`, `agent wake`. Expected: the claim comes down
+      with **no credential at all**, the job ends `ok`, and its log on the server carries
+      *answered by the board, no password needed: the empty material at class admin* and **no**
+      *nothing to log in with*. A refusal here with *its Walter is older* is the server's version
+      gate, not this change — see the version item below.
+- [ ] **And a repeater that is not this unit's own still pays for both** (task p9-05). The same
+      unit, the second repeater of §17, over the air. A `status` for it must still show the
+      `waiting 20 s for the airtime budget` lines, a real transaction count and `client_tx` moving;
+      and a `cli` at `admin` for it **with nothing stored** must still come back `unauthorized`
+      with *the claim carried no admin material; nothing to log in with* and **nothing on the
+      air**. This is the item that catches a door left open — an `answersLocally()` that stays
+      true after the job, or an own key that matches too much.
+- [ ] **The version meshmaster.dk gates both on** (task p9-05). `agent id`'s first line must say
+      `version 0.1.2+…` (or later), and the unit's page on meshmaster.dk must show the same: the
+      server reads the heartbeat's `agentVersion` and hands nothing for a unit's own repeater only
+      from **0.1.2** (`LocalDoor.NoMaterialFrom`), keeping the stored password and the refusal for
+      anything older. A version string the server cannot parse counts as older too, so this is
+      worth one glance before the two items above are read as findings.
 - [ ] **The clock check runs when the uplink has been up** (task p9-04). `rak update` typed in a
       boot where nothing has given the Walter a time prints, after the outcome, *the clock check
       was skipped: this Walter had no time of its own in this boot*. Do `lte up` first and the

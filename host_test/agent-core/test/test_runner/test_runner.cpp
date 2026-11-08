@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -199,10 +200,53 @@ class RunnerTest : public ::testing::Test {
     return server.results().empty() ? std::string() : server.results().back().body;
   }
 
+  // The payload of the daily `config.read` of meshmaster.dk's key table: **thirty** keys, of
+  // which `regions` is two commands and `acl` the binary access-list request, so the read is
+  // 30 + the two extras + 1 = 33 transactions and `kThirtyKeyRead` **34** with its login -
+  // EXIT-NODES §7's `config.read` row, and the shape of job 22032, the read that reset a Walter
+  // on 7 November 2026. Every key the fake's repeater does not already hold is given a value
+  // here, so that what these tests measure is the pacing and nothing else.
+  std::string thirtyKeyPayload() {
+    static const char* const keys[] = {
+        "name",        "lat",              "lon",           "owner.info",       "advert.interval",
+        "dutycycle",   "repeat",           "af",            "flood.max",        "flood.advert.interval",
+        "flood.max.unscoped", "flood.max.advert", "path.hash.mode", "loop.detect", "txdelay",
+        "direct.txdelay", "rxdelay",       "int.thresh",    "cad",              "multi.acks",
+        "allow.read.only", "agc.reset.interval", "tx",      "radio",            "radio.rxgain",
+        "radio.fem.rxgain", "radio.fem.txgain", "freq",     "regions",          "acl"};
+    std::string json = "{\"keys\":[";
+    for (const char* key : keys) {
+      if (json.back() != '[') json += ",";
+      json += std::string("\"") + key + "\"";
+      const bool isGet = std::strcmp(key, "regions") != 0 && std::strcmp(key, "acl") != 0;
+      if (isGet && mesh.config().count(key) == 0) mesh.setConfig(key, "0");
+    }
+    return json + "]}";
+  }
+  static constexpr int kThirtyKeyRead = 34;
+
   std::string outcomeOf(const std::string& body) const { return memberOf(body, "outcome"); }
+  // Where a failed job failed (task p1.7-28), or "" when the result carries no such member -
+  // which is what `memberOf` gives for an absent one, and an absent one is the point of half the
+  // tests below.
+  std::string failedAtOf(const std::string& body) const { return memberOf(body, "failedAt"); }
   std::string dataOf(const std::string& body) const { return memberOf(body, "data"); }
   std::string logOf(const std::string& body) const { return memberOf(body, "log"); }
   int transactionsOf(const std::string& body) const { return std::atoi(memberOf(body, "transactions").c_str()); }
+  // Every `prefix` of a result's hops, in order: a trace's round trip, or a neighbours page.
+  std::vector<std::string> prefixesOf(const std::string& data) const {
+    std::vector<std::string> out;
+    const std::string needle = "\"prefix\":\"";
+    size_t at = 0;
+    while ((at = data.find(needle, at)) != std::string::npos) {
+      at += needle.size();
+      const size_t end = data.find('"', at);
+      if (end == std::string::npos) break;
+      out.push_back(data.substr(at, end - at));
+      at = end;
+    }
+    return out;
+  }
 
   fake::FakePlatform platform;
   fake::FakeMesh mesh{platform};
@@ -493,6 +537,58 @@ TEST_F(RunnerTest, ATraceReportsTheRoundTripAndThisBoardsOwnHopLast) {
   EXPECT_EQ(hops, 6);
   EXPECT_NE(data.find("\"prefix\":\"a1\""), std::string::npos) << data;
   EXPECT_NE(data.find("\"prefix\":\"7f\""), std::string::npos) << data;
+}
+
+// The one width the library chooses for itself (task p1.10-39): a direct neighbour has no learned
+// hop to take a width from, and until now `runTrace` filled in one byte - which is how job 20005
+// of 5 November 2026 reported an `86` that any of three repeaters within earshot could have sent.
+// The width is the board's own, which the mesh answers with (IMesh::floodPathHashSize).
+TEST_F(RunnerTest, ATraceToADirectNeighbourGoesAtTheBoardsWidth) {
+  const std::string body = run(fake::Job(12352, "trace").atClass("none").leasedUntil(kLease).asDirectNeighbour());
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(transactionsOf(body), 1) << "a trace asks nobody for a session (§7)";
+  const std::string data = dataOf(body);
+  EXPECT_TRUE(fake::followsShapeOf(data, fake::contract("TraceResult")));
+  // The round trip of a direct neighbour is one hash out - the repeater's own, computed from its
+  // key - and this board's own appended on the way home. Two bytes each: four hex digits, not two.
+  const std::vector<std::string> hops = prefixesOf(data);
+  ASSERT_EQ(hops.size(), 2u) << data;
+  EXPECT_EQ(hops[0], repeater().substr(0, 4)) << data;
+  EXPECT_EQ(hops[1], self().substr(0, 4)) << data;
+}
+
+// And that width is the **mesh's** answer, not a number in the library: a mesh that floods wider
+// traces wider, which is what the method is for.
+TEST_F(RunnerTest, TheWidthOfADirectNeighboursTraceIsTheMeshsOwnAnswer) {
+  mesh.setFloodPathHashSize(4);
+  const std::string body = run(fake::Job(12353, "trace").atClass("none").leasedUntil(kLease).asDirectNeighbour());
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  const std::vector<std::string> hops = prefixesOf(dataOf(body));
+  ASSERT_EQ(hops.size(), 2u) << body;
+  EXPECT_EQ(hops[0], repeater().substr(0, 8)) << body;
+  EXPECT_EQ(hops[1], self().substr(0, 8)) << body;
+}
+
+// A path the claim carried keeps its own width, as it always did: the library never widens one,
+// because the extra byte of a narrow hop belongs to no node.
+TEST_F(RunnerTest, ATraceAlongAClaimedPathKeepsThatPathsWidth) {
+  const std::vector<std::string> one =
+      prefixesOf(dataOf(run(fake::Job(12354, "trace").atClass("none").leasedUntil(kLease).alongPath({"a1", "7f"}))));
+  ASSERT_EQ(one.size(), 6u);
+  for (const std::string& hop : one) EXPECT_EQ(hop.size(), 2u) << hop;
+  EXPECT_EQ(one[0], "a1");
+  EXPECT_EQ(one[2], repeater().substr(0, 2));
+  EXPECT_EQ(one[5], self().substr(0, 2));
+
+  const std::vector<std::string> two = prefixesOf(
+      dataOf(run(fake::Job(12355, "trace").atClass("none").leasedUntil(kLease).alongPath({"a1b2", "7f80"}))));
+  ASSERT_EQ(two.size(), 6u);
+  for (const std::string& hop : two) EXPECT_EQ(hop.size(), 4u) << hop;
+  EXPECT_EQ(two[0], "a1b2");
+  EXPECT_EQ(two[2], repeater().substr(0, 4));
+  EXPECT_EQ(two[5], self().substr(0, 4));
 }
 
 TEST_F(RunnerTest, ATraceAlongThreeByteHashesIsUnsupportedAtNoTransaction) {
@@ -987,6 +1083,138 @@ TEST_F(RunnerTest, ASilenceRightAfterAnAnsweredBlankLoginIsReportedAsTheRefusalI
   EXPECT_NE(logOf(body).find("answered a blank login at read-only"), std::string::npos) << body;
 }
 
+// ---------------------------------------------------------------------------------------------
+// `failedAt`: where a failed job failed (task p1.7-28; meshmaster.dk's task p4.17-136)
+//
+// `unreachable` is two different things - a login nobody answered, which on stock firmware is
+// also a wrong password, and a request lost twice after a login that *was* answered - and the
+// page that says *the stored guest password is probably wrong* must say it for the first alone.
+// So every failed result names its step, and a result that asked the repeater for nothing names
+// none: a trace logs in to nobody, and a job that never went on the air has no step to name.
+// One test per credential class, which is what decides whether there is a login at all.
+
+// `none`, the trace's class: it logs in to nobody, so there is no step to name however it ends.
+TEST_F(RunnerTest, ATraceCarriesNoFailedAtHoweverItEnds) {
+  const std::string ok = run(fake::Job(12420, "trace").atClass("none").leasedUntil(kLease));
+  EXPECT_EQ(outcomeOf(ok), "ok");
+  EXPECT_EQ(failedAtOf(ok), "") << ok;
+
+  mesh.beSilentAlways();
+  const std::string lost = run(fake::Job(12421, "trace").atClass("none").leasedUntil(kLease));
+  EXPECT_EQ(outcomeOf(lost), "unreachable");
+  EXPECT_EQ(mesh.logins(), 0) << "a trace asks nobody for a session (§7)";
+  EXPECT_EQ(failedAtOf(lost), "") << "a job with no login has no step to name: " << lost;
+}
+
+// `guest`: the case the field exists for. Two silent logins, nothing after them - and the server
+// may tell the owner that the stored guest password is the thing to look at.
+TEST_F(RunnerTest, AGuestLoginNobodyAnsweredIsFailedAtTheLogin) {
+  mesh.setGuestPassword("the-guest-one");
+  mesh.beSilentAlways();
+  const std::string body = run(fake::Job(12422, "status")
+                                   .atClass("guest")
+                                   .leasedUntil(kLease)
+                                   .withGuestPassword("the-guest-one")
+                                   .withPayload("{\"version\":false}"));
+
+  EXPECT_EQ(outcomeOf(body), "unreachable");
+  EXPECT_EQ(mesh.logins(), 2) << "the two tries of the login sequence";
+  EXPECT_EQ(failedAtOf(body), "login") << body;
+  // And it is the failed fixture's shape: the one field an `ok` result never carries, last.
+  EXPECT_TRUE(fake::followsShapeOf(body, fake::contract("JobResultReportFailed"))) << body;
+}
+
+// `acl`, the class of this exit node's own key: a login the repeater *refused* is an answer, and
+// it is still a failure at the login - the field says where, not why.
+TEST_F(RunnerTest, AnAclLoginTheRepeaterRefusedIsFailedAtTheLogin) {
+  mesh.grant(self(), mm::kPermReadOnly);
+  mesh.refuseTheNextLogin(1);
+  const std::string body =
+      run(fake::Job(12423, "status").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+
+  EXPECT_EQ(outcomeOf(body), "unauthorized");
+  EXPECT_EQ(mesh.logins(), 1) << "a refusal is an answer: the sequence stops at it";
+  EXPECT_EQ(failedAtOf(body), "login") << body;
+}
+
+// `admin`: the login was answered and the line after it was not. Nothing about any password.
+TEST_F(RunnerTest, AnAdminRequestLostAfterAnAnsweredLoginIsFailedAtTheRequest) {
+  mesh.silenceLine("set tx 20");  // the repeater is on the air and this line is never answered
+  const std::string body = run(fake::Job(12424, "cli")
+                                   .atClass("admin")
+                                   .leasedUntil(kLease)
+                                   .withAdminPassword("adm1n-pass")
+                                   .withPayload("{\"command\":\"set tx 20\"}"));
+
+  EXPECT_EQ(outcomeOf(body), "unreachable");
+  EXPECT_EQ(mesh.logins(), 1) << "the login was answered";
+  EXPECT_EQ(mesh.cliLines(), 1) << "a CLI line is sent once and never retried";
+  EXPECT_EQ(failedAtOf(body), "request") << body;
+}
+
+// And the one that is both, in that order: a reused session, a request that got no answer, a
+// login again that got none either. The job ended at a login, so that is what it names - which
+// is why the stage is set at every attempt and not once at the start of the request.
+TEST_F(RunnerTest, ARequestThatCouldNotLogInAgainIsFailedAtTheLoginAfterAll) {
+  mesh.grant(self(), mm::kPermReadOnly);
+  run(fake::Job(12425, "status")
+          .atClass("acl")
+          .leasedUntil(kLease)
+          .withAclLevel(mm::kPermReadOnly)
+          .withPayload("{\"version\":false}"));
+  ASSERT_EQ(mesh.logins(), 1);
+
+  mesh.beSilentAlways();  // the repeater goes off the air under the second job
+  const std::string body = run(fake::Job(12426, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .withPayload("{\"version\":false}"));
+
+  EXPECT_EQ(outcomeOf(body), "unreachable");
+  EXPECT_NE(logOf(body).find("no reply on a reused session: logging in again once"), std::string::npos) << body;
+  EXPECT_EQ(failedAtOf(body), "login") << body;
+}
+
+// A job that never went on the air names no step, whatever its class: there was no login to go
+// unanswered, and `failedAt: login` on it would point an owner at a password for a packet nobody
+// sent. The lease that had already run out is the case with a class that is not `none`.
+TEST_F(RunnerTest, AJobThatSentNothingCarriesNoFailedAt) {
+  const std::string body =
+      run(fake::Job(12427, "status").atClass("acl").leasedUntil(kNow - 1).withAclLevel(mm::kPermReadOnly));
+
+  EXPECT_EQ(outcomeOf(body), "timeout");
+  EXPECT_EQ(mesh.sendCount(), 0);
+  EXPECT_EQ(failedAtOf(body), "") << body;
+  EXPECT_TRUE(fake::followsShapeOf(body, fake::contract("JobResultReport"))) << body;
+}
+
+// An `ok` result never carries it - the fixtures' own README says so, which is why
+// JobResultReport.json is the ok result it always was and the failed one is a file of its own.
+TEST_F(RunnerTest, AnOkResultCarriesNoFailedAt) {
+  mesh.setGuestPassword("the-guest-one");
+  const std::string body = run(fake::Job(12428, "status")
+                                   .atClass("guest")
+                                   .leasedUntil(kLease)
+                                   .withGuestPassword("the-guest-one")
+                                   .withPayload("{\"version\":false}"));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(failedAtOf(body), "") << body;
+  EXPECT_TRUE(fake::followsShapeOf(body, fake::contract("JobResultReport"))) << body;
+}
+
+// The two words are the server's `JobFailedAt`, read out of the fixture rather than typed here:
+// a rename in meshmaster.dk moves that file and fails this.
+TEST(FailedAt, TheTwoWordsAreTheOnesTheFixtureCarries) {
+  const std::string failed = fake::contract("JobResultReportFailed");
+  EXPECT_NE(failed.find(std::string("\"failedAt\":\"") + mm::kFailedAtLogin + "\""), std::string::npos) << failed;
+  EXPECT_STREQ("login", mm::kFailedAtLogin);
+  EXPECT_STREQ("request", mm::kFailedAtRequest);
+  // And the ok fixture has neither word: the member is the one an ok result never carries.
+  EXPECT_EQ(fake::contract("JobResultReport").find("failedAt"), std::string::npos);
+}
+
 TEST_F(RunnerTest, AnUnknownTypeIsUnsupportedAtNoTransaction) {
   const std::string body = run(fake::Job(12398, "walter.sleep").atClass("none").leasedUntil(kLease));
 
@@ -1037,6 +1265,229 @@ TEST_F(RunnerTest, OneSendPerCommandTheMinimumGapAndThePerMinuteCapAreHeldByTheC
       << "more transactions in a minute than the budget allows";
   EXPECT_GE(platform.millis(), 5u * mm::kDefaultMinGapSeconds * 1000u) << "the waits really happened";
   EXPECT_NE(logOf(body).find("waiting 20 s for the airtime budget"), std::string::npos) << body;
+}
+
+// ---- the local door (task p1.10-40) ----------------------------------------------------------
+//
+// A mesh that answers for the repeater **without the air** (IMesh::answersLocally) - the
+// repeater-v2 unit's Walter, whose own radio is on a UART - neither waits for the airtime budget
+// nor spends it. The three tests below are the pacing, the same job on the air for comparison,
+// and the slot accounting between them.
+
+TEST_F(RunnerTest, A34LineReadThroughTheLocalDoorWaitsForNoBudgetAndSpendsNone) {
+  // The conservative default of EXIT-NODES §8, which is what the unit's own budget was on
+  // 7 November 2026: two transactions a minute, twenty seconds apart.
+  setBudget(mm::kDefaultMaxTransactionsPerMinute, mm::kDefaultMinGapSeconds);
+  mesh.setAnswersLocally(true);
+  // A local job logs in with **no material at any class** (task p1.10-41), so the admin session
+  // this read needs comes from the empty login: the real door answers that at admin by itself,
+  // and this fake is a stock repeater, which answers it at the level its ACL holds this board's
+  // key at. The claim's password is still here, and still goes nowhere.
+  mesh.grant(self(), mm::kPermAdmin);
+  const std::string body = run(fake::Job(12404, "config.read")
+                                   .atClass("admin")
+                                   .leasedUntil(kNow + 1800)
+                                   .withAdminPassword("adm1n-pass")
+                                   .withPayload(thirtyKeyPayload()));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(mesh.loginsWithMaterial(), 0) << "the door is answered by the board: nothing was sent to log in with";
+  EXPECT_EQ(mesh.sendCount(), kThirtyKeyRead)
+      << "the login, twenty-eight gets, the two region commands, ver, board and the access list";
+  // A transaction is an exchange with a repeater **over the mesh** (EXIT-NODES §7), and none of
+  // these was one, so the figure meshmaster.dk prices the air by counts none of them.
+  EXPECT_EQ(transactionsOf(body), 0);
+  EXPECT_EQ(runner.gate().transmissions(), 0u) << "and the gate was never told a slot was taken";
+  EXPECT_EQ(runner.gate().totalWaitMs(), 0u) << "nor asked for one";
+  EXPECT_EQ(logOf(body).find("waiting"), std::string::npos) << body;
+  // (The job's own *the air is not used* line is the first entry of a log of thirty-four, which
+  // a kilobyte does not hold - task p1.10-38 drops whole entries from the front when it fills -
+  // so it is asserted on the short local job of the third test instead.)
+  // No idle longer than a reply wait: the longest gap between two sends is the fake's flooded
+  // reply latency, which is well under both the reply wait (perHopMs x 4, 16 s at the claim's
+  // defaults) and the budget's twenty-second gap. On the Walter it was a 40 s idle here that
+  // outlived the 30 s task watchdog.
+  for (uint32_t gap : mesh.gapsMs()) {
+    EXPECT_LT(gap, 3000u) << "a gap this long is a wait for something, and nothing here waits";
+  }
+  // The whole read, against the sixteen-odd minutes the next test measures for the same job.
+  EXPECT_LT(platform.millis(), 60u * 1000u);
+}
+
+TEST_F(RunnerTest, TheSame34LineReadOnAMeshThatIsOnTheAirStillWaitsAsItDid) {
+  setBudget(mm::kDefaultMaxTransactionsPerMinute, mm::kDefaultMinGapSeconds);
+  const std::string body = run(fake::Job(12405, "config.read")
+                                   .atClass("admin")
+                                   .leasedUntil(kNow + 1800)
+                                   .withAdminPassword("adm1n-pass")
+                                   .withPayload(thirtyKeyPayload()));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(mesh.sendCount(), kThirtyKeyRead);
+  EXPECT_EQ(transactionsOf(body), kThirtyKeyRead);
+  EXPECT_EQ(runner.gate().transmissions(), static_cast<uint32_t>(kThirtyKeyRead));
+  for (uint32_t gap : mesh.gapsMs()) {
+    EXPECT_GE(gap, mm::kDefaultMinGapSeconds * 1000u) << "two transactions closer than the minimum gap";
+  }
+  EXPECT_LE(mesh.mostInAnyMinute(), mm::kDefaultMaxTransactionsPerMinute);
+  // Two a minute for thirty-four of them: sixteen minutes of waiting, which is what the budget
+  // is for when the air is really being used.
+  EXPECT_GE(platform.millis(), 16u * 60u * 1000u);
+  EXPECT_NE(logOf(body).find("waiting 20 s for the airtime budget"), std::string::npos) << body;
+}
+
+TEST_F(RunnerTest, ALocalJobLeavesTheNextJobOnTheAirNoFreeSlot) {
+  setBudget(mm::kDefaultMaxTransactionsPerMinute, mm::kDefaultMinGapSeconds);
+  mesh.grant(self(), mm::kPermReadOnly);
+
+  // One job on the air first: a login and a status request, which fills the minute.
+  run(fake::Job(12406, "status")
+          .atClass("acl")
+          .leasedUntil(kNow + 1800)
+          .withAclLevel(mm::kPermReadOnly)
+          .withPayload("{\"version\":false}"));
+  ASSERT_EQ(runner.gate().transmissions(), 2u);
+  const uint32_t airSpentAt = platform.millis();
+  // What that job waited for its own second slot: the gate's totals are cumulative, and the
+  // local job's share of them must be nothing.
+  const uint32_t waitedForTheAir = runner.gate().totalWaitMs();
+  ASSERT_GT(waitedForTheAir, 0u);
+  mesh.forgetSends();
+
+  // Then a local one. It reuses the session, so on the air it would have been one transaction;
+  // through the local door it is none, it waits for nothing, and the gate hears nothing of it.
+  mesh.setAnswersLocally(true);
+  const std::string local = run(fake::Job(12407, "status")
+                                    .atClass("acl")
+                                    .leasedUntil(kNow + 1800)
+                                    .withAclLevel(mm::kPermReadOnly)
+                                    .withPayload("{\"version\":false}"));
+  EXPECT_EQ(outcomeOf(local), "ok");
+  EXPECT_EQ(transactionsOf(local), 0);
+  EXPECT_EQ(runner.gate().transmissions(), 2u) << "a local job takes no slot from the job after it";
+  EXPECT_EQ(runner.gate().totalWaitMs(), waitedForTheAir) << "and asks the gate for none of its own";
+  EXPECT_LT(platform.millis() - airSpentAt, 10u * 1000u) << "so nothing of it was a wait";
+  EXPECT_NE(logOf(local).find("this mesh answers for this repeater without the air"), std::string::npos) << local;
+  mesh.forgetSends();
+
+  // And it gave the next job on the air nothing either: the window still holds the two starts of
+  // the first job, so this one waits until the oldest of them is a minute old - which is where
+  // it would have waited with no local job in between at all.
+  mesh.setAnswersLocally(false);
+  const std::string body = run(fake::Job(12408, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kNow + 1800)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .withPayload("{\"version\":false}"));
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(transactionsOf(body), 1) << "the session is still live; the request is the transaction";
+  EXPECT_EQ(runner.gate().transmissions(), 3u);
+  ASSERT_FALSE(mesh.sends().empty());
+  EXPECT_GE(mesh.sends().front().atMs, 60u * 1000u)
+      << "the third transaction of the minute went out before the first was a minute old";
+  EXPECT_NE(logOf(body).find("s for the airtime budget"), std::string::npos) << body;
+}
+
+// ---- no password for a local login (task p1.10-41) -------------------------------------------
+//
+// The same door, at its login: a job it answers needs **no material at any class**, because the
+// board at the other end answers the login itself and at admin. What this is for is job 22016 of
+// 7 November 2026 - a scheduled `config.read` of a unit's **own** repeater, refused by
+// meshmaster.dk with *no admin password stored*, for a radio whose password is a random one
+// nobody knows.
+
+TEST_F(RunnerTest, AnAdminJobThroughTheLocalDoorRunsToItsEndWithNoPasswordAnywhere) {
+  mesh.setAnswersLocally(true);
+  // The real door answers any login at admin; this fake is a stock repeater and answers the
+  // **empty** login at the level its ACL holds this board's key at, which is the same answer by
+  // the stock route (FakeMesh::setAnswersLocally).
+  mesh.grant(self(), mm::kPermAdmin);
+
+  // The claim meshmaster.dk hands a unit for its own repeater: `admin`, and no credential at all.
+  const std::string body = run(fake::Job(12409, "cli")
+                                   .atClass("admin")
+                                   .leasedUntil(kNow + 1800)
+                                   .withPayload("{\"command\":\"set tx 20\"}"));
+
+  EXPECT_EQ(outcomeOf(body), "ok") << body;
+  EXPECT_EQ(mesh.logins(), 1) << "the login went, and it was the empty one";
+  EXPECT_EQ(mesh.loginsWithMaterial(), 0);
+  ASSERT_EQ(mesh.lines().size(), 1u);
+  EXPECT_EQ(mesh.lines()[0], "set tx 20") << "the line the job is for, once";
+  EXPECT_EQ(transactionsOf(body), 0) << "none of it was on the air (task p1.10-40)";
+  EXPECT_NE(logOf(body).find("answered by the board, no password needed: the empty material at class admin"),
+            std::string::npos)
+      << body;
+  EXPECT_EQ(logOf(body).find("nothing to log in with"), std::string::npos)
+      << "that is the sentence this task ended for a local job: " << body;
+  EXPECT_TRUE(fake::followsShapeOf(dataOf(body), fake::contract("CliResult")));
+}
+
+TEST_F(RunnerTest, TheSameAdminJobOnTheAirWithNoPasswordIsStillUnauthorizedWithNothingSent) {
+  // Not local, and nothing changes: there is no admin login without an admin password, and the
+  // job is refused before anything is sent.
+  mesh.grant(self(), mm::kPermAdmin);
+  const std::string body = run(fake::Job(12410, "cli")
+                                   .atClass("admin")
+                                   .leasedUntil(kNow + 1800)
+                                   .withPayload("{\"command\":\"set tx 20\"}"));
+
+  EXPECT_EQ(outcomeOf(body), "unauthorized") << body;
+  EXPECT_EQ(mesh.sendCount(), 0) << "nothing at all went out";
+  EXPECT_EQ(transactionsOf(body), 0);
+  EXPECT_NE(logOf(body).find("the claim carried no admin material; nothing to log in with"), std::string::npos)
+      << body;
+}
+
+TEST_F(RunnerTest, ALocalJobSendsNoPasswordTheClaimDidCarryEither) {
+  mesh.setAnswersLocally(true);
+  mesh.grant(self(), mm::kPermAdmin);
+
+  // A password this repeater does not know - an older server's, or one typed for another job. If
+  // it went out, the fake would answer it with the silence stock firmware answers a wrong
+  // password with, and the job would come back `unreachable` after two tries. It comes back `ok`,
+  // which is the proof that nothing of it was sent.
+  const std::string body = run(fake::Job(12411, "cli")
+                                   .atClass("admin")
+                                   .leasedUntil(kNow + 1800)
+                                   .withAdminPassword("not-the-one")
+                                   .withPayload("{\"command\":\"set tx 20\"}"));
+
+  EXPECT_EQ(outcomeOf(body), "ok") << body;
+  EXPECT_EQ(mesh.logins(), 1);
+  EXPECT_EQ(mesh.loginsWithMaterial(), 0) << "the claim's password stayed where it was";
+  EXPECT_EQ(body.find("not-the-one"), std::string::npos) << "and is nowhere in the result: " << body;
+}
+
+TEST_F(RunnerTest, ALocalJobThatCarriedNoLevelRestoresNothing) {
+  mesh.setAnswersLocally(true);
+  mesh.grant(self(), mm::kPermAdmin);
+
+  // The restore (task p4.1-60) is gated on the **level the claim carried**, and a unit's own
+  // repeater is handed none (meshmaster.dk's task p4.27-173): nothing is put back on a repeater
+  // the unit *is*, and no `setperm` goes over its console.
+  const std::string first = run(fake::Job(12412, "cli")
+                                    .atClass("admin")
+                                    .leasedUntil(kNow + 1800)
+                                    .withPayload("{\"command\":\"set tx 20\"}"));
+  EXPECT_EQ(outcomeOf(first), "ok") << first;
+  EXPECT_EQ(mesh.cliLines(), 1) << "the job's own line and no restore after it";
+  EXPECT_EQ(mesh.timesSent("setperm " + self() + " 3"), 0);
+  EXPECT_EQ(logOf(first).find("the ACL entry"), std::string::npos) << first;
+  EXPECT_EQ(mesh.levelOf(self()), mm::kPermAdmin) << "the ACL is as it was";
+  mesh.forgetSends();
+
+  // And the gate really is the claim's level and not the door: a local job that *does* carry one
+  // is restored exactly as an over-the-air one is, because the level the server granted is the
+  // level the server expects to find.
+  const std::string second = run(fake::Job(12413, "cli")
+                                     .atClass("admin")
+                                     .leasedUntil(kNow + 1800)
+                                     .withAclLevel(mm::kPermReadOnly)
+                                     .withPayload("{\"command\":\"set tx 20\"}"));
+  EXPECT_EQ(outcomeOf(second), "ok") << second;
+  EXPECT_EQ(mesh.timesSent("setperm " + self() + " 1"), 1) << "the session's last command, as task 60 wrote it";
+  EXPECT_EQ(mesh.levelOf(self()), mm::kPermReadOnly);
 }
 
 TEST_F(RunnerTest, TheLeaseRunningOutMidJobRefusesTheNextTransaction) {
@@ -1222,6 +1673,102 @@ TEST_F(RunnerTest, TheConsoleReportsReadBackWhatTheRunnerDid) {
   char line[160];
   runner.describe(line, sizeof line);
   EXPECT_NE(std::string(line).find("1 run"), std::string::npos) << line;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The result's log, one entry per line (task p1.10-38)
+//
+// `JobLog` joins its entries with a `'\n'`, as MeshMaster.Agent's `JobLog.Append` does, because
+// *The agent's log* on a job's page keeps line breaks and several entries carry a `"; "` of
+// their own - so a `"; "` between entries was a paragraph the page could not split back up.
+// `logOf` unescapes, so a `'\n'` here is the `\n` the envelope carried.
+
+// The entry the drop test fills the buffer with: 41 characters, so a kilobyte holds twenty-four
+// of them and the twenty-fifth is what makes the buffer drop. The format string is written out
+// at both of its two uses rather than held in a variable, so that it stays a literal to
+// `JobLog::add`'s printf attribute.
+std::string filler(int i) {
+  char text[64];
+  std::snprintf(text, sizeof text, "entry %03d of a job that said a great deal", i);
+  return text;
+}
+
+TEST(JobLog, ThreeEntriesAreThreeLines) {
+  mm::JobLog log;
+  log.add("a");
+  log.add("b");
+  log.add("c");
+  EXPECT_EQ(std::string(log.text()), "a\nb\nc");
+
+  // And the envelope carries them as `a\nb\nc`: JsonWriter escapes the byte, so the server
+  // parses three lines out of one JSON string (JsonWriter.h's `escape`).
+  mm::JobReport r;
+  r.clientId = "1-a";
+  r.outcome = mm::Outcome::Ok;
+  r.log = log.text();
+  char out[256];
+  const size_t len = mm::writeJobResult(r, out, sizeof out);
+  ASSERT_GT(len, 0u);
+  EXPECT_NE(std::string(out, len).find("\"log\":\"a\\nb\\nc\""), std::string::npos) << std::string(out, len);
+}
+
+TEST(JobLog, AnEmptyLogIsNoLineAndOneEntryIsNoLineBreak) {
+  mm::JobLog log;
+  EXPECT_STREQ(log.text(), "");
+  log.add("only this");
+  EXPECT_STREQ(log.text(), "only this") << "one entry carries no separator at all";
+  log.clear();
+  EXPECT_STREQ(log.text(), "");
+}
+
+TEST(JobLog, FillingTheBufferDropsWholeEntriesSoTheFirstLineIsAWholeEntry) {
+  mm::JobLog log;
+  for (int i = 0; i < 200; i++) log.add("entry %03d of a job that said a great deal", i);
+  const std::string text = log.text();
+  ASSERT_LT(text.size(), 1024u) << "the kilobyte buffer still bounds it";
+
+  // The oldest line left is an entry from its first character to its last, not the tail of one
+  // cut at byte 512.
+  const std::string first = text.substr(0, text.find('\n'));
+  int which = -1;
+  ASSERT_EQ(std::sscanf(first.c_str(), "entry %d of a job that said a great deal", &which), 1)
+      << "the log starts mid-entry: " << first;
+  ASSERT_GT(which, 0) << "nothing was dropped, so this test checked nothing";
+  EXPECT_EQ(first, filler(which));
+
+  // The newest entry is whole too, and the one before the first line is gone.
+  EXPECT_NE(text.find(filler(199)), std::string::npos) << text;
+  EXPECT_EQ(text.find(filler(which - 1)), std::string::npos) << text;
+}
+
+TEST(JobLog, AnEntryLongerThanHalfTheBufferIsCutButStillBounded) {
+  mm::JobLog log;
+  const std::string huge(5000, 'x');
+  for (int i = 0; i < 5; i++) log.add("%s", huge.c_str());
+  EXPECT_LT(std::strlen(log.text()), 1024u) << "there is no line break to cut at, so the half goes as it always did";
+  EXPECT_GT(std::strlen(log.text()), 0u);
+
+  // A short entry before one that long puts the only line break well before the half, so there
+  // is none at or after it: the half goes, and the short entry with it.
+  mm::JobLog mixed;
+  mixed.add("the first entry, short");
+  mixed.add("%s", huge.c_str());
+  mixed.add("%s", huge.c_str());
+  EXPECT_EQ(std::string(mixed.text()).find("the first entry, short"), std::string::npos) << mixed.text();
+}
+
+TEST_F(RunnerTest, TheLogOfARealJobIsOneEntryPerLine) {
+  mesh.grant(self(), mm::kPermReadOnly);
+  const std::string body = run(fake::Job(12420, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .withPayload("{\"version\":false}"));
+  const std::string log = logOf(body);
+  ASSERT_NE(log.find('\n'), std::string::npos) << "the entries are joined by a line break: " << body;
+  EXPECT_EQ(log.substr(0, log.find('\n')).rfind("job 12420 status for repeater", 0), 0u)
+      << "the first line is the whole of the first entry: " << log;
+  EXPECT_NE(body.find("\\n"), std::string::npos) << "and the envelope escaped it: " << body;
 }
 
 }  // namespace

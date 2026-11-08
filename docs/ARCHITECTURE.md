@@ -1373,6 +1373,35 @@ job. Per core type:
 | `status`, `neighbours` | no request of §5 yields the bytes the job parses | `failed` — a later link minor |
 | `trace` | a radio cannot trace a round trip to itself | `failed` |
 
+**And the library is told** (task p9-05). Until 0.1.2 the door was this firmware's secret: the
+library paced a local job like any other and asked it for a password like any other, because
+`mm::IMesh` had no way to say otherwise. It has one now — `answersLocally()`, a defaulted virtual
+the exit-node firmware's tasks p1.10-40 and p1.10-41 added, which `LinkMesh` overrides from
+`job_.local` and no other mesh in the fleet overrides at all. Two things follow, and both are the
+library's doing rather than ours:
+
+- **no airtime budget, no transaction.** `JobRunner::spend` returns before the gate, so a local
+  job neither waits for a slot nor spends one and its exchanges count **0** transactions — a
+  transaction is an exchange with a repeater *over the mesh* (EXIT-NODES §7) and the budget exists
+  to share one radio channel (§8). On 7 November 2026 the daily 34-line `config.read` of the first
+  unit's own repeater was paced at the server's *2 a minute, gap 20 s* anyway: its first 40 s wait
+  outlived the 30 s task watchdog and reset the Walter mid-job. Task p9-01 made the waiting yield;
+  this takes the waiting away. The same read now finishes in **3.4 s** of simulated time instead
+  of **983 s**, and the gate's counters do not move — both figures are measured by
+  `host_test/agent-backend/`, the second of them against a *neighbour*, which is still paced
+  exactly as it was.
+- **no login material at any class.** `loginMaterialFor` answers the empty string the moment the
+  door is open, `admin` included, because `localLogin()` answers the login itself at admin and
+  never reads the password it was handed. So **no admin password is stored anywhere for a unit's
+  own repeater** — the refusal of 7 November, for a radio whose settings had been lost and whose
+  admin password is therefore a random one nobody knows (`SYSTEM.md` S-13). A password a claim
+  did carry is not sent either: the door would ignore it.
+
+The lease still ends such a job, because a lease is the server's claim on the repeater and says
+nothing about the air. And the door is open **only** between a `beginJob` for the unit's own key
+and the `endJob` that closes it: a job for a neighbour straight after a local one is paced, is
+asked for its password, and is refused unsent when the claim carries none.
+
 ### The identity: who this exit node says it is (task p4-04)
 
 `components/agent/identity.h`. The heartbeat's identity is **read from the radio and from this

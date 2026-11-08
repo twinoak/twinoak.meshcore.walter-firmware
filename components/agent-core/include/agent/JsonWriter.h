@@ -79,11 +79,15 @@ class JsonWriter {
   //   6  a code point above the BMP                  a surrogate pair, uppercase hex
   //   7  private use, the non-characters, the BOM,   \uXXXX - and see the header: an
   //      the space separators other than a space     *unassigned* code point is clause 5 here
-  //   8  a surrogate, or a byte that is not UTF-8    �; it is not a character
+  //   8  a surrogate, or a byte sequence that        �, one per **maximal subpart** of the
+  //      is not well-formed UTF-8                    ill-formed sequence; it is not a character
   //
   // Clause 5 is what task p1.6-24 changed, and it is where every byte this writer now saves
   // comes from: tests/fixtures/contracts/ConfigReadResult.json carries a plain `>`, and a
-  // repeater called Grenå costs six bytes in a name instead of ten.
+  // repeater called Grenå costs six bytes in a name instead of ten. Clause 8 is what task
+  // p1.7-25 finished: the spec's rule is .NET's, whose strings are UTF-16 and whose only
+  // ill-formed input is a lone surrogate, and this end reads **bytes** - so the clause is the
+  // same answer over a wider input, and `string()` below is where the whole of it is.
   void string(const char* text) {
     if (text == nullptr) {
       string(text, 0);
@@ -93,6 +97,14 @@ class JsonWriter {
   }
 
   // The same, for text that is not NUL-terminated or is longer than it should be.
+  //
+  // This is also the only decoder between a stranger's bytes and the wire, and the bytes are a
+  // stranger's: an advert's name is whatever was put in the advert and a CLI reply is whatever
+  // the repeater's console answered. A JSON document is UTF-8 by definition and
+  // System.Text.Json refuses one that is not - and a result the server refuses is kept and
+  // retried at the head of this agent's ordered queue, blocking the results behind it until the
+  // buffer evicts it. So **no output of this writer is ill-formed UTF-8, whatever came in**
+  // (task p1.7-25): every byte that is not part of a well-formed sequence is U+FFFD here.
   void string(const char* text, size_t len) {
     put('"');
     size_t i = 0;
@@ -103,32 +115,60 @@ class JsonWriter {
         i++;
         continue;
       }
-      // A UTF-8 sequence: its length from the lead byte, and the code point out of it.
-      size_t need = c >= 0xF0 ? 4 : (c >= 0xE0 ? 3 : (c >= 0xC0 ? 2 : 0));
+      // A UTF-8 sequence as **Table 3-7** of the standard defines one: the lead byte gives the
+      // length *and* the range the byte after it may be in. That range is what makes an overlong
+      // form (C0, C1, E0 80, F0 80), a surrogate (ED A0) and a code point above U+10FFFF
+      // (F4 90, F5-FF) ill-formed at the byte that proves it, rather than at the code point they
+      // would otherwise have decoded to - which is how such bytes used to reach the wire as
+      // themselves.
+      size_t need = 0;
+      unsigned char lo = 0x80;
+      unsigned char hi = 0xBF;
+      if (c >= 0xC2 && c <= 0xDF) {
+        need = 2;
+      } else if (c >= 0xE0 && c <= 0xEF) {
+        need = 3;
+        if (c == 0xE0) lo = 0xA0;  // E0 80..9F: an overlong two-byte form
+        if (c == 0xED) hi = 0x9F;  // ED A0..BF: a surrogate
+      } else if (c >= 0xF0 && c <= 0xF4) {
+        need = 4;
+        if (c == 0xF0) lo = 0x90;  // F0 80..8F: an overlong three-byte form
+        if (c == 0xF4) hi = 0x8F;  // F4 90..BF: above U+10FFFF
+      }
+      if (need == 0) {
+        // A continuation byte on its own, C0 or C1 (nothing but an overlong form can follow
+        // either), or F5-FF (nothing but a code point there is none of): no well-formed sequence
+        // begins with this byte, so the maximal subpart is the byte itself.
+        unicode(0xFFFD);
+        i++;
+        continue;
+      }
       uint32_t cp = need == 4 ? (c & 0x07u) : (need == 3 ? (c & 0x0Fu) : (c & 0x1Fu));
-      bool ok = need > 0 && i + need <= len;
-      for (size_t k = 1; ok && k < need; k++) {
+      size_t k = 1;
+      for (; k < need; k++) {
+        if (i + k >= len || text[i + k] == '\0') break;  // cut: by the buffer, or by a NUL in it
         const unsigned char cc = static_cast<unsigned char>(text[i + k]);
-        if ((cc & 0xC0) != 0x80) ok = false;
+        if (cc < (k == 1 ? lo : 0x80) || cc > (k == 1 ? hi : 0xBF)) break;
         cp = (cp << 6) | (cc & 0x3Fu);
       }
-      if (!ok || (cp >= 0xD800 && cp <= 0xDFFF)) {
-        // Clause 8: a cut or malformed sequence, and a surrogate that was encoded as if it were
-        // a character, which is what .NET makes of a lone one in a UTF-16 string.
+      if (k < need) {
+        // Clause 8, by Unicode 3.9's **maximal subpart**: one U+FFFD for the longest prefix that
+        // could still have become a character - the `k` bytes read - and the byte that broke it
+        // is then read as a byte of its own. So a cut `E2 82 41` is one U+FFFD and an `A`, and a
+        // sequence cut at the end of the buffer is one U+FFFD. It is what .NET makes of the same
+        // bytes.
         unicode(0xFFFD);
-        i += ok ? need : 1;
+        i += k;
         continue;
       }
       if (cp >= 0x10000) {
         cp -= 0x10000;
         unicode(0xD800 + (cp >> 10));
         unicode(0xDC00 + (cp & 0x3FF));
-      } else if (cp < 0x80) {
-        escape(static_cast<unsigned char>(cp));  // an overlong encoding of an ASCII byte
       } else if (escapedAboveAscii(cp)) {
         unicode(cp);
       } else {
-        for (size_t k = 0; k < need; k++) put(text[i + k]);  // clause 5: the character itself
+        for (size_t b = 0; b < need; b++) put(text[i + b]);  // clause 5: the character itself
       }
       i += need;
     }

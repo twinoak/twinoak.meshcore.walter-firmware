@@ -5,7 +5,7 @@
 // `JobRunner::ensureSession` is the .NET agent's `EnsureSessionAsync`: the material of the job's
 // class once, and once more when the first try got no reply. Refused is `unauthorized`, silence
 // twice is `unreachable` - and on stock firmware a password the repeater does not know is silence
-// (`handleLoginReq`, examples/simple_repeater/MyMesh.cpp:89-141 at d9296435, is `return 0` to a
+// (`handleLoginReq`, examples/simple_repeater/MyMesh.cpp:89-141 at 81dbae59, is `return 0` to a
 // non-blank password that is neither of its two), so a wrong password and a dead repeater look the
 // same from here. That matters in exactly one place: a job handed the **new** candidate of an
 // `unverified` credential rotation, where the server's fallback to the old candidate is keyed to
@@ -57,10 +57,29 @@ namespace mm {
 //   - `nullptr` at class **`admin`** with no admin password, which every caller turns into
 //     `unauthorized` at no transaction, because there is no admin login without one.
 //
+// **`answeredLocally` is asked first, and answers every class with `""`** (task p1.10-41;
+// `IMesh::answersLocally`, task p1.10-40). A job the mesh answers without the air is answered by
+// the board at the other end of the seam: the repeater-v2 unit's Walter serves a job for its
+// *own* radio over the UART, and its local door (`LinkMesh::localLogin`,
+// `components/agent/link_mesh.cpp` in twinoak.meshcore.walter-firmware) answers the login itself,
+// **at admin, whatever material the login carried** - it does not look at it. So there is nothing
+// to log in with and nothing missing: the material is the empty string at `admin` as much as at
+// `acl`, and a password the claim did carry is **not sent**, because the door would ignore it.
+// Deciding this before the class is what the question's place in this function is for: until
+// 7 November 2026 `admin` answered `nullptr` here and `ensureSession` reported `unauthorized`
+// without sending anything, so every CLI job of a unit's own repeater (`cli`, `reboot`,
+// `config.apply`, `clock.sync`, `advert.request`, `acl.set`, `password.set` - all `admin`-class)
+// needed a stored password that nothing reads, and a radio whose password nobody knows could not
+// be configured through its own unit at all (job 22016, the scheduled `config.read` of a
+// re-registered repeater, *no admin password stored*). meshmaster.dk hands nothing at any class
+// for such a pair from the Walter that has this (`AgentProtocol.DecideAsync`, its task p4.27-175).
+// A job that is **not** local is unchanged, down to the note: `admin` with no password still
+// refuses, at no transaction and with nothing sent.
+//
 // `note` takes the line and is left empty when there is nothing to say; it never carries a
 // password. Here rather than in `JobRunner` so that every branch is walked on a host.
 constexpr size_t kLoginNoteCap = 160;
-const char* loginMaterialFor(const ClaimedJob& job, char* note, size_t noteCap);
+const char* loginMaterialFor(const ClaimedJob& job, bool answeredLocally, char* note, size_t noteCap);
 
 // What one login came to - the runner's own reading of a reply. `Refused` is a reply that was
 // not a login-ok, and a login answered below the class it was for (task p3.5-41); `NoReply` is

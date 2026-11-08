@@ -46,6 +46,12 @@
 // the board, the companion firmware, the radio - comes in as values (HeartbeatIdentity) that the
 // board fills and refreshes, rather than being read from its settings here.
 //
+// **The observer, since task p1.7-28.** One optional field more of the heartbeat
+// (meshmaster.dk's D-46): a consumer that also publishes every packet it hears to the community
+// MQTT maps gives the loop an `IHeartbeatObserver` and the loop writes what it says. This
+// library knows nothing of brokers, topics or keys, and a consumer that gives none sends the
+// heartbeat it sent before, byte for byte.
+//
 // **Two ways to be driven, since task p1.5-18.** Everything above is `loop()`, called for ever
 // from the Arduino loop with the link up: that is the Heltec, and nothing of it changed. A device
 // that sleeps - the Walter of a repeater-v2 unit, on a battery and a panel, attaching to LTE a
@@ -218,6 +224,11 @@ struct WakeReport {
   // the loop a store: whether an image was written at all - at most one a wake, and none when
   // the store already holds what it would say - and what the store was too small for, dropped
   // from RAM and counted in the heartbeat's `resultsDropped` and `observationsDropped`.
+  //
+  // `observationsNotKept` also counts the adverts **nothing could date** (task p1.7-25): heard
+  // on a boot whose clock never got the time, so neither an epoch nor an age survives the sleep,
+  // and the alternative to dropping them is an observation stamped with the moment of the next
+  // restore. The log line says which of the two it was.
   bool keptImageWritten = false;
   int resultsNotKept = 0;
   int observationsNotKept = 0;
@@ -275,6 +286,29 @@ struct HeartbeatIdentity {
   RadioParameters radio;                   // what the radio is programmed with; sent while there is an identity
 };
 
+// Where the heartbeat's `observer` object comes from, for a consumer that has one (task p1.7-28;
+// meshmaster.dk's D-46 and its task p4.17-140). **This library does not know what an observer
+// is** - not a broker, not a topic, not a key, not a packet - and it is not going to: a consumer
+// that publishes to the community's MQTT maps gives the loop one of these, and the loop asks it
+// at every heartbeat and writes whatever it says.
+//
+// A consumer that has no observer gives the loop none, and then there is no `observer` member in
+// the body at all: **its heartbeat is byte for byte the heartbeat it sent before**, which is
+// what `AgentHeartbeatNoWake.json` holds in test/test_envelopes. On this firmware the provider
+// is `src/observer/Observer.h` and it is handed over only while a slot is configured.
+class IHeartbeatObserver {
+ public:
+  // Fill `out` for the heartbeat about to go, and return true; false leaves the field out, which
+  // is how a provider says *not now* (the observer was turned off between two heartbeats).
+  // `out` is the loop's and is fresh at every call; the strings and the slot array it is given
+  // are the provider's and must stay valid until the heartbeat has been posted - the loop copies
+  // nothing, as it copies nothing of HeartbeatIdentity.
+  virtual bool describeObserver(HeartbeatObserver& out) = 0;
+
+ protected:
+  ~IHeartbeatObserver() {}
+};
+
 class AgentLoop {
  public:
   using Counters = AgentCounters;
@@ -284,6 +318,11 @@ class AgentLoop {
 
   // The board's own identity, as 64 lowercase hex, or nullptr while the radio has made none.
   void setIdentity(const char* publicKeyHex);
+
+  // The observer in the heartbeat, for a consumer that has one (IHeartbeatObserver above).
+  // Optional and additive: nullptr - the default - is a consumer that is not an observer, and
+  // its heartbeat does not change by a byte. May be set and unset at any time.
+  void setHeartbeatObserver(IHeartbeatObserver* observer) { observerProvider_ = observer; }
 
   void loop();
 
@@ -443,6 +482,14 @@ class AgentLoop {
   IMesh* mesh_ = nullptr;
   JobRunner* jobs_ = nullptr;
   const HeartbeatIdentity* identity_ = nullptr;
+  IHeartbeatObserver* observerProvider_ = nullptr;  // nullptr: no `observer` member is written
+  // Where the provider's answer lives for the length of one heartbeat. A member and not a local
+  // of buildHeartbeat(), because the Heartbeat it fills points at it and that struct outlives
+  // the call (doHeartbeat and wakeHeartbeat both post after building).
+  HeartbeatObserver observer_;
+  // And the flood scope's, for the same reason (task p1.8-32): the counts are the runner's and
+  // the scope is the mesh's, read at every heartbeat and written into this.
+  HeartbeatFlood flood_;
 
   ObservationRing ring_;
   Counters counters_;

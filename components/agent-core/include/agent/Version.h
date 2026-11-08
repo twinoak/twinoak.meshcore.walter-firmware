@@ -10,7 +10,7 @@
 
 #pragma once
 
-#define AGENT_CORE_VERSION "0.3.0"
+#define AGENT_CORE_VERSION "0.6.0"
 
 namespace mm {
 

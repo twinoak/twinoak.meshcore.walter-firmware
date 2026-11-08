@@ -1,14 +1,15 @@
 // How the firmware's CLI replies are read, on both ends (task p4-54; MeshMaster.Contracts'
 // CliReplies in twinoak/meshmaster.dk).
 //
-// CommonCLI at d9296435 (src/helpers/CommonCLI.cpp) has no status code. A `set` it took starts
-// with `OK` - `OK` for most keys (line 504, advert.interval), `OK - repeat is now OFF`/`ON`
-// (535), `OK - 50.0%` for dutycycle (460); a `get` it answered starts with `> `; a value it
-// refused starts with `Error` or `ERROR` (`Error, max 64` at 639/648/657, `ERROR: dutycycle must
-// be 1-100` at 453, `Error: interval range is 60-240 minutes` at 499); a clock it would not move
-// back is `ERR: clock cannot go backwards` (207) or `(ERR: clock cannot go backwards)` (226); a
-// key handleSetCmd does not know is `unknown config: …` (802), one handleGetCmd does not know is
-// `??: …` (985), a command handleCommand does not know is `Unknown command` (444), and the
+// CommonCLI at 81dbae59 (src/helpers/CommonCLI.cpp; since 1.18 the radio keys answer from
+// src/helpers/CommonRadioPrefs.cpp, with the same words) has no status code. A `set` it took starts
+// with `OK` - `OK` for most keys (line 511, advert.interval), `OK - repeat is now OFF`/`ON`
+// (541), `OK - 50.0%` for dutycycle (CommonRadioPrefs.cpp:97); a `get` it answered starts with `> `; a value it
+// refused starts with `Error` or `ERROR` (`Error, max 64` at 557/566/575, `ERROR: dutycycle must
+// be 1-100` at CommonRadioPrefs.cpp:91, `Error: interval range is 60-240 minutes` at 506); a clock it would not move
+// back is `ERR: clock cannot go backwards` (218) or `(ERR: clock cannot go backwards)` (237); a
+// key handleSetCmd does not know is `unknown config: …` (696), one handleGetCmd does not know is
+// `??: …` (833), a command handleCommand does not know is `Unknown command` (482), and the
 // repeater's own `Err - bad params` a malformed setperm (simple_repeater/MyMesh.cpp). Everything
 // else - `clock`'s time, `ver`, a neighbour list - is an answer and not an error.
 //

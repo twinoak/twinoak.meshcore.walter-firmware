@@ -132,6 +132,12 @@ uint32_t JobRunner::loginWaitMs(const ClaimedJob& job) const {
 
 bool JobRunner::spend(const ClaimedJob& job, Context& ctx, bool escape) {
   if (!escape && leaseRanOut(job)) return false;
+  // A job this mesh answers without the air (IMesh::answersLocally, task p1.10-40) skips the gate
+  // altogether: no wait, no `took` - so it is given no slot and takes none from the job after it -
+  // and no transaction, because a transaction is an exchange with a repeater **over the mesh**
+  // (EXIT-NODES §7) and this was not one. The lease above still holds, because a lease is the
+  // server's claim on the repeater and says nothing about the air.
+  if (mesh_->answersLocally()) return true;
   uint32_t wait = gate_.waitMs(millis());
   if (wait > 0) {
     // A budget of two a minute means most of a job is waiting. Never wait past the lease: the
@@ -159,8 +165,14 @@ const char* JobRunner::loginMaterial(const ClaimedJob& job) {
   // that every branch of it is walked natively (test/test_rotation_probe) rather than held on
   // this file's text. This puts its one line into the job's log, and no log line ever takes the
   // value as an argument.
+  //
+  // The door is **part of the question** (task p1.10-41): a job this mesh answers without the air
+  // is answered at admin by the board at the other end of the seam, whatever the login carried,
+  // so the material is the empty string at every class and a job for a unit's own repeater needs
+  // no stored password. Asked here, where the material is chosen, and not after it: the answer at
+  // `admin` with no password is otherwise `nullptr`, and `ensureSession` refuses the job on it.
   char note[kLoginNoteCap] = {0};
-  const char* material = loginMaterialFor(job, note, sizeof note);
+  const char* material = loginMaterialFor(job, mesh_->answersLocally(), note, sizeof note);
   if (note[0] != '\0') g_log.add("%s", note);
   return material;
 }
@@ -170,18 +182,23 @@ JobRunner::LoginResult JobRunner::loginOnce(const ClaimedJob& job, Context& ctx,
   if (!spend(job, ctx)) return LoginResult::Timeout;
   const uint32_t started = millis();
   uint32_t tag = 0;
+  const FloodMode mode = scopeTheNextSend();
   const SendResult sent = mesh_->sendLogin(material, tag);
+  noteSend(sent, mode);
   if (sent == SendResult::Failed) {
     g_log.add("%s: the packet could not be built", what);
     return LoginResult::Failed;
   }
+  char shape[48];
+  describeSend(sent, mode, shape, sizeof shape);
   if (!mesh_->awaitReply(tag, loginWaitMs(job), pump_)) {
     // Stock firmware answers a login it will not take with **silence** (`handleLoginReq`
     // returns 0): a key its ACL does not hold on a blank login, a password that is neither of
     // its two on a password login. It cannot be told from a repeater that is off the air.
-    g_log.add("%s: no reply (%s)", what, sent == SendResult::Direct ? "direct" : "flood");
+    g_log.add("%s: no reply (%s)", what, shape);
     return LoginResult::NoReply;
   }
+  flood_.answered();
   if (!ctx.hasRtt) {
     ctx.hasRtt = true;
     ctx.rttMs = static_cast<int>(millis() - started);
@@ -218,8 +235,33 @@ JobRunner::LoginResult JobRunner::loginOnce(const ClaimedJob& job, Context& ctx,
   ctx.sessionRole = granted;
   ctx.sessionWasFresh = true;
   g_log.add("%s: logged in as %s%s%s (%s)", what, permissionName(granted), level, login.legacy ? " (a legacy reply)" : "",
-            sent == SendResult::Direct ? "direct" : "flood");
+            shape);
   return LoginResult::Ok;
+}
+
+// Where a failed job failed, as the result reports it (meshmaster.dk's task p4.17-136): the two
+// words of `JobFailedAt` over the stage the job reached, and nothing at all for the three cases
+// the server reads without one.
+//
+//   ok                      the field is for a failure
+//   CredentialClass::None   a trace logs in to nobody, so there is no step to name
+//   Stage::None             nothing was asked of the repeater: a type this mesh declines, a
+//                           claim whose lease had run out, a class with no material. Naming a
+//                           login that never went out would tell the owner's page that a stored
+//                           password is suspect on the strength of a packet nobody sent
+//
+// What is left is the distinction the field exists for: `unreachable` after a login nobody
+// answered is a password worth doubting, and `unreachable` after a request lost twice on an
+// answered login is not.
+const char* JobRunner::failedAtOf(const ClaimedJob& job, const Context& ctx, Outcome outcome) {
+  if (outcome == Outcome::Ok) return nullptr;
+  if (job.credentialClass == CredentialClass::None) return nullptr;
+  switch (ctx.stage) {
+    case Context::Stage::Login: return kFailedAtLogin;
+    case Context::Stage::Request: return kFailedAtRequest;
+    case Context::Stage::None: break;
+  }
+  return nullptr;
 }
 
 // The login sequence's exchange over this runner (agent/LoginSequence.h): a login with the job's
@@ -255,6 +297,10 @@ class JobRunner::LoginOnTheAir : public LoginExchange {
 Outcome JobRunner::ensureSession(const ClaimedJob& job, Context& ctx) {
   if (job.credentialClass == CredentialClass::None) return Outcome::Ok;  // a trace asks nobody
 
+  // From here the job is at its login, whichever way it gets one: a failure before anything is
+  // requested is a failure at the login, and the result says so (task p1.7-28). A session reused
+  // counts - a login was answered, earlier, and that is what this job stands on.
+  ctx.stage = Context::Stage::Login;
   const uint32_t now = millis();
   if (const RepeaterSession* live = sessions_.get(job.repeaterKey, job.credentialClass, now)) {
     ctx.hasSession = true;
@@ -273,6 +319,10 @@ Outcome JobRunner::ensureSession(const ClaimedJob& job, Context& ctx) {
   // agent/LoginSequence.h's, on a host; this puts its logins on the air.
   const bool probes = probesBetweenTries(job.credentialCandidate, material);
   LoginOnTheAir exchange(*this, job, ctx, material);
+  // The two tries and the probe between them are **one** flooded transaction: the first flood of
+  // it is scoped, the second unscoped while `flood.unscoped` is `retry`, and one of the three
+  // counts moves when it ends (agent/FloodScope.h).
+  const FloodTransaction transaction(flood_);
   const LoginVerdict verdict = loginSequence(exchange, probes);
   if (verdict.silentAfterReachable) {
     ctx.silentAfterReachable = true;
@@ -291,12 +341,15 @@ bool JobRunner::probeReachable(const ClaimedJob& job, Context& ctx) {
     return false;
   }
   uint32_t tag = 0;
+  const FloodMode mode = scopeTheNextSend();
   const SendResult sent = mesh_->sendLogin("", tag);
+  noteSend(sent, mode);
   if (sent == SendResult::Failed) {
     g_log.add("reachability probe (blank login): the packet could not be built");
     return false;
   }
-  const char* how = sent == SendResult::Direct ? "direct" : "flood";
+  char how[48];
+  describeSend(sent, mode, how, sizeof how);
   if (!mesh_->awaitReply(tag, loginWaitMs(job), pump_)) {
     g_log.add("reachability probe (blank login): no reply (%s)", how);
     g_log.add("the blank login was not answered either: nothing is known about the password - the repeater is off "
@@ -304,6 +357,7 @@ bool JobRunner::probeReachable(const ClaimedJob& job, Context& ctx) {
     LOG_I("jobs: job %lld: reachability probe (blank login): no reply; nothing is known about the password", job.id);
     return false;
   }
+  flood_.answered();
   // No session is stored from this reply, whatever it says: the next job is a candidate job and
   // logs in afresh, and a session another login opened would make its verdict a lie.
   const MeshReply& reply = mesh_->reply();
@@ -334,25 +388,34 @@ template <typename Send>
 Outcome JobRunner::exchange(const ClaimedJob& job, Context& ctx, const char* what, bool retry, bool text, Send send,
                             bool escape) {
   const int attempts = retry ? 2 : 1;
+  const FloodTransaction transaction(flood_);
   for (int attempt = 1; attempt <= attempts; attempt++) {
+    // Set per attempt and not once: the re-login below puts the stage back to Login, so a job
+    // that lost its session mid-request and could not get another reports `login`, and one that
+    // got another and then lost the second try reports `request` (task p1.7-28).
+    ctx.stage = Context::Stage::Request;
     if (!spend(job, ctx, escape)) return Outcome::Timeout;
     const uint32_t started = millis();
     uint32_t tag = 0;
+    const FloodMode mode = scopeTheNextSend();
     const SendResult sent = send(tag);
+    noteSend(sent, mode);
     if (sent == SendResult::Failed) {
       g_log.add("%s try %d: the packet could not be built", what, attempt);
       return Outcome::Failed;
     }
+    char shape[48];
+    describeSend(sent, mode, shape, sizeof shape);
     const bool answered = text ? mesh_->awaitText(requestWaitMs(job), pump_) : mesh_->awaitReply(tag, requestWaitMs(job), pump_);
     if (answered) {
+      flood_.answered();
       ctx.hasRtt = true;
       ctx.rttMs = static_cast<int>(millis() - started);
-      g_log.add("%s try %d: ok (%s, %lu ms)", what, attempt, sent == SendResult::Direct ? "direct" : "flood",
-                static_cast<unsigned long>(ctx.rttMs));
+      g_log.add("%s try %d: ok (%s, %lu ms)", what, attempt, shape, static_cast<unsigned long>(ctx.rttMs));
       if (text) std::memcpy(g_cliReply, mesh_->reply().text, sizeof g_cliReply);
       return Outcome::Ok;
     }
-    g_log.add("%s try %d: no reply", what, attempt);
+    g_log.add("%s try %d: no reply (%s)", what, attempt, shape);
     if (attempt == 1 && retry && !ctx.sessionWasFresh && ctx.hasSession) {
       // An old session and no answer: the repeater may have rebooted and forgotten us.
       sessions_.invalidate(job.repeaterKey);
@@ -406,6 +469,14 @@ int JobRunner::restoreAcl(const ClaimedJob& job, Context& ctx, Outcome outcome) 
   // Nothing to restore unless the claim carried a grant below admin and the session in force is
   // admin - by the admin password, which rewrote our entry to admin on stock firmware, or a
   // blank login answered admin because an earlier session died before its restore.
+  //
+  // **The claim's level is the whole gate, and that is what a local job turns on** (task
+  // p1.10-41, checking task p4.1-60's rule once more): the local door answers every login at
+  // admin, so `ctx.sessionRole` is admin for such a job too - but a unit's own repeater is handed
+  // no grant (meshmaster.dk's task p4.27-173), `hasAclLevel` is false, and the first clause ends
+  // it. Nothing is restored on a repeater the unit *is*, and no `setperm` goes over its console.
+  // A local job that somehow does carry a level is restored exactly as an over-the-air one is:
+  // the level the server granted is the level the server expects to find.
   if (!job.hasAclLevel || job.aclLevel >= kPermAdmin || job.aclLevel < kPermReadOnly || !ctx.hasSession ||
       ctx.sessionRole != kPermAdmin) {
     return -1;
@@ -570,9 +641,15 @@ Outcome JobRunner::runTrace(const ClaimedJob& job, Context& ctx, size_t& dataLen
   uint8_t hashSize = 0;
   uint8_t hops = pathToBytes(job, g_pathBytes, sizeof g_pathBytes, hashSize);
   if (hops == 0 && job.hasPath && job.pathCount == 0) {
-    // A direct neighbour: a known path of zero hops, and the trace's hashes are this board's own
-    // size, one byte (PATH_HASH_SIZE).
-    hashSize = 1;
+    // A direct neighbour: a known path of zero hops, so there is no learned hop to take a width
+    // from and the only hash is one we compute ourselves, from the repeater's key. The width is
+    // then **this board's own** - what its floods originate at, two bytes and never one (D-33;
+    // the mesh answers, AgentMesh::kFloodPathHashSize) - for the repeater's hash on the way out
+    // and for this board's own on the way back. One byte addresses every repeater that shares a
+    // first byte: job 20005 of 5 November 2026 got an `86` that three of them could have sent.
+    // The .NET agent chooses the same way (meshmaster.dk's Handlers.cs, TraceHandler: a direct
+    // path takes the companion's own mode, any other path its own width).
+    hashSize = mesh_->floodPathHashSize();
   } else if (hops == 0) {
     g_log.add("no path is known to this repeater: a trace needs one; run discover first");
     return Outcome::Unreachable;
@@ -696,6 +773,12 @@ Outcome JobRunner::runDiscover(const ClaimedJob& job, Context& ctx, size_t& data
   // the server sends at that class since its task p4.7-94 (task p1.4-14) - it is the guest
   // password the claim carried, or, for a pair the door made at its empty form, the blank login
   // of the empty door itself, which a repeater with no guest password answers at guest.
+  //
+  // The whole handler is **one** flooded transaction (agent/FloodScope.h): a discover that floods
+  // twice - the login for the path its reply comes back along, and then the path-discovery
+  // request - sends the first scoped and the second unscoped while `flood.unscoped` is `retry`,
+  // and which of them was answered is what the counts on `status` are made of.
+  const FloodTransaction transaction(flood_);
   const char* material = loginMaterial(job);
   if (material != nullptr) {
     if (mesh_->hasPath()) {
@@ -736,20 +819,26 @@ Outcome JobRunner::runDiscover(const ClaimedJob& job, Context& ctx, size_t& data
     return Outcome::Timeout;
   }
   uint32_t tag = 0;
-  if (mesh_->sendDiscovery(tag) == SendResult::Failed) {
+  const FloodMode mode = scopeTheNextSend();
+  const SendResult sent = mesh_->sendDiscovery(tag);
+  noteSend(sent, mode);
+  if (sent == SendResult::Failed) {
     g_log.add("path discovery request: the packet could not be built");
     dataLen = writeDiscoverResult(false, nullptr, 0, nullptr, 0, nullptr, g_data, kDataCap);
     return Outcome::Failed;
   }
+  char shape[48];
+  describeSend(sent, mode, shape, sizeof shape);
   const uint32_t started = millis();
   if (mesh_->awaitReply(tag, requestWaitMs(job), pump_) && mesh_->hasPath()) {
+    flood_.answered();
     ctx.hasRtt = true;
     ctx.rttMs = static_cast<int>(millis() - started);
-    g_log.add("path discovery request, the last resort (some firmware never answers it): ok, %lu ms",
+    g_log.add("path discovery request, the last resort (some firmware never answers it): ok (%s, %lu ms)", shape,
               static_cast<unsigned long>(ctx.rttMs));
     return learned(job, ctx, LoginResult::NoReply, kPathSourceDiscovery, dataLen);
   }
-  g_log.add("path discovery request, the last resort (some firmware never answers it): no reply");
+  g_log.add("path discovery request, the last resort (some firmware never answers it): no reply (%s)", shape);
   dataLen = writeDiscoverResult(false, nullptr, 0, nullptr, 0, nullptr, g_data, kDataCap);
   return Outcome::Unreachable;
 }
@@ -1082,9 +1171,9 @@ Outcome JobRunner::runCli(const ClaimedJob& job, Context& ctx, size_t& dataLen) 
 }
 
 Outcome JobRunner::runAdvertRequest(const ClaimedJob& job, Context& ctx, size_t& dataLen) {
-  // `advert` floods (CommonCLI::handleCommand at d9296435, src/helpers/CommonCLI.cpp:195-198:
+  // `advert` floods (CommonCLI::handleCommand at 81dbae59, src/helpers/CommonCLI.cpp:206-209:
   // sendSelfAdvertisement(1500, true), answered `OK - Advert sent`), which is what refreshes
-  // everyone's paths; `advert.zerohop` (191-194) reaches the direct neighbours only.
+  // everyone's paths; `advert.zerohop` (202-205) reaches the direct neighbours only.
   const char* command = job.advertFlood ? "advert" : "advert.zerohop";
   const Outcome session = adminSession(job, ctx);
   if (session != Outcome::Ok) return session;
@@ -1108,7 +1197,7 @@ Outcome JobRunner::runAdvertRequest(const ClaimedJob& job, Context& ctx, size_t&
 }
 
 Outcome JobRunner::runClockSync(const ClaimedJob& job, Context& ctx, size_t& dataLen) {
-  // `time <unix>` (CommonCLI.cpp:217-227) rather than `clock sync` (199-208): both refuse to
+  // `time <unix>` (CommonCLI.cpp:228-238) rather than `clock sync` (210-219): both refuse to
   // go backwards, but with `time` the value set is in the command line and in the result, not
   // only in a frame field nobody stores. The value is this board's clock - SNTP, or the
   // server's time until SNTP answers - and a board with no time yet has nothing to set.
@@ -1153,7 +1242,7 @@ Outcome JobRunner::runPasswordSet(const ClaimedJob& job, Context& ctx, size_t& d
     return Outcome::Failed;
   }
   if (job.credential.newPasswordCut) {
-    // The firmware keeps fifteen bytes (`char password[16]` in NodePrefs at d9296435): a value
+    // The firmware keeps fifteen bytes (`char password[16]` in NodePrefs at 81dbae59): a value
     // it would cut is a lock-out, because the server would store what was sent and the repeater
     // what it kept.
     g_log.add("the new password is longer than %u bytes and the firmware keeps %u: nothing is sent, because a cut-off "
@@ -1170,8 +1259,8 @@ Outcome JobRunner::runPasswordSet(const ClaimedJob& job, Context& ctx, size_t& d
 
   // The command line as bytes - prefix and secret - built right before the send and wiped right
   // after it; the log names the command without its value, and the frame log stars the body
-  // (`sensitive`). `password <new>` is CommonCLI.cpp:256-261 (admin), `set guest.password <new>`
-  // is handleSetCmd at 506-509 (guest); the first echoes what it stored, `password now: …`.
+  // (`sensitive`). `password <new>` is CommonCLI.cpp:267-272 (admin), `set guest.password <new>`
+  // is handleSetCmd at 513-516 (guest); the first echoes what it stored, `password now: …`.
   const bool admin = job.passwordField == PasswordField::Admin;
   const char* what = admin ? "cli 'password <new>'" : "cli 'set guest.password <new>'";
   std::snprintf(g_secretLine, sizeof g_secretLine, "%s%s", admin ? "password " : "set guest.password ",
@@ -1248,7 +1337,7 @@ Outcome JobRunner::runReboot(const ClaimedJob& job, Context& ctx, size_t& dataLe
   g_log.add("no restore on this session: the repeater is asked to reboot on it, and a restore before the command would "
             "make the command unanswerable; the next login from this key puts the entry back (task 60)");
 
-  // `reboot` is `_board->reboot()`, which does not return (CommonCLI.cpp:185-186): silence is
+  // `reboot` is `_board->reboot()`, which does not return (CommonCLI.cpp:196-197): silence is
   // the expected answer, and the next status read confirms it by the uptime, on the server.
   const Outcome sent = cliLine(job, ctx, "cli 'reboot'", "reboot", false);
   if (sent == Outcome::Unreachable) {
@@ -1274,6 +1363,16 @@ Outcome JobRunner::runReboot(const ClaimedJob& job, Context& ctx, size_t& dataLe
 }
 
 // ------------------------------------------------------------------ the runner
+
+// One question, asked in two places: by runJob() below, before a job of one of the thirteen
+// reaches the air, and by a caller that prices a claimed job before it runs it. An extension's
+// own type is never asked - IJobExtension.h: a type that is none of the thirteen is the
+// extension's to run or decline - and a runner with no mesh declines nothing.
+bool JobRunner::meshDeclines(const ClaimedJob& job) const {
+  if (mesh_ == nullptr) return false;
+  const bool offered = extension_ != nullptr && !isKnownJobType(job.type);
+  return !offered && !mesh_->supports(job.type);
+}
 
 Outcome JobRunner::runJob(const ClaimedJob& job, Context& ctx, size_t& dataLen) {
   dataLen = 0;
@@ -1301,8 +1400,10 @@ Outcome JobRunner::runJob(const ClaimedJob& job, Context& ctx, size_t& dataLen) 
   // cannot carry is not advertised, so the server routes none of it here - but a job claimed
   // before a heartbeat said so, or one bound to this agent, can still arrive, and it is
   // `unsupported` at no transaction with nothing sent, as a type nobody handles is. Asked
-  // before beginJob(), so the mesh is never given a job it has already declined.
-  if (!offered && !mesh_->supports(job.type)) {
+  // before beginJob(), so the mesh is never given a job it has already declined - and asked
+  // through meshDeclines(), which is the same question a caller that prices a job asks before
+  // it prices one (AgentLoop::wakeJobs, task p1.7-25).
+  if (meshDeclines(job)) {
     g_log.add("this mesh cannot carry a '%s' job, so it is not advertised and nothing was sent", job.type);
     return Outcome::Unsupported;
   }
@@ -1315,6 +1416,11 @@ Outcome JobRunner::runJob(const ClaimedJob& job, Context& ctx, size_t& dataLen) 
   }
   if (hops == 0 && job.hasPath && job.pathCount == 0) mesh_->setDirectPath();  // a direct neighbour
   g_log.add("path %s", mesh_->hasPath() ? "from the server" : "unknown: the mesh floods");
+  // The local door (IMesh::answersLocally, task p1.10-40), said once on the job's page: this is
+  // why the result reports no transaction and why the job was not paced by the airtime budget.
+  if (mesh_->answersLocally()) {
+    g_log.add("this mesh answers for this repeater without the air: no airtime budget, no transaction");
+  }
 
   if (std::strcmp(job.type, "status") == 0) return runStatus(job, ctx, dataLen);
   if (std::strcmp(job.type, "telemetry") == 0) return runTelemetry(job, ctx, dataLen);
@@ -1539,6 +1645,9 @@ void JobRunner::runClaimed(int i) {
   }
   size_t dataLen = 0;
   Outcome outcome = runJob(job, ctx, dataLen);
+  // Read here and not at the report below: the ACL restore puts a CLI line of its own on the
+  // air after this, and the job's own last step is what the result names (task p1.7-28).
+  const char* failedAt = failedAtOf(job, ctx, outcome);
 
   // The session's last command (task p4.1-60): an admin session on a repeater where this exit
   // node holds a grant puts its own entry back to the granted level before the job is over,
@@ -1593,8 +1702,10 @@ void JobRunner::runClaimed(int i) {
   report.transactions = ctx.transactions;
   report.data = dataLen > 0 ? g_data : nullptr;
   report.log = g_log.text();
+  report.failedAt = failedAt;
 
-  LOG_I("jobs: job %lld: %s after %d transaction(s)", job.id, outcomeName(outcome), ctx.transactions);
+  LOG_I("jobs: job %lld: %s after %d transaction(s)%s%s", job.id, outcomeName(outcome), ctx.transactions,
+        failedAt == nullptr ? "" : ", failed at the ", failedAt == nullptr ? "" : failedAt);
   const size_t len = writeJobResult(report, g_body, kBodyCap);
   bool posted = false;
   if (len == 0) {
@@ -1632,6 +1743,8 @@ void JobRunner::reportNotRun(int i, const char* why) {
   report.finishedAt = at;
   report.transactions = 0;
   report.log = g_log.text();
+  // No `failedAt`: nothing was sent, so no login was tried and no request either, and the log
+  // says what the wake could not fit (task p1.7-28).
 
   LOG_W("jobs: job %lld %s was not run: %s", job.id, job.type, why == nullptr ? "not run" : why);
   const size_t len = writeJobResult(report, g_body, kBodyCap);
@@ -1707,6 +1820,38 @@ void JobRunner::describe(char* out, size_t cap) const {
   std::snprintf(out, cap, "%lu run, %lu transaction(s); last job %lld %s %s after %d tx", static_cast<unsigned long>(ran_),
                 static_cast<unsigned long>(gate_.transmissions()), r.id, r.type, outcomeName(r.outcome),
                 r.transactions);
+}
+
+// ------------------------------------------------------------------ the flood scope
+
+FloodMode JobRunner::scopeTheNextSend() {
+  const FloodMode mode = flood_.modeForNextFlood(mesh_->floodScope());
+  mesh_->setFloodMode(mode);
+  return mode;
+}
+
+void JobRunner::noteSend(SendResult sent, FloodMode mode) { flood_.sent(sent == SendResult::Flood, mode); }
+
+void JobRunner::describeSend(SendResult sent, FloodMode mode, char* out, size_t cap) const {
+  FloodPolicy::describeSend(sent == SendResult::Direct, mode, mesh_->floodScope(), out, cap);
+}
+
+void JobRunner::describeFlood(char* out, size_t cap) const {
+  const char* scope = mesh_ == nullptr ? nullptr : mesh_->floodScope();
+  const FloodCounts& c = flood_.counts();
+  const char* rule;
+  if (scope == nullptr) {
+    rule = "this mesh says nothing about scope: whatever its radio holds decides";
+  } else if (floodScopeIsUnscoped(scope)) {
+    rule = "every flood goes out with no transport code (flood.scope *)";
+  } else if (flood_.retry() == UnscopedRetry::Retry) {
+    rule = "the second flood of a transaction goes unscoped";
+  } else {
+    rule = "every flood is scoped (flood.unscoped never)";
+  }
+  std::snprintf(out, cap, "scope %s, answered scoped %lu / unscoped %lu / none %lu since boot; %s",
+                scope == nullptr ? "none" : scope, static_cast<unsigned long>(c.answeredScoped),
+                static_cast<unsigned long>(c.answeredUnscoped), static_cast<unsigned long>(c.unanswered), rule);
 }
 
 #undef g_jobs

@@ -134,7 +134,7 @@ char* trimInPlace(char* text);
 // ---------------------------------------------------------------------------------------------
 // The `regions` key (task p4-57)
 
-// `CommonCLI::handleRegionCmd` at d9296435 exports the map into 160 characters and
+// `CommonCLI::handleRegionCmd` at 81dbae59 exports the map into 160 characters and
 // `BufStream::write` simply stops there, with no marker: a reply of 159 characters, or one that
 // does not end in a newline, ran out of room and is no evidence.
 constexpr size_t kRegionReplyLimit = 160;

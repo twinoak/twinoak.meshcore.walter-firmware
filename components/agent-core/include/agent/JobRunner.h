@@ -89,6 +89,7 @@
 #include <agent/Airtime.h>
 #include <agent/ConfigApply.h>
 #include <agent/ConfigRead.h>
+#include <agent/FloodScope.h>
 #include <agent/IJobExtension.h>
 #include <agent/IMesh.h>
 #include <agent/IPlatform.h>
@@ -104,9 +105,16 @@ namespace mm {
 
 // A result's free text, bounded here rather than at the envelope: 4 000 characters is what API §3
 // allows and a kilobyte is more than any of these jobs has to say. When it fills, the oldest
-// half goes - what a job did last is what a reader of its page wants. Nothing that could need
+// entries go - what a job did last is what a reader of its page wants. Nothing that could need
 // redacting ever reaches it: a password is never an argument of any line the runner adds, and
 // the .NET agent's redactor has nothing to do here because there is nothing to redact.
+//
+// **One entry per line** (task p1.10-38), as MeshMaster.Agent's own `JobLog.Append` writes it:
+// *The agent's log* on a job's page is a `<pre>` with `whitespace-pre-wrap`, so it keeps the
+// line breaks and reads line by line. A `"; "` between entries could not, because several
+// entries have a `"; "` of their own inside them and the page cannot tell the two apart. The
+// JSON writer escapes the `'\n'` as `\n`, so one raw byte is still two on the wire - the width
+// `"; "` had - and API §3's 4 000-character bound is untouched.
 class JobLog {
  public:
   void clear() {
@@ -117,8 +125,7 @@ class JobLog {
   void add(const char* fmt, ...) __attribute__((format(printf, 2, 3))) {
     if (len_ + 2 >= sizeof buf_) drop();
     if (len_ > 0) {
-      buf_[len_++] = ';';
-      buf_[len_++] = ' ';
+      buf_[len_++] = '\n';
       buf_[len_] = '\0';
     }
     va_list args;
@@ -134,10 +141,20 @@ class JobLog {
   const char* text() const { return buf_; }
 
  private:
+  // Whole entries go, not bytes: the cut is the first line break at or after the half, so what
+  // is left begins where an entry begins and the first line a reader sees is a whole one. An
+  // entry longer than half the buffer has no line break to cut at, and is cut at the half as it
+  // always was - there is nothing better to do with it.
   void drop() {
-    const size_t half = sizeof buf_ / 2;
-    std::memmove(buf_, buf_ + half, len_ - half + 1);
-    len_ -= half;
+    size_t cut = sizeof buf_ / 2;
+    for (size_t i = cut; i < len_; i++) {
+      if (buf_[i] == '\n') {
+        cut = i + 1;
+        break;
+      }
+    }
+    std::memmove(buf_, buf_ + cut, len_ - cut + 1);
+    len_ -= cut;
   }
 
   char buf_[1024] = {0};
@@ -245,6 +262,15 @@ class JobRunner {
   void reportNotRun(int i, const char* why);
   void endClaim();
 
+  // Will this job be **declined** rather than run, because the mesh cannot carry its type
+  // (IMesh::supports, task p1.6-23)? `runClaimed` asks this itself, before anything goes on the
+  // air, and answers `unsupported` at no transaction with nothing sent. A caller that prices a
+  // job before running it asks it **first** (task p1.7-25): a type this unit will never carry
+  // costs no transaction, so pricing it is pricing a job that was never going to be run, and a
+  // bound `trace` in a tight wake came back `failed`, *wake budget*, instead of `unsupported`.
+  // The extension's own types are not asked; they are the extension's to decline.
+  bool meshDeclines(const ClaimedJob& job) const;
+
   // The offline buffer (task 06): results the server did not take are kept and posted later,
   // oldest first, with the timestamps and the client ids they were made with. Called by the
   // agent loop after every heartbeat the server answered - "the offline buffer is posted first,
@@ -271,6 +297,10 @@ class JobRunner {
   const Record* newest() const { return recentCount_ > 0 ? &recent_[0] : nullptr; }
 
   const AirtimeGate& gate() const { return gate_; }
+  // The same gate, for a transaction that is not a job's (task p1.8-33: the observer's
+  // neighbour sweep sends a regions request per neighbour, and each one waits for this gate
+  // and is counted on it, so the board's airtime is one budget and not two).
+  AirtimeGate& gate() { return gate_; }
   const ResultBuffer& results() const { return results_; }
   // The buffer itself, for the one thing outside this runner that writes it: the kept image the
   // loop writes at the end of a wake and reads back after a deep sleep (agent/IRetained.h, task
@@ -295,6 +325,19 @@ class JobRunner {
   // One line for `status`.
   void describe(char* out, size_t cap) const;
 
+  // ------------------------------------------------------------------ the flood scope
+
+  // `flood.unscoped` on the console: whether the second flood of a transaction drops the scope
+  // (agent/FloodScope.h; meshmaster.dk's D-47). The scope itself is the mesh's (IMesh::floodScope)
+  // and is set where the mesh is.
+  void setFloodRetry(UnscopedRetry retry) { flood_.setRetry(retry); }
+  // What the heartbeat's `flood` object carries: the three counts, per flooded transaction since
+  // boot, and whether the unscoped retry is on **and** there is a scope to drop for one send.
+  const FloodCounts& floodCounts() const { return flood_.counts(); }
+  bool floodUnscopedRetry() const { return flood_.unscopedRetryFor(mesh_ == nullptr ? nullptr : mesh_->floodScope()); }
+  // `status`'s `flood` line: the scope this mesh floods in and the counts since boot.
+  void describeFlood(char* out, size_t cap) const;
+
  private:
   // What one job is while it runs.
   struct Context {
@@ -318,7 +361,20 @@ class JobRunner {
     // The restore (task p4.1-60): sent once per job, by the handler that needs its verdict in
     // the result (config.read) or by the runner after the handler.
     bool aclRestoreDone = false;
+    // **How far this job got**, for the result's `failedAt` (task p1.7-28; meshmaster.dk's task
+    // p4.17-136). `None` is a job that asked the repeater for nothing - a `trace`, a type this
+    // mesh declines, a lease that had already run out - and such a result carries no `failedAt`
+    // at all. `Login` is a login on the air or a session reused to stand in for one; `Request`
+    // is a request or a CLI line after one, set at the top of every attempt, so a request that
+    // had to log in again mid-way and failed at *that* reads `Login` again. Where a job stopped
+    // is where it failed.
+    enum class Stage : uint8_t { None, Login, Request };
+    Stage stage = Stage::None;
   };
+
+  // The word a result carries for where it failed, or nullptr: the rule above, with success and
+  // a job that logs in to nobody (CredentialClass::None - a trace) carrying none.
+  static const char* failedAtOf(const ClaimedJob& job, const Context& ctx, Outcome outcome);
 
   // What one login came to: agent/LoginSequence.h's reading, which is this runner's. `Refused`
   // is a reply that was not a login-ok, and a login answered below the class it was for (task
@@ -428,6 +484,24 @@ class JobRunner {
   // when it was Arduino's.
   uint32_t millis() const { return platform_->millis(); }
 
+  // ---- the flood scope, around every send that may flood (agent/FloodScope.h) ----
+  //
+  // One flooded transaction is one retry loop, and the three calls below are the whole of it:
+  // `FloodTransaction` is the loop's own lifetime (nestable - a re-login inside a request's retry
+  // floods inside the transaction already running), `scopeTheNextSend` tells the mesh which shape
+  // to use and `noteSend` records what the send came to. A reply is `flood_.answered()`.
+  struct FloodTransaction {
+    explicit FloodTransaction(FloodPolicy& policy) : policy_(policy) { policy_.begin(); }
+    ~FloodTransaction() { policy_.end(); }
+    FloodTransaction(const FloodTransaction&) = delete;
+    FloodTransaction& operator=(const FloodTransaction&) = delete;
+    FloodPolicy& policy_;
+  };
+  FloodMode scopeTheNextSend();
+  void noteSend(SendResult sent, FloodMode mode);
+  // The words a job's log line prints for a send: `direct`, `flood, scope dk`, `flood, unscoped`.
+  void describeSend(SendResult sent, FloodMode mode, char* out, size_t cap) const;
+
   IMesh* mesh_ = nullptr;
   IUplink* server_ = nullptr;
   IPlatform* platform_ = nullptr;
@@ -438,6 +512,8 @@ class JobRunner {
 
   AirtimeGate gate_;
   SessionStore sessions_;
+  // The flood scope's rule and its counts (agent/FloodScope.h, task p1.8-32).
+  FloodPolicy flood_;
   // The wake's ledger, or null: AgentLoop::begin lends it (setMeter).
   UplinkMeter* meter_ = nullptr;
 
