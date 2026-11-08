@@ -1,7 +1,9 @@
 # Flashing a unit, with the unit on a desk
 
 From a module out of its box to a unit that checks in with meshmaster.dk. One page: the Walter,
-then the RAK, then *[a unit at 0.1.0](#a-unit-at-010)* — the one that already exists — then what
+then the RAK, then the two ways a unit that already exists takes a newer release —
+*[from 0.1.1, over LTE](#from-011-to-012-over-lte)* with no cable at all, and
+*[a unit at 0.1.0](#a-unit-at-010)* by cable — then what
 *checking in* looks like, and the three things to look at when it does
 not. [`bench.md`](bench.md) is the long walk that proves each of these one at a time;
 [`provisioning.md`](provisioning.md) is the session that gives a unit its SIM, its server and its
@@ -22,7 +24,7 @@ The module's USB-C **is** the ESP32-S3's own USB, so there is no adapter and no 
    partition table and the OTA data with it:
 
    ```
-   esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.1-factory.bin
+   esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.2-factory.bin
    ```
 
    `--flash-mode dio` is esptool's way in; the image's own header says QIO and the bootloader
@@ -45,9 +47,9 @@ After a reset the port prints a dozen lines and a `>` prompt
 ([`console.md`](console.md), *What the port prints at boot*, has them all):
 
 ```
-twinoak-walter 0.1.1+<sha7>
+twinoak-walter 0.1.2+<sha7>
 running from ota_0 at 0x010000 (3072 KB), ota state valid
-image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.1+<sha7>, link 1.1
+image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.2+<sha7>, link 1.2
 ...
 type 'help' for the commands
 >
@@ -117,20 +119,117 @@ CR LF back out of its answers*. It is slower than a 0.1.1 push and it finishes. 
 the same thing forced, for a Walter whose ready line cannot be read at all; it is never needed
 against 0.1.1 or newer, and the hello's version word refuses it there.
 
+## From 0.1.1 to 0.1.2, over LTE
+
+**This is the first release a unit already in the field takes with no cable at all.** Two presses on
+meshmaster.dk, on the **unit's own exit-node page**, and the unit does the rest across one or two of
+its own wakes. Nothing here is typed at a console; the console is only where it can be watched.
+
+Before pressing anything, two facts about the file:
+
+- **The image comes from meshmaster.dk and never from github.com.** The only path to the Walter's
+  own image over the air is a `twinoak.fw.offer` whose product is `twinoak-walter-firmware`, and the
+  fetch is `{server.url}{base}` — the manifest at `{base}/manifest.json`, its signature beside it
+  and the file at `{base}/files/{name}` (`components/agent/firmware_jobs.cpp`). Every host but
+  `github.com` is held to **ISRG Root X1** (`components/core/net/trust.cpp`), which is the root that
+  loaded into the modem's slot and matched at the first request on the first board on 23 October.
+  The console's `fetch <base-url>` is the one thing that reaches github.com, and it only ever writes
+  a **radio** image into the store.
+- **The Walter's own download does not resume across wakes.** A radio image does: the store keeps a
+  progress record and the next wake continues the file. The Walter's own slot is erased when a write
+  opens on it (`SelfUpdate::beginWrite` → `written_ = 0`), so a download the wake's budget cuts
+  short is started again from zero at the next wake, whatever the job's own message says. In
+  practice it fits: the exchange is given **twenty minutes** (`kBackendBoundMs`) and a megabyte a
+  wake (`kWakeDownloadBytes`), and the application is about 750 kB in **twelve 64 kB ranges**, each
+  its own request with its own deadline and three attempts. A range that stalls is retried; three
+  failures in a row end the download for that wake.
+
+### 1. *Offer a release*, with the Walter's product
+
+On the unit's page, *Offer a release* — a page of its own behind the re-authentication gate,
+because the unit spends its data plan on the download. Pick the release whose product is the
+**Walter's**, type the reason, press it. That makes one `twinoak.fw.offer` job, and the unit claims
+it at its next wake. (Nothing is flashed by an offer, and **one wake updates one box, never both**:
+S-7 is why the server refuses to offer the radio an image while an apply of the Walter is still out
+there, and the other way round.)
+
+What the unit does with it, and what a cable would show while it does:
+
+```
+fetch: manifest.json, 1024 bytes
+fetch: manifest.json.sig, 108 bytes
+fetch: check 1, the signature: passed (key this build trusts)
+fetch: check 2, the manifest: passed
+fetch: check 3, the image for this slot: passed - twinoak-walter-v0.1.2.bin, 763479 bytes, version 0.1.2+<sha7>
+fetch: check 6, the manifest's region against this build's: passed
+  range 0-65535: ok,  (attempt 1)
+  ...
+fetch: 763479 bytes in 12 range(s), 0 retries, 0 restart(s), 214000 ms
+fetch: check 4, the file's size and hash: passed
+fetch: check 5, the descriptor inside the file: passed
+fetch: check 6, the region: passed
+```
+
+Checks 1, 2, 3 and the manifest's half of 6 run **before a byte of the image is asked for**, and 4,
+5 and the rest of 6 over the bytes as they lie in the other slot — the laptop, the server and the
+manifest are all untrusted at every one of them (`spec/FIRMWARE-MANIFEST.md` §5).
+
+On the unit's page while it runs: the job's **Progress** line, *512 kB of 745 kB*, posted every
+128 kB between two ranges (the one moment the socket is free), and the lease extended as it goes.
+When it is done the job says *stored*, with the image id, the hash and the bytes, and the page's
+**Firmware downloads** box gains a line for what the plan was billed. At the cable, `self status`
+now says `received: 0.1.2 in slot 1 (763479 bytes), waiting for 'self switch'` — the same state a
+`self receive` over USB leaves, and the same one the apply below consumes.
+
+### 2. *Apply the candidate*
+
+The second press, also gated and also with a reason. The unit claims the `twinoak.fw.apply` at a
+wake, checks that the image in its other slot is the one the server named — the hash, not the
+server's word — journals the result it will **owe**, tells the radio how long it will be gone, and
+restarts. The boot after that is the trial:
+
+```
+boot 7: software reset, the Walter's own update, switching to the other slot
+self-update: this image (0.1.2, slot 1) is on trial: 300 s to reach the main loop, HELLO the radio
+  and reach the backend, or it is rolled back ('self status' watches, 'self confirm' / 'self reject' end it)
+...
+self-update: on trial -> confirmed: all three conditions hold: confirmed
+```
+
+The three conditions are the main loop with the pins in the safe state, a `HELLO` the radio answers,
+and one exchange with the backend ([`update.md`](update.md), *The trial*). The heartbeat of that
+boot's own wake is the third one, so the trial ends in the same wake that began it — and **the
+result the apply owes is posted from the journal in that same exchange**, not an interval later. Any
+reset inside the trial window is a rollback, by the bootloader and not by a decision: the previous
+image comes back, the new one's hash goes on the bad list, and the journal says why.
+
+On the unit's page: the job reads *committed* with the version it moved to, or *rolledBack* with the
+journal line by line — which is the unit disagreeing with the server, and allowed to. Afterwards the
+heartbeat's `agentVersion` is `0.1.2+<sha7>`, and that is the one place a person sees which release
+a unit out there is really running.
+
+### If it is wanted by cable instead
+
+The `esptool` line of *The Walter*, above, with this release's `-factory.bin`. It keeps `nvs`, the
+`journal` and the `rakfw` store, so a provisioned unit stays provisioned and its radio images
+survive — the same promise, from the same property of the file.
+
 ## A unit at 0.1.0
 
-The first unit ran `v0.1.0` on 6 November 2026 and could not finish a radio install: the flasher
-never let the idle task run, so the task watchdog reset the Walter at every attempt, and the run
-ended `STUCK: no image to return to`. Four more faults came out of the same evening. `v0.1.1` is
-all five, and taking a unit there is three things in this order — the Walter, then the radio's
-first install, then the server.
+A unit still at `v0.1.0` goes by cable, and the first unit is past this: it was flashed to `v0.1.1`
+on 7 November 2026 and takes this release over LTE (above). The section stays for any other board
+left at `0.1.0`. On 6 November that release could not finish a radio install — the flasher never let
+the idle task run, so the task watchdog reset the Walter at every attempt and the run ended
+`STUCK: no image to return to` — and four more faults came out of the same evening. Taking such a
+unit to this release is three things in this order: the Walter, then the radio's first install, then
+the server.
 
 ### The Walter's own update goes by cable
 
 The same one `esptool` line as a module out of the box, with **this release's** `-factory.bin`:
 
 ```
-esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.1-factory.bin
+esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.2-factory.bin
 ```
 
 **What it keeps:** `nvs` (the settings — the APN, the SIM's PIN, the server's URL and token, the
@@ -140,40 +239,34 @@ candidate, any golden image, the base). All three are above the two application 
 image ends where the application ends, so a provisioned unit stays provisioned and comes back with
 the same radio images and the same journal it had (*What a factory flash keeps*, above).
 
-**Not over LTE** — but not for the reason it looks like. A unit's own image **never comes from
-github.com**: the only path to it over the air is a `twinoak.fw.offer` job whose product is the
-Walter's, and that fetch is `{server.url}/…` — meshmaster.dk — which this firmware holds to **ISRG
-Root X1**, the root that loaded and matched on the first board on 23 October
-(`core/net/trust.cpp`: `github.com` is the one host held to USERTrust ECC, the root that modem
-refused, and every other host — meshmaster.dk, and the `githubusercontent` host a GitHub download
-redirects to — falls to ISRG Root X1). The console's `fetch <base-url>` is what reaches github.com,
-and it only ever writes a **radio** image into the store. So a 0.1.0 unit could in principle be
-offered `v0.1.1` over LTE, and from `v0.1.1` onwards that is the way: *Offer a release* on the
-unit's page, then an apply, whose result the **next** wake posts ([`field.md`](field.md)).
+**Not over LTE, from 0.1.0** — and not for the reason it looks like. The path exists at `0.1.0`
+already and goes nowhere near github.com: it is the `twinoak.fw.offer` of *From 0.1.1 to 0.1.2, over
+LTE* above, from meshmaster.dk and held to ISRG Root X1. What `0.1.0` cannot be relied on is
+**carrying its own download**:
 
-Why the cable all the same, for this one unit:
-
-- **0.1.0 cannot be relied on to carry its own download.** An offer is many HTTPS connections in
-  one wake — the config, the heartbeat, the claim, then the manifest, its signature and a range of
-  the image per wake budget — and on 0.1.0 the *second* connection of a wake was the one that
-  failed: `the request did not go out`, three wakes in a row on 6 November. That is the fault
-  `v0.1.1` fixes, and it is the firmware that would have to do the fetching.
-- **The radio needs a cable in this session anyway** (below), so the Walter's own flash costs
-  nothing extra; a 752 kB application over LTE-M on a metered SIM across several wakes is not free.
+- **its second HTTPS connection of a wake was the one that failed** — `the request did not go out`,
+  three wakes in a row on 6 November, because every connection was socket 1 and the previous
+  connection's close landed on the next one. An offer is the config, the heartbeat, the claim, the
+  manifest, its signature and a dozen ranges, so a unit that cannot make two connections cannot
+  make fifteen. The fix is `v0.1.1`'s, and the firmware that would have to do the fetching is the
+  firmware with the fault.
+- **the radio needs a cable in this session anyway** (below), so the Walter's own flash costs
+  nothing extra; 750 kB over LTE-M on a metered SIM is not free.
 
 ### Then the radio's first install
 
 1. **`rak hello`** — the radio's session: its firmware version, its board, its slot, and with a
-   repeater at `v0.1.1` its `band 868` (a `v0.1.0` radio says `band: not said (a 1.0 radio)`, which
-   is a radio this Walter still talks to, flashes and proves). No answer at all is
+   repeater at `v0.1.1` or newer its `band 868`, and at `v0.1.2` the `local-request` capability
+   (a `v0.1.0` radio says `band: not said (a 1.0 radio)`, which is a radio this Walter still talks
+   to, flashes and proves). No answer at all is
    [`bench.md`](bench.md) §3, not an update.
 2. **The candidate the unit holds may not be the one to use.** `image list` says what is in the
    store and `image bad` lists the hashes of candidates that failed. **A first install that failed
    put its candidate's hash on the bad list before it entered *stuck*** (`RadioUpdate::fail`: the
    hash first, then *no image to return to*), and such an image is refused before a sector is
    erased — `error: rak update: refused at check: this image failed a health check once and is
-   never tried again` — and cannot be pushed back in either. So on the unit of 6 November, push the
-   repeater's **`v0.1.1`**, which is a different file and a different hash:
+   never tried again` — and cannot be pushed back in either. So push the repeater's current
+   release, **`v0.1.2`**, which is a different file and a different hash:
 
    ```
    python tools/walterctl.py push --port COM7 --as candidate <release-dir>
@@ -181,8 +274,8 @@ Why the cable all the same, for this one unit:
 
    Nothing has to be typed about the conversion: `walterctl` reads the protocol off the console's
    ready line and takes a 0.1.0 Walter's CR LF back out of its answers by itself (*Pushing a
-   repeater image in over the cable*, above). Against a Walter already at `v0.1.1` it says
-   `protocol 2` and sends the frames as they are.
+   repeater image in over the cable*, above). Against a Walter already at `v0.1.1` or newer it
+   says `protocol 2` and sends the frames as they are.
 3. **`rak update --first-install`** — the run with no golden image to return to, a person's command
    only. Expect the flasher's page lines through the scan, the pages and the read-back **with no
    reboot in the middle** (that reboot was the fault), then the reset, the health check and
@@ -213,7 +306,7 @@ radio has a proved application to go back to, and every later image is an ordina
 ### Then meshmaster.dk
 
 *Read the unit's state* on the unit's page. With a golden image the slot's role, board and band
-come from the image's own descriptor; with a `v0.1.1` radio and no golden image they come from the
+come from the image's own descriptor; with a `v0.1.1` radio or newer and no golden image they come from the
 session's `HELLO`, which now ends with the band — the one word that was missing on 6 November and
 the reason the server could pick no image. Either way *Mark canary* can offer this release, and the
 unit's repeater can be offered a release from then on with no cable at all.
@@ -281,7 +374,7 @@ On the exit node's page, after that wake:
   once a minute has passed: a repeater-v2 unit tells the server when it will be back, and the
   server judges it against that promise rather than calling it quiet between wakes;
 - **the firmware version** — `agentVersion`, which is this firmware's own version string,
-  `0.1.1+<sha7>` for this release. It is the one place a person sees which release a unit out there
+  `0.1.2+<sha7>` for this release. It is the one place a person sees which release a unit out there
   is actually running;
 - **the repeater** — the unit's heartbeat reports its radio's public key, and the first heartbeat
   carrying a key the server knows links the exit node to that repeater by itself.

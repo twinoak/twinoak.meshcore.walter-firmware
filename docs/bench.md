@@ -5,11 +5,12 @@ rig is brought up (`spec/SYSTEM.md` §7, and the hardware repository's
 `hardware/pcb/BENCH-BREADBOARD.md` §7): the Walter alone, then the UART, the reset line, SWD, the
 first flash, **and only then the kill line** — then images, updates, the supervisor, the modem,
 HTTPS, provisioning, sleep, and a day of it. A Walter has run a development build of this firmware
-and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`), and the first unit ran
-`v0.1.0` at a desk on 6 November — half an hour that found five faults and walked none of the items
-below. **No unit has walked this file.** It is what turns that sentence over, and **`v0.1.1` is the
-release it is walked with** ([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item
-added by this phase's tasks needs that release or later, and says so.
+and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`); the first unit ran `v0.1.0`
+at a desk on 6 November — half an hour that found five faults — and `v0.1.1` on 7 November, which
+gave its radio a golden image and found five more. **No unit has walked this file.** It is what
+turns that sentence over, and **`v0.1.2` is the release it is walked with**
+([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item added by phases 8 and 9
+needs that release or later, and says so.
 
 Walk it in order. A step whose *Needs* are not met is a step that will waste an evening, and a
 number written down in step 2 is one step 16 does not have to guess at.
@@ -174,8 +175,8 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
 
   (that hex is the public half in `keys/release-keys.txt`, key id `73efdd383a957596`; the same
   thing with the file rather than the hex is `python tools/release/verify_release.py <the
-  directory>`). Then flash `twinoak-walter-v0.1.1-factory.bin` with the `esptool` line in the
-  release's own body and read three lines: the banner's version is **`0.1.1+<sha7>`** with that
+  directory>`). Then flash `twinoak-walter-v0.1.2-factory.bin` with the `esptool` line in the
+  release's own body and read three lines: the banner's version is **`0.1.2+<sha7>`** with that
   commit's seven characters, `self status` says `ota_0` and **`valid`**, and `trust` says
   **`1 key … 73efdd383a957596`**. That is the whole point of the release: a board flashed by cable
   with it can take every later one over LTE.
@@ -187,13 +188,13 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   written for somebody who has not read the rest, and a session cannot tell whether it is enough.
 
 - [ ] **A release taken over an older one by cable, on a unit that is already a unit** (task
-  p8-06; the first unit, which is at `v0.1.0`). This is the item that says a factory flash is
+  p8-06; the first unit, which is at `v0.1.1`). This is the item that says a factory flash is
   **safe on a unit in service**, which every sentence about updating by cable rests on. Before:
   `get` (how many of the keys are set), `image list` (what the store holds, with the candidate's
   hash), `rak update status` (the 6 November story and its last state), `image bad`. Then the
   `esptool` line of [*Releases* → *Latest*](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)'s
   `-factory.bin` ([`flashing.md`](flashing.md), *A unit at 0.1.0*), and afterwards:
-  the banner says **`0.1.1+<sha7>`**, `self status` says `ota_0` and `valid`, and **all four
+  the banner says **`0.1.2+<sha7>`**, `self status` says `ota_0` and `valid`, and **all four
   readings above are unchanged** — the same keys set (a secret still answers `set`, never its
   value), the same images in the store with the same hashes, the same journal with the same last
   state, the same bad list. One key lost, one image gone or one journal entry missing is a finding
@@ -1598,8 +1599,8 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       ran real jobs costs more than a quiet one, and *how much more* is the number this item brings
       back.
 - [ ] **The release a unit is running, on the server's page** (task p7-01). After any wake of a
-      board flashed from `v0.1.1`, the exit node's page shows the firmware version it reported —
-      `agentVersion`, this firmware's own string, **`0.1.1+<sha7>`** — beside the heartbeat. It is
+      board flashed from `v0.1.2`, the exit node's page shows the firmware version it reported —
+      `agentVersion`, this firmware's own string, **`0.1.2+<sha7>`** — beside the heartbeat. It is
       the one place a person sees which release a unit out there is actually on, and *LTE test
       node*'s page said `0.0.0-dev` until this one was flashed. Check that the seven characters
       are the tagged commit's.
@@ -1720,6 +1721,25 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       after any run: the oldest entry of it, `check`, carries the candidate's `sha256` and not
       `0000000000000000…`. On the first unit the 6 November run's `seq 28` was all zeros and the
       journal never said which image that run was about.
+- [ ] **The Walter's own release over LTE, 0.1.1 to 0.1.2** (task p9-07). The item this release
+      exists to make possible, and **the first one that would put a new image on a unit with no
+      cable in it**. *Offer a release* on the unit's page, product `twinoak-walter-firmware`,
+      release `v0.1.2`, with a reason; then `agent wake` (or wait for one). Expected, in this
+      order: the six checks in the console's `fetch` lines, **twelve ranges** of 64 kB for about
+      750 kB, a `progress` line on the job's page every 128 kB, and the result `stored` with the
+      manifest's hash — then `self status` saying `received: 0.1.2 … waiting for 'self switch'`.
+      **Write down the wall-clock seconds of the download and the wake's own elapsed time**: the
+      Walter's slot does **not** resume across wakes (`SelfUpdate::beginWrite` erases it), so the
+      whole file has to fit one wake's twenty minutes, and this is the first measurement of whether
+      it does on a real LTE-M plan. If the wake's budget cuts it short, the job's message says *the
+      next wake continues it* and for the Walter that is wrong — the next wake starts at zero;
+      note the bytes that were paid for twice.
+      Then *Apply the candidate*: the board restarts, the trial's three conditions hold inside the
+      next boot's own wake, and that same exchange posts `committed` with `0.1.2+<sha7>` — the
+      banner, `agentVersion` on the page and `self status` all saying it, and `self status` `valid`
+      rather than `pending-verify`. **If the trial rolls back**, the previous image returns by
+      itself and the page says `rolledBack` with the journal: read it before flashing anything by
+      cable, because the rollback working is the better half of this item.
 
 ## What to bring back
 
