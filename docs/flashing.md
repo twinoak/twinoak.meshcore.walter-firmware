@@ -160,11 +160,11 @@ fetch: manifest.json, 1024 bytes
 fetch: manifest.json.sig, 108 bytes
 fetch: check 1, the signature: passed (key this build trusts)
 fetch: check 2, the manifest: passed
-fetch: check 3, the image for this slot: passed - twinoak-walter-v0.1.2.bin, 763479 bytes, version 0.1.2+<sha7>
+fetch: check 3, the image for this slot: passed - twinoak-walter-v0.1.2.bin, 763616 bytes, version 0.1.2+<sha7>
 fetch: check 6, the manifest's region against this build's: passed
   range 0-65535: ok,  (attempt 1)
   ...
-fetch: 763479 bytes in 12 range(s), 0 retries, 0 restart(s), 214000 ms
+fetch: 763616 bytes in 12 range(s), 0 retries, 0 restart(s), 214000 ms
 fetch: check 4, the file's size and hash: passed
 fetch: check 5, the descriptor inside the file: passed
 fetch: check 6, the region: passed
@@ -178,7 +178,7 @@ On the unit's page while it runs: the job's **Progress** line, *512 kB of 745 kB
 128 kB between two ranges (the one moment the socket is free), and the lease extended as it goes.
 When it is done the job says *stored*, with the image id, the hash and the bytes, and the page's
 **Firmware downloads** box gains a line for what the plan was billed. At the cable, `self status`
-now says `received: 0.1.2 in slot 1 (763479 bytes), waiting for 'self switch'` — the same state a
+now says `received: 0.1.2 in slot 1 (763616 bytes), waiting for 'self switch'` — the same state a
 `self receive` over USB leaves, and the same one the apply below consumes.
 
 ### 2. *Apply the candidate*
