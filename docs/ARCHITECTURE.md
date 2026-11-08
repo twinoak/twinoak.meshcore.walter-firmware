@@ -1123,8 +1123,14 @@ USERTrust, every other host to ISRG); a host whose chain ends elsewhere fails it
 
 Above the socket: a **client** (`core/net/client.h`) that refuses anything but `https://` before
 the modem is touched, follows at most three redirects and only to `https://`, never carries an
-`Authorization` header to another host, reads 401/403 as *denied* and 429/5xx as *later* with
-`Retry-After` capped at an hour, and cuts a body at the caller's bound rather than buffering it; a
+`Authorization` header to another host, **puts `X-Agent-Version` on every request it makes** (task
+p10-05: the header meshmaster.dk refuses an `/agent/v1` request without, which the download never
+sent until v0.1.3 - it is the client's so that no path above it can forget it, and a caller that
+names the header itself keeps its own value), reads 401/403 as *denied* and 429/5xx as *later* with
+`Retry-After` capped at an hour, **names a refused request by its status and its file** (*http 400
+for manifest.json*, with the server's problem-details `detail` after it, one printable line, cut to
+fit and dropped whole when it holds the request's token), and cuts a body at the caller's bound
+rather than buffering it; a
 **download** (`core/net/download.h`) in ranges of 64 KB, each with its deadline and three attempts,
 resuming from what the sink holds, refusing a 206 whose `Content-Range` is not the range asked
 for out of the size expected, restarting the sink from zero on a 200 (a server that ignores

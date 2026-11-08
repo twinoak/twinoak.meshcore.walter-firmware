@@ -1749,7 +1749,15 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       journal never said which image that run was about.
 - [ ] **The Walter's own release over LTE, 0.1.1 to 0.1.2** (task p9-07). The item this release
       exists to make possible, and **the first one that would put a new image on a unit with no
-      cable in it**. *Offer a release* on the unit's page, product `twinoak-walter-firmware`,
+      cable in it**.
+      **Read first (task p10-05): this cannot work from 0.1.2 or older until meshmaster.dk's pile
+      4.28 task 177 is deployed.** On 8 November job 22841 failed in two seconds because no
+      download has ever sent `X-Agent-Version`, which the server requires on every `/agent/v1`
+      request; 177 serves the three download routes without it, for the units already out there,
+      and v0.1.3 sends it. So: either the server has 177 and the unit may be at 0.1.2, or the unit
+      is at v0.1.3 or newer and the server's half does not matter. Otherwise the cable
+      (`docs/flashing.md`, the correction in the LTE walk) and this item waits.
+      *Offer a release* on the unit's page, product `twinoak-walter-firmware`,
       release `v0.1.2`, with a reason; then `agent wake` (or wait for one). Expected, in this
       order: the six checks in the console's `fetch` lines, **twelve ranges** of 64 kB for about
       750 kB, a `progress` line on the job's page every 128 kB, and the result `stored` with the
@@ -1779,6 +1787,25 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       transfer of sha256 … stopped at N of M bytes (it can be resumed)` and the next wake's
       `fetch` line says *resuming at N of M bytes already in flash*). A Walter offer that said
       *continues it* would be v0.1.2's wording and a finding against this task.
+- [ ] ★ **The download says who it is** (task p10-05). The item that unblocks the two above, and
+      the first thing to walk of this release. **Needs the unit at v0.1.3** (by cable, the one time)
+      **and the uplink up.** Two readings, in this order:
+      1. **A release fetched over LTE at all.** *Offer a release* for either product and
+         `agent wake`. Expected: the console's `fetch: manifest.json, N bytes` line — which on
+         0.1.2 never came, because the manifest's own request was answered 400. The job must not
+         come back in two seconds with a refusal. **If it does**, read the next reading's sentence:
+         it now says which status and which file.
+      2. **A refusal that names itself.** Force one at the cable, with no job needed:
+         `lte up`, then `http get https://meshmaster.dk/agent/v1/firmware/999999/manifest.json`.
+         Expected: `http get: 400 failed` (or 401/404 — whatever that server answers an
+         unauthenticated request to a release that is not there) and **the line under it naming the
+         status and the file**: `http 404 for manifest.json`, with the server's own sentence after
+         it when it sends problem details. *a status this firmware does not act on* appearing
+         anywhere is v0.1.2's wording and a finding against this task. **No token may be in that
+         line**, whatever the server wrote: check it against `dump` as well.
+      Worth noting while the cable is in: `agent url` still prints the `X-Agent-Version` the
+      agent's calls carry, and it must be the banner's version. A download carries the same one
+      now, which the server's own log is the place to confirm.
 
 ## What to bring back
 

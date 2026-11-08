@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "agent/agent_bench.h"
+#include "core/version.h"
 #include "fixtures/manifest_files.h"
 
 using bench::AgentBench;
@@ -488,4 +489,53 @@ TEST_CASE("twinoak.power.cycle: within the board's bounds the rail is cut and th
     CHECK(bench::member(bench.lastResult(34), "outcome") == "failed");
     CHECK(bench.v().pins.kill_cycles == 1);
   }
+}
+
+TEST_CASE("an offer of each product, through the server's own X-Agent-Version rule: every request of the wake carries the header") {
+  // What task p10-05 is about, end to end. The scripted server refuses an `/agent/v1` request
+  // without `X-Agent-Version` with meshmaster.dk's 400 (sim/scripted_server.h,
+  // `agent_version_required`, from its AgentV1.cs at commit d7b9b3ea9deb), and the base of a
+  // release is `/agent/v1/firmware/7` (unit-protocol.md §4). Before this task the download's
+  // three requests carried no header, and the offer failed in two seconds - job 22841 of
+  // 8 November 2026 - while every host test passed, because the fake took any request.
+  const char* product = nullptr;
+  bool ota = false;
+  const char* fixture = nullptr;
+  const char* image_id = nullptr;
+  SUBCASE("the radio's image") {
+    product = agent::kProductRepeater;
+    fixture = "store-a";
+    image_id = "repeater.rak4630-single.868";
+  }
+  SUBCASE("the Walter's own image") {
+    product = agent::kProductWalter;
+    fixture = "self-a";
+    image_id = "manager.walter.lte-m";
+    ota = true;
+  }
+  AgentBench bench;
+  const Candidate golden("update-golden");
+  const Candidate offered(fixture);
+  readyUnit(bench, golden);
+  bench::serveRelease(bench.world.http.server, offered, bench::kBase, nullptr, nullptr, nullptr, ota);
+  bench.server().queue(bench::ownJob(55, agent::kOfferType, bench::offerPayload(offered, product)).json());
+  (void)bench.oneWake();
+
+  const std::string data = bench::objectOf(bench.lastResult(55), "data");
+  REQUIRE_FALSE(data.empty());
+  CHECK(bench::member(data, "stored") == "true");
+  CHECK(bench::member(data, "imageId") == image_id);
+  CHECK(bench::member(data, "bytes") == std::to_string(offered.file.size()));
+
+  // Not one request of the wake went without the header - the heartbeat, the claim, the lease's
+  // extensions, the manifest, the signature, every range of the file, and the result.
+  const sim::ScriptedServer& server = bench.world.http.server;
+  CHECK(server.unversioned_refused == 0);
+  REQUIRE(server.requests.size() >= 6);
+  int downloads = 0;
+  for (const sim::SeenRequest& r : server.requests) {
+    CHECK_MESSAGE(r.header("X-Agent-Version") == core::version(), r.path);
+    if (r.path.rfind(std::string(bench::kBase) + "/", 0) == 0) ++downloads;
+  }
+  CHECK(downloads == 3);  // the manifest, its signature, the one range of this fixture's file
 }

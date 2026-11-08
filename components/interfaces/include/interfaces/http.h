@@ -32,8 +32,11 @@ struct HttpHeader {
   const char* value = nullptr;
 };
 
-// How many a request may carry. Range, If-Range, Authorization and a content type is the most
-// this firmware ever sends at once; a fifth is a mistake worth a compile error.
+// How many a request may carry. Four is the most this firmware ever sends at once, and two
+// different fours: a range of a download carries `X-Agent-Version`, `Range`, `If-Range` and
+// `Authorization`, and an agent call carries `X-Agent-Version`, `Accept`, `Authorization` and
+// `Content-Type` (task p10-05 made the first of each the client's own, core/net/client.h). A
+// fifth is a mistake worth a compile error.
 constexpr std::size_t kMaxRequestHeaders = 4;
 
 struct HttpRequest {

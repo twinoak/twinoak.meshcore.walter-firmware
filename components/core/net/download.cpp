@@ -298,7 +298,11 @@ DownloadResult Download::fetch(const char* url, std::uint32_t expected_size, con
       return finish(DownloadVerdict::kWrongFile, range_sink.why());
     }
     if (r.status == 416) {
-      report.why = "416: the server's file is shorter than the manifest promised";
+      // The client's own sentence names the status and the file (task p10-05); what a 416 means
+      // to a download is this firmware's to add.
+      std::snprintf(refusal_, sizeof refusal_, "%s: the server's file is shorter than the manifest promised",
+                    r.why);
+      report.why = refusal_;
       if (listener != nullptr) listener->range(report);
       return finish(DownloadVerdict::kWrongFile, report.why);
     }

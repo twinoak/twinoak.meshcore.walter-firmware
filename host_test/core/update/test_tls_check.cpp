@@ -49,6 +49,12 @@ TEST_CASE("no host: not configured; a reachable host with the right root: reache
   CHECK(reached.lastOpen() == interfaces::TlsOpen::kNoUplink);
   CHECK(std::string(reached.serverHost()) == "meshmaster.dk");
   CHECK(reached.serverPort() == 443);
+
+  // The condition is a **handshake and nothing more**, so there is no request to carry
+  // `X-Agent-Version` and task p10-05 left it alone: the server saw no request of any of the
+  // five checks above, and the one that reached the server opened and closed a connection.
+  CHECK(server.requests.empty());
+  CHECK(socket.opens > 0);
 }
 
 TEST_CASE("a modem that will not take the roots is a failed check, not a confirmed trial") {
