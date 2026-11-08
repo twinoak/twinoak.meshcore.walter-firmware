@@ -42,6 +42,20 @@ until something resets it. The ladder's second rung is a reset, so the ladder fi
 then ends there, because something is running over there and it is not this unit's business to
 reflash it from under a person.
 
+### What a classification means to the rest of the firmware
+
+The health the supervisor ends up with (`rak watch`, `status`) is read by two other machines, and
+each reads it through one function of `core/supervisor/supervisor.h` so that there is a single
+answer:
+
+| Question | Who asks | Answer |
+|---|---|---|
+| **is the link known down?** | the radio's update machine: the `HELLO` refusal and the battery-unknown refusal of a `check` (`docs/update.md`) | `linkKnownDown()` - **`silent` alone**. A scanner is answering in its own way, and a slot awaiting its first install is silent by design: an apply of either is refused, not flashed past |
+| **will the radio answer a frame `HELLO`?** | the Walter's own update: the trial's second condition (`docs/update.md`) | `radioKnownDown()` - `silent`, `scanner` or `awaiting its first install`. Not `unknown`: a wake that classified nothing waives nothing, and a switch on a radio that does not answer is refused instead of putting a good image on a trial it cannot pass |
+
+Neither is *the radio did not answer us just now*. A radio can be silent on this wake's `HELLO`
+without the supervisor having decided anything about it, and in that state both refusals stand.
+
 ## The ladder
 
 Each rung is tried only after the one below it failed, and each is followed by a wait before the

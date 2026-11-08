@@ -218,10 +218,13 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
     context.may = core::power::allowanceFor(band);
     context.on_trial = known.wake.on_trial;
     context.update_running = known.wake.update_running;
-    // A radio that did not answer the HELLO above is silent whatever the wake's own record says:
-    // the console's `agent wake` runs no step 2 and has no health to carry.
-    context.radio_silent = !radio_up || static_cast<core::supervisor::Health>(known.wake.radio) ==
-                                            core::supervisor::Health::kSilent;
+    // Nothing about the radio's health crosses here (task p9-03). What the HELLO above settled is
+    // the *other* fact - whether there is a key to tell a job for this unit's own repeater by -
+    // and `sayRadio()` has just reported it. *The link is known down* is a classification of the
+    // supervisor's, which the jobs read off the supervisor itself
+    // (walter_agent/firmware_jobs.h, `radioHealth()`): p8-04 made this line say it whenever there
+    // was no frame session, and a scanner slot and a slot awaiting its first install have none
+    // either.
     context.battery_known = known.battery_known;
     context.battery_mv = known.battery_mv;
     context.deadline_ms = deadline_ms;

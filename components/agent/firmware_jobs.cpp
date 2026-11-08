@@ -660,7 +660,10 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
   upd::Request request{};
   request.kind = first_install ? upd::Kind::kFirstInstall : upd::Kind::kUpdate;
   request.slot = radio_.slot();
-  request.link_known_down = context_.radio_silent;
+  // The link's refusal and the battery's below it read **the supervisor's classification** and
+  // nothing else (task p9-03): a scanner slot and a slot awaiting its first install have no frame
+  // session either, and neither is a radio this end may flash past the two of them.
+  request.link_known_down = core::supervisor::linkKnownDown(radioHealth());
   if (!parts_.update->start(request)) {
     char note[kJournalNoteBytes];
     std::snprintf(note, sizeof note, "%.70s", upd::describe(parts_.update->reason()));
@@ -806,7 +809,11 @@ bool FirmwareJobs::runSelfApply(const mm::ClaimedJob& job, const char* expected_
   did_.carried = interfaces::Ask::kUpdateSelf;
   line("check", "the received image is the one the server named");
   upd::SwitchRequest request{};
-  request.radio_known_down = context_.radio_silent;
+  // The trial's second condition: only a radio the supervisor has classified may be waived
+  // (task p9-03). A wake that classified nothing waives nothing, and the switch is refused on a
+  // radio that does not answer - which is what keeps a good Walter image from being condemned by
+  // a `HELLO` nobody had decided about.
+  request.radio_known_down = core::supervisor::radioKnownDown(radioHealth());
   const std::uint64_t began = clock_.nowMs();
   const upd::SelfReason why = parts_.self->switchNow(request);
   did_.outside_ms += static_cast<std::uint32_t>(clock_.nowMs() - began);
