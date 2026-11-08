@@ -1374,6 +1374,16 @@ bool JobRunner::meshDeclines(const ClaimedJob& job) const {
   return !offered && !mesh_->supports(job.type);
 }
 
+// The local door, asked for a job rather than for the job in progress (IMesh::answersLocallyFor,
+// task p1.10-43). One question in one place: `spend` and `loginMaterial` ask the mesh about the
+// job they are inside, by `answersLocally()`, and a caller that prices a claimed job before it is
+// begun asks the same door about the job's repeater through here. The interface's contract is
+// that the two agree, so what the wake prices is what the run will do.
+bool JobRunner::meshAnswersLocally(const ClaimedJob& job) const {
+  if (mesh_ == nullptr) return false;
+  return mesh_->answersLocallyFor(job.repeaterKey);
+}
+
 Outcome JobRunner::runJob(const ClaimedJob& job, Context& ctx, size_t& dataLen) {
   dataLen = 0;
   // The lease first, before anything is decided about the job (task 06). A claim's jobs are run

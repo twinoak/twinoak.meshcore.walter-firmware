@@ -194,6 +194,28 @@ class IMesh {
   // its own and it has no local door. Cheap, const, never blocks.
   virtual bool answersLocally() const { return false; }
 
+  // **Would a job for this repeater be answered without the air?** - the same door, asked for a
+  // key **before** any job has begun (task p1.10-43). `answersLocally()` above cannot answer it:
+  // it is true only from a `beginJob` to its `endJob`, and the caller that needs to know is the
+  // one which **prices** a claimed job before it runs it (`AgentLoop::wakeJobs`). The two must
+  // agree: this is true for a key exactly when a job begun for that key would make
+  // `answersLocally()` true. The key is 64 lowercase hex characters, as a claim carries it and as
+  // `beginJob` takes it; a key this mesh cannot parse is false, not an error.
+  //
+  // A job answered true here is priced at **its reply waits**: no airtime gaps and no
+  // transactions, because neither is spent on a job that never touches the channel. Priced as air
+  // instead, a 34-line `config.read` of a unit's own repeater looked like 34 x (20 s + 8 s), 952
+  // s, to a wake that would really have finished it in seconds - and a wake slice shorter than
+  // that refused, at no transaction and in no time at all, the very job `answersLocally()` made
+  // fast.
+  //
+  // The default is **false**, as above: a mesh that overrides nothing is priced as air for every
+  // job, which is what this board's `AgentMesh` is. Cheap, const, never blocks.
+  virtual bool answersLocallyFor(const char* publicKeyHex) const {
+    (void)publicKeyHex;
+    return false;
+  }
+
   // ------------------------------------------------------------------ a job's exchanges
 
   // The repeater this job is for, and the path the server knows to it (the hop hashes as the

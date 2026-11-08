@@ -89,6 +89,31 @@ of its own (`journal`: *agent, the agent asked for a restart for its health and 
 **Nothing of it touches the radio.** No frame is sent, no ladder is climbed and the radio is not
 woken: it is a byte, a letter and a line.
 
+### How long the board was away (task p10-01)
+
+The same retained record carries one more thing: **the seconds the last sleep asked its timer
+for**, written by `endingInSleep()` as the last thing before the chip goes down and read by the
+boot on the other side. It is there because of what `interfaces/clock.h` says — `esp_timer`
+restarts at zero after a deep sleep — and because the agent's library has to be told how long a
+board was away, or a wait the server asked for counts for nothing across it.
+
+`core::cycle::WakeReason::timeAwayMs()` is the answer, and the rule is **never more than really
+passed**:
+
+| This wake | What it was away |
+|---|---|
+| the timer | the seconds the sleep asked for, **less ten per cent** — the deep-sleep timer runs on the internal RC oscillator the ESP32-S3's `RTC_SLOW_CLK` defaults to, which ESP-IDF calibrates against the crystal at every boot and for which Espressif publishes no tolerance ("the frequency stability of this clock source is affected by temperature fluctuations", `docs/en/api-reference/system/system_time.rst`). `core/cycle/wake_reason.h` cites all of it beside the figure |
+| anything else | **0.** The radio's line, a spurious wake, a person's cable, a power-on, a reset, a crash, a watchdog: the sleep was cut short and nothing here knows how much of it had passed |
+
+A figure too small owes a sliver of a wait for one more wake; a figure too large calls a server
+back before the wait it asked for. So the discount is deliberate and the 0 is deliberate.
+
+**The record grew by four bytes for it**, and a retained record of another size in the same slot is
+not the same record (`interfaces/retained.h`). So the first boot of 0.1.3 reads none: for that one
+wake the wake log, the band's hysteresis, the spurious count and the faults in a row all start
+again, exactly as after a power cut, and the interval is the `unknown` band's hour. `wake` says
+*the record did not survive*, and the wake after it is normal.
+
 ### What is journalled, and what is not
 
 **Not every wake.** The journal is 1024 entries of 64 bytes in one 64 KB partition and it exists

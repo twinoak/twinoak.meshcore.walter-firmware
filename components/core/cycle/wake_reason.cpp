@@ -50,11 +50,13 @@ void WakeReason::load() {
     record_ = Record{};
     band_ = power::Band::kUnknown;
     wakes_in_saving_ = 0;
+    asked_s_ = 0;
     count_ = 0;
     return;
   }
   if (record_.count > kWakesRemembered) record_.count = kWakesRemembered;
   count_ = record_.count;
+  asked_s_ = record_.asked_s;
   band_ = record_.band < static_cast<std::uint8_t>(power::Band::kCount)
               ? static_cast<power::Band>(record_.band)
               : power::Band::kUnknown;
@@ -252,11 +254,26 @@ void WakeReason::clearAgentAttention() {
   if (begun_) save();
 }
 
-void WakeReason::endingInSleep(std::uint32_t lasted_s) {
+void WakeReason::endingInSleep(std::uint32_t lasted_s, std::uint32_t asked_s) {
   // 0 is reserved for "it never reached sleep", so a wake shorter than a second is recorded as
   // one second: it did reach sleep, and that is the thing the entry is asked about.
   record_.items[0].lasted_s = lasted_s == 0 ? 1 : lasted_s;
+  // And what this sleep asks its timer for, for the boot on the other side of it to read. 0 is
+  // honest here: a sleep with no timer at all (the radio's line alone) is a sleep whose length
+  // nothing can know, and `timeAwayMs()` answers 0 for it.
+  record_.asked_s = asked_s;
   save();
+}
+
+std::uint32_t WakeReason::timeAwayMs() const {
+  // Only a timer wake. Everything else was cut short by whatever woke the board, and nothing
+  // here knows how much of the sleep had passed when it was (see the header).
+  if (!begun_ || info_.wake != Wake::kTimer || asked_s_ == 0) return 0;
+  // In 64 bits: the longest interval the policy can ask for is a day doubled four times by faults
+  // (core/power/interval_policy.h), and a person's `sleep <seconds>` is whatever they typed.
+  const std::uint64_t believed =
+      static_cast<std::uint64_t>(asked_s_) * 1000u * (100u - kTimerErrorPercent) / 100u;
+  return believed > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<std::uint32_t>(believed);
 }
 
 void WakeReason::forget() {
@@ -264,6 +281,7 @@ void WakeReason::forget() {
   count_ = 0;
   band_ = power::Band::kUnknown;
   wakes_in_saving_ = 0;
+  asked_s_ = 0;
   info_ = WakeInfo{};
   begun_ = false;
   survived_ = false;

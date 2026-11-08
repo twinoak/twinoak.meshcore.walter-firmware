@@ -1604,6 +1604,19 @@ backoff, the accepted interval, the airtime budget, a 401 and the heartbeat's co
 a retained slot of its own before the sleep and is restored before the next wake: every duration in
 it is a *duration* and not a deadline, because `millis()` restarts at zero after a deep sleep.
 
+**And the restore is told how long the board was away** (task p10-01). A wait the server asked for
+is a number of seconds of *real* time, so `restore(state, awayMs)` takes the sleep off it: without
+that a 30 s hold was put back whole at every wake and spent five seconds at a time across wakes
+that each sent nothing — the first unit woke 56 times on the night of 8 November 2026 and
+meshmaster.dk heard from it on about every sixth. The library cannot measure it (its only clock is
+`millis()`, which the sleep kills), so this firmware does:
+`core::cycle::WakeReason::timeAwayMs()`, which answers the seconds the last sleep asked its timer
+for — written into the duty-cycle retained record by `endingInSleep()` — less the timer's own error,
+and **0 for every wake that is not the timer's**, because a sleep cut short by the radio's line, a
+cable or a reset is a sleep of no known length. The rule is *never more than really passed*: a
+figure too small owes a sliver of a wait for one more wake, a figure too large calls a server back
+before the wait it asked for.
+
 ### What it costs, and what it is linked by
 
 `mm::JobRunner` is tens of kilobytes of buffers — one scratch area every job shares rather than a

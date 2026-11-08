@@ -80,7 +80,7 @@ is written.
 
 ## Found while doing 05 (8 November)
 
-- [ ] **[later] The wake still prices a local job as air.** `AgentLoop::wakeJobs` asks
+- [x] **[later] The wake still prices a local job as air.** `AgentLoop::wakeJobs` asks
   `transactionsOf(job)` and `estimateJobMs(job)` - `n x (minGapSeconds + loginMs)` - *before* it
   runs a claimed job, and reports it `failed`, *wake budget: about N s left of this wake and
   config.read needs about M s*, at no transaction when the wake's slice is smaller. A 34-line
@@ -95,6 +95,15 @@ is written.
   the fix is upstream's: price a job the mesh answers locally at the reply waits and not at the
   gaps. Named here with the arithmetic so that the next pile can take it upstream rather than
   rediscover it from a bench refusal.
+  - **Taken upstream and closed by `tasks/phase-10/reports/01.md`.** The exit-node firmware's task
+    p1.10-43 added `IMesh::answersLocallyFor(publicKeyHex)` — the local door asked for a *key*,
+    before any job has begun — and `wakeJobs` now asks it once per job and reads the answer into
+    both bounds. p10-01 synced that commit and overrode the virtual
+    (`LinkMesh::answersLocallyFor`, `beginJob`'s own expression, so the two answers cannot drift
+    apart). The 34-line local read is priced at **272 s** and not **952 s**, and three cases of
+    `host_test/agent-backend/test_agent_local_door.cpp` hold the line it draws: the same job runs
+    inside a 400 s wake through the door, is refused at 952 s for a neighbour, and is refused at
+    272 s with *answered without the air* when the wake really is too small.
 
 ## Found while doing 07 (8 November)
 

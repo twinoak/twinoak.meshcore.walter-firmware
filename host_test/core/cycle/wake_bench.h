@@ -395,6 +395,14 @@ struct WakeWalter {
     duty.reset(new cyc::DutyCycle(sleeper, board, link, uplink, health, clock, wall, restart,
                                   w.retained, supervisor.get(), &update, &self, &journal,
                                   &settings));
+    // **Why the wake is worked out here and not in `begin()`.** main.cpp's order is
+    // `duty.begin()` (main/main.cpp:492) and then the agent's `backend.begin()` (:614), and
+    // since task p10-01 that order *matters*: the backend restores the agent library's state
+    // over how long the board was away, and the only thing that knows that is the wake reason
+    // this call settles (`core/cycle/wake_reason.h`, `timeAwayMs()`). The bench used to begin the
+    // duty cycle afterwards, in `begin()`, which no test had noticed - a Walter whose state was
+    // restored before anything knew why it was awake. `begin()` is idempotent about it now.
+    duty->begin();
     interfaces::Backend* backend = &w.backend;
 #if WALTER_AGENT
     if (w.agent) {
@@ -464,7 +472,7 @@ struct WakeWalter {
   // loop so that the trial's first condition is met.
   void begin() {
     (void)self.begin();
-    duty->begin();
+    if (!duty->begun()) duty->begin();  // the constructor did it: main.cpp's order (see there)
     duty->guard().arm();
     self.mainLoopReached();
   }

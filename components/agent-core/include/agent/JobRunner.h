@@ -271,6 +271,15 @@ class JobRunner {
   // The extension's own types are not asked; they are the extension's to decline.
   bool meshDeclines(const ClaimedJob& job) const;
 
+  // Will this job be answered **without the air** (IMesh::answersLocallyFor, task p1.10-43)?
+  // The same shape as meshDeclines() above, for the same reason: the mesh's own answer about a
+  // claimed job, asked by a caller that **prices** the job before it runs it. A job answered true
+  // here is the job `IMesh::answersLocally()` is true for once it has begun - and so the job
+  // `spend` neither paces nor counts a transaction for (task p1.10-40) - so a caller that prices
+  // one prices its reply waits and no gaps, and charges it no transaction. A runner with no mesh
+  // answers false, as it declines nothing.
+  bool meshAnswersLocally(const ClaimedJob& job) const;
+
   // The offline buffer (task 06): results the server did not take are kept and posted later,
   // oldest first, with the timestamps and the client ids they were made with. Called by the
   // agent loop after every heartbeat the server answered - "the offline buffer is posted first,

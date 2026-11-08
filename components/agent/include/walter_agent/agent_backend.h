@@ -29,7 +29,11 @@
 //                     the closed set's `asks` stay empty, because the agent's jobs are the work;
 //   across the sleep  the loop's `WakeState` (76 bytes, a POD) as hex in the key-value store
 //                     (`agent.state` in NVS: RTC memory has 36 bytes free, tasks/phase-3/reports/
-//                     05.md, and NVS is strings of 160) and restored before the next wake; and
+//                     05.md, and NVS is strings of 160) and restored before the next wake -
+//                     **with how long the board was away** (task p10-01), which the library takes
+//                     off a wait the server asked for, because the wait is a number of seconds of
+//                     real time and the sleep is most of them. `core/cycle/wake_reason.h`'s
+//                     `timeAwayMs()` is the measure and the rule it is measured under; and
 //                     the kept image of results and adverts a wake could not post, through the
 //                     library's own fourth seam over a flash window (walter_agent/region_store.h).
 //
@@ -165,6 +169,11 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   const mm::WakeReport& lastReport() const { return report_; }
   const AgentBackendCounters& counters() const { return counters_; }
   bool stateSurvived() const { return state_survived_; }
+  // What `restore()` was told this boot and what it was told it about (task p10-01): how long the
+  // board was away, as `core/cycle/wake_reason.h` measured it, and how much of a wait the state
+  // in the store still owed before that was taken off. Both 0 when no state was restored.
+  std::uint32_t timeAwayMs() const { return away_ms_; }
+  std::uint32_t holdOwedBeforeSleepMs() const { return owed_before_ms_; }
   bool begun() const { return begun_; }
   // The most an offer may download in one wake (kWakeDownloadBytes by default; a test sets a
   // small one to see a wake stop mid-download and the next resume).
@@ -192,6 +201,8 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   void (*pump_)() = nullptr;
   bool begun_ = false;
   bool state_survived_ = false;
+  std::uint32_t away_ms_ = 0;         // what restore() was told the sleep lasted
+  std::uint32_t owed_before_ms_ = 0;  // ... and the hold the stored state still owed before it
   mm::WakeReport report_;
   AgentBackendCounters counters_;
   std::uint64_t download_bytes_ = kWakeDownloadBytes;

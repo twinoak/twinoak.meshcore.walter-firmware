@@ -198,11 +198,23 @@ bool AgentBackend::loadState() {
     }
     bytes[i] = static_cast<std::uint8_t>((hi << 4) | lo);
   }
+  // **How long the board was away**, which the library cannot know and this firmware can only
+  // measure one way (task p10-01; the exit-node firmware's p1.10-42). `core/cycle/wake_reason.h`
+  // is where the rule and the figure are: a timer wake has slept what the last sleep asked its
+  // timer for, less the timer's own error, and every other wake passes 0. Without a duty cycle -
+  // a test that has none - it is 0, which is the behaviour this call had before it was measured.
+  //
+  // Until this, a 30 s hold set by one failed call was put back whole at every wake and spent
+  // five seconds at a time: the unit of 8 November 2026 woke 56 times in a night and
+  // meshmaster.dk heard from it on about every sixth.
+  const std::uint32_t away_ms = p_.duty != nullptr ? p_.duty->reason().timeAwayMs() : 0;
   // The library refuses a state of another version and changes nothing.
-  if (!p_.loop->restore(s)) {
+  if (!p_.loop->restore(s, away_ms)) {
     counters_.state_refused = saturate(counters_.state_refused);
     return false;
   }
+  away_ms_ = away_ms;
+  owed_before_ms_ = s.holdForMs;
   std::memcpy(last_hex_, state_hex_, sizeof last_hex_);
   counters_.state_restored = saturate(counters_.state_restored);
   return true;
@@ -525,10 +537,26 @@ void AgentBackend::state(interfaces::TextOut& out) {
   sayf(&out, "agent state: %s across the last sleep (%lu restored, %lu saved, %lu refused)\n",
        state_survived_ ? "restored" : "not restored", static_cast<unsigned long>(counters_.state_restored),
        static_cast<unsigned long>(counters_.state_saved), static_cast<unsigned long>(counters_.state_refused));
-  sayf(&out, "  version %lu; backoff %lu ms, %lu consecutive failure(s) for %lu ms, hold %lu ms left\n",
+  // The hold, and - in a second write on the same line, because one line of this console is 200
+  // bytes and the two halves together can be longer than that - **what the sleep took off it**
+  // (task p10-01). Before this firmware measured the sleep, the figure after the semicolon was
+  // always "0 s slept" and a wait the server asked for outlived five or six wakes.
+  sayf(&out, "  version %lu; backoff %lu ms, %lu consecutive failure(s) for %lu ms, hold %lu ms left",
        static_cast<unsigned long>(s.version), static_cast<unsigned long>(s.backoffMs),
        static_cast<unsigned long>(s.consecutiveFailures), static_cast<unsigned long>(s.failingForMs),
        static_cast<unsigned long>(s.holdForMs));
+  if (!state_survived_) {
+    say(&out, "\n");
+  } else if (away_ms_ > 0) {
+    sayf(&out, "; %lu s owed before the sleep, %lu s slept\n",
+         static_cast<unsigned long>(owed_before_ms_ / 1000u),
+         static_cast<unsigned long>(away_ms_ / 1000u));
+  } else {
+    // A state restored at a power-on, a reset, a crash or a wake on the radio's line: the hold is
+    // owed whole, because nothing here can say how much of the sleep had passed.
+    sayf(&out, "; %lu s owed before the sleep, no sleep this end could measure\n",
+         static_cast<unsigned long>(owed_before_ms_ / 1000u));
+  }
   sayf(&out, "  accepted interval %d s; budget %d/min, gap %d s; %s; %s, last heartbeat at %lu\n", s.pollIntervalS,
        s.budget.maxTransactionsPerMinute, s.budget.minGapSeconds,
        s.halted ? "HALTED on a 401 (set server.token)" : "not halted",

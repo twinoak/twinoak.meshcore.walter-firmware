@@ -1,29 +1,29 @@
 # The MeshMaster agent core, copied - never edited here.
-# source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit 8c24da5bca3dda6e788ab294d3b5357130140e1b
+# source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit 6290e0927a99d252ddcec7929f63719cbb32332d
 # written by tools/sync-agent-core.ps1; docs/upstream.md says how and when
 #
 # sha256                                                           bytes  name
 f293f9467ee62436d4bb5efd5f7505c04eb8118026d80165e56fe0acca36d211     3097  CMakeLists.txt
 caefa7229d88901938befb91ab7e530b022df726b4ce5f1d62430d6916342fc0     1523  idf_component.yml
-d7efae56d2de8a9e0dc389a1c7134d812226d10735c0e24fa836428368e34dc4    34215  include/agent/AgentLoop.h
+f1e9c4c85d7c1e3a5334cb28de1f85fce9b9e2ac0d1f0c2e745f5d4fcae6676e    36018  include/agent/AgentLoop.h
 54a1b82b6d81ab950911fb65f443be9b17601b9a35bbac4b67b1b3b9c817858a     3791  include/agent/Airtime.h
 caceeef2dd5744813f41eff3c8196ca31372b3dea7a3d5df7fe9121746fe56be     1805  include/agent/Backoff.h
 58967dd6f5a8e0bbd8a66e9e3e28e27ae986d1885886565781c50933cd8e639e     2022  include/agent/CliReplies.h
 6bb078aa91240fd01ead5aa1936028e591741616a5a5a2c22dce34c22194b2ba     9915  include/agent/ConfigApply.h
-c50fb692ab260530bf215ec7fa569312a3f57d39e58988ccb748cb12fea47b29     9099  include/agent/ConfigRead.h
+9ce2c5a6be8cee79e7713339a386a6fc7c684cde549479c591079a9e3c220c65     9477  include/agent/ConfigRead.h
 c2109f5576f50e38e4db8504efa0ea011bd5f0051d79407ebec9badb89a2706b     2546  include/agent/ConfigReply.h
 ff69aa9279b1eddf8f05b0b97d5bd19da6c910026dfa497114e2e4ad34eb528d     4602  include/agent/Credentials.h
 84fdd082b2d6ca787dc117a2942acba5ff34a216873920ebb1baa018c9bfad7c    10282  include/agent/Envelopes.h
 e6795133869628f8c75a549140fe8a53e29c78566cd4f4e5776cd9ee407a2d71     6180  include/agent/FloodScope.h
 969e794df1ce82eb8242b5fc62287cdb1da62c5d1914c16b27a1d1f7d00ef2e8     2800  include/agent/IJobExtension.h
-77746886849e8483864cb09415fe621580764c35a6cc3a7dd8c7007a4e2359b2    16426  include/agent/IMesh.h
+e6e5be69d4dd7a2aef5be7d3233b27085d3733b45502d0cf3f61cd8d3bac83de    17867  include/agent/IMesh.h
 7f03c8525ebc668ab00d70400b333a1214175c95a39f9882b790451bb4f47e13     3124  include/agent/IPlatform.h
 242cd49a1bf5d681b57069601c05705e6e61bfa25661688252d0cd168601f54e     4436  include/agent/IRetained.h
 ba57873ab1fba4c1a428b0f89ed8d8ae0256a6e948452fb6b810a5189ec2e8b9      934  include/agent/Iso8601.h
 26726a5148ea97e3e34a1b1fc44eb31c9ac0686d4388d79579049f2ac6337ada     4451  include/agent/IUplink.h
 3f4877bcabe7438ade32ca3cc8e4690ad51a45d8bee418dfdbb4513617cb32ff    12804  include/agent/JobEnvelopes.h
 12c037646e7c12d1144c5a92fd52b2cdef361e96577d629351e1a44e170b8238     6388  include/agent/JobResults.h
-93ed29c77bc1f4042f1a9a42a24f7e66e4d461d17a380d58f7742beab8ecb336    31506  include/agent/JobRunner.h
+825e87b897169df4aa382d1b7a5339ff31bb15891344434e45ca8a42e7a46df0    32186  include/agent/JobRunner.h
 eef72dfcc0bdfd7e1303fde132ca1173046b0db45ed94248e5ee673d81bd1eef     2539  include/agent/Json.h
 c21c9d43aa77057c3b917f1001e776476ca954d22ba32414b7570def199a9fa0    12151  include/agent/JsonWriter.h
 4e602d5402d406db3788946da1625c2fc58732d87bd42546fc0df2bcb80bdf98     6552  include/agent/KeptImage.h
@@ -40,12 +40,12 @@ af88ccd7d758b15d201a369166021e25a0a2f4b3c26721836ce9d2a1afdd3470     3263  inclu
 3cf6f1d3dd4c91bf568afdd6f9f2f3ac49c56ec642a2fa2988e49cf71f4a5118     5379  include/agent/UplinkMeter.h
 04ff4490d5271a9931fc7000ef8fc7b0101f48c882f0d0c83cfb9bf9700ff565      819  include/agent/Version.h
 8b4bf0772892adeaeab7dfb658fc5cf639404494782566274e089a1958650260      926  library.json
-789a3dca95833d2e370e73a8ffb06457de008f4cedb9005509ab8ead0e17c61e    56546  src/AgentLoop.cpp
+278e334bb1d3f8c7b0c09077bf83ef224843bb5f3d9975c0f3893b8498cfeb87    59188  src/AgentLoop.cpp
 7b6d7a7fd83564d261a3bb3308e3d4506dcf0015b77ceb7064cab4d3c897b185     3546  src/Airtime.cpp
 37c1cfd6e7a9afdac14caa13d6cb329f0392cf9e4cdc1e8f81c9060681721f7e      995  src/Backoff.cpp
 7581c2966c738b0f2e059089652b8fc77a9b0f5f5769949d39761d1edb069580     1092  src/CliReplies.cpp
 1ee2f72686e0284d4dd3fc23c8aced692d8134825c8336d3a95d3c4eff4dc9e4    17955  src/ConfigApply.cpp
-6f48aeb1593803b7cbd8f7719ab96f5df40908b3dce8b0ed8e6c764e4034d719     8934  src/ConfigRead.cpp
+c096f3b2981a9248e58bb2711abe386f2af1e648e8980bb67bb828f3c406bfc1    10016  src/ConfigRead.cpp
 4b7af217f81fe607aabaaec3e4ba38988ec21c29bfee8f9532e316b3c77a574f     4762  src/ConfigReply.cpp
 207d928b51618632940f5afe479d26a700195d9a9524a930ffd8dcd9efae3ab1     2714  src/Credentials.cpp
 9cccb315bea1f3b75d55bced3cb959fbf4da4a07d0ab4eca07349eefcf78f123     8702  src/Envelopes.cpp
@@ -53,7 +53,7 @@ af88ccd7d758b15d201a369166021e25a0a2f4b3c26721836ce9d2a1afdd3470     3263  inclu
 213015c0a4e1f6b07d1cbd678dab870539e9db9d7fbef1cb3781ef045829872b     3361  src/Iso8601.cpp
 735e13ba11f0ac0f9db4d67ec80aabda086d93a0878908b84f6dee9b6eed5ee7    19369  src/JobEnvelopes.cpp
 88a076aa1bf3898858fcf8f7fb12d7ebf99d5ad27b7c77a28fb35f5594f567ea     7690  src/JobResults.cpp
-91d2905de3b74d008805790841d3129eb626d75262ead2472126af95d137f9d6    92010  src/JobRunner.cpp
+a5e96e901fa7568d21630faffbf6a020fd4a377d605ca40fde08539892d39f31    92630  src/JobRunner.cpp
 010704690e5e3fe89aac6e6bd332fb5e7bfc1900010a16e80366893038af4cda     8163  src/KeptImage.cpp
 41bd34a24f0112b44ba630e7c11c226c6cb124c85aaaafc0bd89e9cfcf0683e0     3026  src/Log.cpp
 f0f216749042d033954190b4a5fef4b5054d05015f0c240a6e8c5f9adab277d9     4934  src/LoginSequence.cpp

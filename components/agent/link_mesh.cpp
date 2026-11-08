@@ -214,6 +214,16 @@ bool LinkMesh::sameKey(const std::uint8_t* a, const std::uint8_t* b) {
   return true;
 }
 
+// The door asked for a key, before any job has begun (task p10-01; the exit-node firmware's
+// p1.10-43). `beginJob`'s own expression below, over the same parse: the two answers come off one
+// piece of state and cannot drift apart.
+bool LinkMesh::answersLocallyFor(const char* publicKeyHex) const {
+  if (!own_key_known_) return false;
+  std::uint8_t key[kKeyLen];
+  if (!parseKey(publicKeyHex, key)) return false;  // not 64 hex characters: false, not an error
+  return sameKey(key, own_key_);
+}
+
 void LinkMesh::rememberBegun(const std::uint8_t* key, bool local) {
   for (std::size_t i = kJobsRemembered - 1; i > 0; --i) begun_[i] = begun_[i - 1];
   JobBegun entry;
