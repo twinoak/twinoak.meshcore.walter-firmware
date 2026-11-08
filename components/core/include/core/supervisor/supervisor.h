@@ -349,6 +349,33 @@ enum class Health : std::uint8_t {
 };
 const char* describe(Health health);
 
+// **The two questions a caller may ask of a classification, and the only answers to them.** Both
+// are *the supervisor has decided this*, never *the radio did not answer us just now*: a slot
+// running NoiseScope and a slot awaiting its first install have no frame session either, and
+// neither is a dead radio (task p9-03, the review of phase 8's S1 - a flag built from "there is
+// no session" lifted the two refusals below and waived a trial's radio condition).
+//
+// *The link is known down*: the one classification an update of the radio may be **started past**
+// - its `HELLO` refusal and its battery-unknown refusal both read this and nothing else
+// (core/update/radio_update.h). It is `kSilent` alone, which is what the note on
+// `kAwaitingFirstInstall` above says: a radio with a bootloader and no application is not a radio
+// the ladder has given up on, and a scanner is answering in its own way. A first install says it
+// for itself (`Kind::kFirstInstall`), and task p2-05's supervisor says it when it puts the golden
+// image back on a radio it has just classified.
+constexpr bool linkKnownDown(Health health) { return health == Health::kSilent; }
+
+// *The radio will not answer a frame `HELLO`, and we know why*: what a self-switch's trial reads,
+// so that a radio the supervisor has classified cannot condemn a good Walter image
+// (core/update/self_update.h, the trial's second condition). The three classified silences -
+// a scanner answers in text, which `SelfUpdate` counts as up, so for it this is belt and braces;
+// a slot awaiting its first install will not answer until it is flashed, and holding a trial to a
+// `HELLO` it can never get would roll back every Walter image a new unit is offered. **Not
+// `kUnknown`**: a wake that has classified nothing may not waive the condition.
+constexpr bool radioKnownDown(Health health) {
+  return health == Health::kSilent || health == Health::kScanner ||
+         health == Health::kAwaitingFirstInstall;
+}
+
 struct Step {
   State before = State::kIdle;
   State after = State::kIdle;

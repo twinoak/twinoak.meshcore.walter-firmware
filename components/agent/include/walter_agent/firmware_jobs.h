@@ -188,7 +188,17 @@ struct WakeContext {
   core::power::Allowance may{};
   bool on_trial = false;        // this firmware is proving itself (S-6): no apply
   bool update_running = false;  // an update of either MCU is mid-run (S-7): no apply
-  bool radio_silent = false;    // the supervisor has classified the link as down
+  // **Nothing about the radio's health is passed in here** (task p9-03). There are two facts and
+  // they are not the same one:
+  //   - *this end has no key to tell a job for its own repeater by* - what the **claim** needs,
+  //     and it is the radio's identity, read before every wake and reported in one line
+  //     (walter_agent/agent_backend.h, walter_agent/identity.h);
+  //   - *the link is known down* - a **classification of the supervisor's**, which is what an
+  //     apply's two refusals and a self-switch's trial read, through
+  //     `core::supervisor::linkKnownDown()` / `radioKnownDown()` and off the supervisor this
+  //     object is already given (`Parts::supervisor`).
+  // p8-04 built one flag out of "there is no frame session" and gave it to the second, which made
+  // a scanner slot and a slot awaiting its first install into dead radios.
   // The battery as this wake read it (the median of the wake's readings), for the power cycle's
   // own floor - the supervisor's rung 3's (core/supervisor/supervisor.h, kPowerCycleMinMv).
   bool battery_known = false;
@@ -309,6 +319,15 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   // The journal entries this object writes.
   bool journal(const JobEntry& entry);
   std::uint32_t nowEpoch() const;
+
+  // What the supervisor has classified the radio as, for the two questions of
+  // core/supervisor/supervisor.h (`linkKnownDown`, `radioKnownDown`). Asked of the supervisor
+  // itself, so that an apply's refusals and a self-switch's trial read a classification and not
+  // this wake's luck with a `HELLO`; a build with no supervisor has classified nothing, which is
+  // `kUnknown` and lifts neither refusal.
+  core::supervisor::Health radioHealth() const {
+    return parts_.supervisor != nullptr ? parts_.supervisor->health() : core::supervisor::Health::kUnknown;
+  }
 
   Parts parts_;
   core::board::RadioPins& pins_;

@@ -83,7 +83,7 @@ An independent read of the code and tests against the task files; nothing built,
   - The README is corrected. **The GitHub release body needs Thomas's edit.**
   - Row 2 of the same notes blames the 2.5-hour push on the conversion; it was walterctl's
     `SerialPort.read`.
-- [ ] **[next Walter pile] S1 · A scanner or an empty slot now counts as a dead radio.**
+- [x] **[done by p9-03] S1 · A scanner or an empty slot now counts as a dead radio.**
   - `agent_backend.cpp` (about line 223) sets `radio_silent = !radio_up || …`. A slot running
     NoiseScope, or awaiting its first install, has no frame session either, and is now "link known
     down", which `supervisor.h` (about lines 345–347) rules out on purpose.
@@ -92,6 +92,29 @@ An independent read of the code and tests against the task files; nothing built,
   - It also marks the radio's condition *not applicable* in a self-switch confirmation
     (`self_update.cpp`, about lines 218 and 464–467).
   - Untested. It does not affect this morning.
+  - **Done by task p9-03.** The two facts are apart. *No key to tell a local job by* stays where
+    p8-04 put it - the identity read before every wake, and the one line that reports it. *The
+    link is known down* is the supervisor's, and there are now **two questions with one answer
+    each**, beside the enumeration they are about (`core/supervisor/supervisor.h`):
+    `linkKnownDown()` is `kSilent` **alone**, which is what an apply's `HELLO` refusal and its
+    battery-unknown refusal read; `radioKnownDown()` is the three classified silences and **not**
+    `kUnknown`, which is what a self-switch's trial reads. `WakeCycle` and `FirmwareJobs` both
+    call them - the jobs off the `Supervisor` they were already given - and `WakeContext` carries
+    nothing about the radio's health at all.
+  - Tested, where it was not before: `host_test/core/supervisor/test_known_down.cpp` is the table
+    over all five healths (as `static_assert`s too, and an invariant tying the two questions), and
+    `host_test/agent/test_radio_health_and_the_refusals.cpp` walks the classifications end to end
+    through the agent - what the claim takes, what an apply refuses, what a self-switch's trial
+    says of the radio - including the two cases where the key and the classification disagree.
+    **Eleven assertions of it fail on the code of 7 November** (`out/experiments/p9-03-before.txt`).
+  - One thing the review's third bullet turned out not to be: a *scanner* never reached
+    `self_update.cpp`'s waiver, because a scanner answers in text and `switchNow` counts that as
+    up. What did reach it is any wake whose `HELLO` had simply gone unanswered - the console's
+    `agent wake` on a radio that died after the last reading - and that is the case the new test
+    holds. `radioKnownDown` gained `kAwaitingFirstInstall`, which the wake cycle's own expression
+    did not have: a slot with a bootloader and no application cannot answer a trial's `HELLO`
+    until it is flashed, and holding the trial to one would roll back every Walter image a freshly
+    provisioned unit is offered (report p9-03, *Decisions taken without asking*).
 - [x] **[done by p9-02] S2 · A close that never comes leaves a socket id one close behind for the
   modem's life.** If the modem sends no `+SQNSH` after our own `AT+SQNSH`, and our close goes out before
   the server's FIN, `close()` → `end()` leaves a debt nobody pays. Every later connection on that id then:

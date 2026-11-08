@@ -984,9 +984,9 @@ bool WakeCycle::runTrial(std::uint64_t deadline_ms) {
 bool WakeCycle::runSelfUpdate() {
   update::SwitchRequest request{};
   // The supervisor has classified the radio; a radio it knows is down must not condemn a good
-  // Walter image (core/update/self_update.h, the trial's second condition).
-  request.radio_known_down = pass_.radio == supervisor::Health::kSilent ||
-                             pass_.radio == supervisor::Health::kScanner;
+  // Walter image (core/update/self_update.h, the trial's second condition). The rule is the
+  // supervisor's own and is written once (core/supervisor/supervisor.h).
+  request.radio_known_down = supervisor::radioKnownDown(pass_.radio);
   const update::SelfReason why = self_->switchNow(request);
   update_ran_ = true;
   if (why != update::SelfReason::kNone) {
@@ -1005,7 +1005,7 @@ bool WakeCycle::runRadioUpdate() {
   update::Request request{};
   request.kind = update::Kind::kUpdate;
   request.slot = radio_.slot();
-  request.link_known_down = pass_.radio == supervisor::Health::kSilent;
+  request.link_known_down = supervisor::linkKnownDown(pass_.radio);
   if (!update_->start(request)) {
     refuse(Step::kUpdate, interfaces::Ask::kUpdateRadio, interfaces::Refusal::kFailed,
            update::describe(update_->reason()));

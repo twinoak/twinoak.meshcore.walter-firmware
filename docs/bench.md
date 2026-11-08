@@ -1615,6 +1615,24 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       item job 20990 failed on 6 November, and the band is the only one of the three words that
       was missing. **If the slot still reports no band** while `rak hello` says one, the state
       report is not reading the session - stop and report it.
+- [ ] **A scanner slot refuses an apply, and nothing is flashed under it** (task p9-03). ⚠ needs
+      `"radio": "disposable"`. `rak role scanner` (§11's scanner item), then queue a
+      `twinoak.fw.apply` of a stored Repeater candidate and `agent wake`. Expected: the result
+      `refused` with `refusal: link` and the `check` line *the link is down and nobody has said
+      why*; `image list` unchanged, the candidate still held, `image bad` still empty, and
+      `rak watch` with no new incident. `rak role repeater` puts the radio back and the same apply
+      then commits. **If the apply flashes a radio running NoiseScope**, this is the 7 November
+      regression again (the review's S1) and the refusal has been lifted by something that is not
+      the supervisor.
+- [ ] **A dead radio nobody has classified refuses an apply; one the supervisor has given up on
+      does not** (task p9-03). Pull the radio's jumper, power the Walter so that the boot is fresh
+      (`rak watch` says `radio health: unknown`), then `lte up` and `agent wake` with a
+      `twinoak.fw.apply` queued: `refused`, `refusal: link`. Then `rak ladder` until it ends
+      *STOPPED* - `rak watch` says `radio health: silent` - and `agent wake` again: the same apply
+      now runs the machine and ends `stuck` (there is no radio to prove anything on), which is the
+      unbrick path task p2-05 built and the one case where the battery-unknown refusal is lifted
+      too. **The difference between the two wakes is a decision of the supervisor's and nothing
+      else**, which is what this item is for.
 
 ## What to bring back
 
