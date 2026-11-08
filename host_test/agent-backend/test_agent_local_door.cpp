@@ -1,8 +1,8 @@
-// The local door as the library now understands it (task p9-05).
+// The local door as the library now understands it (tasks p9-05, p9-06 and p10-01).
 //
 // `LinkMesh::answersLocally()` is the Walter's override of the virtual the exit-node firmware's
 // tasks p1.10-40 and p1.10-41 added to `mm::IMesh`, and these are the cases it is for - each
-// through the **real** `JobRunner` (agent-core as synced, at 8c24da5b) and the **real**
+// through the **real** `JobRunner` (agent-core as synced, at 6290e092) and the **real**
 // `LinkMesh` over the simulated RAK, with the library's simulated stock repeater behind it:
 //
 //   - **the read that reset the Walter.** A 34-line `config.read` of the unit's own repeater at
@@ -208,6 +208,116 @@ TEST(AgentLocalDoor, ALocalJobLeavesTheNextJobForANeighbourPacedAndTheDoorShut) 
   // The gate saw the neighbour's two and nothing of the local job's.
   EXPECT_EQ(bench.agent.half().jobs.gate().transmissions(), 2u);
   EXPECT_EQ(bench.rak().client_tx(), 2u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// A local job is priced as local (task p10-01; the exit-node firmware's p1.10-43)
+//
+// Task p9-05 told the library a job was local **while it ran**, so it waited for no slot and
+// spent none. The wake prices a claimed job **before** it runs it, from a different gate, and
+// priced it as air: `n x (minGapSeconds + loginMs)`. A 34-line `config.read` of the unit's own
+// repeater came out at 34 x (20 s + 8 s) = **952 s** against the exchange's 1 200 s bound
+// (`kBackendBoundMs`) - 248 s of margin on the dearest job this unit really runs, and a shorter
+// bound, a longer key list or a larger `minGapSeconds` from the server would have refused, in
+// seconds and at no transaction, the very job the door had just made fast. That is
+// tasks/phase-9/FOLLOWUPS.md's *The wake still prices a local job as air*.
+//
+// `LinkMesh::answersLocallyFor()` is this firmware's override of the virtual 43 added, and these
+// three cases are the line it draws: the same job on both sides of a wake too small for the air
+// price, and the refusal when a refusal is the right answer.
+
+namespace {
+
+// The two prices, from the library's own arithmetic (`AgentLoop::estimateJobMs`) at the unit's
+// own budget - *2 a minute, gap 20 s* - for the server's thirty-key read, which is 34
+// transactions (`agent_mesh_bench.h`). Named, so that a test fails if either moves.
+constexpr std::uint32_t kReadTransactions = 34;
+constexpr std::uint32_t kReplyMs = 8000;      // the claim's `timeouts.loginMs` (support/Jobs.h)
+constexpr std::uint32_t kGapMs = 20000;       // the server's `minGapSeconds`
+constexpr std::uint32_t kLocalPriceS = kReadTransactions * kReplyMs / 1000u;            // 272
+constexpr std::uint32_t kAirPriceS = kReadTransactions * (kGapMs + kReplyMs) / 1000u;   // 952
+static_assert(kLocalPriceS == 272, "the local price is the reply waits");
+static_assert(kAirPriceS == 952, "the air price is the gaps and the replies");
+
+// A wake slice between the two prices: too small for the air price, ample for the local one.
+constexpr std::uint32_t kWakeSeconds = 400;
+static_assert(kWakeSeconds > kLocalPriceS, "the local price has to fit this wake");
+static_assert(kWakeSeconds < kAirPriceS, "and the air price must not");
+
+}  // namespace
+
+TEST(AgentLocalDoor, ALocalJobIsPricedAtItsRepliesSoAWakeTooSmallForTheAirPriceStillRunsIt) {
+  MeshBench bench;
+  bench.agent.modemWorks();
+  bench.agent.server().queue(bench::ownConfigReadServerList(86, false).json());
+
+  interfaces::BackendAnswer out;
+  const interfaces::Exchanged how =
+      bench.agent.exchange(bench::knowledgeFor(core::power::Band::kPlenty), kWakeSeconds, &out);
+
+  EXPECT_EQ(how, interfaces::Exchanged::kAsked);
+  const std::string result = bench.agent.lastResult(86);
+  ASSERT_FALSE(result.empty());
+  // Run, and run to its end: before this it was `failed`, *wake budget*, at no transaction.
+  EXPECT_EQ(bench::member(result, "outcome"), "ok") << result;
+  EXPECT_EQ(bench::member(result, "transactions"), "0") << result;
+  // No *wake budget* anywhere in it. The log is a kilobyte and drops whole entries when it fills
+  // (the exit-node firmware's p1.10-38), so a 34-line read's own first line is not in it - the
+  // counters below are what say the door served it.
+  EXPECT_FALSE(has(bench::member(result, "log"), "wake budget")) << result;
+  EXPECT_EQ(bench.rak().client_tx(), 0u);
+  EXPECT_EQ(bench.agent.half().jobs.gate().transmissions(), 0u);
+  EXPECT_EQ(bench.agent.half().jobs.gate().totalWaitMs(), 0u);
+  EXPECT_EQ(bench.agent.half().mesh.linkCounters().local_jobs, 1u);
+  // And the door answers the same question for the key, before any job has begun, as it does for
+  // the job in progress: that agreement is the whole contract of the two virtuals.
+  EXPECT_TRUE(bench.agent.half().mesh.answersLocallyFor(bench::kOwnKeyHex));
+  EXPECT_FALSE(bench.agent.half().mesh.answersLocally()) << "between jobs the door is shut";
+}
+
+TEST(AgentLocalDoor, TheSameReadForANeighbourIsStillPricedAsAirAndStillRefused) {
+  MeshBench bench;
+  bench.agent.modemWorks();
+  bench::seedNeighbourConfig(bench.repeater());
+  bench.agent.server().queue(bench::neighbourConfigReadServerList(87).json());
+
+  interfaces::BackendAnswer out;
+  const interfaces::Exchanged how =
+      bench.agent.exchange(bench::knowledgeFor(core::power::Band::kPlenty), kWakeSeconds, &out);
+
+  EXPECT_EQ(how, interfaces::Exchanged::kAsked);
+  const std::string result = bench.agent.lastResult(87);
+  ASSERT_FALSE(result.empty());
+  EXPECT_EQ(bench::member(result, "outcome"), "failed") << result;
+  const std::string log = bench::member(result, "log");
+  // The air price, to the second, and no clause: this job really would spend the gaps.
+  EXPECT_TRUE(has(log, "needs about " + std::to_string(kAirPriceS) + " s")) << log;
+  EXPECT_FALSE(has(log, "answered without the air")) << log;
+  EXPECT_EQ(bench::member(result, "transactions"), "0") << result;
+  EXPECT_EQ(bench.rak().client_tx(), 0u) << "a job refused by the wake sends nothing";
+  EXPECT_FALSE(bench.agent.half().mesh.answersLocallyFor(fake::repeaterKey().c_str()))
+      << "the door must not answer for a key that is not this radio's";
+}
+
+TEST(AgentLocalDoor, ALocalJobTooLargeForItsWakeIsRefusedAtTheLocalPriceAndSaysSo) {
+  // The bound has not gone away, it has moved. A wake slice that cannot hold even the replies
+  // refuses - and the figure and the clause are what tell a reader the bound was the wake's and
+  // not the air's.
+  MeshBench bench;
+  bench.agent.modemWorks();
+  bench.agent.server().queue(bench::ownConfigReadServerList(88, false).json());
+
+  interfaces::BackendAnswer out;
+  (void)bench.agent.exchange(bench::knowledgeFor(core::power::Band::kPlenty), 100, &out);
+
+  const std::string result = bench.agent.lastResult(88);
+  ASSERT_FALSE(result.empty());
+  EXPECT_EQ(bench::member(result, "outcome"), "failed") << result;
+  const std::string log = bench::member(result, "log");
+  EXPECT_TRUE(has(log, "needs about " + std::to_string(kLocalPriceS) + " s")) << log;
+  EXPECT_TRUE(has(log, "answered without the air")) << log;
+  EXPECT_FALSE(has(log, std::to_string(kAirPriceS))) << log;
+  EXPECT_EQ(bench.rak().client_tx(), 0u);
 }
 
 // ---------------------------------------------------------------------------------------------

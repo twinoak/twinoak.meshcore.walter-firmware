@@ -628,8 +628,12 @@ extern "C" void app_main() {
     std::printf("agent: no identity read yet (the radio has not been asked anything in this "
                 "boot); the next wake asks, or 'rak hello' then 'agent id'\n");
   }
-  std::printf("agent: the loop's state %s the last sleep; the kept image's store %s\n",
+  // ...and, when it did, how long this boot was told the board was away (task p10-01): the figure
+  // the library took off a wait the server asked for. 0 is a wake whose sleep has no known length
+  // - the radio's line, a cable, a power-on - and `agent state` says the same in a sentence.
+  std::printf("agent: the loop's state %s the last sleep (%lu s away); the kept image's store %s\n",
               backend.stateSurvived() ? "survived" : "did not survive",
+              static_cast<unsigned long>(backend.timeAwayMs() / 1000u),
               kept != nullptr ? "is the rakfw partition's tail" : "is not there");
 #else
   static core::console::Console console(g_usb, radio_pins, health, g_clock, g_restart, radio,

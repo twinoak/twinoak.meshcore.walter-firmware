@@ -10,6 +10,7 @@
 // road; `mesh.world()` is the link under it, `mesh.repeater()` the repeater on the far side.
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -939,6 +940,53 @@ TEST_F(LinkMeshTest, TheDoorAnswersForTheOwnRepeaterOnlyAndOnlyInsideItsJob) {
   ASSERT_TRUE(link().beginJob(repeater().c_str(), nullptr, 0, 0));
   EXPECT_FALSE(link().answersLocally()) << "this end no longer knows which repeater is its own";
   link().endJob();
+}
+
+// The same door asked for a **key**, before any job has begun (task p10-01; the exit-node
+// firmware's p1.10-43). The interface's contract is that the two answers agree - true for a key
+// exactly when a job begun for that key would make `answersLocally()` true - so this walks the
+// pair together and lets them disagree if they can.
+TEST_F(LinkMeshTest, TheKeyedDoorAnswersForTheOwnRepeaterAndAgreesWithTheJobsOwnAnswer) {
+  EXPECT_FALSE(link().answersLocallyFor(repeater().c_str())) << "no own key yet: the door is shut";
+  makeItLocal();
+
+  // True for this radio's key between jobs, which is exactly where `answersLocally()` is false:
+  // that is the difference the second virtual exists for.
+  EXPECT_TRUE(link().answersLocallyFor(repeater().c_str()));
+  EXPECT_FALSE(link().answersLocally());
+  // False for a stranger's.
+  EXPECT_FALSE(link().answersLocallyFor(fake::strangerKey().c_str()));
+  // **The same key shouted is the same key**, because `beginJob` reads it the same way - both go
+  // through this end's one `parseKey`, whose hex digits are case-insensitive - and agreeing with
+  // `beginJob` is the contract, not matching the claim's spelling. A claim carries lowercase, so
+  // nothing the server sends takes this path; what matters is that the two cannot disagree.
+  std::string shouted = repeater();
+  for (char& c : shouted) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  EXPECT_TRUE(link().answersLocallyFor(shouted.c_str()));
+  ASSERT_TRUE(link().beginJob(shouted.c_str(), nullptr, 0, 0));
+  EXPECT_TRUE(link().answersLocally()) << "and the job for it really is a local one";
+  link().endJob();
+  // And a key it cannot parse is false and not an error, as the interface asks: the `beginJob` a
+  // moment later refuses it anyway.
+  EXPECT_FALSE(link().answersLocallyFor("not-a-key"));
+  EXPECT_FALSE(link().answersLocallyFor(""));
+  EXPECT_FALSE(link().answersLocallyFor(nullptr));
+  EXPECT_FALSE(link().answersLocallyFor((repeater() + "00").c_str())) << "too long is not this key";
+
+  // The pair, walked together over both keys: whatever the keyed door says of a key, a job begun
+  // for it says the same.
+  for (const std::string& key : {repeater(), fake::strangerKey()}) {
+    const bool keyed = link().answersLocallyFor(key.c_str());
+    ASSERT_TRUE(link().beginJob(key.c_str(), nullptr, 0, 0)) << key;
+    EXPECT_EQ(link().answersLocally(), keyed) << key;
+    EXPECT_EQ(link().local(), keyed) << key;
+    link().endJob();
+    EXPECT_EQ(link().answersLocallyFor(key.c_str()), keyed) << key;
+  }
+
+  // The radio swapped: the key goes away and the door shuts for the key it used to answer for.
+  link().clearOwnKey();
+  EXPECT_FALSE(link().answersLocallyFor(repeater().c_str()));
 }
 
 // ---------------------------------------------------------------------------------------------

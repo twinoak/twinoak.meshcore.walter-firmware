@@ -214,9 +214,11 @@ SleepResult Sleep::sleepFor(std::uint32_t seconds, const power::Decision& decisi
   // pull-up when it is to wake us.
   r.pins_held = pins_.holdForSleep(arm_radio_line);
 
-  // 5. The wake's duration into its entry, and then sleep. The record is stored *before* the
-  // sleep because after it there is no "after": the next statement runs in a new boot.
-  wake_.endingInSleep(r.awake_s);
+  // 5. The wake's duration into its entry, **the seconds the timer is being asked for** for the
+  // boot on the other side to read (task p10-01: the one measure of a sleep this board has, since
+  // `esp_timer` starts again at zero), and then sleep. The record is stored *before* the sleep
+  // because after it there is no "after": the next statement runs in a new boot.
+  wake_.endingInSleep(r.awake_s, seconds);
 
   interfaces::SleepPlan plan{};
   plan.seconds = seconds;

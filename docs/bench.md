@@ -77,6 +77,7 @@ Two marks:
 | [16](#16-a-day) | A day | §15, §12, §14 |
 | [17](#17-the-agent) | The agent | §3, a second repeater on the bench; §12 and a token for the uplink's items |
 | [18](#18-a-day-as-an-exit-node) ★ | A day as an exit node | §§16–17, a token, a release on the server |
+| [19](#19-a-night-that-is-not-silent) ★ | A night that is not silent | §18, the unit on the battery with the cable out |
 | [—](#what-to-bring-back) | **What to bring back** | the numbers, in one table |
 
 The numbers above are this walk's, in walking order; the task files' own section numbers are not
@@ -1840,6 +1841,87 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       adverts are, because a wake with nothing to post does not stall. Keep the whole paste; it is
       the only copy. The five things to read it for, and the two rails to check while it is on, are
       in §13.
+
+## 19. A night that is not silent
+
+From task p10-01 (`core/cycle/wake_reason.h`'s `timeAwayMs()`, `components/agent/agent_backend.h`,
+agent-core at `6290e092` — the exit-node firmware's tasks p1.10-42 and p1.10-43). **This is the
+section the pile exists for.** On the night of 8 November 2026 the unit woke 56 times and
+meshmaster.dk heard from it on about every sixth wake: a call that fails sets a hold of 30 s or
+more, the library saved what was left of it across the sleep, and **the sleep counted for nothing**,
+so a 30 s hold was spent five seconds at a time across six wakes that each sent nothing. At the
+unit's hourly interval that is six hours of silence after one failed call. The library now takes
+the time away off the hold and this firmware measures it; these items are whether it did.
+
+Needs §18 walked, and the unit on the battery with the cable out for the first item.
+
+- [ ] ★ **The first boot of 0.1.3 loses the wake log, once.** The duty-cycle retained record grew
+      by four bytes to carry the seconds a sleep asked for, and a record of another size in the
+      same slot is not the same record, so the first boot after the update reads none. Expected, on
+      that boot only: `wake` says **the record did not survive**, the last-ten list is this wake
+      alone, the band is `unknown` and the next interval is **60 min** rather than the 15 the pack
+      would have allowed. The wake after it is normal, with the band back and the list growing.
+      Anything else — a record that did not come back on the *second* wake, or a band that stays
+      `unknown` — is a finding and not this.
+
+- [ ] ★ **A failed call costs one wake, not six.** Make one call fail and no more: `lte up`, then
+      point `server.url` at a host that refuses (or pull the SIM's data for one wake), `agent wake`,
+      and put it back. Then `agent state` on the **next** wake. Expected: the hold's line ends
+      `hold 0 ms left; 30 s owed before the sleep, 810 s slept` — the second figure is 90 % of the
+      interval the last sleep asked for (810 s of a quarter of an hour, 3 240 s of an hour) — and
+      the wake **heartbeats**. The library's own line *N s of a wait the server asked for is still
+      owed from before the sleep* must **not** appear: at any interval this unit sleeps, a 30 s to
+      120 s hold is spent whole by one sleep. If it appears, read the two figures on the hold's
+      line: *0 s slept*, or *no sleep this end could measure*, means the wake was not the timer's.
+
+- [ ] ★ **And then the night.** Unplug, leave it, and read the morning: `wake` for the count of
+      wakes and `agent state` for the heartbeat counter. **The two must be within a wake or two of
+      each other** — 31 heartbeats against 56 wakes was the symptom — unless the server really was
+      away, which the server's own page settles. This is the one item that cannot be checked any
+      other way, and it is the acceptance of the whole pile.
+
+- [ ] **A wake on the radio's line still owes the whole wait.** Deliberate, and the right way
+      round: nothing on this board knows how much of a sleep had passed when the line moved, so
+      none of it is claimed. With a hold running, raise an attention on the radio (§8's
+      `EV_ATTENTION`, or `rak` on the repeater's side) so the Walter wakes on the line: `agent
+      state` must then say **no sleep this end could measure**, and the wake must send nothing
+      until the wait has really run out. A line wake that *did* clear a hold would mean the measure
+      is reading a wake it should not.
+
+- [ ] **A `Retry-After` the server really names, across a shorter sleep.** The one case where the
+      wait outlives a sleep. Provoke a 429 with a long `Retry-After` (or ask on the server side for
+      one), then `sleep 900` on the console — a person's sleep, shorter than the wait. The next
+      wake must come back owing **the remainder** (`agent state`: *1 800 s owed before the sleep,
+      810 s slept*, and the library's *still owed* line present) and must not call before it. The
+      wait was shortened, not forgotten.
+
+- [ ] ★ **The read that would have been refused, priced as local.** The other half of this task
+      (agent-core's p1.10-43), and the item the exit-node firmware's report asks for by name. A
+      34-line `config.read` of the unit's **own** repeater — job 22032's shape, thirty keys — is now
+      priced at its thirty-four reply waits, **272 s**, and not at 34 × (20 s gap + 8 s reply) =
+      **952 s** of air it never touches. Queue it (*Read config* on the Configuration tab) and
+      expect `ok` in **seconds** at `transactions` **0**, with no *wake budget* anywhere in the
+      result's log. The figure is only visible as a refusal that no longer happens, so the way to
+      see it is to make the wake small: `agent wake` is given the whole exchange bound, but a unit
+      whose `kBackendBoundMs` were set between the two prices would have refused this job in
+      seconds at no transaction before this change and must run it now.
+
+- [ ] **A refusal that is a real one reads as local.** If a local job ever is refused, the message
+      must carry the **272 s** figure and the clause *answered without the air*: that is what tells
+      a reader the bound was the wake's and not the channel's. **952** appearing for a job of the
+      unit's own repeater means the door is not answering for this radio — `agent id`'s `local
+      door: open` line and the key beside it are where to look.
+
+- [ ] **A job for a repeater that is not the unit's own is still priced as air.** The item that
+      catches a door answering for too much. The second repeater of §17, over the air: a refusal
+      must carry **952 s** and no clause, and a wake large enough must pace the job at the gap and
+      count its transactions.
+
+- [ ] **An empty `get` is a value.** Came with the sync (the exit-node firmware's p1.10-44) and
+      costs one look: a `config.read` whose key list includes `guest.password` on a repeater with
+      **no** guest password must bring `"guest.password": ""` back under `values`, and no
+      `get guest.password: >` line under `raw`. Before the sync the key arrived as a raw line and
+      the server left its stored guest password alone.
 
 ## What to bring back
 

@@ -96,6 +96,39 @@ constexpr std::uint8_t kSpuriousPerWindow = 3;
 // the task asks. Eight bytes each, inside one retained record.
 constexpr std::size_t kWakesRemembered = 10;
 
+// **The deep-sleep timer's own error**, as a percentage, taken off the seconds the last sleep
+// asked for before `timeAwayMs()` believes any of it (task p10-01). The rule that figure is
+// measured under is the agent library's: *never more than really passed* (the exit-node
+// firmware's task p1.10-42, `mm::AgentLoop::restore`'s `awayMs`), and the clock a deep sleep is
+// timed by is not one this firmware can check afterwards.
+//
+// What the documents say, read in the build image at v5.5.5:
+//
+//   * **the source is the internal RC oscillator.**
+//     `$IDF_PATH/components/esp_hw_support/port/esp32s3/Kconfig.rtc` has `choice RTC_CLK_SRC`
+//     with `default RTC_CLK_SRC_INT_RC`, "Internal 136 kHz RC oscillator", and
+//     `sdkconfig.defaults` sets no `CONFIG_RTC_CLK_SRC_*` - so this build takes that default.
+//   * **it is calibrated against the main crystal at every boot**, over
+//     `CONFIG_RTC_CLK_CAL_CYCLES` cycles - 1024 for that source (the same file) - so what is
+//     left is not the oscillator's absolute tolerance but its drift between that calibration and
+//     the wake.
+//   * **what moves it is temperature.** "The frequency stability of this clock source is
+//     affected by temperature fluctuations, so time may drift in both Deep-sleep and Light-sleep
+//     modes" (`$IDF_PATH/docs/en/api-reference/system/system_time.rst`, *RTC Timer Clock
+//     Sources*). **No tolerance is published for it**: the only figure on that page is the
+//     high-resolution timer's APB source, "a frequency deviation of less than ±10 ppm", and that
+//     is a different clock which a sleep does not use.
+//
+// So the figure is not read off a document; what a document settles is the *direction*. Believing
+// less than was slept leaves a sliver of a wait owed for one more wake; believing more calls a
+// server back before the wait it asked for. **Ten per cent** is the bound taken - an order of
+// magnitude above any plausible temperature coefficient of an RC oscillator over one interval -
+// and it costs nothing against the waits this exists for: a 30 s to 120 s backoff is spent whole
+// by 90 % of the shortest interval this firmware sleeps (`core/power/interval_policy.h`,
+// kPlentyMinutes = 15, so 810 s of a 900 s sleep).
+constexpr std::uint32_t kTimerErrorPercent = 10;
+static_assert(kTimerErrorPercent < 100, "the believed part of a sleep has to be positive");
+
 // §8's attention, as this object keeps it. The same three fields the event carries.
 struct Attention {
   std::uint8_t reason = link::attention::kNone;
@@ -190,9 +223,34 @@ class WakeReason {
   std::uint8_t agentAttention() const { return record_.agent_attention; }
   void clearAgentAttention();
 
-  // The wake is ending in a sleep: its duration goes into this wake's entry, and the record is
+  // The wake is ending in a sleep: its duration goes into this wake's entry, the seconds the
+  // timer is being asked for are written down for the *next* boot to read, and the record is
   // stored. Called by core/cycle/sleep.h on the one way out of a wake.
-  void endingInSleep(std::uint32_t lasted_s);
+  //
+  // `asked_s` is not a nicety and has no default: it is the only measure of a sleep this board
+  // has afterwards. `interfaces/clock.h` says why - `esp_timer` restarts at zero at every wake
+  // from deep sleep - and the agent's library has to be told how long the board was away, or a
+  // wait the server asked for is spent five seconds at a time across wakes that send nothing
+  // (`timeAwayMs()` below; the unit of 8 November 2026).
+  void endingInSleep(std::uint32_t lasted_s, std::uint32_t asked_s);
+
+  // What the sleep this boot followed asked its timer for, in seconds. 0 when there was none
+  // this firmware wrote down: the first boot, a power cut, or a record of another shape.
+  std::uint32_t lastSleepAskedS() const { return asked_s_; }
+
+  // **How long this board was away before this boot**, in milliseconds, and never more than
+  // really passed - which is the rule `mm::AgentLoop::restore(state, awayMs)` is handed it under
+  // (the exit-node firmware's task p1.10-42).
+  //
+  //   a timer wake   has slept the interval the last sleep asked for, less the timer's own error
+  //                  (`kTimerErrorPercent` above). That is the one sleep this board can put a
+  //                  number on.
+  //   anything else  **0**. A wake on the radio's line, a spurious one, a person's cable, a
+  //                  power-on, a reset, a crash, a watchdog: the sleep was cut short by whatever
+  //                  woke us and nothing here knows how much of it had passed. 0 is "no time
+  //                  passed", which is the behaviour this firmware had before it measured any,
+  //                  and it errs the safe way - a wait is owed a little longer, never less.
+  std::uint32_t timeAwayMs() const;
 
   // The last ten wakes, newest first. 0 is this wake.
   std::size_t count() const { return count_; }
@@ -202,10 +260,23 @@ class WakeReason {
   void forget();
 
  private:
-  // interfaces::RetainedSlot::kDutyCycle. Plain data, 92 bytes, inside kRetainedRecordMax.
+  // interfaces::RetainedSlot::kDutyCycle. Plain data, 100 bytes, inside kRetainedRecordMax -
+  // which costs nothing, because platform/retained.cpp gives every slot kRetainedRecordMax bytes
+  // whatever its record holds (interfaces/retained.h).
+  //
+  // **It grew by four bytes in task p10-01**, and a record of another size in the same slot is
+  // not the same record (interfaces/retained.h), so the first boot of 0.1.3 reads no record and
+  // `recordSurvived()` is false for that one wake: the wake log, the band's hysteresis, the
+  // spurious count and the faults in a row all start again, exactly as after a power cut. That is
+  // the rule working, not failing - the old bytes meant something else - and the cost is one
+  // wake at the `unknown` band's interval, named in the report and in docs/bench.md.
   struct Record {
     std::uint32_t wakes;
     std::uint32_t spurious_total;
+    // What the sleep before this boot asked its timer for, in seconds; 0 for a boot that followed
+    // no sleep of ours. Written by endingInSleep(), read by timeAwayMs(): the whole of what this
+    // board knows about a sleep once `esp_timer` has started again at zero.
+    std::uint32_t asked_s;
     std::uint8_t count;             // how many of items[] are real
     std::uint8_t spurious_in_window;
     std::uint8_t disarmed;          // 0 or 1
@@ -236,6 +307,10 @@ class WakeReason {
   WakeInfo info_{};
   power::Band band_ = power::Band::kUnknown;
   std::uint32_t wakes_in_saving_ = 0;
+  // The record's `asked_s` as `load()` found it: what the sleep *this boot followed* asked for.
+  // Latched, because endingInSleep() overwrites the record's copy with the seconds of the sleep
+  // this boot is about to begin, and a reader after that would get the wrong one.
+  std::uint32_t asked_s_ = 0;
   std::size_t count_ = 0;
   bool begun_ = false;
   bool survived_ = false;

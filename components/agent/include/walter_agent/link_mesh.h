@@ -47,7 +47,9 @@
 //     Since task p9-05 the library is **told** the job is local, by `answersLocally()` below:
 //     such a job neither waits for the airtime budget nor spends it, counts no transaction, and
 //     logs in with no material at any class - `admin` included, so no admin password is stored
-//     for a unit's own repeater anywhere.
+//     for a unit's own repeater anywhere. Since task p10-01 the wake is told the same thing
+//     **before** it prices a claimed job, by `answersLocallyFor()` beside it, so the figure a
+//     refusal is measured against is the reply waits and not the gaps.
 //
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
@@ -212,7 +214,7 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   bool supports(const char* jobType) const override;
 
   // **The local door, in the library's own words** (`IMesh::answersLocally`, agent-core at
-  // 8c24da5b: the exit-node firmware's tasks p1.10-40 and p1.10-41). True from a `beginJob` for
+  // 6290e092: the exit-node firmware's tasks p1.10-40 and p1.10-41). True from a `beginJob` for
   // the unit's own repeater until the `endJob` that closes it, and false otherwise - which is
   // exactly `job_.local` for the span `job_.begun` holds, because `beginJob` sets the pair
   // together and `endJob` clears the whole `Job`. The default of the interface is false, so this
@@ -239,6 +241,25 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // The lease still ends such a job: it is the server's claim on the repeater and says nothing
   // about the air.
   bool answersLocally() const override { return job_.begun && job_.local; }
+
+  // **The same door, asked for a key before any job has begun** (`IMesh::answersLocallyFor`,
+  // agent-core at 6290e092: the exit-node firmware's task p1.10-43). The caller is the one that
+  // *prices* a claimed job - `AgentLoop::wakeJobs`, before it runs it - and `answersLocally()`
+  // above cannot answer it, because it is true only between a `beginJob` and its `endJob`.
+  //
+  // The two have to agree, and here they cannot disagree: this is `beginJob`'s own expression,
+  // `own_key_known_ && sameKey(key, own_key_)`, over the key it would parse out of the same hex.
+  // A key that is not 64 hex characters is false and not an error, as the interface asks - the
+  // `beginJob` a moment later refuses it anyway.
+  //
+  // What it changes for this unit: a 34-line `config.read` of its own repeater is priced at its
+  // thirty-four reply waits, **272 s**, instead of at 34 x (20 s gap + 8 s reply) = **952 s** of
+  // air it was never going to touch. The wake's slice is `kBackendBoundMs`, 1 200 s
+  // (`core/cycle/wake_cycle.h`), so the old figure left 248 s of margin on the dearest job this
+  // unit really runs - and a shorter bound, a longer key list or a larger `minGapSeconds` from
+  // the server would have refused, in seconds and at no transaction, the very job the door made
+  // fast (tasks/phase-9/FOLLOWUPS.md, *The wake still prices a local job as air*).
+  bool answersLocallyFor(const char* publicKeyHex) const override;
 
   bool beginJob(const char* publicKeyHex, const std::uint8_t* pathHashes, std::uint8_t hopCount,
                 std::uint8_t hashSize) override;
