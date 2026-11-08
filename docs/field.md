@@ -9,11 +9,12 @@ the firmware's own map is
 the first bring-up of a unit is [`bench.md`](bench.md).
 
 > **No unit has run this on a mast yet.** One Walter on a development build checked in with the
-> real meshmaster.dk on 23 October 2026, and the first unit ran `v0.1.0` on a desk on 6 November
-> — which is where the five faults `v0.1.1` fixes come from (README, *The state of things*).
-> Everything else below is built and tested on a host against simulators, and none of it has been
-> on a mast. [`bench.md`](bench.md) is the walk that proves each of these sentences one at a time,
-> with `v0.1.1` ([`flashing.md`](flashing.md)).
+> real meshmaster.dk on 23 October 2026; the first unit ran `v0.1.0` on a desk on 6 November, and
+> `v0.1.1` on 7 November — which is where the faults `v0.1.2` fixes come from (README, *The state
+> of things*). Everything else below is built and tested on a host against simulators, and none of
+> it has been on a mast. [`bench.md`](bench.md) is the walk that proves each of these sentences one
+> at a time, with `v0.1.2` ([`flashing.md`](flashing.md)) — which is also the first release a unit
+> in the field can be given **over LTE** rather than over a cable.
 
 ## The two boxes
 
@@ -125,10 +126,22 @@ at once, which is what the repeater uses when something is wrong.
    the journal**, which is where the reason is. This is not a failure of the unit; it is the unit
    doing the thing it exists for.
 
-A `twinoak.fw.apply` of the *LTE box's own* firmware is the same, one step longer: the board
-reboots into the image being tried, and the result is posted by the **next** wake — after the new
-image has reached its main loop, talked to the radio and been recognised by the server in one
-boot. If any of the three fails, the next boot rolls back.
+A `twinoak.fw.apply` of the *LTE box's own* firmware is the same, one step longer: the board reboots
+into the image being tried, and that image has **one boot** to reach its main loop, talk to the radio
+and be recognised by the server. The heartbeat of that boot's own wake is the third condition, so the
+trial ends in the same wake that began it and the result the apply owes is posted from the journal in
+that same exchange. If any of the three fails — or anything at all resets the board inside the trial
+window — the bootloader runs the image that worked and the next wake reports *rolledBack*.
+
+**Two differences between the two boxes' downloads are worth knowing before an offer is pressed.**
+A radio image's download **resumes**: the store keeps a progress record, the job is left leased, and
+the next wake continues the file where this one stopped. The LTE box's own does **not** — a write on
+its other application slot erases it — so its roughly 750 kB has to finish inside one wake, which
+it is given a megabyte and up to twenty minutes for, in twelve 64 kB ranges. A wake that runs out
+starts the file again at the next one, and the plan pays twice. And **one wake updates one box,
+never both** (`spec/SYSTEM.md` S-7), which is also why the server will not offer the radio an image
+while an apply of the Walter is still out there. [`flashing.md`](flashing.md) walks both presses,
+with what the console and the unit's page say at each step.
 
 **When the server says *uplink silent*.** The server has not heard from this unit for several of
 its own expected intervals. In order:
@@ -311,9 +324,11 @@ radio it has no known-good image for. So, at the bench, with the radio on the ca
    is either promoted to golden or rolled back — and a candidate that failed once is never tried
    again ([`update.md`](update.md)).
 
-**Until a release key exists, a unit accepts nothing.** Every manifest is refused at the first of
-six checks, which is correct: the alternative is a unit that trusts whatever a server sends.
-`trust` on the console says which keys this build accepts — today, none.
+**A unit accepts a release signed with one key and no other.** That key exists — Thomas made it on
+20 October 2026, `73efdd383a957596`, and it signs both boxes' releases — and a build that named none
+would refuse every manifest at the first of six checks, which is correct: the alternative is a unit
+that trusts whatever a server sends. `trust` on the console says which keys this build accepts, and
+on a released image it says `1 key`.
 
 ## What cannot be recovered remotely
 
@@ -354,7 +369,8 @@ The honest list. Each of these needs a person with the unit in their hands.
 For balance, because the list above is the short one:
 
 - the radio's firmware, as often as a release says so, with a known-good image behind it;
-- the LTE box's own firmware, with one boot's trial and automatic rollback;
+- the LTE box's own firmware, with one boot's trial and automatic rollback — from `v0.1.1` onwards,
+  and `v0.1.2` is the first release meant to arrive that way ([`flashing.md`](flashing.md));
 - a radio that is hung, confused, or has had its application corrupted — the ladder;
 - a radio whose clock has drifted, every wake;
 - a non-secret setting of the repeater's, over the server, as a job;

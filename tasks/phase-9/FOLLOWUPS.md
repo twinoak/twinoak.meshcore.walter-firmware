@@ -95,3 +95,30 @@ is written.
   the fix is upstream's: price a job the mesh answers locally at the reply waits and not at the
   gaps. Named here with the arithmetic so that the next pile can take it upstream rather than
   rediscover it from a bench refusal.
+
+## Found while doing 07 (8 November)
+
+- [ ] **[later] The Walter's own download does not resume, and the message says it does.** Writing
+  `docs/flashing.md`'s LTE walk against the code turned up a difference between the two boxes that
+  nothing says out loud. A radio image's download resumes: `Fetch::fetchInto` calls
+  `target.beginWrite(expected)` and the store's `TransferTarget` answers `written() != 0` from its
+  progress record, so the next wake continues the file (*fetch: resuming at N of M bytes already in
+  flash*). The **Walter's own** slot does not: `SelfUpdate::beginWrite` sets `written_ = 0` and the
+  platform's `beginWrite` erases the slot, and `abandonWrite()` - which every non-complete verdict
+  calls - zeroes it again. So a `twinoak.fw.offer` of the Walter's product that the wake's budget
+  cuts short starts the file again from zero at the next wake, and the plan pays for the bytes
+  twice. Two things follow:
+  - **The words are wrong in two places.** `core::update::describe(FetchVerdict::kBudget)` says
+    *the wake's budget ran out; the download resumes next wake*, and `FirmwareJobs::runOffer`'s
+    budget branch logs *no result, the lease is left to expire and the next wake continues it* and
+    posts `reason: the wake's budget ended the download; the next wake resumes it`. Both are true
+    of a radio image and false of the Walter's own, and the branch already knows which it is in
+    (`walter`). One sentence each, and the server's job page stops promising a resume that will not
+    happen.
+  - **Whether it should resume at all is a design question**, not a bug: the other application slot
+    has no progress record of its own and ESP-IDF's `esp_ota_begin` erases what it opens, so a
+    resume would need the journal to carry the bytes written and the slot to be reopened without an
+    erase - `esp_ota_resume` exists in v5.5 for exactly that. It does not bite while the file fits
+    one wake: 750 kB in twelve 64 kB ranges, against a megabyte and twenty minutes
+    (`kWakeDownloadBytes`, `kBackendBoundMs`). `docs/bench.md` §18's new item is where the real
+    figure comes from, and it is the figure that decides whether this is worth building.
