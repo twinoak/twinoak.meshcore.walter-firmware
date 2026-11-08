@@ -1,4 +1,4 @@
-// One struct per payload of protocol 1.1, and the functions the Walter's end needs: an encoder
+// One struct per payload of protocol 1.2, and the functions the Walter's end needs: an encoder
 // for every request it sends, a decoder for every response and every event it receives
 // (spec/LINK-PROTOCOL.md §5-§8). The other two directions - decoding a request, encoding a
 // response - are the radio firmware's and are not here; the fixtures are the only thing the two
@@ -187,6 +187,15 @@ struct LppGetRequest {
   std::uint8_t perm_mask = 0;  // perm::kBase | perm::kLocation | perm::kEnvironment
 };
 
+// §5.9 (1.2). One request of the node's own handler, answered as it answers an admin over the
+// mesh, with nothing on the air. `data` is what the datagram's plaintext holds after the
+// timestamp, 0 to 32 bytes; a longer one the encoder refuses (the radio would say ERR_MALFORMED).
+struct LocalRequestRequest {
+  static constexpr std::uint8_t kType = type::kLocalRequest;
+  std::uint8_t req_type = 0;  // local_req::kStatus, kAccessList, kNeighbours, kOwnerInfo
+  Bytes data;
+};
+
 // §6.1. Ends any job in progress first, then makes this key the peer.
 struct JobBeginRequest {
   static constexpr std::uint8_t kType = type::kJobBegin;
@@ -248,6 +257,7 @@ Encoded encode(const RebootRequest& request, std::uint8_t* out, std::size_t out_
 Encoded encode(const SleepNoticeRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const CliRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const LppGetRequest& request, std::uint8_t* out, std::size_t out_size);
+Encoded encode(const LocalRequestRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const JobBeginRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const PathSetRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const SendLoginRequest& request, std::uint8_t* out, std::size_t out_size);
@@ -347,6 +357,15 @@ struct LppGetResponse {  // §5.8
   Bytes lpp;  // the Cayenne-LPP bytes a mesh client would have been told at those permissions
 };
 
+struct LocalRequestResponse {  // §5.9
+  // `data` is the handler's answer **after its four tag bytes**: what a mesh client finds after
+  // the reflected timestamp, and what a SEND_REQUEST to another node delivers as a reply record's
+  // `data` (§6.3, state 3). Empty is a legal answer (an empty access list), and ERR_RANGE is the
+  // handler answering nothing at all - over the mesh that would have been silence.
+  std::uint8_t status = status::kOk;
+  Bytes data;
+};
+
 struct PathGetResponse {  // §6.1: the path the job holds now, a learned one included
   std::uint8_t status = status::kOk;
   Path path;
@@ -396,6 +415,7 @@ bool decode(Bytes payload, CliResponse* out);
 bool decode(Bytes payload, PowerGetResponse* out);
 bool decode(Bytes payload, EnvGetResponse* out);
 bool decode(Bytes payload, LppGetResponse* out);
+bool decode(Bytes payload, LocalRequestResponse* out);
 bool decode(Bytes payload, PathGetResponse* out);
 bool decode(Bytes payload, SendResponse* out);
 bool decode(Bytes payload, ReplyGetResponse* out);
@@ -432,6 +452,50 @@ struct EvAttention {
 bool decode(Bytes payload, EvBoot* out);
 bool decode(Bytes payload, EvMeshReply* out);
 bool decode(Bytes payload, EvAttention* out);
+
+// ------------------------------------------------------- §5.9's `data`, read for a person alone
+//
+// **Not a payload of this link.** §5.9 says the response's `data` is the node's own answer and
+// that nothing is re-encoded at either end, and nothing of this firmware decides anything from
+// it: a LOCAL_REQUEST's bytes go to the agent library, which parses them with the same reader a
+// mesh reply's go through (`agent/ReplyCodec.h`, `parseRepeaterStats`). This one shape is read
+// here as well so that `rak request 01` can print the fields by name on the bench - a person
+// reading `ac0f0000...` off a console learns nothing.
+//
+// The layout is MeshCore's `RepeaterStats` at the repeater firmware's pin (repeater-v1.18.0,
+// examples/simple_repeater/MyMesh.h), packed little-endian with no padding: 56 bytes as
+// `<HHhhIIIIIIIIHhHHII`, which is what spec/tools/linkref.py's `repeater_stats()` writes and the
+// fixtures' *local request: the status, as the node packs it* carries. The struct grew at its
+// end, so a shorter one is read field for field and the last two are *not known* rather than 0 -
+// a zero would be printed as a true reading of no errors.
+struct RepeaterStats {
+  std::uint16_t battery_mv = 0;
+  std::uint16_t tx_queue_len = 0;
+  std::int16_t noise_floor_dbm = 0;
+  std::int16_t last_rssi = 0;
+  std::uint32_t packets_recv = 0;
+  std::uint32_t packets_sent = 0;
+  std::uint32_t airtime_s = 0;
+  std::uint32_t uptime_s = 0;
+  std::uint32_t sent_flood = 0;
+  std::uint32_t sent_direct = 0;
+  std::uint32_t recv_flood = 0;
+  std::uint32_t recv_direct = 0;
+  std::uint16_t err_events = 0;
+  std::int16_t last_snr_q4 = 0;
+  std::uint16_t direct_dups = 0;
+  std::uint16_t flood_dups = 0;
+  bool has_rx_airtime = false;
+  std::uint32_t rx_airtime_s = 0;
+  bool has_recv_errors = false;
+  std::uint32_t recv_errors = 0;
+};
+
+// The first forty-eight bytes are the shape every pinned firmware has had; the two u32 after
+// them came later (`agent/ReplyCodec.h`'s `kRepeaterStatsMinLen` is the same figure).
+constexpr std::size_t kRepeaterStatsMinLen = 48;
+
+bool decodeRepeaterStats(Bytes data, RepeaterStats* out);
 
 }  // namespace link
 }  // namespace core

@@ -11,14 +11,21 @@ using jsonfix::Value;
 
 namespace {
 
-// The fixtures' cases, once: the responses and events this radio answers with.
+// The fixtures' cases, once: the responses and events this radio answers with. **1.0's file**,
+// because that is what the radio on the bench speaks unless a test gives it a `band` and a
+// capability - every answer this radio falls back to is a 1.0 one, as it always was.
 const Value& cases() { return fixtures::linkFixture()["cases"]; }
 
+// A case by name, for `answerWith()` and `sendEvent()`: 1.0's file first, then 1.2's, which is
+// every case of 1.0 and 1.1 with the same bytes plus the ones the newer minors add (§5.9's
+// LOCAL_REQUEST, task p9-06). So a test can name a 1.2 answer without this radio's *fallbacks*
+// moving to a newer minor.
 const Value* findCase(const std::string& name) {
-  const Value& all = cases();
-  for (std::size_t i = 0; i < all.size(); ++i) {
-    if (all.at(i)["name"].string() == name) {
-      return &all.at(i);
+  for (const Value* all : {&cases(), &fixtures::linkFixture12()["cases"]}) {
+    for (std::size_t i = 0; i < all->size(); ++i) {
+      if (all->at(i)["name"].string() == name) {
+        return &all->at(i);
+      }
     }
   }
   return nullptr;

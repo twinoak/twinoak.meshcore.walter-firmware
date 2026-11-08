@@ -267,6 +267,12 @@ class Client {
   Answer<PowerGetResponse> powerGet();
   Answer<EnvGetResponse> envGet();
   Answer<LppGetResponse> lppGet(std::uint8_t perm_mask);
+  // §5.9 (1.2): one request of the radio's own handler, answered as it answers an admin over the
+  // mesh and with nothing on the air. `data` is 0 to 32 bytes - what the datagram's plaintext
+  // holds after the timestamp - and the answer's `data` is the handler's reply after its four tag
+  // bytes, so a caller can hand it on exactly as a mesh exchange would have. Without the
+  // capability nothing is sent: kUnsupported (§4, §5.1), which is what a radio at 1.1 gives.
+  Answer<LocalRequestResponse> localRequest(std::uint8_t req_type, Bytes data);
 
   // ------------------------------------------------------------------ §6 and §7, the mesh client
   //

@@ -413,6 +413,45 @@ bool SimRak::onRequest(const link::Packet& packet, std::vector<std::uint8_t>* pa
       payload->insert(payload->end(), lpp.begin(), lpp.end());
       return true;
     }
+    case link::type::kLocalRequest: {
+      // §5.9: `req_type : u8`, then `data` : rest, 0 to 32 bytes. Nothing of the mesh client is
+      // touched - no job, no packet, no client_tx.
+      if (size < 1) {
+        *payload = statusOnly(link::status::kMalformed);
+        ++refused_other;
+        return true;
+      }
+      const std::uint8_t req_type = at[0];
+      const std::size_t len = size - 1;
+      if (len > link::kMaxLocalRequestData) {
+        *payload = statusOnly(link::status::kMalformed);
+        ++refused_other;
+        ++local_refused;
+        return true;
+      }
+      LocalAsked asked;
+      asked.req_type = req_type;
+      asked.data.assign(at + 1, at + 1 + len);
+      local_asked.push_back(asked);
+      std::vector<std::uint8_t> answer;
+      std::uint8_t status = link::status::kOk;
+      if (!local_door) {
+        status = link::status::kUnsupported;  // §5.9: a role with no request handler
+      } else if (!link::local_req::isAnswered(req_type)) {
+        status = link::status::kRange;  // telemetry is LPP_GET's, keep-alive is a session's
+      } else if (!local_door(req_type, len == 0 ? nullptr : at + 1, len, &answer)) {
+        status = link::status::kRange;  // the handler answered nothing: silence, over the mesh
+      }
+      if (status != link::status::kOk) {
+        *payload = statusOnly(status);
+        ++refused_other;
+        ++local_refused;
+        return true;
+      }
+      *payload = statusOnly(link::status::kOk);
+      payload->insert(payload->end(), answer.begin(), answer.end());
+      return true;
+    }
     default:
       return false;  // §5's own, §7, and anything else: the fixtures answer
   }

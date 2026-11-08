@@ -708,6 +708,13 @@ Answer<LppGetResponse> Client::lppGet(std::uint8_t perm_mask) {
   return call<LppGetRequest, LppGetResponse>(request);
 }
 
+Answer<LocalRequestResponse> Client::localRequest(std::uint8_t req_type, Bytes data) {
+  LocalRequestRequest request;
+  request.req_type = req_type;
+  request.data = data;
+  return call<LocalRequestRequest, LocalRequestResponse>(request);
+}
+
 // ---------------------------------------------------------------------------- §6 and §7
 
 Answer<StatusOnly> Client::jobBegin(Bytes pubkey, const Path& path) {

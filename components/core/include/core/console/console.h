@@ -201,6 +201,7 @@ class Console {
   void rakPower();
   void rakEnv();
   void rakCli(const char* line, std::size_t size);
+  void rakRequest(std::uint8_t req_type, const std::uint8_t* data, std::size_t size);
   void rakEvents();
   void rakText();
   void printEvent(const link::client::QueuedEvent& event, std::size_t number);

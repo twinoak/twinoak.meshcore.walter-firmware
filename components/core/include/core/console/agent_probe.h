@@ -77,9 +77,15 @@ struct AgentIdentityView {
   // the door tells its own repeater by.
   bool door_open = false;
   std::uint32_t local_jobs = 0;      // jobs begun for the unit's own repeater
-  std::uint32_t local_requests = 0;  // CLI and LPP_GET requests made for one
-  std::uint32_t local_silent = 0;    // local sends answered with silence on purpose (the ACL)
+  std::uint32_t local_requests = 0;  // CLI, LPP_GET and LOCAL_REQUEST requests made for one
+  std::uint32_t local_silent = 0;    // local sends answered with silence on purpose
   std::uint32_t local_unserved = 0;  // local sends the link has no request for
+  // Whether the session carries `LOCAL_REQUEST` (spec/LINK-PROTOCOL.md §5.9, link 1.2, task
+  // p9-06): with it the door answers a status, an access list, a neighbour list and the owner
+  // info out of the radio's own handler, and without it those four are what they were before
+  // 1.2 - three *Failed* and one silence. It is read off the session's capability bits, which is
+  // the same question the door asks at every send, so the line cannot drift from the behaviour.
+  bool door_local_request = false;
 };
 
 // One row of `agent obs`: the fields of an advert the radio heard, **without its name**.

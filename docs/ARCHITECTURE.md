@@ -425,9 +425,9 @@ numbers. A decoded message's variable-length fields are *views* into the receive
 until the next frame is read, so keeping one means copying it. A decoder refuses a value that
 selects the layout of what follows it (`path_mode`, a reply record's `state`) and passes on one
 that is only data (a status, a role, a capability bit), because §5.1 says a minor version adds
-those and that unknown ones are ignored. It is tested against `spec/fixtures/link/link-v1.json`
-and `link-v1.1.json`, which the radio firmware's own codec is tested against too; neither sees the
-other's source, and if both pass every case they agree on the wire.
+those and that unknown ones are ignored. It is tested against `spec/fixtures/link/link-v1.json`,
+`link-v1.1.json` and `link-v1.2.json`, which the radio firmware's own codec is tested against too;
+neither sees the other's source, and if both pass every case they agree on the wire.
 
 **Link 1.1, and the band** (6 November, task p8-05). `HELLO`'s answer and `EV_BOOT` end with
 `band`, the band the running image was built for, and a `HELLO` from this firmware asks for minor
@@ -442,6 +442,15 @@ November reported `{"slot": 0}` and the server could never offer that radio its 
 is **not** compared is the minor: a 1.1 Walter accepts, flashes and talks to a 1.0 repeater image
 (only the major is, in `image/choose.cpp`, `image/file_check.cpp` and the update's health check),
 because the unit on the bench runs repeater v0.1.0.
+
+**Link 1.2, and the local request** (7 November, task p9-06). `LOCAL_REQUEST` (§5.9), type `0x0D`,
+capability bit `0x80`: one request of the radio's own request handler, answered as it answers an
+admin arriving over the mesh and with nothing on the air. A `HELLO` from this firmware now asks
+for minor **2**, and `codec/wire.h`'s `kProtoMinor` carries that into the descriptor's
+`link_minor` and the release manifest's `link` as before. What decides whether the request may be
+made is **not** the minor but the capability bit, as it is for every other optional type of §4
+(`capabilityOf`): a radio that does not advertise it is answered `kUnsupported` by the client with
+nothing on the wire. What it is for is the local door, below (§13).
 
 **The client** (`core/link/client/`, task p1-02) owns the UART (115200 8N1 on GPIO7/8) and gives
 the rest of the firmware typed calls: *hello*, *ping*, *status*, *set time*, *run this console
@@ -1368,10 +1377,37 @@ job. Per core type:
 | `cli`, `config.apply`, `advert.request`, `clock.sync`, `acl.set` | `CLI` lines | served |
 | `password.set` | `CLI`, the password line sensitive, the restore after it | served; no value anywhere |
 | `reboot` | `CLI reboot`: no answer, the expected silence (§5.7) | served, *ok as sent* |
-| `config.read` | `CLI` lines; the access list silent | served, without the ACL |
+| `config.read` | `CLI` lines; the access list `LOCAL_REQUEST 0x05`, or silent below link 1.2 | served; the ACL from 1.2 on |
 | `discover` | the UART is the direct path: the synthetic login teaches it | served, zero hops |
-| `status`, `neighbours` | no request of §5 yields the bytes the job parses | `failed` — a later link minor |
+| `status` | `LOCAL_REQUEST 0x01`, and `0x07` for the version a `status` at class `acl` asks for | served from link 1.2; `failed` below it |
+| `neighbours` | `LOCAL_REQUEST 0x06`, a page per request, chosen by the request's own `data` | served from link 1.2; `failed` below it |
 | `trace` | a radio cannot trace a round trip to itself | `failed` |
+
+**And the four §5.9 answers** (task p9-06, link 1.2). The sentence above - *nothing of §5 yields
+the bytes of a status reply* - was true of link 1.1 and is the reason the first unit's repeater
+stayed *stale* on meshmaster.dk with none of the graphs a status read feeds. Link 1.2 adds
+`LOCAL_REQUEST` (§5.9): the radio runs its **own request handler** on `req_type` and `data`, as it
+runs one that arrived over the mesh from a client logged in as admin, and answers with MeshCore's
+own bytes after their four tag bytes - which is byte for byte what a `SEND_REQUEST` to another node
+delivers as a reply record's `data` (§6.3, state 3). So `LinkMesh` hands the answer to the library
+unchanged, and nothing is re-encoded at either end.
+
+Which of the two shapes the door has is **the session's capability bit** `0x80` and nothing else
+(`LinkMesh::answersRequestsLocally()`, which `agent id` also prints): with it, status, the access
+list, neighbours and owner info go as `LOCAL_REQUEST`; without it - a radio at 1.1, which the
+first unit's is until the repeater firmware's own 0.1.2 reaches it - every one of them is exactly
+what it was. Three cases of the answer:
+
+- **`OK`** is a held *Response* whose data is the handler's answer, as the access list's and
+  telemetry's already were.
+- **`ERR_RANGE`** is **silence**: §5.9 says a request the handler gives no answer to is answered
+  that way and that over the mesh it would have been silence, so the library hears no reply - which
+  for the access list is its own rule, *no ACL in this snapshot, no evidence either way*. Counted
+  in `local_silent`.
+- anything else is `Failed`, as a refused request on this link always is.
+
+Telemetry stays `LPP_GET`: §5.9 answers `0x03` `ERR_RANGE` on purpose, because two ways to the same
+bytes is one too many. Discovery and trace stay `Failed` at every version.
 
 **And the library is told** (task p9-05). Until 0.1.2 the door was this firmware's secret: the
 library paced a local job like any other and asked it for a password like any other, because
@@ -1443,9 +1479,11 @@ after the radio has an identity carries the key.
 
 **The job type list is the one place the server could be surprised**, and it is deliberate: the
 list is what the server routes by, so it is *every* type the mesh can carry and is **not** reduced
-by the local door's table above. A `status` or a `neighbours` job for the unit's *own* repeater is
-routed here and comes back `unsupported`, because the door cannot build those bytes over the UART;
-meshmaster.dk's routing then tries the next candidate (`EligibleAsync`). The alternative — not
+by the local door's table above. A `status` or a `neighbours` job for the unit's *own*
+repeater on a radio below link 1.2 is routed here and comes back `failed`, because the door cannot
+build those bytes over the UART; meshmaster.dk's routing then tries the next candidate
+(`EligibleAsync`), and since its task 4.27-176 it keeps a list per unit and routes the two to a
+unit whose Walter *and* radio report 0.1.2 or later. The alternative — not
 advertising them — would stop this unit answering `status` for a *neighbour*, which it does
 perfectly well, and `supports()` is asked per type and not per peer.
 

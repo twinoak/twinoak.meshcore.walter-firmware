@@ -29,6 +29,10 @@
 //   - a password is in RAM for the length of the send: the one buffer here is wiped as soon as
 //     the repeater has been handed the login, and a sensitive CLI line the same.
 //
+// §5.9's LOCAL_REQUEST is modelled from link 1.2 (task p9-06): the repeater's own request handler
+// behind `local_door`, answering status, the access list, neighbours and owner info with the bytes
+// a mesh admin would have been answered - nothing on the air, no job needed, `client_tx` unmoved.
+//
 // §7's OBS_PULL is modelled too (task p4-04): a ring of adverts a test pushes, handed out oldest
 // first, at most five to a payload and at most `max`, removed from the ring as they go, with
 // `remaining` and the per-pull `dropped` the specification asks for. The fixtures' own two-advert
@@ -120,6 +124,26 @@ class SimRak final : public interfaces::ByteStream {
   // §5.8, LPP_GET's answer: the fixtures' eight bytes (link-v1.json, `lpp response`) unless a
   // test sets the companion's telemetry bytes.
   std::vector<std::uint8_t> lpp = {0x01, 0x74, 0x01, 0x90, 0x01, 0x67, 0x00, 0x28};
+
+  // §5.9 (link 1.2, task p9-06), LOCAL_REQUEST: the node's **own request handler**, reached over
+  // this link with nothing on the air. `req_type` and `data` are where the datagram's plaintext
+  // holds them, and the answer is what the handler would have replied after its four tag bytes.
+  // The mesh client is not involved at all: a job in progress is untouched, no packet is built
+  // and `client_tx()` does not move, which is the whole point of the request.
+  //
+  // Unset is a radio whose role has no handler - ERR_UNSUPPORTED, which is also what a radio
+  // without the capability bit answers (§5.9's last line). Returning **false** is a request the
+  // handler gives no answer to; §5.9 makes that ERR_RANGE, where over the mesh it would have
+  // been silence.
+  std::function<bool(std::uint8_t req_type, const std::uint8_t* data, std::size_t len,
+                     std::vector<std::uint8_t>* answer)>
+      local_door;
+  struct LocalAsked {
+    std::uint8_t req_type = 0;
+    std::vector<std::uint8_t> data;
+  };
+  std::vector<LocalAsked> local_asked;  // every LOCAL_REQUEST executed, in order (§3: no retries)
+  std::uint32_t local_refused = 0;      // of those, answered with a status other than OK
 
   // ---------------------------------------------------------------- what it did
   struct Sent {

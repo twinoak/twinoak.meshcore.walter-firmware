@@ -20,6 +20,7 @@
 
 #include "agent/agent_bench.h"
 #include "fakes/fake_clock.h"
+#include "sim/local_door.h"
 
 namespace bench {
 
@@ -77,6 +78,28 @@ inline fake::Job neighbourTelemetry(long long id) {
 // at class admin with the password the local door never sends anywhere.
 inline fake::Job ownTelemetry(long long id) {
   return fake::Job(id, "telemetry")
+      .forRepeater(17, kOwnName, kOwnKeyHex)
+      .atClass("acl")
+      .leasedUntil(0)
+      .withAclLevel(mm::kPermReadOnly)
+      .withPayload("{}")
+      .asDirectNeighbour();
+}
+// The own repeater's status and neighbour reads, which are what meshmaster.dk schedules for every
+// repeater it knows and what kept the first unit's own repeater *stale*: before link 1.2 the local
+// door had no request that yields their bytes (task p9-06). At class `acl`, which is the class a
+// scheduled probe of a repeater this unit is on the access list of comes down at.
+inline fake::Job ownStatus(long long id) {
+  return fake::Job(id, "status")
+      .forRepeater(17, kOwnName, kOwnKeyHex)
+      .atClass("acl")
+      .leasedUntil(0)
+      .withAclLevel(mm::kPermReadOnly)
+      .withPayload("{\"version\":true}")
+      .asDirectNeighbour();
+}
+inline fake::Job ownNeighbours(long long id) {
+  return fake::Job(id, "neighbours")
       .forRepeater(17, kOwnName, kOwnKeyHex)
       .atClass("acl")
       .leasedUntil(0)
@@ -281,6 +304,19 @@ struct MeshBench {
 
   sim::SimRak& rak() { return *agent.world.simrak; }
   fake::FakeMesh& repeater() { return hood->repeater; }
+
+  // The radio at **link 1.2** (task p9-06): the `LOCAL_REQUEST` capability in what its HELLO will
+  // say, and the repeater's own request handler behind the RAK (§5.9, `sim/local_door.h`). Called
+  // before the first exchange, because the session is opened inside one - a bench that does not
+  // call it is a radio at 1.1, which is every case written before this task and the first unit's
+  // own radio until the repeater firmware's pile 3.9 reaches it.
+  void radioAt12(int neighbours = 11) {
+    door.fillNeighbours(neighbours);
+    rak().local_door = door.handler();
+    agent.world.rak.caps |= core::link::cap::kLocalRequest;
+  }
+
+  sim::FixtureLocalDoor door;
 };
 
 }  // namespace bench

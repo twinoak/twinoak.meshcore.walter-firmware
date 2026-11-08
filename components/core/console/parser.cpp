@@ -91,6 +91,28 @@ bool parseEpoch(const char* text, std::uint32_t& out) {
   return true;
 }
 
+// Two hex digits, the pair `text` begins with. Neither case nor a prefix: this reads the words of
+// `rak request`, where every byte is written as its two digits (§5.9's `req_type` and `data`).
+bool parseHexByte(const char* text, std::uint8_t* out) {
+  std::uint8_t value = 0;
+  for (int i = 0; i < 2; ++i) {
+    const char c = text[i];
+    std::uint8_t digit;
+    if (c >= '0' && c <= '9') {
+      digit = static_cast<std::uint8_t>(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      digit = static_cast<std::uint8_t>(c - 'a' + 10);
+    } else if (c >= 'A' && c <= 'F') {
+      digit = static_cast<std::uint8_t>(c - 'A' + 10);
+    } else {
+      return false;
+    }
+    value = static_cast<std::uint8_t>((value << 4) | digit);
+  }
+  *out = value;
+  return true;
+}
+
 // A 32-bit address: hexadecimal with a 0x prefix (at most eight digits), or decimal (at most ten
 // digits, inside a u32). The alignment is checked by the caller, so that the message can say so.
 bool parseAddress(const char* text, std::uint32_t& out) {
@@ -181,6 +203,47 @@ Parsed parseRak(char* rest) {
     Parsed p = accept(Verb::kRakCli);
     std::memcpy(p.command.text, arg, n + 1);
     p.command.text_size = n;
+    return p;
+  }
+  // rak request <type> [hex data] (§5.9, link 1.2, task p9-06): one LOCAL_REQUEST. The type is
+  // two hex digits and the data an even number of them, 0 to 32 bytes - both parsed here so that
+  // a typo is one line from the parser and never a frame.
+  if (std::strcmp(sub, "request") == 0) {
+    if (!hasArg) {
+      return refuse("rak request needs a request type: rak request <type> [hex data] "
+                    "(01 status, 05 access list, 06 neighbours, 07 owner info)");
+    }
+    char* word = arg;
+    char* hex = word;
+    while (*hex != 0 && !isSpace(*hex)) ++hex;
+    if (*hex != 0) {
+      *hex++ = 0;
+      while (*hex != 0 && isSpace(*hex)) ++hex;
+    }
+    for (const char* p = hex; *p != 0; ++p) {
+      if (isSpace(*p)) {
+        return refuse("rak request takes a type and one hex word: rak request <type> [hex data]");
+      }
+    }
+    Parsed p = accept(Verb::kRakRequest);
+    std::uint8_t byte = 0;
+    if (std::strlen(word) != 2 || !parseHexByte(word, &byte)) {
+      return refuse2("rak request: the type is two hex digits (01, 05, 06, 07): ", word);
+    }
+    p.command.req_type = byte;
+    const std::size_t digits = std::strlen(hex);
+    if ((digits % 2) != 0) {
+      return refuse2("rak request: the data takes an even number of hex digits: ", hex);
+    }
+    if (digits / 2 > link::kMaxLocalRequestData) {
+      return refuse("rak request: the data is at most 32 bytes (the link refuses more)");
+    }
+    for (std::size_t i = 0; i < digits; i += 2) {
+      if (!parseHexByte(hex + i, &byte)) {
+        return refuse2("rak request: the data is hex digits only: ", hex);
+      }
+      p.command.bytes[p.command.bytes_size++] = byte;
+    }
     return p;
   }
   // rak swd <operation> (tasks p1-03, p1-04): connect, id, mem <addr> [words].

@@ -172,6 +172,31 @@ TEST_CASE("agent id prints the local door's counters, and says when the door is 
   // this line then ran on from (task p9-04).
   CHECK(has(text, "twinoak.power.cycle\n"));
   CHECK(has(text, "\nlocal door: "));
+  // §5.9 (task p9-06): which of the four requests the door answers out of the radio's own
+  // handler. This bench's radio carries no `LOCAL_REQUEST` capability - a radio at link 1.1, as
+  // the first unit's own is until the repeater firmware's pile 3.9 reaches it - so the line says
+  // none of them, and a status, a neighbour list and the owner info of this unit's own repeater
+  // are what they were before 1.2.
+  CHECK(has(text, "  from LOCAL_REQUEST: none - this radio is older than link 1.2"));
+  CHECK(has(text, "status, neighbours and owner info are failed and the access list silent"));
+}
+
+TEST_CASE("agent id says which of §5.9's requests the door answers, from the radio's own bit") {
+  // The other half of the line above: a radio at link 1.2. The bit is in what its HELLO says, so
+  // it is set before the session is opened - and `agent id` reads it off the session, which is the
+  // same question `LinkMesh::localRequest` asks at every send (task p9-06).
+  AgentBench bench(nullptr, false);
+  bench.modemWorks();
+  bench.v().begin();
+  bench.world.rak.caps |= core::link::cap::kLocalRequest;
+  (void)bench.v().runLine("lte up");
+  bench.server().queue(ownTelemetryJob(73).json());
+  (void)bench.v().runLine("agent wake");
+  const std::string text = bench.v().runLine("agent id");
+  INFO(text);
+  CHECK(has(text, "local door: open: a job naming this radio is answered here"));
+  CHECK(has(text, "  from LOCAL_REQUEST: status, access list, neighbours, owner info "
+                  "(telemetry stays LPP_GET)\n"));
 }
 
 TEST_CASE("a console agent wake puts the wake's bound back and says what the cable would do") {

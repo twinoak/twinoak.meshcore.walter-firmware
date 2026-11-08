@@ -210,4 +210,126 @@ TEST(AgentLocalDoor, ALocalJobLeavesTheNextJobForANeighbourPacedAndTheDoorShut) 
   EXPECT_EQ(bench.rak().client_tx(), 2u);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Link 1.2: the four §5.9 answers through a whole wake (task p9-06)
+//
+// Before 1.2 the local door had no request that yields a status, a neighbour list, the owner info
+// or an access list, so a scheduled probe of the unit's **own** repeater came back *failed* - and
+// repeater 41 on meshmaster.dk stayed *stale* and had none of the graphs a status read feeds. What
+// these hold is the pair: with a 1.2 radio each of them is an answer, and with a 1.1 one each is
+// exactly what it was. Both through the real runner and the real `LinkMesh`, over the simulated
+// RAK, with the repeater's own request handler behind it (`sim/local_door.h`: the fixtures' bytes).
+
+TEST(AgentLocalDoor, With12AStatusOfTheOwnRepeaterIsTheFixturesReadingAtNoTransaction) {
+  MeshBench bench;
+  bench.radioAt12();
+  bench.agent.modemWorks();
+  bench.agent.server().queue(bench::ownStatus(90).json());
+
+  interfaces::BackendAnswer out;
+  const interfaces::Exchanged how =
+      bench.agent.exchange(bench::knowledgeFor(core::power::Band::kPlenty), 600, &out);
+
+  EXPECT_EQ(how, interfaces::Exchanged::kAsked);
+  const std::string result = bench.agent.lastResult(90);
+  ASSERT_FALSE(result.empty());
+  EXPECT_EQ(bench::member(result, "outcome"), "ok") << result;
+  const std::string data = bench.agent.lastData(90);
+  // spec/tools/linkref.py's `repeater_stats()` figures, as the fixture packs them.
+  EXPECT_NE(data.find("\"batteryMv\":4012"), std::string::npos) << data;
+  EXPECT_NE(data.find("\"uptimeS\":86400"), std::string::npos) << data;
+  EXPECT_NE(data.find("\"noiseFloorDbm\":-112"), std::string::npos) << data;
+  EXPECT_NE(data.find("\"lastRssi\":-97"), std::string::npos) << data;
+  // `{"version":true}` asks for the firmware too, which is the owner info (0x07).
+  EXPECT_NE(data.find("\"firmware\":\"v1.18.0\""), std::string::npos) << data;
+  // Nothing on the air, nothing of the budget, and the door is what answered it.
+  EXPECT_EQ(bench::member(result, "transactions"), "0") << result;
+  EXPECT_EQ(bench.rak().client_tx(), 0u);
+  EXPECT_EQ(bench.agent.half().jobs.gate().transmissions(), 0u);
+  EXPECT_GT(bench.agent.half().mesh.linkCounters().local_requests, 0u);
+  EXPECT_EQ(bench.agent.half().mesh.linkCounters().local_unserved, 0u);
+  EXPECT_TRUE(bench.agent.half().mesh.answersRequestsLocally());
+}
+
+TEST(AgentLocalDoor, With12ANeighboursJobPagesThroughTheDoorWithAnOffset) {
+  MeshBench bench;
+  bench.radioAt12(11);  // eleven rows, nine to a page: a second request at offset 9
+  bench.agent.modemWorks();
+  bench.agent.server().queue(bench::ownNeighbours(91).json());
+
+  interfaces::BackendAnswer out;
+  (void)bench.agent.exchange(bench::knowledgeFor(core::power::Band::kPlenty), 600, &out);
+
+  const std::string result = bench.agent.lastResult(91);
+  ASSERT_FALSE(result.empty());
+  EXPECT_EQ(bench::member(result, "outcome"), "ok") << result;
+  ASSERT_EQ(bench.door.page_offsets.size(), 2u) << "two pages";
+  EXPECT_EQ(bench.door.page_offsets[0], 0);
+  EXPECT_EQ(bench.door.page_offsets[1], 9);
+  const std::string data = bench.agent.lastData(91);
+  EXPECT_NE(data.find("\"prefix\":\"0111223344556677\""), std::string::npos) << data;
+  EXPECT_NE(data.find("\"prefix\":\"0b11223344556677\""), std::string::npos)
+      << "the eleventh row, which only the second page carries: " << data;
+  EXPECT_EQ(bench::member(result, "transactions"), "0") << result;
+  EXPECT_EQ(bench.rak().client_tx(), 0u);
+}
+
+TEST(AgentLocalDoor, With12AConfigReadsAccessListIsTheFixturesEntry) {
+  MeshBench bench;
+  bench.radioAt12();
+  bench.agent.modemWorks();
+  bench.agent.server().queue(bench::ownConfigReadServerList(92, false).json());
+
+  interfaces::BackendAnswer out;
+  (void)bench.agent.exchange(bench::knowledgeFor(core::power::Band::kPlenty), 3600, &out);
+
+  const std::string result = bench.agent.lastResult(92);
+  ASSERT_FALSE(result.empty());
+  EXPECT_EQ(bench::member(result, "outcome"), "ok") << result;
+  const std::string data = bench.agent.lastData(92);
+  EXPECT_NE(data.find("a1b2c3d4e5f6"), std::string::npos)
+      << "the fixtures' one admin entry: " << data;
+  // The door answers it now, so neither of `readAccessList`'s two tries is silence - the figure
+  // task p9-05 held at 2 is 0 here, which is what makes this change a visible one.
+  EXPECT_EQ(bench.agent.half().mesh.linkCounters().local_silent, 0u);
+  EXPECT_EQ(bench::member(result, "transactions"), "0") << result;
+  EXPECT_EQ(bench.rak().client_tx(), 0u);
+}
+
+TEST(AgentLocalDoor, With11TheSameThreeJobsAreExactlyWhatTheyWereBefore12) {
+  // No `radioAt12()`: the radio of every case written before this task, and the first unit's own
+  // until the repeater firmware's pile 3.9 reaches it. A status and a neighbour read of the unit's
+  // own repeater are *failed* with *the packet could not be built*, and a `config.read`'s access
+  // list is the silence the library reads as *no ACL in this snapshot*.
+  MeshBench bench;
+  bench.agent.modemWorks();
+  bench.agent.server().queue(bench::ownStatus(93).json());
+  bench.agent.server().queue(bench::ownNeighbours(94).json());
+  bench.agent.server().queue(bench::ownConfigReadServerList(95, false).json());
+
+  interfaces::BackendAnswer out;
+  for (int pass = 0; pass < 4; pass++) {
+    (void)bench.agent.exchange(bench::knowledgeFor(core::power::Band::kPlenty), 3600, &out);
+  }
+
+  EXPECT_FALSE(bench.agent.half().mesh.answersRequestsLocally());
+  const std::string status = bench.agent.lastResult(93);
+  const std::string neighbours = bench.agent.lastResult(94);
+  const std::string read = bench.agent.lastResult(95);
+  ASSERT_FALSE(status.empty());
+  ASSERT_FALSE(neighbours.empty());
+  ASSERT_FALSE(read.empty());
+  EXPECT_EQ(bench::member(status, "outcome"), "failed") << status;
+  EXPECT_TRUE(has(bench::member(status, "log"), "the packet could not be built")) << status;
+  EXPECT_EQ(bench::member(neighbours, "outcome"), "failed") << neighbours;
+  EXPECT_EQ(bench::member(read, "outcome"), "ok") << read;
+  EXPECT_TRUE(has(bench::member(read, "log"), "no ACL in this snapshot")) << read;
+  // The counters of the three unserved sends and the two silences the access list's retry makes.
+  EXPECT_EQ(bench.agent.half().mesh.linkCounters().local_unserved, 2u)
+      << "the status and the neighbour read; the owner info is never asked after a failed status";
+  EXPECT_EQ(bench.agent.half().mesh.linkCounters().local_silent, 2u);
+  EXPECT_EQ(bench.rak().client_tx(), 0u) << "and nothing went on the air either way";
+  EXPECT_TRUE(bench.rak().local_asked.empty()) << "no LOCAL_REQUEST was sent without the bit";
+}
+
 }  // namespace

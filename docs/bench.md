@@ -99,7 +99,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   Open the port at any baud (USB Serial/JTAG ignores it). After a reset the console prints
   `twinoak-walter 0.0.0-dev` on its own line, then `running from ota_0 at 0x010000 (3072 KB), ota
   state undefined (...)`, then `image descriptor at <address>: role manager, board walter, band
-  lte-m, version 0.0.0-dev, link 1.1` (task p0-02), then `boot 1: power-on reset`, `the boot
+  lte-m, version 0.0.0-dev, link 1.2` (task p0-02), then `boot 1: power-on reset`, `the boot
   record starts here (a power cut, or the first boot)`, `type 'help' for the commands` and a `> `
   prompt (task p0-03; until it, the last line was `console on USB; nothing to do yet - idling`).
   `--flash-mode dio` is esptool's way in; the image's header says QIO and the bootloader
@@ -131,7 +131,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   ```
 
   The console's third line is `image descriptor at <address>: role manager, board walter, band
-  lte-m, version <the manifest's version>, link 1.1` — the same role, board, band and version the
+  lte-m, version <the manifest's version>, link 1.2` — the same role, board, band and version the
   descriptor and `manifest.json` give. Everything here is checked on every build except that a
   board flashed with the released file boots and prints it: that is what only a Walter on a desk
   shows.
@@ -1677,6 +1677,38 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       from **0.1.2** (`LocalDoor.NoMaterialFrom`), keeping the stored password and the refusal for
       anything older. A version string the server cannot parse counts as older too, so this is
       worth one glance before the two items above are read as findings.
+- [ ] ★ **The link at 1.2, and the request itself** (task p9-06). **Needs the radio at repeater
+      v0.1.2 too** (the repeater firmware's pile 3.9, offered over LTE like the Walter's); until
+      then every item below reads as the 1.1 line and is not a finding. `rak hello`: the
+      `capabilities` line must carry **`local-request`** (bit `0x80`) and the `protocol` line must
+      say **1.2** — the session's minor is the highest both ends know, so a 1.2 Walter against a
+      0.1.1 radio still says 1.1 and no `local-request`. Then `rak request 01`: *local request 0x01
+      (status)*, `ok: 56 byte(s)`, the hex, and the fields by name — battery, uptime, transmit
+      queue, noise floor, last RSSI and SNR, packets in and out, airtime, duplicates, errors.
+      Compare the battery with `rak power`'s channel 2 and the uptime with `rak status`: they are
+      the same radio read two ways, and a mismatch is the layout and not the link. Then
+      `rak request 07` (three lines of text: version, name, owner info) and `rak request 06
+      000a0000000611223344` (a page of ten neighbours, newest first, six-byte prefixes). And
+      `rak request 03`, which must be refused: *the handler answered nothing, which over the mesh
+      would have been silence* — telemetry's local form is `rak cli`'s `LPP_GET`, on purpose.
+- [ ] ★ **The repeater leaves *stale* on meshmaster.dk** (task p9-06). With both 0.1.2s on the
+      unit, `agent id` must say `from LOCAL_REQUEST: status, access list, neighbours, owner info`
+      on the line under `local door:`. Then let the schedule run (or press *Read now*): the
+      repeater's page must take a `status` and a `neighbours` reading **through its own unit**, at
+      **0 transactions** and with nothing on the air, leave *stale*, and start filling the graphs
+      a status read feeds — battery, noise floor, packets, airtime. A *Read config* of it must now
+      report a real **access list** instead of the note *no ACL in this snapshot*. If the page
+      still says *Its own unit answers no status over the box link until its Walter and radio are
+      at 0.1.2*, read which half it names: that sentence is the server's version gate
+      (`LocalDoor.OlderHalf`) and not this change.
+- [ ] **And a radio at 0.1.1 is exactly what it was** (task p9-06). Worth doing **before** the
+      radio is updated, which is the state the unit is in the moment v0.1.2 of the Walter lands: a
+      scheduled `status` or `neighbours` of the unit's own repeater must come back **`failed`**
+      with *the packet could not be built*, a *Read config* must carry the note *no ACL in this
+      snapshot, and no evidence either way*, and `agent id` must say `from LOCAL_REQUEST: none -
+      this radio is older than link 1.2`. Nothing on the air either way. This is the pairing the
+      fleet will be in for as long as it takes to offer the radio its own update, so it has to be
+      the old behaviour and not a new failure.
 - [ ] **The clock check runs when the uplink has been up** (task p9-04). `rak update` typed in a
       boot where nothing has given the Walter a time prints, after the outcome, *the clock check
       was skipped: this Walter had no time of its own in this boot*. Do `lte up` first and the

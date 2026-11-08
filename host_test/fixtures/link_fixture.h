@@ -1,12 +1,14 @@
-// The link fixtures, read at run time, and the small conversions every test over them needs. The
-// path comes from TWINOAK_REPO_ROOT (host_test/CMakeLists.txt), so the tests read the
-// specification's own copy of the fixtures and not a transcription of them.
+// The link fixtures, read at run time. The path comes from TWINOAK_REPO_ROOT
+// (host_test/CMakeLists.txt), so the tests read the specification's own copy of the fixtures and
+// not a transcription of them; the hex both ways is fixtures/hex.h.
 //
-// **Two files, because the link has two minors** (spec/LINK-PROTOCOL.md, *Versions*).
+// **Three files, because the link has three minors** (spec/LINK-PROTOCOL.md, *Versions*).
 // `link-v1.json` is 1.0's and keeps its bytes for ever; `link-v1.1.json` is every case of it plus
-// the four of 1.1. `linkFixture()` is 1.0's and is what the scripted radio answers from - the
-// radio on the bench runs repeater v0.1.0, which speaks 1.0 - and `linkFixture11()` is the newer
-// file, which the codec's own test walks as well (task p8-05).
+// the four of 1.1; `link-v1.2.json` is every case of 1.1 plus the fourteen of 1.2 (§5.9's
+// LOCAL_REQUEST and the HELLOs that carry its bit). `linkFixture()` is 1.0's and is what the
+// scripted radio answers from - the radio on the bench runs repeater v0.1.0, which speaks 1.0 -
+// and `linkFixture11()`/`linkFixture12()` are the newer files, which the codec's own test walks
+// as well (tasks p8-05 and p9-06).
 #pragma once
 
 #include <doctest.h>
@@ -17,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "fixtures/hex.h"
 #include "fixtures/json.h"
 
 namespace fixtures {
@@ -56,6 +59,14 @@ inline const jsonfix::Value& linkFixture11() {
   return fixture;
 }
 
+// 1.2's file: every case of 1.1 and the fourteen of 1.2 (the HELLO that asks for minor 2, the
+// answers with and without the `LOCAL_REQUEST` bit, the four requests §5.9 answers with their
+// answers, and its two refusals).
+inline const jsonfix::Value& linkFixture12() {
+  static jsonfix::Value fixture = loadLinkFixtureFrom("link-v1.2.json");
+  return fixture;
+}
+
 // The fixtures' case of this name, in whichever file, or nullptr. The name is the specification's
 // own words for it, which is how a test says which bytes it means.
 inline const jsonfix::Value* linkCaseIn(const jsonfix::Value& fixture, const std::string& name) {
@@ -66,31 +77,6 @@ inline const jsonfix::Value* linkCaseIn(const jsonfix::Value& fixture, const std
     }
   }
   return nullptr;
-}
-
-inline std::vector<std::uint8_t> fromHex(const std::string& hex) {
-  REQUIRE_MESSAGE(hex.size() % 2 == 0, "a hex string of an odd length: " << hex);
-  std::vector<std::uint8_t> out;
-  out.reserve(hex.size() / 2);
-  for (std::size_t i = 0; i < hex.size(); i += 2) {
-    out.push_back(static_cast<std::uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
-  }
-  return out;
-}
-
-inline std::string toHex(const std::uint8_t* data, std::size_t size) {
-  static const char* digits = "0123456789abcdef";
-  std::string out;
-  out.reserve(size * 2);
-  for (std::size_t i = 0; i < size; ++i) {
-    out.push_back(digits[data[i] >> 4]);
-    out.push_back(digits[data[i] & 0x0F]);
-  }
-  return out;
-}
-
-inline std::string toHex(const std::vector<std::uint8_t>& bytes) {
-  return toHex(bytes.data(), bytes.size());
 }
 
 }  // namespace fixtures

@@ -376,7 +376,7 @@ mm::SendResult LinkMesh::sendRequest(std::uint8_t reqType, const std::uint8_t* d
                                      std::uint32_t& tag) {
   tag = 0;
   if (job_.local) {
-    return localRequest(reqType);
+    return localRequest(reqType, data, len);
   }
   const link::Bytes body{len == 0 ? nullptr : data, len};
   const lc::Answer<link::SendResponse> answer = client_.sendRequest(kSendTimeoutCeilingMs, reqType, body);
@@ -628,7 +628,8 @@ mm::SendResult LinkMesh::localLogin() {
   return mm::SendResult::Direct;
 }
 
-mm::SendResult LinkMesh::localRequest(std::uint8_t reqType) {
+mm::SendResult LinkMesh::localRequest(std::uint8_t reqType, const std::uint8_t* data,
+                                      std::uint8_t len) {
   clearReply();
   local_held_ = false;
   if (reqType == mm::kReqTypeGetTelemetry) {
@@ -648,20 +649,52 @@ mm::SendResult LinkMesh::localRequest(std::uint8_t reqType) {
     local_held_ = true;
     return mm::SendResult::Direct;
   }
+  // §5.9 (link 1.2): status (0x01), the access list (0x05), neighbours (0x06) and owner info
+  // (0x07) are answered by the radio's **own request handler**, over this link, as it answers an
+  // admin over the mesh - the request's `data` and `len` go as they are, and the answer is the
+  // handler's reply after its four tag bytes, which is exactly what a `SEND_REQUEST` to another
+  // node delivers as a reply record's `data` (§6.3, state 3). So it is handed on unchanged.
+  if (answersRequestsLocally() && link::local_req::isAnswered(reqType)) {
+    const lc::Answer<link::LocalRequestResponse> answer =
+        client_.localRequest(reqType, link::Bytes{len == 0 ? nullptr : data, len});
+    link_counters_.local_requests = saturate(link_counters_.local_requests);
+    if (answer.ok()) {
+      note(answer);
+      reply_.kind = mm::MeshReply::Kind::Response;
+      std::size_t n = answer.message.data.size;
+      if (n > mm::kMeshReplyDataCap) n = mm::kMeshReplyDataCap;
+      if (n > 0) copyBytes(answer.message.data.data, reply_.data, n);
+      reply_.len = static_cast<std::uint8_t>(n);
+      last_record_.state = link::reply_state::kResponse;
+      local_held_ = true;
+      return mm::SendResult::Direct;
+    }
+    if (answer.fault == lc::Fault::kRefused && answer.status == link::status::kRange) {
+      // §5.9: "A request the handler gives no answer to is ERR_RANGE... Over the mesh it would
+      // have been silence." So it is silence here: the send went, nothing is held, and the
+      // library's await says no reply - which for the access list is its own rule, *no ACL in
+      // this snapshot, no evidence either way* (JobRunner::readAccessList).
+      note(answer);
+      link_counters_.local_silent = saturate(link_counters_.local_silent);
+      return mm::SendResult::Direct;
+    }
+    note(answer);
+    return mm::SendResult::Failed;
+  }
   if (reqType == mm::kReqTypeGetAccessList) {
-    // No request on this link yields the ACL's bytes, and the library's own rule for the access
-    // list is that its silence is *no ACL in this snapshot, no evidence either way* - the one
-    // key whose silence a reachable repeater guarantees (JobRunner::readAccessList). So the
-    // request is "sent" and nothing answers it, and a config.read of the unit's own repeater
-    // keeps its fifteen other keys.
+    // A radio without `LOCAL_REQUEST`: no request on this link yields the ACL's bytes, and the
+    // library's own rule for the access list is that its silence is *no ACL in this snapshot, no
+    // evidence either way* - the one key whose silence a reachable repeater guarantees
+    // (JobRunner::readAccessList). So the request is "sent" and nothing answers it, and a
+    // config.read of the unit's own repeater keeps its fifteen other keys.
     link_counters_.local_silent = saturate(link_counters_.local_silent);
     return mm::SendResult::Direct;
   }
   // Status (REQ 0x01, RepeaterStats as bytes), neighbours (0x06, the paged binary list) and
-  // owner-info (0x07): CommonCLI.cpp at d9296435 has `stats-*` and `neighbors` lines, which
-  // print text and not these structs, and nothing of §5 carries them. Failed, which the library
-  // reports as a failed job with *the packet could not be built*; the report lists each as the
-  // input to a link 1.1 request.
+  // owner-info (0x07) on a radio older than link 1.2: CommonCLI.cpp at d9296435 has `stats-*` and
+  // `neighbors` lines, which print text and not these structs, and nothing of §5 carried them
+  // before §5.9. Failed, which the library reports as a failed job with *the packet could not be
+  // built* - and so is a request type nobody has a local form for.
   link_counters_.local_unserved = saturate(link_counters_.local_unserved);
   return mm::SendResult::Failed;
 }

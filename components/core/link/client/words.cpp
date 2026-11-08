@@ -17,7 +17,7 @@ constexpr Bit kCapabilities[] = {
     {cap::kCli, "cli"},                   {cap::kPower, "power"},
     {cap::kEnv, "env"},                   {cap::kMeshClient, "mesh-client"},
     {cap::kObservations, "observations"}, {cap::kAttention, "attention"},
-    {cap::kTimePersist, "time-persist"},
+    {cap::kTimePersist, "time-persist"}, {cap::kLocalRequest, "local-request"},
 };
 
 // §5.3's STATUS flags.
@@ -212,6 +212,19 @@ const char* eventName(std::uint8_t value) {
     case type::kEvBoot: return "boot";
     case type::kEvMeshReply: return "mesh reply";
     case type::kEvAttention: return "attention";
+    default: return "unknown";
+  }
+}
+
+// §5.9's table, in MeshCore's own words for the four request types the node answers over the
+// link. Anything else is the ERR_RANGE the radio gives it - including 0x03 telemetry, whose local
+// form is LPP_GET (§5.8), and 0x02 keep-alive, which belongs to a login session this link has not.
+const char* localRequestName(std::uint8_t req_type) {
+  switch (req_type) {
+    case local_req::kStatus: return "status";
+    case local_req::kAccessList: return "access list";
+    case local_req::kNeighbours: return "neighbours";
+    case local_req::kOwnerInfo: return "owner info";
     default: return "unknown";
   }
 }

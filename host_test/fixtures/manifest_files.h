@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/image/trust.h"
+#include "fixtures/hex.h"
 #include "manifest_fixtures.h"
 
 namespace fixtures {
@@ -37,26 +38,6 @@ inline std::vector<std::uint8_t> readVariantFile(const Variant& v) {
 
 inline std::string asText(const std::vector<std::uint8_t>& bytes) {
   return std::string(bytes.begin(), bytes.end());
-}
-
-inline std::vector<std::uint8_t> fromHex(const std::string& hex) {
-  REQUIRE(hex.size() % 2 == 0);
-  std::vector<std::uint8_t> out;
-  out.reserve(hex.size() / 2);
-  for (std::size_t i = 0; i < hex.size(); i += 2) {
-    out.push_back(static_cast<std::uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
-  }
-  return out;
-}
-
-inline std::string toHex(const std::uint8_t* bytes, std::size_t size) {
-  static const char* digits = "0123456789abcdef";
-  std::string out;
-  for (std::size_t i = 0; i < size; ++i) {
-    out.push_back(digits[bytes[i] >> 4]);
-    out.push_back(digits[bytes[i] & 0x0F]);
-  }
-  return out;
 }
 
 // The test key, with its id computed as section 3 says rather than copied.
