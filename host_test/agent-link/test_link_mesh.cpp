@@ -790,6 +790,64 @@ TEST_F(LinkMeshTest, AJobForANeighbourAfterALocalOneIsAMeshJobAgain) {
   EXPECT_EQ(world().requestsOf(link::type::kJobBegin), 1u);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Where the last ten jobs went (task p9-04)
+
+TEST_F(LinkMeshTest, TheLastTenJobsRememberTheKeyTheyNamedAndWhetherTheDoorAnsweredThem) {
+  // Nothing of the library's own `last ten` carries the key a job was addressed to, and
+  // components/agent-core is a hash-checked copy of upstream, so the end that decides where a
+  // job goes is the end that remembers it.
+  EXPECT_EQ(link().jobsBegun(), 0u);
+  EXPECT_EQ(link().jobBegunAt(0), nullptr);
+  // The fixture arms this end with a key (the shim's setSelfKey); a wake that has not read the
+  // identity out of the radio yet has none, which is where this starts.
+  link().clearOwnKey();
+  EXPECT_EQ(link().ownKeyShown(), nullptr);
+
+  // One for a stranger while this end has no key of its own: a mesh job, and the entry says the
+  // door was shut at the time.
+  EXPECT_TRUE(link().beginJob(fake::strangerKey().c_str(), nullptr, 0, 0));
+  link().endJob();
+  ASSERT_EQ(link().jobsBegun(), 1u);
+  const agent::JobBegun* first = link().jobBegunAt(0);
+  ASSERT_NE(first, nullptr);
+  EXPECT_FALSE(first->local);
+  EXPECT_FALSE(first->own_key_known);
+
+  // The key arrives, and a job naming it goes through the door.
+  makeItLocal();
+  ASSERT_NE(link().ownKeyShown(), nullptr);
+  EXPECT_TRUE(link().beginJob(repeater().c_str(), nullptr, 0, 0));
+  link().endJob();
+  ASSERT_EQ(link().jobsBegun(), 2u);
+  const agent::JobBegun* local = link().jobBegunAt(0);
+  ASSERT_NE(local, nullptr);
+  EXPECT_TRUE(local->local);
+  EXPECT_TRUE(local->own_key_known);
+  // Newest first: the stranger's is behind it now.
+  EXPECT_FALSE(link().jobBegunAt(1)->local);
+  // And the six bytes kept are the key's own first six.
+  uint8_t key[32];
+  ASSERT_TRUE(keyBytes(repeater(), key));
+  EXPECT_EQ(std::memcmp(local->key, key, agent::kKeyShownBytes), 0);
+  EXPECT_EQ(std::memcmp(link().ownKeyShown(), key, agent::kKeyShownBytes), 0);
+
+  // A key that is not 64 hex characters is no job at all, and nothing is remembered for it.
+  EXPECT_FALSE(link().beginJob("not-a-key", nullptr, 0, 0));
+  EXPECT_EQ(link().jobsBegun(), 2u);
+
+  // The list is ten deep and the oldest falls off the end.
+  for (int i = 0; i < 12; i++) {
+    EXPECT_TRUE(link().beginJob(fake::strangerKey().c_str(), nullptr, 0, 0));
+    link().endJob();
+  }
+  EXPECT_EQ(link().jobsBegun(), agent::kJobsRemembered);
+  for (size_t i = 0; i < agent::kJobsRemembered; i++) {
+    EXPECT_FALSE(link().jobBegunAt(i)->local) << i;  // the local one is twelve jobs ago
+  }
+  EXPECT_EQ(link().jobBegunAt(agent::kJobsRemembered), nullptr);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

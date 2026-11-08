@@ -6,6 +6,7 @@
 #include <string>
 
 #include "core/cycle/wake_bench.h"
+#include "core/link/codec/wire.h"
 
 using bench::WakeBench;
 using core::cycle::Ending;
@@ -291,4 +292,35 @@ TEST_CASE("a build with nothing to do it with: every step answers, and the wake 
   CHECK(pass.ending == Ending::kSlept);
   CHECK(sleeper.sleeps == 1);
   CHECK(pins.violations.empty());
+}
+
+TEST_CASE("`lte up` at the console gives this Walter a clock, so the link has a time to give") {
+  // Until task p9-04 only step 6 of a wake ever filled `NetworkClock`, so a boot a person drove
+  // by hand had no time of its own however long the uplink had been up - and `rak update`'s §5.4
+  // clock check was skipped in every one of them, saying *until phase 3's modem*
+  // (tasks/phase-8/FOLLOWUPS.md).
+  WakeBench bench;
+  bench.modemWorks();
+  bench.world.usb = true;
+  bench.boot(interfaces::WokeBy::kNotFromSleep, core::health::ResetReason::kResetPin);
+  bench.v().begin();
+  CHECK_FALSE(bench.v().wall.known());
+  interfaces::WallTime none{};
+  CHECK_FALSE(bench.v().wall.now(&none));
+  // The link has nothing to give the radio: a TIME_SET is not sent.
+  const std::uint32_t sets_before = bench.v().link.counters().time_sets;
+
+  const std::string said = bench.v().runLine("lte up");
+  INFO(said);
+  CHECK(bench::has(said, "from the network"));
+  CHECK(bench::has(said, "this Walter's clock is set from it"));
+  CHECK(bench.v().wall.known());
+  interfaces::WallTime now{};
+  REQUIRE(bench.v().wall.now(&now));
+  CHECK(now.epoch != 0);
+  CHECK(now.source == core::link::time_source::kCellular);
+  // And the link now has one, which is what §5.4's check of an update reads.
+  (void)bench.v().link.hello();
+  (void)bench.v().link.serviceTime();
+  CHECK(bench.v().link.counters().time_sets > sets_before);
 }

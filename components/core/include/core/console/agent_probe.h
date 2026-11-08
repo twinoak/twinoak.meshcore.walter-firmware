@@ -68,6 +68,18 @@ struct AgentIdentityView {
   std::uint32_t boot_changes = 0;
   std::uint32_t unreadable = 0;
   std::uint32_t no_identity = 0;
+
+  // **The local door** (task p9-04): a job begun for the unit's own repeater is answered by this
+  // end and nothing goes on the air (`walter_agent/link_mesh.h`). Until this line the four
+  // counters were printed nowhere, and on 7 November a telemetry job that went on the air
+  // because meshmaster.dk held the radio's old key could only be told from the server's audit
+  // log (tasks/phase-8/FOLLOWUPS.md). `door_open` is `known` seen from the door's side: the key
+  // the door tells its own repeater by.
+  bool door_open = false;
+  std::uint32_t local_jobs = 0;      // jobs begun for the unit's own repeater
+  std::uint32_t local_requests = 0;  // CLI and LPP_GET requests made for one
+  std::uint32_t local_silent = 0;    // local sends answered with silence on purpose (the ACL)
+  std::uint32_t local_unserved = 0;  // local sends the link has no request for
 };
 
 // One row of `agent obs`: the fields of an advert the radio heard, **without its name**.

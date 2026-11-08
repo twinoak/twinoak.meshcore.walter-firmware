@@ -91,8 +91,12 @@ health check holds the `HELLO` it gets against the descriptor it flashed"):
    major is one this Walter speaks. A radio that refuses `HELLO` with `ERR_UNSUPPORTED` has booted
    and does not speak this major (`spec/LINK-PROTOCOL.md` §5.1): a failure, not a silence.
 2. **The clock can be set**: `TIME_SET` accepted - the first thing a healthy repeater must take
-   (§5.4). A Walter with no time to give (no modem until phase 3) cannot make this check; it says
-   so (*the clock check was skipped*) and asks `TIME_GET` instead, which must answer.
+   (§5.4). A Walter with no time of its own **in this boot** cannot make this check; it says so
+   (*the clock check was skipped*) and asks `TIME_GET` instead, which must answer. Its own clock
+   is the network's, taken again at every wake because the monotonic counter restarts at each one
+   (`core/cycle/network_clock.h`): a wake's step 6 takes it, `lte up` at the console takes it, and
+   the agent's server time fills it where the cellular network gave none. So the way to make this
+   check on the bench is `lte up` before `rak update`.
 3. **`STATUS` says the radio initialised** (§5.3, flag bit 4).
 4. **The link stays up** - a `PING` every `kProvingPingIntervalMs` - for the whole
    **proving period** `kProvingPeriodMs`, with **no restart** in it: the `boot_id` unchanged and
@@ -190,8 +194,9 @@ rak update: done: 0.3.1+abc1234 (sha256 1f2e3d4c5b6a7988...) is the golden image
   resumed run is being driven from the main loop; wait for it.
 - `update: stopped in <state>: the journal could not be written` - the machine does not act
   without its journal. Nothing more happens until the next boot reads what was written.
-- `(the clock check was skipped: this Walter has no time to give until phase 3's modem)` after the
-  outcome, when it was.
+- `(the clock check was skipped: this Walter had no time of its own in this boot, so there was
+  none to give the radio. 'lte up' before 'rak update' lets it run)` after the outcome, when it
+  was.
 
 `rak update --first-install` is the same run with no golden image to return to - a person's
 command only: a unit's first repeater image, loaded as a candidate over USB. If it fails, the

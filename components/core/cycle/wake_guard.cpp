@@ -35,6 +35,29 @@ void WakeGuard::allow(std::uint32_t bound_ms) {
   refresh();
 }
 
+std::uint32_t WakeGuard::raiseFor(std::uint32_t bound_ms) {
+  const std::uint32_t was = bound_ms_;
+  allow(bound_ms);
+  return was;
+}
+
+void WakeGuard::putBack(std::uint32_t bound_ms) {
+  if (!armed_) return;
+  bound_ms_ = bound_ms < kWakeBoundMs ? kWakeBoundMs
+                                      : (bound_ms > kRaisedBoundMax ? kRaisedBoundMax : bound_ms);
+  refresh();
+}
+
+std::uint32_t WakeGuard::endsAfterCableMs() const {
+  // `stay` and a disarmed guard are the two states nothing would end.
+  if (!armed_ || staying_ || overrun_) return 0;
+  // The clock now and not `status_.awake_ms`, which is only as new as the last refresh: a
+  // console line printed between two ticks has to be true when it is printed.
+  const std::uint32_t awake = static_cast<std::uint32_t>(clock_.nowMs() - armed_at_ms_);
+  const std::uint32_t left = awake >= bound_ms_ ? 0 : bound_ms_ - awake;
+  return left > kUsbGraceMs ? left : kUsbGraceMs;
+}
+
 void WakeGuard::disarm() {
   armed_ = false;
   overrun_ = false;

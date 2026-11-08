@@ -465,7 +465,10 @@ property of the code's shape and not of everybody's care.
 It keeps the radio's `boot_id` and treats a change as "everything I knew about that radio's state
 is gone"; a changed `boot_id` or an `EV_BOOT` is raised to whoever subscribed. It sets the radio's
 clock after every restart it sees, before anything else — from `interfaces::WallClock`, which
-answers "I have no time to give" until phase 3's modem fills it. `EV_BOOT`, `EV_MESH_REPLY` and
+answers "I have no time to give" until something has filled it **in this boot**: a wake's step 6
+from the cellular network, `lte up` at the console from the same read, or the agent's server time
+(`core/cycle/network_clock.h`; the monotonic counter restarts at every wake, so the time is taken
+again each time and never carried across a sleep). `EV_BOOT`, `EV_MESH_REPLY` and
 `EV_ATTENTION` are decoded and queued as they arrive — a small bounded queue, its overflow counted,
 their sequence numbers watched for gaps — whenever the client reads the port, which the main task
 does every time round.

@@ -159,6 +159,7 @@ An independent read of the code and tests against the task files; nothing built,
   - Report 06 lists three of the five files' hashes: the `.sig` is 0c7aa12f…ff69, `SHA256SUMS`
     5d2c9840…53e3.
   - `docs/bench.md` §9 says *the run that the watchdog ended*; it ended on `kFlashFailed`.
+    (Corrected by task p9-04, with report p8-01 named beside it.)
   - 03 relies on the library's unchecked `_socketGet(id)->state` (`WalterModem.cpp`, about line 3205).
     (Read again for p9-02: `_socketGet` matches on the id **alone** at 1.5.0, and that is
     deliberate upstream - QuickSpot/walter-arduino#109 was a panic when it also required the
@@ -173,21 +174,52 @@ An independent read of the code and tests against the task files; nothing built,
   173 stops handing the unit an `acl` level for its own repeater. Should agent-core restore anyway
   whenever it logged in at admin, the Walter skips the restore on a local job
   (`host_test/agent-link/test_link_mesh.cpp`, about lines 685–686, asserts it today).
-- [ ] **[next Walter pile] A first install's `check` entry journals a zero hash.** 7 November, `rak update
+- [x] **[done by p9-04] A first install's `check` entry journals a zero hash.** 7 November, `rak update
   status` on the first unit: `seq 28: check - first install, slot 0, image sha256 0000000000000000...`.
   The journal's story of the 6 November run never names the image it was about. The image is only on
   the bad list (`003a8895…`, repeater v0.1.0). Read whether `RadioUpdate` journals `check` before it
   has loaded the candidate's record, at 0.1.0 and at 0.1.1, and make the first entry carry the hash.
+  - **It did, at both tags.** `start()` is `clear()` - which zeroes `status_` - and then
+    `enter(State::kCheck, …)`, and every entry carries `status_.sha256`; the field is filled by
+    `stepCheck`'s `loadImage`, one step *after* that entry is written. The two tags' `start()` are
+    identical here, so every run of both releases named 64 zero bits in its first entry.
+  - **Done by task p9-04:** `start()` reads the record of the image the run is about - the record
+    alone, no reader opened and nothing verified: that is `stepCheck`'s business and its
+    refusals are unchanged - and the hash and the version are in `status_` before the `check`
+    entry is written. A slot with no record leaves the hash zero and `stepCheck` refuses with
+    *no candidate*, which is the honest entry for a run about nothing.
+  - Three tests in `host_test/core/update/test_radio_update.cpp`: an update's first entry, a
+    first install's, and the empty slot's.
 - [x] **[bench, 7 November] The first install worked on the board.** Walter 0.1.1 (factory flash by
   cable), repeater 0.1.1+3d81536 pushed by `walterctl` (protocol 2, no `--undo-crlf`), then `rak update
   --first-install`: 102 pages, read back whole, the radio reset, *proving*, *committing*, `done: … is the
   golden image`, with no Walter reboot. It took about a quarter of an hour at 125 kHz between Thomas's
   two console pastes (19:31–19:49 local), where `docs/flashing.md` says *seven minutes or so*: time it
   properly with `docs/bench.md` and correct the figure.
-- [ ] **[next Walter pile] *the clock check was skipped: this Walter has no time to give until phase 3's
+  - **The figure is corrected by task p9-04**, from the code's own page and poll counts rather
+    than from a guess: 413 s for the flash of 417,284 bytes in 102 pages at 125 kHz (548 of
+    p9-01's pauses in it, 5.5 s, about 1 %), up to 20 s of boot window and 180 s of proving -
+    **about eleven minutes**, of which seven are SWD traffic. `docs/flashing.md` has the table
+    and the bench's quarter of an hour beside it as the line still to fill; `docs/bench.md`
+    §9 is where the flash alone is to be timed.
+- [x] **[done by p9-04] *the clock check was skipped: this Walter has no time to give until phase 3's
   modem*.** The modem has been in since phase 3. The check was skipped because the uplink was not up in
   this boot, so there was no network time to give. Say that, and say that `lte up` before a
   `rak update` lets the check run. Or have the update ask the uplink for the time when it can.
+  - **Done by task p9-04, both halves - because the second sentence was not true yet.**
+    `Console::lteUp` printed the network's time and gave it to nothing: only the wake cycle's
+    step 6 ever filled `core::cycle::NetworkClock`, so a boot a person drove by hand had no clock
+    of its own however long the uplink had been up, and `lte up` before `rak update` would not
+    have let the check run.
+  - So `lte up` now hands the time it read to that object - the same `interfaces::NetworkTime`
+    through the same window, one place still deciding what to believe and it is still the
+    network - and says so: *this Walter's clock is set from it, so the radio can be given it
+    too*. The update is given no uplink: it reads `interfaces::WallClock` as it always did.
+  - The message says what is true: *the clock check was skipped: this Walter had no time of its
+    own in this boot, so there was none to give the radio. 'lte up' before 'rak update' lets it
+    run*, in `docs/update.md`, `docs/provisioning.md`'s replayed session and `docs/console.md`.
+  - Tested: `host_test/core/cycle/test_wake_cycle.cpp`, *`lte up` at the console gives this
+    Walter a clock, so the link has a time to give* - and the link then sends a real `TIME_SET`.
 - [x] **[read by p9-02; what is left is on the bench] The fifth connection of a wake still stalled.** 7 November,
   Walter 0.1.1 on the first unit, `agent wake`:
   - config, heartbeat, claim and the job's result all went through (four connections, about 1.1–1.3 s
@@ -241,13 +273,28 @@ An independent read of the code and tests against the task files; nothing built,
     one). Nothing else of the library's deprecated surface is called.
   - **Done by task p9-02:** `walter_tls.cpp` silences the library's `DEPRECATION` tag where that
     reserve is made, with the reason beside it. The line goes; the second id stays.
-- [ ] **[next Walter pile] The local door's counters are printed nowhere.** `LinkMesh::linkCounters()`
+- [x] **[done by p9-04] The local door's counters are printed nowhere.** `LinkMesh::linkCounters()`
   (`local_jobs`, `local_silent`, `local_requests`, `local_unserved`) is not on the console. On
   7 November a telemetry job for the unit's own repeater came back *unreachable after 2
   transactions*. The cause was meshmaster.dk addressing the radio's **old** key (it changed on
   6 November: repeater firmware `tasks/phase-3.8/FOLLOWUPS.md`), so the job was a stranger's and went
   on the air. Only the server's audit log could tell. `agent id` or `agent jobs` should show whether a
   job went through the local door, and should say when a job's key is not this radio's.
+  - **Done by task p9-04**, in both places and for both questions.
+  - `agent id` ends with a `local door:` line: *open: a job naming this radio is answered here*
+    or *shut: no key for this radio, so no mesh job is carried at all*, and the four counters.
+  - `agent jobs` ends with two blocks the library's own report cannot write: `local` (the same
+    four, and this radio's key shortened) and `begun` - **the last ten jobs by the repeater they
+    named**, each *the local door: nothing went on the air* or *the mesh; NOT this radio's key
+    …*, with both keys shortened to twelve hex characters. `components/agent-core` is a
+    hash-checked copy of upstream, so the list is kept at the end that decides where a job goes:
+    `LinkMesh::beginJob` (`agent::JobBegun`, seventy bytes of that object).
+  - Tested: `host_test/agent-link/test_link_mesh.cpp` for the list itself, and
+    `host_test/agent/test_agent_console.cpp` for the two commands' words, with a job for a
+    neighbour beside one for the unit's own repeater.
+  - One thing found on the way and fixed: `agent jobs`'s `firmware` line was a single `sayf` of
+    more than the 200 bytes a line is printed into, so it had been cut at *0 pow* and had lost
+    its newline. It is three lines now.
 - [ ] **[next Walter pile / agent-core] An admin job for the unit's own repeater needs a password nobody
   reads.**
   - agent-core decides what to log in with before it knows a job is local. `loginMaterialFor`

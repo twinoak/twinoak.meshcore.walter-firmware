@@ -537,3 +537,89 @@ TEST_CASE("a flash that fails - the target goes silent - rolls back when the chi
   CHECK(unit.world.chipHolds(unit.golden));
   CHECK(unit.world.store.store.isBad(unit.read(Which::kCandidate).sha256));
 }
+
+// -- the first entry of a run names the image it is about (task p9-04) ---------------------------
+
+namespace {
+
+// The oldest radio-update entry the journal holds, which on an empty journal is a run's first:
+// the walk is backwards, so this is the end of it.
+upd::Payload firstEntry(const bench::Walter& w) {
+  upd::Cursor cursor;
+  upd::Entry e;
+  upd::Payload p;
+  upd::Payload oldest;
+  bool any = false;
+  bool more = w.journal.first(&cursor, &e);
+  while (more) {
+    if (e.kind == upd::kind::kRadioUpdate && upd::decode(e, &p)) {
+      oldest = p;
+      any = true;
+    }
+    more = w.journal.previous(&cursor, &e);
+  }
+  REQUIRE(any);
+  return oldest;
+}
+
+bool allZero(const std::uint8_t* sha) {
+  for (std::size_t i = 0; i < core::image::kSha256Size; ++i) {
+    if (sha[i] != 0) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("a run's first journal entry carries the image's hash, not sixty-four zero bits") {
+  // 7 November, `rak update status` on the first unit: `seq 28: check - first install, slot 0,
+  // image sha256 0000000000000000...`. Every entry carries `status_.sha256`, and until task
+  // p9-04 that field was filled by stepCheck's loadImage - one step after the `check` entry was
+  // written - so the journal's story of a run never named the image it was about
+  // (tasks/phase-8/FOLLOWUPS.md). The same at 0.1.0 and at 0.1.1: `start()` was unchanged
+  // between the two tags.
+  ReadyUnit unit;
+  bench::Walter& w = *unit.walter;
+  const bench::Record candidate = unit.read(Which::kCandidate);
+  REQUIRE(candidate.present);
+  REQUIRE_FALSE(allZero(candidate.sha256));
+
+  REQUIRE(w.update.start(unit.request()));
+  CHECK(w.update.state() == State::kCheck);
+  // Before a single step: the entry is written by start() and is the run's first.
+  const upd::Payload first = firstEntry(w);
+  CHECK(first.state == State::kCheck);
+  CHECK(first.kind == Kind::kUpdate);
+  CHECK_FALSE(allZero(first.sha256));
+  CHECK(core::image::sha256Equal(first.sha256, candidate.sha256));
+  // And the console has the version with it, before the check has loaded anything.
+  CHECK(std::string(w.update.status().version) == unit.candidate.version);
+  CHECK(w.run() == State::kDone);
+}
+
+TEST_CASE("a first install's first entry carries its candidate's hash too") {
+  // The 6 November run: a first install, into a blank chip, with no golden image.
+  ReadyUnit unit(true, false);
+  bench::Walter& w = *unit.walter;
+  const bench::Record candidate = unit.read(Which::kCandidate);
+  REQUIRE(candidate.present);
+  REQUIRE(w.update.start(unit.request(Kind::kFirstInstall)));
+  const upd::Payload first = firstEntry(w);
+  CHECK(first.state == State::kCheck);
+  CHECK(first.kind == Kind::kFirstInstall);
+  CHECK(core::image::sha256Equal(first.sha256, candidate.sha256));
+}
+
+TEST_CASE("a run about an image that is not in the store journals zeros and refuses") {
+  // Nothing is invented: a candidate slot with no record leaves the hash as it was and stepCheck
+  // refuses with *no candidate*, which is the honest entry for a run about nothing.
+  ReadyUnit unit;
+  bench::Walter& w = *unit.walter;
+  REQUIRE(unit.world.store.store.erase(Which::kCandidate, bench::Slot{0}) == bench::StoreError::kNone);
+  REQUIRE(w.update.start(unit.request()));
+  const upd::Payload first = firstEntry(w);
+  CHECK(first.state == State::kCheck);
+  CHECK(allZero(first.sha256));
+  CHECK(w.run() == State::kRefused);
+  CHECK(w.update.reason() == Reason::kNoCandidate);
+}

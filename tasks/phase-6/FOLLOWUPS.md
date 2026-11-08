@@ -54,13 +54,28 @@ Review findings and what a walk saw, tagged with the task that must pick them up
   scripted modem of `host_test/` should answer `+CME ERROR: 4` and `+CME ERROR: 10` where the real
   one did, so that a test holds each fix.
 
-- [ ] **[04] A person's `agent wake` keeps the 20-minute bound for the rest of the boot.**
+- [x] **[04; done by p9-04] A person's `agent wake` keeps the 20-minute bound for the rest of the boot.**
   `AgentBackend` calls `guard().allow(kBackendBoundMs)` (`components/agent/agent_backend.cpp`, about
   line 307), and `allow` only ever raises the bound, counted from the boot's `arm()`. On the first
   board (23 October), after a bench session with `agent wake` and the cable pulled, the Walter stayed
   awake at about 43 mA until a power cycle. It would have restarted into a normal wake 20 minutes after
   boot plus the minute's grace, so nothing was wrong, but it was invisible. 04 decides whether a
   console `agent wake` lowers the bound again when it returns, and says so on the console.
+  - **Done by task p9-04**, and the choice is *the bound goes back to what it was when the
+    command returns* - not *it ends when the cable goes*, because the bound is a property of the
+    wake and the cable is a property of the person: one rule, counted from the boot, with no new
+    state to get wrong. `WakeGuard::raiseFor()` answers the bound it found and `putBack()`
+    returns to it (`core/cycle/wake_guard.h`); `putBack` is the only thing that lowers a bound,
+    lowers it no further than `kWakeBoundMs`, and does nothing while disarmed. It happened again
+    on 7 November, and the drop to 8 mA now comes one USB grace after the cable.
+  - The console says the figure before the cable is pulled: `agent wake` ends with *the wake's
+    bound is back to 300 s from the boot (awake N s)* and *pull the cable and this wake ends in
+    M s*, where M is `WakeGuard::endsAfterCableMs()` - the later of the grace and what is left of
+    the bound, which is exactly the rule `tick()` applies.
+  - Tested with the fake clock: `host_test/core/cycle/test_wake_guard.cpp` has the 7 November
+    session both ways round (*a bound raised for a command is put back*, and *without the putting
+    back, the same session stays awake to the raised bound*), and
+    `host_test/agent/test_agent_console.cpp` holds the two console lines.
 - [ ] **[02] Asleep, measured once:** after a power cycle with no cable, one wake (about a minute,
   jumpy), then **8 mA** for the whole unit on the lab supply at 3.7 V: the repeater listening, the
   Walter in deep sleep with the modem at `CFUN=0`, and connector B. §16's microamp walk splits that
