@@ -3629,9 +3629,20 @@ void Console::wake() {
          duty_->reason().recordSurvived()
              ? ""
              : " (the wake log starts at this wake: a power cut, or the first boot)");
+  // **What each wake did, and not only how long it was** (task p10-02). Three wakes of 40 s and
+  // four of 6 s were read on 7 November 2026 first as wakes that skipped the modem and then as a
+  // failed connection, and `lte` said both readings were wrong. The letters say it; the legend
+  // goes above the list, because a letter nobody can look up is a worse answer than a sentence.
+  print("  M the uplink came up, S the server answered, J a job ran; '-' not, '?' not recorded\n");
   for (std::size_t i = 0; i < duty_->reason().count(); ++i) {
     const cycle::WakeEntry& e = duty_->reason().at(i);
-    printf("  %2lu. %-9s", static_cast<unsigned long>(i + 1), cycle::name(e.wake));
+    char did[4] = {'?', '?', '?', 0};
+    if ((e.did & cycle::kDidSaid) != 0) {
+      did[0] = (e.did & cycle::kDidModem) != 0 ? 'M' : '-';
+      did[1] = (e.did & cycle::kDidAnswered) != 0 ? 'S' : '-';
+      did[2] = (e.did & cycle::kDidJobs) != 0 ? 'J' : '-';
+    }
+    printf("  %2lu. %-9s %s", static_cast<unsigned long>(i + 1), cycle::name(e.wake), did);
     if (e.attention != 0) {
       printf(" attention %u (%s), detail %u", static_cast<unsigned>(e.attention),
              link::client::attentionName(e.attention), static_cast<unsigned>(e.detail));
@@ -3941,7 +3952,8 @@ void Console::printPass(const cycle::Pass& pass) {
          static_cast<unsigned long>(pass.bound_ms));
   // The seam, and what it is: a person who types `cycle dry` on a unit that reports to nobody
   // should be told so, in words (spec/SYSTEM.md §8).
-  printf("the backend: %s; %lu reading(s) offered%s\n", interfaces::describe(pass.exchanged),
+  printf("the backend: %s (%s); %lu reading(s) offered%s\n",
+         interfaces::describe(pass.exchanged), interfaces::describe(pass.reached),
          static_cast<unsigned long>(pass.readings_offered),
          pass.readings_taken ? " and taken" : "");
   if (pass.asks != 0) {
@@ -3972,7 +3984,16 @@ void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
   if ((p.flags & cycle::kWakeFlagClimbed) != 0) print("; the ladder was climbed");
   if ((p.flags & cycle::kWakeFlagOnTrial) != 0) print("; this firmware was on trial");
   if ((p.flags & cycle::kWakeFlagClockSet) != 0) print("; the radio's clock was set");
-  if ((p.flags & cycle::kWakeFlagExchanged) != 0) print("; the backend was reached");
+  // **Only an answered heartbeat is *reached*** (task p10-02). The flag used to be set for every
+  // exchange that did not fail, so a wake held back by a wait said it had reached the server;
+  // what such a wake says now is what it did instead, with the wait that was still owed.
+  if ((p.flags & cycle::kWakeFlagAnswered) != 0) print("; the backend was reached");
+  if (p.reached == interfaces::Reached::kWait) {
+    printf("; nothing sent: a wait still owed, %lu s", static_cast<unsigned long>(p.owed_s));
+  } else if (p.reached != interfaces::Reached::kAnswered &&
+             p.reached != interfaces::Reached::kUnsaid) {
+    printf("; nothing sent: %s", interfaces::describe(p.reached));
+  }
   if ((p.flags & cycle::kWakeFlagReadingsTaken) != 0) print("; the readings were taken");
   if ((p.flags & cycle::kWakeFlagShortened) != 0) print("; the sleep was shortened");
   if (p.carried != interfaces::Ask::kNothing) printf("; %s", interfaces::describe(p.carried));

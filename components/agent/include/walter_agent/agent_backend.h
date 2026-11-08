@@ -190,6 +190,10 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   void sayRadio(bool radio_known, bool radio_up) const;
   bool saveState();
   bool loadState();
+  // Whether this wake was answered, and when it was not, why nothing was sent (task p10-02):
+  // the seam's `interfaces::Reached`, named from the library's own chain. Reads `report_`, which
+  // is the wake just run.
+  interfaces::Reached reachedThisWake(const interfaces::BackendKnowledge& known) const;
   void printReport(interfaces::TextOut& out) const;
   // `agent jobs`'s own two blocks about the local door (task p9-04): the door's counters, and
   // the last ten jobs by the repeater they named - which the library's report has no field for.

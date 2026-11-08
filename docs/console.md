@@ -146,7 +146,7 @@ supervisor's stop is printed at every level.
 | `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, the local door's four counters (task p9-04) and which of §5.9's four requests it answers (task p9-06), what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
 | `agent heartbeat` | (task p4-04) the body `POST /agent/v1/heartbeat` would carry, built and **not sent**: the bench's way to compare it with meshmaster.dk's contract fixture by eye. It asks the radio nothing |
 | `agent obs [pull]` | (task p4-04) the observation ring the agent posts from: how many adverts wait, how many were heard, how many were dropped (the figure the heartbeat carries), what the radio's own ring has lost and how much is still in it, and the last five - the key, how long ago, the hops, the signal and the role, and **never the name** a stranger chose (`spec/LINK-PROTOCOL.md` §7). `agent obs pull` drains the radio's ring into it first (§7's `OBS_PULL`, as many pages as it answers) |
-| `agent wake` | (task p4-05) one wake of the agent's loop now, through the backend seam the wake cycle's step 8 runs: **the radio asked who it is first** - a `HELLO` when there is no session and then `IDENTITY`, so that a job for the unit's own repeater can be told from a neighbour's (task p8-04) - then the offline buffer flushed, one heartbeat with this wake's intent, the claim, and the jobs the claim handed over: a neighbour's over the mesh, the unit's own through the local door, a firmware job into a slot or onto the chip. It restores the loop's retained state before the wake and saves it after, as a real wake across a sleep does. The uplink must be up (`lte up` first); **no `rak hello` is needed before it**, and a radio that does not answer one leaves the wake claiming only this unit's own `twinoak.*` job types, which one line says. See *The agent's identity* |
+| `agent wake` | (task p4-05) one wake of the agent's loop now, through the backend seam the wake cycle's step 8 runs: **the radio asked who it is first** - a `HELLO` when there is no session and then `IDENTITY`, so that a job for the unit's own repeater can be told from a neighbour's (task p8-04) - then the offline buffer flushed, one heartbeat with this wake's intent, the claim, and the jobs the claim handed over: a neighbour's over the mesh, the unit's own through the local door, a firmware job into a slot or onto the chip. It restores the loop's retained state before the wake and saves it after, as a real wake across a sleep does. The uplink must be up (`lte up` first); **no `rak hello` is needed before it**, and a radio that does not answer one leaves the wake claiming only this unit's own `twinoak.*` job types, which one line says. Its last line is the seam's own answer in three words rather than two (task p10-02): *the backend answered*, or why nothing was sent — *a wait still owed*, *no uplink*, *not configured*, *halted on a 401*. See *The agent's identity* |
 | `agent jobs` | (task p4-05) the last ten jobs as the agent's library remembers them: the id, the type, the outcome, how many transactions each took and how long, and whether a result is still waiting in the offline buffer for the next wake to post. Then (task p9-04) the two blocks the library cannot write: `local`, the door's counters and this radio's key shortened, and `begun`, the last ten jobs **by the repeater they named** - the local door, or the mesh and whose key it was. **A job the local door answered shows `0` transactions** (task p9-05): it spends no airtime and waits for none, so there is nothing of the budget to count, and the whole of a 34-line `config.read` of this unit's own repeater now takes seconds. It reads; it runs nothing |
 | `agent state` | (task p4-05) the loop's retained state as it stands: whether it has ever heartbeated, the poll interval it will sleep by, any hold a server asked for, the counters the heartbeat carries, and whether a kept image is waiting in the agent's flash window. Since task p10-01 the hold's line ends with **what the sleep took off it** — `hold 0 ms left; 30 s owed before the sleep, 810 s slept` — or, for a wake this end cannot put a length on (the radio's line, a cable, a power-on, a crash), `no sleep this end could measure`, which means the wait is owed whole. It reads; it runs nothing |
 
@@ -154,7 +154,7 @@ supervisor's stop is printed at every level.
 
 | Command | What it does |
 |---|---|
-| `wake` | (task p3-04) why this Walter is awake — the timer, the radio's line with the attention behind it, a spurious wake, a person with a cable, a power-up, a crash, a watchdog — the last ten wakes with their reasons and how long each lasted, the spurious count, and whether the radio's line is armed as a wake source. **It only reads** |
+| `wake` | (task p3-04) why this Walter is awake — the timer, the radio's line with the attention behind it, a spurious wake, a person with a cable, a power-up, a crash, a watchdog — the last ten wakes with their reasons and how long each lasted, the spurious count, and whether the radio's line is armed as a wake source. Since task p10-02 each wake of that list carries **three letters for what it did**: `M` the uplink came up, `S` the server answered, `J` a job ran, `-` for one that did not and `?` for a wake that wrote nothing down (it was ended by a reset, a crash or the bound). The legend is printed above the list, and `docs/cycle.md` has the table. **It only reads** |
 | `power` | the battery's band, the readings behind it (the median and the mean, and every sample kept), the thresholds, what a wake in that band may do, and how long until the next one. It costs one `POWER_GET` on the link. See `docs/power.md` |
 | `sleep now` | go to sleep for the interval the battery chose: the journal, `SLEEP_NOTICE` to the radio, the modem down, the pins safe and held, deep sleep. **It does not come back** — the next boot is the next wake |
 | `sleep <seconds>` | the same, for a number a person picks (1 to 604800). What the band allows is unchanged; only the timer is |
@@ -172,7 +172,7 @@ confirm` or `self reject` first. See *Sleep, and what wakes it* below.
 
 | Command | What it does |
 |---|---|
-| `journal` | the last twelve entries of the flash journal in words, newest first, whatever wrote them: the radio's updates (task p2-03), this firmware's own (p2-04), the supervisor's ladder (p2-05), the duty cycle's sleeps (p3-04) and the wake records (p3-05), with the head, the next sequence number and whether an operation's entries are protected from a wrap. `rak update status` and `self status` tell the story of one run; this is the log |
+| `journal` | the last twelve entries of the flash journal in words, newest first, whatever wrote them: the radio's updates (task p2-03), this firmware's own (p2-04), the supervisor's ladder (p2-05), the duty cycle's sleeps (p3-04) and the wake records (p3-05), with the head, the next sequence number and whether an operation's entries are protected from a wrap. A wake record says **the backend was reached** only for a heartbeat the server answered (task p10-02 — it used to say it for every exchange that did not fail, so a wake held back by a wait claimed it), and a wake that sent nothing says so instead: *nothing sent: a wait still owed, 30 s*, *nothing sent: not configured*, *nothing sent: no uplink*, *nothing sent: halted on a 401*. `rak update status` and `self status` tell the story of one run; this is the log |
 
 A refusal is one line starting with `error:` and names what was wrong: an unknown command,
 subcommand or key, an argument where none is taken, a missing or non-numeric value, a value out of
@@ -1025,8 +1025,10 @@ reset, and the journal is what takes the work up again at the next boot (`docs/c
 in ten days. So an unremarkable sleep — the same band and the same interval as the last one — is
 recorded in RTC memory only, which is where `wake` reads the last ten from, and the journal gets a
 line when there is news: the band changed, the interval was lengthened by a fault, the radio's line
-was disarmed or armed again, the wake was a crash or a watchdog, a person typed `sleep now`, or the
-sleep was refused.
+was disarmed or armed again, the wake was a crash or a watchdog, a person typed `sleep now`, the
+sleep was refused, or the wake came round on its timer and **still owed a wait** (task p10-02:
+after p10-01 that means a sleep did not cover its hold, which is worth an entry and costs at most
+one per failed server call).
 
 ## One whole wake
 
@@ -1048,13 +1050,16 @@ what a wake would do, doing none of it - nothing is sent and nothing is written
   10 sleep    y it would run               [up to 15000 ms]
 wake 12 timer: radio healthy, band normal, steps yyyyyyyyyy, 0 s awake, next 60 min
 the wake: a dry run: nothing was done; the budget 240000 ms, 240000 left, 0 outside it; the bound 300000 ms
-the backend: the exchange failed; 3 reading(s) offered
+the backend: the exchange failed (it did not say); 3 reading(s) offered
 ```
 
 The last line is the seam, and on this firmware it is honest: **the backend does nothing.** The
 implementation in this repository answers *nothing to do* every wake, for ever
 (`core/cycle/null_backend.h`), because the server side is three accepted proposals and a decision
-about where it will be built, not a protocol (`spec/SYSTEM.md` §8). The readings of every wake are
+about where it will be built, not a protocol (`spec/SYSTEM.md` §8). The word in brackets is why
+nobody was reached, and this one says **not configured** at every wake it is asked: a build running
+it must never read *the backend was reached* in its journal, because nothing ever was (task
+p10-02). The readings of every wake are
 kept in a bounded ring and offered to it; nobody takes them, so the oldest are dropped and the
 dropped count is kept.
 

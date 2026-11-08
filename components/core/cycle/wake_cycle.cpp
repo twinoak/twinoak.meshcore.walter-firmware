@@ -190,16 +190,22 @@ std::size_t recordLine(const Pass& pass, char* out, std::size_t cap) {
   // `h` a restart was asked for and not taken. docs/cycle.md has the table beside the steps'.
   char agent[3] = {};
   agentAttentionLetters(pass.agent_attention, agent);
+  // Why nothing was sent, when nothing was and the exchange said so (task p10-02). Neither
+  // *answered* nor *it did not say* prints a clause: the first is the ordinary wake and the
+  // second is a step that never ran or a backend with no word for it.
+  const bool silent = pass.reached != interfaces::Reached::kAnswered &&
+                      pass.reached != interfaces::Reached::kUnsaid;
   const unsigned minutes = static_cast<unsigned>(pass.interval_s / 60u);
   const int n = std::snprintf(
-      out, cap, "wake %lu %s: radio %s, band %s, steps %s, %lu s awake, next %u min%s%s%s%s%s",
+      out, cap, "wake %lu %s: radio %s, band %s, steps %s, %lu s awake, next %u min%s%s%s%s%s%s%s",
       static_cast<unsigned long>(pass.wakes), cycle::name(pass.reason),
       supervisor::describe(pass.radio), power::name(pass.band), letters,
       static_cast<unsigned long>(pass.awake_s), minutes,
       pass.attention != 0 ? ", attention " : "",
       pass.attention != 0 ? link::client::attentionName(pass.attention) : "",
       agent[0] != 0 ? ", agent " : "", agent,
-      pass.carried != interfaces::Ask::kNothing ? ", one update step" : "");
+      pass.carried != interfaces::Ask::kNothing ? ", one update step" : "",
+      silent ? ", nothing sent: " : "", silent ? interfaces::describe(pass.reached) : "");
   if (n <= 0) return 0;
   return static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1;
 }
@@ -219,10 +225,16 @@ void encode(const WakePayload& p, std::uint8_t out[kWakePayloadBytes]) {
   put32(out + 20, p.interval_s);
   put32(out + 24, p.at_epoch);
   put32(out + 28, p.wakes);
+  out[32] = static_cast<std::uint8_t>(p.reached);
+  put32(out + 33, p.owed_s);
 }
 
 bool decode(const update::Entry& e, WakePayload* out) {
-  if (e.kind != update::kind::kWakeCycle || e.size < kWakePayloadBytes || out == nullptr) {
+  // **The shorter payload is read too** (task p10-02): a unit's journal holds the entries its
+  // earlier firmware wrote, and the whole point of the log is that an update does not blind it.
+  // What the two fields past byte 32 say about such an entry is *nothing was said*, because
+  // nothing was.
+  if (e.kind != update::kind::kWakeCycle || e.size < kWakePayloadBytesV1 || out == nullptr) {
     return false;
   }
   if (e.payload[0] >= static_cast<std::uint8_t>(Wake::kCount)) return false;
@@ -243,6 +255,13 @@ bool decode(const update::Entry& e, WakePayload* out) {
   out->interval_s = get32(e.payload + 20);
   out->at_epoch = get32(e.payload + 24);
   out->wakes = get32(e.payload + 28);
+  out->reached = interfaces::Reached::kUnsaid;
+  out->owed_s = 0;
+  if (e.size >= kWakePayloadBytes) {
+    if (e.payload[32] >= static_cast<std::uint8_t>(interfaces::Reached::kCount)) return false;
+    out->reached = static_cast<interfaces::Reached>(e.payload[32]);
+    out->owed_s = get32(e.payload + 33);
+  }
   return true;
 }
 
@@ -699,6 +718,9 @@ void WakeCycle::stepUplink() {
     finish(Step::kUplink, Outcome::kFailed, uplink::describe(r.failure));
     return;
   }
+  // The uplink came up: the first of `wake`'s three letters, into this wake's own entry in
+  // retained storage so that a boot later the list says the modem was up (task p10-02).
+  duty_.reason().didThisWake(kDidModem);
   // The network's time, if it gave one. `no-time` is not a failure of the uplink (task p3-01):
   // an uplink that came up without a time is up.
   if (wall_.give(r.time)) pass_.time_known = true;
@@ -769,6 +791,17 @@ void WakeCycle::stepBackend() {
   // backend: it answers at once.
   const std::uint64_t deadline = step_began_ms_ + kBackendBoundMs;
   pass_.exchanged = backend_.exchange(known_, deadline, &answer_);
+  // Who was reached, or why nobody was (task p10-02). One reading of the pair, here and nowhere
+  // else: the journal's flag, the record's clause and `wake`'s letters all come off these three
+  // lines, so they cannot tell different stories about the same wake.
+  // An exchange that failed says nothing about who was reached - *the exchange failed* is the
+  // step's own outcome and the whole of the news - so whatever it left in `out` is dropped here.
+  pass_.reached = pass_.exchanged == interfaces::Exchanged::kFailed ? interfaces::Reached::kUnsaid
+                                                                   : answer_.reached;
+  pass_.jobs_ran = answer_.jobs_ran;
+  pass_.owed_s = pass_.reached == interfaces::Reached::kWait ? answer_.sleep_at_least_s : 0;
+  if (interfaces::wasAnswered(pass_.exchanged, answer_)) duty_.reason().didThisWake(kDidAnswered);
+  if (answer_.jobs_ran > 0) duty_.reason().didThisWake(kDidJobs);
   outside_ms_ += answer_.outside_ms;
   // A firmware job's machine ran inside the exchange for up to those same twenty minutes: that wall
   // time is outside the ordinary budget but still counts against the guard's ceiling, so the bound
@@ -1149,6 +1182,10 @@ void WakeCycle::stepSleep() {
   pass_.lengthened = lengthened;
   pass_.interval_s = seconds;
 
+  // This wake ran to its end, so its letters are a record and not a silence: `kDidSaid` is what
+  // tells `wake`'s `---` (it did none of the three) from its `???` (nobody wrote it down) - a
+  // wake ended by a reset, a crash or the bound keeps only the bits it had reached (task p10-02).
+  duty_.reason().didThisWake(kDidSaid);
   // The wake's record goes to the journal **before** the sleep, because a sleep does not return.
   // A sleep that is then refused writes its own entry after this one (core/cycle/sleep.h), and
   // the two together are the story.
@@ -1197,6 +1234,24 @@ void WakeCycle::journalWake() {
   if (pass_.carried != interfaces::Ask::kNothing) news = true;
   if (pass_.exchanged == interfaces::Exchanged::kAsked) news = true;
   if (pass_.reason == Wake::kCrash || pass_.reason == Wake::kWatchdog) news = true;
+  // **A timer wake that still owes a wait is news** (task p10-02), and nothing else about a wake
+  // that sent nothing is.
+  //
+  // Since task p10-01 a sleep takes its own length off the wait, and step 10 above lengthens the
+  // sleep to cover one the seam carried out - so a wake that comes round on its timer and *still*
+  // owes a wait means a sleep did not cover its hold. That is the failure of the night of
+  // 8 November 2026, it must leave a trace, and it costs at most one entry per failed server call
+  // (a hold under ninety per cent of the interval is spent whole by one sleep; a longer one costs
+  // a second wake and then it too is spent). The worst a night of them could cost is one entry a
+  // wake - 48 at the quarter-hour interval, so the 1024-entry log would still take three weeks of
+  // nothing but these to wrap.
+  //
+  // The other reasons are **not** news, each for its own reason: a unit with no server
+  // configured would write one entry every wake for ever, which is the log wrapped in ten days;
+  // *no uplink* is already news through step 6's failure; and a halt on a 401 raises the Walter's
+  // own attention, which the record carries and `status` says. A wake on the radio's line inside
+  // a hold is expected and p10-01 documented it, so it is not news either.
+  if (pass_.reason == Wake::kTimer && pass_.reached == interfaces::Reached::kWait) news = true;
   if (!news) return;
 
   WakePayload p{};
@@ -1205,7 +1260,7 @@ void WakeCycle::journalWake() {
   p.radio = pass_.radio;
   p.flags = static_cast<std::uint8_t>(
       (pass_.on_trial ? kWakeFlagOnTrial : 0) | (pass_.clock_set ? kWakeFlagClockSet : 0) |
-      (pass_.exchanged == interfaces::Exchanged::kFailed ? 0 : kWakeFlagExchanged) |
+      (interfaces::wasAnswered(pass_.exchanged, answer_) ? kWakeFlagAnswered : 0) |
       (pass_.readings_taken ? kWakeFlagReadingsTaken : 0) |
       (pass_.decision.changed ? kWakeFlagBandChanged : 0) |
       (pass_.climbed ? kWakeFlagClimbed : 0) | (pass_.shortened ? kWakeFlagShortened : 0) |
@@ -1213,6 +1268,8 @@ void WakeCycle::journalWake() {
   for (std::size_t i = 0; i < kStepCount; ++i) p.step[i] = pass_.step[i].outcome;
   p.asks = pass_.asks;
   p.carried = pass_.carried;
+  p.reached = pass_.reached;
+  p.owed_s = pass_.owed_s;
   p.awake_s = pass_.awake_s;
   p.interval_s = pass_.interval_s;
   interfaces::WallTime now{};

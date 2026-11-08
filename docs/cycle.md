@@ -114,6 +114,60 @@ wake the wake log, the band's hysteresis, the spurious count and the faults in a
 again, exactly as after a power cut, and the interval is the `unknown` band's hour. `wake` says
 *the record did not survive*, and the wake after it is normal.
 
+### What a wake did, and who was reached (task p10-02)
+
+The seam's `Exchanged` has three values and they answered two questions at once, so *nothing to
+do* meant both "it talked and there was nothing waiting" and "it never opened its mouth". The
+journal read the first of those into the second and said **the backend was reached** about wakes
+that sent nothing, which is what the morning of 8 November 2026 was read wrong from. The three
+answers this firmware's words now tell apart are:
+
+| | |
+|---|---|
+| **answered** | a heartbeat went out and the backend answered it. The only thing the journal says *the backend was reached* about, and the only thing `interfaces::wasAnswered()` is true for |
+| **sent nothing** | the exchange worked and nothing went over it, **with the reason beside it** |
+| **failed** | the exchange did not work. *the exchange failed* is the step's own outcome and the whole of the news; nothing is claimed about who was reached |
+
+The reason is `interfaces::Reached`, a field of the answer rather than a fourth `Exchanged`: one
+value more could not carry *why*, and the why is the point — and `Exchanged`'s three values are
+what the wake cycle's rails turn on (S-7's one update step, the budget, a sleep a wait lengthens:
+all of them test for *failed* and nothing else).
+
+| | Means |
+|---|---|
+| `the backend answered` | a heartbeat came back |
+| `a wait still owed` | a backoff or a `Retry-After` the agent's loop is still inside. The seconds left go with it |
+| `no uplink` | there was no uplink to send it over |
+| `not configured` | this unit has no server to send it to — **what the null backend of this repository answers, every wake** |
+| `halted on a 401` | the server refused this unit's token and a person has to act (`server.token`) |
+| `nothing to send` | nothing was sent for a reason this seam has no word for |
+| `it did not say` | the implementation said nothing, and **nothing may be claimed**: it is the zero of the field, so a backend that is silent about it is never credited with having reached anybody |
+
+A wake that sent nothing ends its record line with `, nothing sent: <reason>` — *answered* and
+*it did not say* print no clause, the first because it is the ordinary wake and the second because
+a step that never ran has nothing to explain.
+
+**What `wake` says.** The last-ten list used to give each wake's length and nothing else, and on
+7 November 2026 three wakes of 40 s and four of 6 s were read first as wakes that skipped the
+modem and then as a failed connection — `lte` said both readings were wrong. So each wake in that
+list now carries three letters:
+
+| | Means |
+|---|---|
+| `M` | the uplink came up (step 6 succeeded) |
+| `S` | the server answered (step 8, and only an answered heartbeat) |
+| `J` | a job of the backend's own ran inside the exchange |
+| `-` | that one did not happen, in a wake that ran to its end and wrote down what it did |
+| `?` | **not recorded**: a wake ended by a reset, a crash or the bound before step 10, or one written by a firmware older than this |
+
+The three bits live in each entry of the duty cycle's retained record, beside the reason and the
+duration, and each is written the moment it becomes true rather than at the end — so a wake that
+does not come back still leaves what it had managed. **The record's size did not change for
+them**: the two bytes they came from are the top half of a `lasted_s` that no wake ever filled (a
+wake is bounded at five minutes, and `stay` holds one open for twelve hours at the most), so an
+entry written by the build before this reads back with the right length and no claim about what it
+did.
+
 ### What is journalled, and what is not
 
 **Not every wake.** The journal is 1024 entries of 64 bytes in one 64 KB partition and it exists
@@ -126,8 +180,27 @@ journal every *sleep* with the same arithmetic.
 So a wake with nothing to say is in the console's log and in retained storage; the journal gets a
 line when the wake has **news**: a step failed, was refused or ran out of time; the band changed;
 the ladder was climbed; this firmware was on trial; the radio's clock was set; an exchange
-happened; an update step or a fetch happened; the wake was a crash or a watchdog. After a week on a
-mast `journal` is then a page of *what happened*, which is what the task asks it to be.
+happened; an update step or a fetch happened; the wake was a crash or a watchdog; **or the wake
+came round on its timer and still owed a wait**. After a week on a mast `journal` is then a page
+of *what happened*, which is what the task asks it to be.
+
+**Why a wait owed is news and the other silences are not** (task p10-02). Since task p10-01 a
+sleep takes its own length off a wait and the sleep is lengthened to cover one the seam carried
+out, so a *timer* wake that still owes means a sleep did not cover its hold — the failure of the
+night of 8 November 2026, and it must leave a trace. It costs at most one entry per failed server
+call: a hold under ninety per cent of the interval is spent whole by one sleep, and a longer one
+costs a second wake and is then spent too. The very worst a night of them could cost is one entry
+a wake — 48 at the quarter-hour interval, so even a night of nothing but these would take three
+weeks to wrap the log. The others are left out each for its own reason: *not configured* is every
+wake of an unprovisioned unit for ever (the log wrapped in ten days), *no uplink* is already news
+through step 6's failure, *halted on a 401* raises the Walter's own attention which the record
+carries, and a wake on the radio's line inside a hold is expected (p10-01 claims no part of such a
+sleep on purpose).
+
+The entry carries the reason and the seconds still owed — five bytes, which **cost nothing**: a
+journal slot is 64 bytes whatever the payload holds. A payload of the older, 32-byte shape is
+still decoded, and answers *it did not say* for the two fields it never held: a unit's journal is
+the log of the firmware that wrote it, and an update may not blind it.
 
 The record is written **before** the sleep, because a sleep does not return. A sleep that was then
 refused writes its own entry after it (`core/cycle/sleep.h`), and the two together are the story.

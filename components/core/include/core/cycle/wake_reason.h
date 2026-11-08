@@ -150,6 +150,23 @@ class AttentionSource {
   virtual bool take(Attention* out) = 0;
 };
 
+// -- what a wake did, in three bits (task p10-02) -----------------------------------------------
+//
+// `wake`'s list gave each wake's length and nothing else, and on 7 November 2026 three wakes of
+// 40 s and four of 6 s were read first as wakes that skipped the modem and then as a failed
+// connection. `lte` said both readings were wrong: seven attempts and no failures. One letter a
+// wake would have said it, so these are the letters - the three things a reader of that list was
+// trying to work out.
+//
+// **kDidSaid is why there are four and not three.** A wake entry written by a firmware that did
+// not keep this - 0.1.2's, or a wake that never reached sleep - has a zero byte, and a zero byte
+// must read as *not recorded* and never as *it did none of these*. So the bit that says "this
+// wake kept the record" is the one the console tests before it prints letters at all.
+constexpr std::uint8_t kDidModem = 0x01;     // the uplink came up (step 6 succeeded)
+constexpr std::uint8_t kDidAnswered = 0x02;  // the backend answered a heartbeat (step 8)
+constexpr std::uint8_t kDidJobs = 0x04;      // work of the backend's own ran in the exchange
+constexpr std::uint8_t kDidSaid = 0x80;      // this wake recorded what it did: 0 is not "none"
+
 // One wake, as it is remembered. Plain data: it is stored as bytes.
 struct WakeEntry {
   Wake wake = Wake::kUnknown;
@@ -158,8 +175,20 @@ struct WakeEntry {
   // How long that wake lasted, in seconds. **0 means it never reached sleep** - it was ended by
   // a reset, a crash or the hard bound - which is itself worth knowing, and `wake` prints it as
   // such rather than as "no time at all".
-  std::uint32_t lasted_s = 0;
+  //
+  // **Sixteen bits since task p10-02**, clamped by endingInSleep(): the bound on a wake is five
+  // minutes and the longest a person's `stay` holds one open is twelve hours, so 18 h is a
+  // ceiling no wake reaches, and the two bytes it gave up are `did` and a spare. The record's
+  // size did not move for it, and it did not have to: these four bytes were a little-endian u32
+  // whose top two bytes are 0 for every wake shorter than 18 h, so an entry written by the build
+  // before this task reads back with the same length and `did` == 0, which is *not recorded*.
+  std::uint16_t lasted_s = 0;
+  std::uint8_t did = 0;  // kDid* above
+  std::uint8_t spare = 0;
 };
+
+// The ceiling `lasted_s` is clamped to, said once so that the console and the tests can name it.
+constexpr std::uint32_t kLastedAtMostS = 0xFFFFu;
 
 struct WakeInfo {
   Wake wake = Wake::kUnknown;
@@ -223,6 +252,14 @@ class WakeReason {
   std::uint8_t agentAttention() const { return record_.agent_attention; }
   void clearAgentAttention();
 
+  // **What this wake did**, as kDid* bits, into this wake's own entry (task p10-02). Additive
+  // and stored at once, like the attention above: a wake that is reset or crashes before step 10
+  // still leaves what it had managed, and the entry is `wake`'s list a boot later. Called as each
+  // fact becomes true - the uplink at step 6, the backend at step 8 - so that `wake` typed in the
+  // middle of a wake tells the truth about the wake in hand too. kDidSaid goes with any of them.
+  void didThisWake(std::uint8_t bits);
+  std::uint8_t didSoFar() const { return count_ == 0 ? 0 : record_.items[0].did; }
+
   // The wake is ending in a sleep: its duration goes into this wake's entry, the seconds the
   // timer is being asked for are written down for the *next* boot to read, and the record is
   // stored. Called by core/cycle/sleep.h on the one way out of a wake.
@@ -263,6 +300,12 @@ class WakeReason {
   // interfaces::RetainedSlot::kDutyCycle. Plain data, 100 bytes, inside kRetainedRecordMax -
   // which costs nothing, because platform/retained.cpp gives every slot kRetainedRecordMax bytes
   // whatever its record holds (interfaces/retained.h).
+  //
+  // **Task p10-02 did not move its size.** What a wake did is three bits in each entry's `did`
+  // byte, and the two bytes that byte and its spare came from are the top half of a `lasted_s`
+  // that no wake ever filled (see WakeEntry). So an entry written by a build of this firmware
+  // before p10-02 reads back with the right length and nothing claimed about what it did, which
+  // is the honest answer and the reason the layout was changed this way rather than grown.
   //
   // **It grew by four bytes in task p10-01**, and a record of another size in the same slot is
   // not the same record (interfaces/retained.h), so the first boot of 0.1.3 reads no record and

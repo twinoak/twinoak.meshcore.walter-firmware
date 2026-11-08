@@ -30,8 +30,12 @@ class NullBackend final : public interfaces::Backend {
                                  interfaces::BackendAnswer* out) override {
     (void)known;
     (void)deadline_ms;
-    (void)out;
     ++exchanges_;
+    // *Nothing to do*, and it says why nobody was reached (task p10-02): there is no server to
+    // reach. A build running this one must never read *the backend was reached* in its journal,
+    // because nothing ever was - and `Reached::kUnsaid` would have left the question open rather
+    // than answering it.
+    if (out != nullptr) out->reached = interfaces::Reached::kNotConfigured;
     return interfaces::Exchanged::kNothing;
   }
 
