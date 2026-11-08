@@ -175,8 +175,22 @@ size_t writeConfigReadResult(const ConfigSnapshot& s, char* out, size_t cap) {
 const char* cliReplyValue(const char* reply) {
   if (reply == nullptr) return nullptr;
   while (isSpace(*reply)) reply++;
-  if (reply[0] == '>' && reply[1] == ' ') return reply + 2;
-  return nullptr;
+  if (reply[0] != '>') return nullptr;
+  // **A bare `>` is the empty value** (task p1.10-44). `handleGetCmd` prints every key it knows
+  // with one `sprintf(reply, "> %s", ...)`, so a key whose value *is* the empty string - an
+  // unset `guest.password`, an unset `owner.info` - answers `"> "`, and JobRunner's
+  // `trimInPlace` makes that `">"`. Reading it as "not a `get` reply" was the difference
+  // between *this repeater has no guest password* and *this firmware does not know the key*,
+  // which is the distinction meshmaster.dk settles `guest.password` on. The .NET agent reads it
+  // the same way (`CliReplies.ValueOf`, meshmaster.dk's task p4.23-165), so the two snapshots
+  // of one repeater agree. Whatever follows the `>` is whitespace or it is not: `">"`, `"> "`
+  // and `">  "` are all the empty value, `">240"` with no space at all is still not a reply
+  // this reads, and a value keeps every space inside it.
+  const char* after = reply + 1;
+  const char* end = after;
+  while (isSpace(*end)) end++;
+  if (*end == 0) return end;  // the reply's own terminator, which is the empty string
+  return *after == ' ' ? after + 1 : nullptr;
 }
 
 char* trimInPlace(char* text) {

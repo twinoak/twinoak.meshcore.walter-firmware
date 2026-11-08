@@ -1388,6 +1388,46 @@ TEST_F(RunnerTest, ALocalJobLeavesTheNextJobOnTheAirNoFreeSlot) {
   EXPECT_NE(logOf(body).find("s for the airtime budget"), std::string::npos) << body;
 }
 
+// The door is keyed to **one** repeater on the real mesh (`LinkMesh::setOwnKey`), and both of the
+// library's questions about it come off that one key (task p1.10-43): `answersLocallyFor(key)`,
+// which is what a wake prices a claimed job by, and `answersLocally()`, which is what `spend`
+// paces the job by once it has begun. Here they are made to disagree if they can: the same mesh,
+// the same job, and the door moved from another repeater's key to this one's. This is the host's
+// half of bench item 6 of report p1.10-40 - a door left open for a key that is not its own.
+TEST_F(RunnerTest, TheDoorIsKeyedToARepeaterSoAJobForAnotherIsStillOnTheAir) {
+  setBudget(mm::kDefaultMaxTransactionsPerMinute, mm::kDefaultMinGapSeconds);
+  mesh.grant(self(), mm::kPermReadOnly);
+  mesh.setLocalDoorKey(fake::strangerKey());
+
+  const std::string air = run(fake::Job(12420, "status")
+                                  .atClass("acl")
+                                  .leasedUntil(kNow + 1800)
+                                  .withAclLevel(mm::kPermReadOnly)
+                                  .withPayload("{\"version\":false}"));
+
+  EXPECT_EQ(outcomeOf(air), "ok");
+  EXPECT_EQ(transactionsOf(air), 2) << "a door for somebody else's repeater is no door for this job";
+  EXPECT_EQ(runner.gate().transmissions(), 2u);
+  EXPECT_EQ(logOf(air).find("without the air"), std::string::npos) << air;
+  const uint32_t waitedForTheAir = runner.gate().totalWaitMs();
+  mesh.forgetSends();
+
+  // The door moved to this repeater's key. Nothing else about the mesh, the budget or the job
+  // changes, and the same exchange is off the air: no transaction, no slot and no wait.
+  mesh.setLocalDoorKey(repeater());
+  const std::string local = run(fake::Job(12421, "status")
+                                    .atClass("acl")
+                                    .leasedUntil(kNow + 1800)
+                                    .withAclLevel(mm::kPermReadOnly)
+                                    .withPayload("{\"version\":false}"));
+
+  EXPECT_EQ(outcomeOf(local), "ok");
+  EXPECT_EQ(transactionsOf(local), 0);
+  EXPECT_EQ(runner.gate().transmissions(), 2u) << "a local job takes no slot";
+  EXPECT_EQ(runner.gate().totalWaitMs(), waitedForTheAir) << "and asks for none";
+  EXPECT_NE(logOf(local).find("this mesh answers for this repeater without the air"), std::string::npos) << local;
+}
+
 // ---- no password for a local login (task p1.10-41) -------------------------------------------
 //
 // The same door, at its login: a job it answers needs **no material at any class**, because the

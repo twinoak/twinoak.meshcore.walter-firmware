@@ -251,7 +251,12 @@ struct WakeReport {
 // Every duration in it is a **duration** and not a deadline, because `millis()` restarts at zero:
 // `holdForMs` is what was left of a wait when the wake returned, and `failingForMs` is how long
 // the present run of unanswered calls has lasted. `restore()` re-bases both against the clock it
-// finds. A caller that hands back a state from a different build is caught by `version`.
+// finds, and it re-bases them **after the time the board was away is taken off them**: a wait is
+// a number of seconds of *real* time, and a sleep spends it. That is `restore()`'s second
+// argument, and the rule behind it is task p1.10-42's - before it the sleep counted for nothing,
+// so a unit that woke every fifteen minutes spent a thirty-second hold five or six seconds at a
+// time, sent nothing at any of those wakes, and was quiet for about an hour and a half after one
+// failed call. A caller that hands back a state from a different build is caught by `version`.
 struct WakeState {
   static constexpr uint32_t kVersion = 1;
 
@@ -349,8 +354,18 @@ class AgentLoop {
   // The state a wake leaves behind, for a caller that is about to lose its RAM, and the way back
   // in after the sleep. `restore()` re-bases every duration against the clock it finds now, and
   // refuses a state of another version (returning false and changing nothing).
+  //
+  // `awayMs` is how long the board was away between that `state()` and this call, measured on a
+  // clock that ran through the sleep. **The caller measures it**: this library's only clock is
+  // `millis()`, which the sleep kills, so it cannot know (task p1.10-42). A duration is re-based
+  // against the new clock *after* that time is taken off it - the hold is what is left of
+  // `holdForMs`, never less than nothing, whether it was a backoff or a Retry-After the server
+  // named, and `failingForMs` is longer by it, because the run of failures lasted through the
+  // sleep as well. The default is **no time passed**: a caller that cannot measure the sleep
+  // passes nothing and gets exactly the behaviour it had before, which is what the Heltec - which
+  // never sleeps and never calls this - and a power-on both want.
   WakeState state() const;
-  bool restore(const WakeState& state);
+  bool restore(const WakeState& state, uint32_t awayMs = 0);
 
   // What a sleep keeps (task p1.6-22; agent/IRetained.h, agent/KeptImage.h). Optional, and for
   // a device that sleeps: the Heltec calls neither.
@@ -456,7 +471,13 @@ class AgentLoop {
   // each. The pace is what dominates - twenty-one transactions at two a minute is eleven
   // minutes and the replies are seconds - so an estimate that is right about the pace is right
   // about the job.
-  uint32_t estimateJobMs(const ClaimedJob& job) const;
+  //
+  // `answeredLocally` is the mesh's answer for this job's repeater (JobRunner::meshAnswersLocally,
+  // task p1.10-43): such a job is **not** on the air, so there is no gap between its exchanges to
+  // price and the estimate is its reply waits alone. The pace then dominates nothing, which is
+  // the whole difference between seconds and the quarter of an hour the same exchanges cost when
+  // they really are transmissions.
+  uint32_t estimateJobMs(const ClaimedJob& job, bool answeredLocally) const;
   // What is left of the wake's seconds, of the uplink's, and of the transaction cap. Each is
   // the whole of it when the budget set no bound.
   uint32_t wakeMsLeft() const;

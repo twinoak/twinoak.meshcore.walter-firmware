@@ -593,9 +593,14 @@ int AgentLoop::claimMax() const {
   return left / kTransactionsPerJobAtLeast;
 }
 
-uint32_t AgentLoop::estimateJobMs(const ClaimedJob& job) const {
+uint32_t AgentLoop::estimateJobMs(const ClaimedJob& job, bool answeredLocally) const {
   const int n = transactionsOf(job);
-  const uint32_t gapMs = static_cast<uint32_t>(budget_.minGapSeconds > 0 ? budget_.minGapSeconds : 0) * 1000u;
+  // A job the mesh answers without the air waits for no slot between its exchanges, because
+  // `spend` returns before the gate for it (task p1.10-40): its cost is the replies and nothing
+  // else. The exchanges themselves are unchanged in number - a 34-line read is thirty-four lines
+  // either way - so only the gap falls away here.
+  const uint32_t gapMs =
+      answeredLocally ? 0u : static_cast<uint32_t>(budget_.minGapSeconds > 0 ? budget_.minGapSeconds : 0) * 1000u;
   const uint32_t replyMs = static_cast<uint32_t>(job.loginMs > 0 ? job.loginMs : 8000);
   return static_cast<uint32_t>(n > 0 ? n : 1) * (gapMs + replyMs);
 }
@@ -693,11 +698,19 @@ void AgentLoop::wakeJobs(WakeReport& report) {
       if (report.jobs == StepOutcome::Skipped) report.jobs = StepOutcome::Done;
       continue;
     }
-    const int price = transactionsOf(job);
+    // A job the mesh answers without the air is priced as what it is (task p1.10-43), from the
+    // same door the run itself reads: no transaction, because `spend` counts none for it and the
+    // wake's cap is a cap on the air; and no gap, because it waits for no slot. Asked once here,
+    // before either bound is applied, so that the two agree with each other and with the run.
+    // Priced as air instead, a 34-line local `config.read` looked like 952 s at the conservative
+    // budget and a wake slice shorter than that refused - in seconds, at no transaction - the very
+    // job the local door had just made fast.
+    const bool local = jobs_->meshAnswersLocally(job);
+    const int price = local ? 0 : transactionsOf(job);
     const int left = transactionsLeft();
-    const uint32_t needMs = estimateJobMs(job);
+    const uint32_t needMs = estimateJobMs(job, local);
     const uint32_t leftMs = wakeMsLeft();
-    char why[128];
+    char why[160];
     // A job this wake cannot finish is reported `failed` with *wake budget* and nothing is sent
     // for it: what must never happen is a job claimed, leased, and silent (EXIT-NODES §6 as
     // built in meshmaster.dk's task 121 - what is left behind is queued and bound to nothing,
@@ -715,9 +728,10 @@ void AgentLoop::wakeJobs(WakeReport& report) {
       continue;
     }
     if (needMs > leftMs) {
-      std::snprintf(why, sizeof why, "wake budget: about %lu s left of this wake and %s needs about %lu s",
+      std::snprintf(why, sizeof why, "wake budget: about %lu s left of this wake and %s needs about %lu s%s",
                     static_cast<unsigned long>(leftMs / 1000u), job.type,
-                    static_cast<unsigned long>(needMs / 1000u));
+                    static_cast<unsigned long>(needMs / 1000u),
+                    local ? ", answered without the air" : "");
       jobs_->reportNotRun(i, why);
       report.jobsNotRun++;
       report.jobs = StepOutcome::NoTime;
@@ -847,7 +861,7 @@ WakeState AgentLoop::state() const {
   return saved;
 }
 
-bool AgentLoop::restore(const WakeState& saved) {
+bool AgentLoop::restore(const WakeState& saved, uint32_t awayMs) {
   if (platform_ == nullptr) return false;
   if (saved.version != WakeState::kVersion) {
     LOG_W("wake: a state of version %lu was handed back and this firmware writes %lu; it is ignored",
@@ -858,17 +872,34 @@ bool AgentLoop::restore(const WakeState& saved) {
   counters_ = saved.counters;
   counters_.consecutiveFailures = saved.consecutiveFailures;
   backoffMs_ = saved.backoffMs;
-  holdUntil_ = now + saved.holdForMs;
-  firstFailureAtMillis_ = now - saved.failingForMs;
+  // The sleep counts (task p1.10-42). A hold is a number of seconds of *real* time - the
+  // backoff's thirty, or the Retry-After the server named - so what is still owed is what the
+  // time away left of it, and nothing below zero. Until this, the sleep counted for nothing: the
+  // first repeater-v2 unit woke every fifteen minutes on 8 November 2026 and spent a
+  // thirty-second hold five or six seconds at a time, each of those wakes sending nothing, so one
+  // failed call bought about ninety minutes of silence - and at the Walter's usual hour, six.
+  const uint32_t owedMs = saved.holdForMs > awayMs ? saved.holdForMs - awayMs : 0;
+  holdUntil_ = now + owedMs;
+  // And the run of failures lasted through the sleep as well, because the reboot guard's ninety
+  // minutes are ninety minutes of real time. Saturating, so a board that has been failing for
+  // forty-nine days reads as *still failing* rather than wrapping round to *just started*; and
+  // zero while nothing is failing, which is what `state()` saves in that case too.
+  const uint64_t failing = static_cast<uint64_t>(saved.failingForMs) + awayMs;
+  const uint32_t failingForMs = saved.consecutiveFailures == 0
+                                    ? 0
+                                    : static_cast<uint32_t>(failing > UINT32_MAX ? UINT32_MAX : failing);
+  firstFailureAtMillis_ = now - failingForMs;
   pollIntervalS_ = saved.pollIntervalS > 0 ? saved.pollIntervalS : 30;
   budget_ = saved.budget;
   jobs_->setBudget(budget_);
   halted_ = saved.halted;
   everHeartbeated_ = saved.everHeartbeated;
   lastHeartbeatAtEpoch_ = saved.lastHeartbeatAtEpoch;
-  if (saved.holdForMs > 0) {
+  // Only what is still owed *after* the time away is worth a line: a hold the sleep spent whole
+  // is not a wait any more, and saying so at every wake would be the noise that hid this bug.
+  if (owedMs > 0) {
     LOG_I("wake: %lu s of a wait the server asked for is still owed from before the sleep",
-          static_cast<unsigned long>(saved.holdForMs / 1000u));
+          static_cast<unsigned long>(owedMs / 1000u));
   }
   return true;
 }

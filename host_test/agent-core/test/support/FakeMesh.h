@@ -216,6 +216,15 @@ class FakeMesh : public mm::IMesh {
   // `grant(self(), kPermAdmin)` and gets the same answer by the stock route. False by default, as
   // the interface is and as this board's mesh is.
   void setAnswersLocally(bool local) { answersLocally_ = local; }
+  // The door of **one** repeater, by its key: the Walter's own radio, which is what the real door
+  // is keyed to (`LinkMesh::setOwnKey`, and `beginJob` there computes *local* as exactly this
+  // comparison). A job for this key is answered off the air and a job for any other is on it,
+  // which is what `setAnswersLocally(true)` above is not - that one holds the door open for
+  // whatever repeater a job names, which was all tasks p1.10-40 and p1.10-41 needed to see.
+  // Setting it is how a test asks the two sides of the door the **same** question: whether a key
+  // is served locally (`answersLocallyFor`, task p1.10-43) and whether the job in progress is
+  // (`answersLocally`), from one piece of state and one comparison, as the Walter does.
+  void setLocalDoorKey(std::string hex64) { doorKey_ = lowerHex(std::move(hex64)); }
   // answer: flood-scope - which shape of flood reaches this repeater at all. A repeater with no
   // region map drops a `dk` flood it would have forwarded unscoped, and a mesh of repeaters
   // running `flood.max.unscoped=0` never carries an unscoped one. Both reach it by default.
@@ -350,8 +359,18 @@ class FakeMesh : public mm::IMesh {
   // bytes, as the Heltec's `AgentMesh::kFloodPathHashSize` is and as the rail asks. A test that
   // wants to see the library *ask* rather than assume says `setFloodPathHashSize(4)`.
   uint8_t floodPathHashSize() const override { return floodPathHashSize_; }
-  // Whether a job of this mesh is served off the air (IMesh::answersLocally, task p1.10-40).
-  bool answersLocally() const override { return answersLocally_; }
+  // Whether the job **in progress** is served off the air (IMesh::answersLocally, task p1.10-40):
+  // the flat flag, or a job begun for the door's own key - and then only while that job is begun,
+  // which is the interface's contract (true from `beginJob` to `endJob`, false between jobs).
+  bool answersLocally() const override { return answersLocally_ || (peerSet_ && servesLocally(peer_)); }
+  // Whether a job **for this key** would be (IMesh::answersLocallyFor, task p1.10-43): the same
+  // flag and the same comparison, with no job needed. The two agree by construction here, as they
+  // must on the real door.
+  bool answersLocallyFor(const char* publicKeyHex) const override {
+    if (answersLocally_) return true;
+    if (publicKeyHex == nullptr) return false;
+    return servesLocally(lowerHex(publicKeyHex));
+  }
 
   void setRing(mm::ObservationRing* ring) override { ring_ = ring; }
   mm::ObservationRing* ring() const { return ring_; }
@@ -1023,6 +1042,16 @@ class FakeMesh : public mm::IMesh {
     };
   }
 
+  // A key as this mesh holds one: 64 lowercase hex, which is what `beginJob` normalises to.
+  static std::string lowerHex(std::string hex) {
+    for (char& c : hex) {
+      if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return hex;
+  }
+  // The local door's one comparison, in one place: both sides of it read this.
+  bool servesLocally(const std::string& keyHex) const { return !doorKey_.empty() && keyHex == doorKey_; }
+
   FakePlatform& platform_;
 
   // the repeater
@@ -1042,6 +1071,7 @@ class FakeMesh : public mm::IMesh {
   std::string floodScope_;
   uint8_t floodPathHashSize_ = 2;
   bool answersLocally_ = false;
+  std::string doorKey_;  // the one repeater this mesh reaches without the air, if any
   mm::FloodMode nextMode_ = mm::FloodMode::Scoped;
   bool scopedReaches_ = true;
   bool unscopedReaches_ = true;

@@ -126,6 +126,11 @@ size_t writeConfigReadResult(const ConfigSnapshot& s, char* out, size_t cap);
 // `CommonCLI::handleGetCmd` answers `> <value>`; anything else is a refusal or an unknown key
 // (`??: <key>`), which the snapshot keeps verbatim under `raw` as `<command>: <reply>`. Returns
 // the value's start, or nullptr when the reply is not that shape.
+//
+// **A bare `>` is the empty value, not a refusal** (task p1.10-44): a key whose value is the
+// empty string is answered `"> "`, which trims to `">"`, and that is the empty value here as it
+// is in the .NET agent's `CliReplies.ValueOf`. `">"`, `"> "` and `">  "` all give `""`;
+// `">240"` gives nullptr. The pointer is into `reply`, so it lives as long as the reply does.
 const char* cliReplyValue(const char* reply);
 
 // The reply's text without leading and trailing whitespace, in place; returns `text`.

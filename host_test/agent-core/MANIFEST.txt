@@ -1,17 +1,17 @@
 # The agent core's host fakes, contract fixtures and own two suites, copied - never edited here.
-# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit 8c24da5bca3dda6e788ab294d3b5357130140e1b
+# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit 6290e0927a99d252ddcec7929f63719cbb32332d
 # written by tools/sync-agent-core.ps1; docs/upstream.md says how and when
 #
 # sha256                                                           bytes  name
 9e0ec1c280b9a037744c41759c57669056204e821e3a6b6edcc852e767d2f686    21876  platformio.ini
-ff8d17d09929c67187259a6a12b83e41c407a37555f8e94da8dd802a0f5dec52    51953  test/support/FakeMesh.h
+1e8a72c1d3f751e63836d49e1c9598a964614532ab21237b4ff97ee8daf585b0    54001  test/support/FakeMesh.h
 3fa0f2fd8eba516f30b3ef3399b217e8531ad6316e5fa3d97d152b06599462db     5983  test/support/FakePlatform.h
 66e0fa1a31b021bed11421b6df6daec4d94ea4e6d4a3251faf64c0d9236099ed     2660  test/support/FakeRetained.h
 ef86253e1bec4743e933644638caa213af1290f4280bae37b421efa18a5e9acc    14512  test/support/FakeUplink.h
 01172f3677f0bd2d04ca4600cb3217bd862aae8afeeddd1b02626d49983912b6     6683  test/support/Fixtures.h
 e26dfebb90161012ab8187bba70b41c4775ff79ec8dfa8d75a71a228ebe0a349     6340  test/support/Jobs.h
-6b46578f7d90b5c75556a0d2a2deb50ef13fee20430969c18db6db9d1796907f   111494  test/test_loop/test_loop.cpp
-283c74e5914a3fce8b875d401b9422757482b9616063e076c5c07d43c0f962f9    89243  test/test_runner/test_runner.cpp
+9e4ed4a8f660d25bb81844c102574b44267c9fc6c9cf3ab8e14f8b8c425fe01d   131587  test/test_loop/test_loop.cpp
+0e17696f8e89af7f92c85dbe8edf97676ded2096ef20b21eea0ba3f98642fe4e    91613  test/test_runner/test_runner.cpp
 0708a3b026116c1ac387d09d2c6b1fb7c9a20db09ac68fd8822e30d8c6d98bf5     1451  tests/fixtures/companion/access-list-response.hex
 ebfa67bcdf0617c577c093010f475fdd7e949886e3cc3745ddd665d990f844d8     2221  tests/fixtures/companion/access-list-response-full.hex
 e9044d5ff237821c677aebad7e818659ead316c601d4398a847b9827c75a15a3      288  tests/fixtures/companion/advert.hex
