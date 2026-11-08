@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "core/cycle/wake_cycle.h"
 #include "core/cycle/wake_guard.h"
 #include "core/health/health.h"
 #include "cycle_bench.h"
@@ -195,4 +196,106 @@ TEST_CASE("the duty cycle hands the sleeper's answer to the guard, and nothing a
   b.world.clock.advance(kUsbGraceMs + kWakeBoundMs + 1000);
   CHECK(b.duty().tick());
   CHECK(b.v().restart.asked == 1);
+}
+
+// -- a bound raised for one command, and put back when it returns (task p9-04) -------------------
+
+TEST_CASE("a bound raised for a command is put back when it returns, and the cable then ends the wake") {
+  // 23 October and again 7 November: after a bench session of `agent wake`s the cable came out
+  // and the drop from about 41 mA to 8 mA did not come, because `allow()` had raised the bound
+  // to twenty minutes **from the boot** and nothing ever lowered it again
+  // (tasks/phase-6/FOLLOWUPS.md, *[04] A person's `agent wake` keeps the 20-minute bound*).
+  using core::cycle::kBackendBoundMs;
+  GuardBench b;
+  b.guard.arm();
+  b.guard.usbHostIs(true);  // a person is at the console
+  CHECK(b.guard.bound() == kWakeBoundMs);
+  // Eight minutes of bench session before the command is typed, so that the ordinary bound has
+  // passed already - which is a bench session's normal state, and 7 November's.
+  b.clock.advance(8u * 60 * 1000);
+  CHECK_FALSE(b.guard.tick());
+
+  // The command raises the bound and is told what it found.
+  const std::uint32_t was = b.guard.raiseFor(kBackendBoundMs);
+  CHECK(was == kWakeBoundMs);
+  CHECK(b.guard.bound() == kBackendBoundMs);
+  // It takes two minutes, as a wake of the loop does, and nothing ends it: the cable is in.
+  b.clock.advance(2u * 60 * 1000);
+  CHECK_FALSE(b.guard.tick());
+  // And returns.
+  b.guard.putBack(was);
+  CHECK(b.guard.bound() == kWakeBoundMs);
+
+  // The wake has been awake far longer than the ordinary bound, so what is left of it is nothing
+  // and the USB grace is the figure the console names.
+  CHECK(b.guard.endsAfterCableMs() == kUsbGraceMs);
+  // The cable comes out. The grace, and then the reset that ends this wake - where before the
+  // Walter would have stayed awake until twenty minutes after the boot.
+  b.guard.usbHostIs(false);
+  CHECK(b.guard.status().state == Guard::kUsbHost);
+  CHECK_FALSE(b.run(kUsbGraceMs - 1000));
+  CHECK(b.restart.asked == 0);
+  b.clock.advance(2000);
+  CHECK(b.guard.tick());
+  CHECK(b.restart.asked == 1);
+}
+
+TEST_CASE("without the putting back, the same session stays awake to the raised bound") {
+  // The behaviour of 7 November, kept as a test so that the difference is a measured one and not
+  // a claim: the same two minutes of work, the bound left raised, and the cable out.
+  using core::cycle::kBackendBoundMs;
+  GuardBench b;
+  b.guard.arm();
+  b.guard.usbHostIs(true);
+  b.clock.advance(8u * 60 * 1000);
+  b.guard.allow(kBackendBoundMs);
+  b.clock.advance(2u * 60 * 1000);
+  b.guard.usbHostIs(false);
+  // Past the grace, and still awake: the raised bound has not passed.
+  CHECK_FALSE(b.run(kUsbGraceMs + 1000));
+  CHECK(b.restart.asked == 0);
+  CHECK(b.guard.endsAfterCableMs() > kUsbGraceMs);
+  // It ends, as it always did - at the raised bound, counted from the boot.
+  CHECK(b.run(kBackendBoundMs));
+  CHECK(b.restart.asked == 1);
+}
+
+TEST_CASE("putting back lowers no further than the ordinary bound, and does nothing while disarmed") {
+  GuardBench b;
+  b.guard.arm();
+  b.guard.usbHostIs(false);
+  CHECK(b.guard.raiseFor(core::cycle::kRaisedBoundMax) == kWakeBoundMs);
+  // A bound of nothing is not a bound: the ordinary one is the floor.
+  b.guard.putBack(0);
+  CHECK(b.guard.bound() == kWakeBoundMs);
+  b.guard.putBack(core::cycle::kRaisedBoundMax * 4);
+  CHECK(b.guard.bound() == core::cycle::kRaisedBoundMax);
+  // A wake that reached sleep while the command was still on the stack is not re-bounded by it.
+  b.guard.disarm();
+  CHECK(b.guard.bound() == kWakeBoundMs);
+  b.guard.putBack(core::cycle::kRaisedBoundMax);
+  CHECK(b.guard.bound() == kWakeBoundMs);
+  CHECK(b.guard.status().state == Guard::kDisarmed);
+  // And a disarmed guard names no time at all: nothing of this object would end that wake.
+  CHECK(b.guard.endsAfterCableMs() == 0);
+  CHECK(b.guard.raiseFor(core::cycle::kRaisedBoundMax) == kWakeBoundMs);
+  CHECK(b.guard.bound() == kWakeBoundMs);  // allow() never arms a disarmed guard
+}
+
+TEST_CASE("the time the console names after a cable: the later of the grace and what is left") {
+  GuardBench b;
+  b.guard.arm();
+  b.guard.usbHostIs(true);
+  // Early in a wake, what is left of the bound outlasts the grace, and that is the figure.
+  b.clock.advance(1000);
+  CHECK(b.guard.endsAfterCableMs() == kWakeBoundMs - 1000);
+  CHECK(b.guard.endsAfterCableMs() > kUsbGraceMs);
+  // Inside the last minute of the bound, the grace is the longer one.
+  b.clock.advance(kWakeBoundMs - kUsbGraceMs);
+  CHECK(b.guard.endsAfterCableMs() == kUsbGraceMs);
+  // `stay` is the one thing that answers "nothing here would end it".
+  b.guard.stayAwake(true);
+  CHECK(b.guard.endsAfterCableMs() == 0);
+  b.guard.stayAwake(false);
+  CHECK(b.guard.endsAfterCableMs() == kUsbGraceMs);
 }

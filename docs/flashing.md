@@ -186,8 +186,25 @@ Why the cable all the same, for this one unit:
 3. **`rak update --first-install`** — the run with no golden image to return to, a person's command
    only. Expect the flasher's page lines through the scan, the pages and the read-back **with no
    reboot in the middle** (that reboot was the fault), then the reset, the health check and
-   `rak update: done: <version> (sha256 …) is the golden image`. Seven minutes or so for a whole
-   image at 125 kHz is the order to expect.
+   `rak update: done: <version> (sha256 …) is the golden image`.
+
+   **How long it takes.** From the code's own page and poll counts, over the simulated debug port
+   at the default 125 kHz (`core/swd/wire.h`; the figures are the ones
+   `host_test/core/flasher/test_flasher_watchdog.cpp` prints):
+
+   | | |
+   |---|---|
+   | the flash: 102 pages scanned, written and read back whole | **413 s** for 417,284 bytes, 548 of task p9-01's pauses in it (5.5 s, about 1 %) |
+   | the radio's reset and its boot window | up to `kBootWindowMs`, 20 s |
+   | the proving period, a `PING` every 3 s | `kProvingPeriodMs`, 180 s |
+   | the check and the commit (a hash over the stored image, a pointer moved) | seconds |
+
+   So **about eleven minutes** is what the code says, of which seven are SWD traffic. On the first
+   unit on 7 November it was **about a quarter of an hour** — 19:31 to 19:49 local, between
+   Thomas's two console pastes, so with a person's time in it — which says the real port is
+   slower than the simulator's clean 125 kHz. That is the line to fill properly:
+   [`bench.md`](bench.md) §9, *A whole image flashed with no watchdog reset, timed*, asks for the
+   wall-clock time of the flash alone and the image's size.
 
 A committed first install is what makes that image **golden**: it ends the slot's *awaiting its
 first install* and it is the last word on a slot the journal had left *stuck*. From then on the
@@ -200,6 +217,51 @@ come from the image's own descriptor; with a `v0.1.1` radio and no golden image 
 session's `HELLO`, which now ends with the band — the one word that was missing on 6 November and
 the reason the server could pick no image. Either way *Mark canary* can offer this release, and the
 unit's repeater can be offered a release from then on with no cable at all.
+
+## A radio recovered by hand may come back with a new key
+
+A radio left half-written — an install that stopped part-way — is brought back over its **own**
+USB-C with the release's `.uf2`, and that is the repeater repository's procedure, not this one's:
+its [`docs/flashing.md`](https://github.com/twinoak/twinoak.meshcore.repeater-firmware/blob/main/docs/flashing.md)
+§3a, *A radio left half-written*, with a step 0 that is this Walter's (`rak update status` first:
+a run the journal left in *flashing-candidate* is resumed at the Walter's next boot and would
+flash the journalled image over whatever has just been put on the radio by hand).
+
+**What the first unit showed on 6 November is that the radio can come back as a different node.**
+Neither the Walter's flasher nor the `.uf2` writes the file system at `0xED000`–`0xF4000` where
+the node's key lives — but up to repeater `v0.1.1` the first boot after the `.uf2` called the
+Adafruit core's `InternalFS.begin()`, which **formats the region when the volume will not mount**,
+and a torn page is what an interrupted flash leaves. It then found no key file and drew a new key,
+with no word said. The reading is the repeater repository's `tasks/phase-3.9/reports/01.md`; from
+its `v0.1.2` the radio **refuses** instead, says `IDENTITY LOST` on its console and on the link,
+and waits for a person's `erase` and `reboot`.
+
+**How to see it**, from this Walter and from the server:
+
+```
+> rak hello                 # which firmware answered, and its board and slot
+> agent id                  # `repeater: <64 hex>` - the key IDENTITY returned
+```
+
+and on meshmaster.dk, the unit's exit-node page: the **companion key changed**, and the audit log
+has `agent.companion_changed` with the old key and the new one. A radio in the lost mode has no
+key to print at all: `agent id` says *the radio has no identity yet*, and the heartbeat carries no
+radio key, no radio block and no job types.
+
+**What then**, when the key is new — in this order, because each step needs the one before it:
+
+1. **Confirm the key on meshmaster.dk** (*This is the right companion* on the exit node's page).
+   Until that is done the server suspends admin routing through the unit.
+2. **Register the unit's repeater again** from the new key: the old repeater record belongs to a
+   node that no longer exists. On the first unit that made repeater 41 where it had been 12.
+3. **Re-apply the settings**, through this console's `rak cli <line>` or at the radio's own USB
+   port, line by line as the repeater's `docs/provisioning.md` §2 gives them — the `name`, the
+   position, `owner.info`, the **admin password** (a fresh node draws a random one nobody knows,
+   `spec/SYSTEM.md` S-13), the guest password, the regions and the ACL. Then tell MeshMaster the
+   admin password; until it has one, every `admin`-class job of that repeater fails with *no admin
+   password stored*, which is what job 22016 did on 7 November.
+
+The profile restores the rest by itself on the first boot; the repeater's own guide lists which.
 
 ## Checking in
 

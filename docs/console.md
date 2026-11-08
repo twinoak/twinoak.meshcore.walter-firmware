@@ -132,7 +132,7 @@ supervisor's stop is printed at every level.
 | Command | What it does |
 |---|---|
 | `lte` | (task p3-01) the uplink: what the modem is, what the last attempt did and how far it got, when the backoff allows the next one, whether a SIM PIN is set and whether it was refused, the last signal reading, the last time, and what power saving the network granted. Since task p9-02 it ends with the socket rotation's own lines: the two socket ids the HTTPS connections take turn and turn about, how many connections this boot has made and which id the last few were on, and the close accounting — see *HTTPS*. **It only reads** — it does not start the modem |
-| `lte up` | bring the uplink up now: the whole sequence inside one wake's budget. **Minutes** — an attach from cold is slow — and it goes ahead even when the backoff would have waited, because a person asked |
+| `lte up` | bring the uplink up now: the whole sequence inside one wake's budget. **Minutes** — an attach from cold is slow — and it goes ahead even when the backoff would have waited, because a person asked. The network's time, when it gave one, becomes **this Walter's own clock** (task p9-04), as a wake's step 6 does with it: so the link has a time to give the radio (§5.4) and `rak update`'s clock check can be made |
 | `lte down` | the modem's radio off (`AT+CFUN=0`); the context goes with it |
 | `lte time` | the network's time, or a refusal in words when the modem answered with its own default |
 | `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. **The only place this firmware prints them**, and they are in no log line, no journal entry and no `status` |
@@ -140,11 +140,11 @@ supervisor's stop is printed at every level.
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
 | `agent url` | (task p4-03) the server the agent's uplink is configured for (`server.url` as it is used, a trailing slash off), whether `server.token` is set, and the `X-Agent-Version` header every call to it carries - this firmware's own version. It reads; it does not call |
 | `agent probe` | (task p4-03) one `GET /agent/v1/config` now, with the token: the status, `Retry-After` and `X-RateLimit-Remaining` when the answer carried them, and the config the server answered (the agent's id and label, its transport, the budget, the poll interval, the server's time). The bench's first look at a server; the uplink must be up (`lte up` first). See *The agent's uplink* |
-| `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
+| `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, the local door's four counters (task p9-04), what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
 | `agent heartbeat` | (task p4-04) the body `POST /agent/v1/heartbeat` would carry, built and **not sent**: the bench's way to compare it with meshmaster.dk's contract fixture by eye. It asks the radio nothing |
 | `agent obs [pull]` | (task p4-04) the observation ring the agent posts from: how many adverts wait, how many were heard, how many were dropped (the figure the heartbeat carries), what the radio's own ring has lost and how much is still in it, and the last five - the key, how long ago, the hops, the signal and the role, and **never the name** a stranger chose (`spec/LINK-PROTOCOL.md` §7). `agent obs pull` drains the radio's ring into it first (§7's `OBS_PULL`, as many pages as it answers) |
 | `agent wake` | (task p4-05) one wake of the agent's loop now, through the backend seam the wake cycle's step 8 runs: **the radio asked who it is first** - a `HELLO` when there is no session and then `IDENTITY`, so that a job for the unit's own repeater can be told from a neighbour's (task p8-04) - then the offline buffer flushed, one heartbeat with this wake's intent, the claim, and the jobs the claim handed over: a neighbour's over the mesh, the unit's own through the local door, a firmware job into a slot or onto the chip. It restores the loop's retained state before the wake and saves it after, as a real wake across a sleep does. The uplink must be up (`lte up` first); **no `rak hello` is needed before it**, and a radio that does not answer one leaves the wake claiming only this unit's own `twinoak.*` job types, which one line says. See *The agent's identity* |
-| `agent jobs` | (task p4-05) the last ten jobs as the agent's library remembers them: the id, the type, the outcome, how many transactions each took and how long, and whether a result is still waiting in the offline buffer for the next wake to post. It reads; it runs nothing |
+| `agent jobs` | (task p4-05) the last ten jobs as the agent's library remembers them: the id, the type, the outcome, how many transactions each took and how long, and whether a result is still waiting in the offline buffer for the next wake to post. Then (task p9-04) the two blocks the library cannot write: `local`, the door's counters and this radio's key shortened, and `begun`, the last ten jobs **by the repeater they named** - the local door, or the mesh and whose key it was. It reads; it runs nothing |
 | `agent state` | (task p4-05) the loop's retained state as it stands: whether it has ever heartbeated, the poll interval it will sleep by, any hold a server asked for, the counters the heartbeat carries, and whether a kept image is waiting in the agent's flash window. It reads; it runs nothing |
 
 ### Sleep and the battery
@@ -623,7 +623,7 @@ lte up: bringing the uplink up; the budget is 240 s and an attach from cold can 
   most of it. The backoff would have allowed this wake
 lte up: up in 7412 ms (up)
   signal: RSRP -92 dBm, RSRQ -10.5 dB, RSSI -71 dBm, operator TDC, band 20, LTE-M
-  time: 1791936086 unix seconds, from the network
+  time: 1791936086 unix seconds, from the network; this Walter's clock is set from it, so the radio can be given it too
   power saving: asked for off (the modem is switched off between wakes); the network has granted nothing (it reports PSM timers when it feels like it)
 ```
 
@@ -822,6 +822,7 @@ repeater: 7f3a9c02e1b44d9a0f6c2b7d8e9a1c3f5d7b9e0a2c4e6f8a0b1c2d3e4f5a6b7c
   name "TwinOak Risskov", firmware 0.1.0, board rak4630-single, built on repeater-v1.17.1+d9296435, boot id 0x1a2b3c4d
 radio: 869.618 MHz, bw 62.5 kHz, sf 8, cr 8
 job types (13): status, telemetry, neighbours, config.read, config.apply, cli, trace, discover, advert.request, clock.sync, password.set, acl.set, reboot
+local door: open: a job naming this radio is answered here; 2 job(s), 3 request(s), 1 answered with silence, 0 with no request to make
 intent: next check-in 3600 s, at most 37 transaction(s) this wake (band normal)
 clock: 1791936000, from the network
 heap: 176880 free, 160224 the least ever

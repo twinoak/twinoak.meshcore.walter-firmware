@@ -110,6 +110,30 @@ class WakeGuard {
   // never lowers a bound and never arms a disarmed guard, and it is capped at kRaisedBoundMax.
   void allow(std::uint32_t bound_ms);
   std::uint32_t bound() const { return status_.bound_ms; }
+
+  // **A bound raised for a piece of work that ends**, and put back when it returns (task p9-04).
+  // `allow()` above only ever raises, and the bound is counted from the boot's `arm()`, so a
+  // person's `agent wake` - a command that returns in a minute or two - used to leave the rest
+  // of the boot bounded at twenty minutes from the boot. On 23 October and again on 7 November
+  // that was a bench session after which the cable came out and the drop from about 41 mA to
+  // 8 mA did not come: the Walter stayed awake until the raised bound had passed, restarted, and
+  // only then slept. Nothing was broken - the work was journalled, the bound was still a bound -
+  // but it was invisible, and it is the battery of the repeater that pays for it
+  // (tasks/phase-6/FOLLOWUPS.md).
+  //
+  // So: `raiseFor()` raises as `allow()` does **and answers the bound it found**, which the
+  // caller hands straight back to `putBack()` when its work returns. `putBack()` is the only
+  // thing in this object that lowers a bound, it lowers it no further than the ordinary one, and
+  // it does nothing at all while disarmed - so a wake that reached sleep in the meantime is not
+  // re-bounded by a command that was still on the stack.
+  std::uint32_t raiseFor(std::uint32_t bound_ms);
+  void putBack(std::uint32_t bound_ms);
+
+  // How long after the cable goes **now** this wake would last, in milliseconds: the later of
+  // the USB grace and what is left of the bound. It is what the console tells a person who is
+  // about to pull the cable, and 0 means nothing would end this wake - `stay` is on, or no wake
+  // is being timed.
+  std::uint32_t endsAfterCableMs() const;
   // The wake reached sleep, or a person took over: the bound stops applying.
   void disarm();
   bool armed() const { return armed_; }

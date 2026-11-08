@@ -182,6 +182,9 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   bool saveState();
   bool loadState();
   void printReport(interfaces::TextOut& out) const;
+  // `agent jobs`'s own two blocks about the local door (task p9-04): the door's counters, and
+  // the last ten jobs by the repeater they named - which the library's report has no field for.
+  void sayLocalDoor(interfaces::TextOut& out) const;
 
   Parts p_;
   interfaces::Clock& clock_;

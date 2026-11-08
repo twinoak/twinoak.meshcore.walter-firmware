@@ -95,6 +95,28 @@ struct LinkMeshCounters {
   std::uint32_t local_unserved = 0; // local sends the link has no request for (Failed)
 };
 
+// How much of a key a line about a job shows: the first 12 hex characters, as the library's own
+// `sessions` line shows one (`JobRunner::reportSessions`, `%.12s...`). Enough to tell two keys
+// apart by eye, which is the whole job of the line.
+constexpr std::size_t kKeyShownBytes = 6;
+
+// How many jobs this end remembers where it sent, newest first: the library's `last ten`, so
+// that the two lists of `agent jobs` line up.
+constexpr std::size_t kJobsRemembered = 10;
+
+// One job this end was asked to begin, and where it went (task p9-04). The library's own `last
+// ten` carries the id, the type and the outcome and **not the key the job was addressed to**,
+// and `components/agent-core` is a hash-checked copy of upstream
+// (`tools/sync-agent-core.ps1`), so this is kept at the end that decides it - the local door
+// itself. On 7 November a telemetry job for the unit's own repeater went on the air because
+// meshmaster.dk held the radio's **old** key: nothing of this firmware said so, and only the
+// server's audit log could tell (tasks/phase-8/FOLLOWUPS.md).
+struct JobBegun {
+  std::uint8_t key[kKeyShownBytes] = {};  // the first six bytes of the peer's key
+  bool local = false;          // the local door answered it: nothing went on the air
+  bool own_key_known = false;  // this end knew which repeater is its own when it was asked
+};
+
 // The link's own fields of the last reply record (§6.3), which the library's MeshReply has no
 // field for since v0.3.0: yours to print, the console does.
 struct LastRecord {
@@ -140,6 +162,14 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   std::uint8_t lastStatus() const { return last_status_; }
   const LinkMeshCounters& linkCounters() const { return link_counters_; }
   const LastRecord& lastRecord() const { return last_record_; }
+  // The last ten jobs this end was asked to begin, newest first (task p9-04): what `agent jobs`
+  // prints beside the library's own list. `jobBegunAt` is null past the end.
+  std::size_t jobsBegun() const { return jobs_begun_; }
+  const JobBegun* jobBegunAt(std::size_t i) const {
+    return i < jobs_begun_ ? &begun_[i] : nullptr;
+  }
+  // The unit's own repeater's key, shortened the same way, or null when this end has none.
+  const std::uint8_t* ownKeyShown() const { return own_key_known_ ? own_key_ : nullptr; }
   // The path this end holds, as the link describes it. The hashes point into this object.
   link::Path path() const;
 
@@ -225,6 +255,8 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
 
   static bool parseKey(const char* hex, std::uint8_t* out);
   static bool sameKey(const std::uint8_t* a, const std::uint8_t* b);
+  // One entry of the list above, newest first: the nine others move down a place.
+  void rememberBegun(const std::uint8_t* key, bool local);
 
   lc::Client& client_;
   interfaces::Clock& clock_;
@@ -254,6 +286,10 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   lc::Fault last_fault_ = lc::Fault::kNone;
   std::uint8_t last_status_ = link::status::kOk;
   LinkMeshCounters link_counters_;
+
+  // Where the last ten jobs went, newest first (task p9-04): seventy bytes of this object.
+  JobBegun begun_[kJobsRemembered];
+  std::size_t jobs_begun_ = 0;
 };
 
 }  // namespace agent

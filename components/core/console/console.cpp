@@ -136,12 +136,13 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  net::TrustLoader* trust, settings::Settings* settings,
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
-                 AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets)
+                 AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets,
+                 cycle::NetworkClock* wall)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
-      mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets),
+      mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets), wall_(wall),
       flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
@@ -2024,7 +2025,14 @@ void Console::printUpdateOutcome() {
       break;
   }
   if (st.time_skipped) {
-    print("  (the clock check was skipped: this Walter has no time to give until phase 3's modem)\n");
+    // Why it was really skipped (task p9-04). *Until phase 3's modem* has been wrong since
+    // phase 3: the modem is in, and the thing that was missing on 7 November was a time **in
+    // this boot** - `interfaces::Clock` restarts at zero at every wake, so the network's time is
+    // taken again each time and nothing had taken it before the `rak update` was typed
+    // (`core/cycle/network_clock.h`). `lte up` now gives it to the Walter's own clock, and so do
+    // a wake's step 6 (`cycle now`) and the agent's server time (`agent probe`).
+    print("  (the clock check was skipped: this Walter had no time of its own in this boot, so\n");
+    print("   there was none to give the radio. 'lte up' before 'rak update' lets it run)\n");
   }
 }
 
@@ -2696,9 +2704,20 @@ void Console::lteUp() {
            interfaces::describe(uplink_->state()));
     interfaces::Signal s;
     if (uplink_->signal(&s)) printSignal(s);
+    // **And the Walter's own clock takes it** (task p9-04). The wake cycle's step 6 does exactly
+    // this with the same `interfaces::NetworkTime` through the same window
+    // (`core/cycle/network_clock.h`: a time is believed only when it came from the network), and
+    // until this line a console session had no clock of its own however long the uplink had been
+    // up - so the link had no time to give the radio (§5.4) and `rak update`'s clock check was
+    // skipped in every boot a person drove by hand. One place still decides what to believe, and
+    // it is the network.
+    // A time whose origin is the network has already been through that window on the way in, so
+    // `give` only answers false here when there is no clock in this build.
+    const bool took = wall_ != nullptr && wall_->give(r.time);
     if (r.time.origin == interfaces::TimeOrigin::kNetwork) {
-      printf("  time: %lu unix seconds, from the network\n",
-             static_cast<unsigned long>(r.time.epoch));
+      printf("  time: %lu unix seconds, from the network%s\n",
+             static_cast<unsigned long>(r.time.epoch),
+             took ? "; this Walter's clock is set from it, so the radio can be given it too" : "");
     } else {
       printf("  time: %s - the uplink is up all the same\n",
              interfaces::describe(r.time.origin));
@@ -3003,7 +3022,20 @@ void Console::agentId() {
     printf("radio: not read%s\n",
            known ? " (the repeater's console did not answer 'get radio')" : "");
   }
-  printf("job types (%d): %s\n", v.job_type_count, v.job_type_count > 0 ? v.job_types : "none");
+  // In pieces, through print(): seventeen job types are over three hundred characters and
+  // printf's line buffer is two hundred, so this line was cut at `twinoak.` and lost its
+  // newline - the line after it then ran on from the middle of a word (task p9-04).
+  printf("job types (%d): ", v.job_type_count);
+  print(v.job_type_count > 0 ? v.job_types : "none");
+  print("\n");
+  // The local door (task p9-04): a job for the key above is answered by this unit and nothing
+  // goes on the air. `agent jobs` says which of the last ten went that way.
+  printf("local door: %s; %lu job(s), %lu request(s), %lu answered with silence, %lu with no request to make\n",
+         v.door_open ? "open: a job naming this radio is answered here"
+                     : "shut: no key for this radio, so no mesh job is carried at all",
+         static_cast<unsigned long>(v.local_jobs), static_cast<unsigned long>(v.local_requests),
+         static_cast<unsigned long>(v.local_silent),
+         static_cast<unsigned long>(v.local_unserved));
   printf("intent: next check-in %lu s, at most %d transaction(s) this wake (band %s)\n",
          static_cast<unsigned long>(v.next_check_in_s), v.max_transactions_this_wake, v.band);
   if (v.time_known) {

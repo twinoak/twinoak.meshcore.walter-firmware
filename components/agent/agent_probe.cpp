@@ -130,6 +130,14 @@ bool IdentityProbe::identity(core::console::AgentIdentityView* out) {
   out->free_heap = platform_.freeHeap();
   out->min_free_heap = platform_.minFreeHeap();
 
+  // The local door as it stands, after `setOwnKey` above (task p9-04).
+  const LinkMeshCounters& door = mesh_.linkCounters();
+  out->door_open = mesh_.hasOwnKey();
+  out->local_jobs = door.local_jobs;
+  out->local_requests = door.local_requests;
+  out->local_silent = door.local_silent;
+  out->local_unserved = door.local_unserved;
+
   const IdentityCounters& counted = identity_.counters();
   out->identity_reads = counted.identity_reads;
   out->radio_reads = counted.radio_reads;

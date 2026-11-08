@@ -114,7 +114,14 @@ class Console {
           // pointer to the real thing and not a seam. A build whose transport is not the modem's
           // - every host test but one, and WALTER_AGENT=0 - hands over nothing and the two
           // commands say nothing about sockets.
-          const net::SocketRotation* sockets = nullptr);
+          const net::SocketRotation* sockets = nullptr,
+          // The Walter's own idea of the time (task p9-04): what `lte up` gives the network's
+          // time to, so that a console session has a clock of its own - the link's TIME_SET
+          // (spec/LINK-PROTOCOL.md §5.4) and the update's clock check both read it, and until
+          // this pointer existed only the wake cycle's step 6 and the agent's server time ever
+          // filled it. A pointer like the rest; a build without one brings the uplink up and
+          // says so in one line.
+          cycle::NetworkClock* wall = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -375,6 +382,7 @@ class Console {
   AgentProbe* identity_ = nullptr;
   AgentLoopProbe* loop_ = nullptr;
   const net::SocketRotation* sockets_ = nullptr;
+  cycle::NetworkClock* wall_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the

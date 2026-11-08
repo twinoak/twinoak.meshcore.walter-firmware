@@ -434,7 +434,7 @@ struct WakeWalter {
                                                nullptr, &settings, &trial, duty.get(),
                                                cycle.get(), nullptr, &agent->mesh_probe,
                                                &agent->uplink_probe, &agent->identity_probe,
-                                               &agent->backend));
+                                               &agent->backend, nullptr, &wall));
       // main.cpp's own last two lines of wiring (task p4-06): the library's log goes where every
       // other line of this port goes, at the `log.level` setting. The cast is main.cpp's
       // `agentLogLevel`, whose static_assert holds the two enumerations' four values together.
@@ -448,7 +448,8 @@ struct WakeWalter {
                                              &w.images.store, nullptr, &update, &journal, &self,
                                              supervisor.get(), &uplink, &http_client, &fetch,
                                              nullptr, &settings, &server, duty.get(),
-                                             cycle.get()));
+                                             cycle.get(), nullptr, nullptr, nullptr, nullptr,
+                                             nullptr, nullptr, &wall));
   }
   ~WakeWalter() {
     CHECK(pins.violations.empty());

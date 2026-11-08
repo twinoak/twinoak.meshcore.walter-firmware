@@ -214,6 +214,16 @@ bool LinkMesh::sameKey(const std::uint8_t* a, const std::uint8_t* b) {
   return true;
 }
 
+void LinkMesh::rememberBegun(const std::uint8_t* key, bool local) {
+  for (std::size_t i = kJobsRemembered - 1; i > 0; --i) begun_[i] = begun_[i - 1];
+  JobBegun entry;
+  for (std::size_t i = 0; i < kKeyShownBytes; ++i) entry.key[i] = key[i];
+  entry.local = local;
+  entry.own_key_known = own_key_known_;
+  begun_[0] = entry;
+  if (jobs_begun_ < kJobsRemembered) ++jobs_begun_;
+}
+
 bool LinkMesh::beginJob(const char* publicKeyHex, const std::uint8_t* pathHashes, std::uint8_t hopCount,
                         std::uint8_t hashSize) {
   std::uint8_t key[kKeyLen];
@@ -233,6 +243,9 @@ bool LinkMesh::beginJob(const char* publicKeyHex, const std::uint8_t* pathHashes
   clearReply();
   job_ = Job{};
   copyBytes(key, job_.peer, kKeyLen);
+  // Where this one went, for `agent jobs` (task p9-04). Before the link is touched: whether the
+  // RAK takes a `JOB_BEGIN` has nothing to do with which repeater the job named.
+  rememberBegun(key, local);
 
   if (local) {
     job_.begun = true;

@@ -247,7 +247,8 @@ update: booting -> proving: the radio answered
 update: proving -> committing: the health check passed
 update: committing -> done: the candidate is the golden image
 rak update: done: ...
-  (the clock check was skipped: this Walter has no time to give until phase 3's modem)
+  (the clock check was skipped: this Walter had no time of its own in this boot, so
+   there was none to give the radio. 'lte up' before 'rak update' lets it run)
 >
 ```
 

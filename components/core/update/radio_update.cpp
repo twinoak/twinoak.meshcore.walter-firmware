@@ -319,6 +319,22 @@ bool RadioUpdate::start(const Request& request) {
     reason_ = Reason::kSelfUpdateUnconfirmed;
     return false;
   }
+  // **The hash before the first entry** (task p9-04). Every entry carries `status_.sha256`, and
+  // until this read that field was filled by `stepCheck`'s `loadImage` - one step *after* the
+  // `check` entry was written, so the first entry of every run named an image of 64 zero bits.
+  // On the first unit `rak update status` had the 6 November run beginning
+  // `check - first install, slot 0, image sha256 0000000000000000...`: the journal's story of a
+  // run that ended *stuck* never said which image it was about, which is the one thing a person
+  // reading it afterwards wanted (tasks/phase-8/FOLLOWUPS.md). The record alone, not
+  // `loadImage`: no reader is opened and nothing is verified here - that is `stepCheck`'s
+  // business and its refusals are unchanged. A record that is not there leaves the hash zero and
+  // `stepCheck` refuses with *no candidate*, which is the honest entry for a run about nothing.
+  image::Record first;
+  if (store_.read(sourceOf(request_.kind), request_.slot, &first) == image::StoreError::kNone &&
+      first.present) {
+    for (std::size_t i = 0; i < image::kSha256Size; ++i) status_.sha256[i] = first.sha256[i];
+    copyText(first.descriptor.version, status_.version, sizeof status_.version);
+  }
   const StepResult r = enter(State::kCheck, "the preconditions");
   return r.changed;
 }

@@ -804,10 +804,12 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   flash with the lines `boot N: watchdog reset` and `update: the
   journal says a run was in progress …; resuming at flashing-candidate` is this fault back.
 - [ ] **The first install the 6 November failure left behind** (task p8-06; the unit's own radio,
-  whose slot the journal says is *stuck*). The run that the watchdog ended also put its
-  candidate's hash on the bad list, before it entered *stuck* — `RadioUpdate::fail` marks the
-  image first and only then decides there is nothing to return to — so **the image that failed is
-  refused and cannot even be pushed back in**. Expected, in order: `image bad` names that hash;
+  whose slot the journal says is *stuck*). That run ended on a **flash failure**
+  (`fail(Reason::kFlashFailed, …)`, after the watchdog had reset the Walter twelve times over;
+  report p8-01 has the reading), and a failure of any kind puts the candidate's hash on the bad
+  list before the run enters *stuck* — `RadioUpdate::fail` marks the image first and only then
+  decides there is nothing to return to — so **the image that failed is refused and cannot even
+  be pushed back in**. Expected, in order: `image bad` names that hash;
   `rak update --first-install` on it is refused with *this image failed a health check once and is
   never tried again*, **with nothing on the SWD lines**; a push of the repeater's `v0.1.1`
   (a different file, a different hash) is accepted as the candidate; and `rak update
@@ -1633,6 +1635,34 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       unbrick path task p2-05 built and the one case where the battery-unknown refusal is lifted
       too. **The difference between the two wakes is a decision of the supervisor's and nothing
       else**, which is what this item is for.
+- [ ] ★ **The cable ends the wake an `agent wake` raised** (task p9-04). The item of 23 October
+      and again of 7 November: after a bench session of several `agent wake`s, pull the cable and
+      watch the current. Expected: the drop from about 41 mA to **8 mA** within a minute or so of
+      the cable — the USB grace (`kUsbGraceMs`, 60 s), one reset (the next boot's `boot` line says
+      `software` and `reboots` says *the wake overran its bound*), and then the ordinary wake that
+      ends in deep sleep. The last lines of each `agent wake` name the figure before you pull:
+      *the wake's bound is back to 300 s from the boot (awake N s)* and *pull the cable and this
+      wake ends in 60 s*. **If it stays at about 41 mA for a quarter of an hour**, the bound is
+      being left raised again and this is the fault back.
+- [ ] **The local door, on the console** (task p9-04). After a wake that ran a job for the unit's
+      own repeater: `agent id` ends with a `local door:` line — *open: a job naming this radio is
+      answered here* and the four counts — and `agent jobs` ends with two blocks of its own,
+      `local` (the same four, and this radio's key shortened) and `begun` (the last ten jobs,
+      newest first, each saying *the local door: nothing went on the air* or *the mesh*).
+      A job for a **neighbour** (§18's second item) must read *the mesh; NOT this radio's key
+      …* with both keys shortened, which is the line that would have explained 7 November's
+      telemetry job in one glance instead of the server's audit log.
+- [ ] **The clock check runs when the uplink has been up** (task p9-04). `rak update` typed in a
+      boot where nothing has given the Walter a time prints, after the outcome, *the clock check
+      was skipped: this Walter had no time of its own in this boot*. Do `lte up` first and the
+      line is gone: `lte up` now says *this Walter's clock is set from it, so the radio can be
+      given it too*, and the proof's step 2 sends a real `TIME_SET` (`rak watch`'s clock line says
+      *was set*). The old message said *until phase 3's modem*, which has been wrong since
+      phase 3.
+- [ ] **The journal names the image of a run's first entry** (task p9-04). `rak update status`
+      after any run: the oldest entry of it, `check`, carries the candidate's `sha256` and not
+      `0000000000000000…`. On the first unit the 6 November run's `seq 28` was all zeros and the
+      journal never said which image that run was about.
 
 ## What to bring back
 

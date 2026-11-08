@@ -48,6 +48,17 @@ void sayf(interfaces::TextOut* out, const char* format, ...) {
   if (n > 0) out->write(line, static_cast<std::size_t>(n) < sizeof line ? static_cast<std::size_t>(n) : sizeof line - 1);
 }
 
+// A key as a line about a job shows it: the first six bytes as twelve lowercase hex characters
+// (task p9-04, `agent::kKeyShownBytes`).
+void shortKey(const std::uint8_t* key, char* out) {
+  const char digits[] = "0123456789abcdef";
+  for (std::size_t i = 0; i < kKeyShownBytes; ++i) {
+    out[i * 2] = digits[key[i] >> 4];
+    out[i * 2 + 1] = digits[key[i] & 0x0F];
+  }
+  out[2 * kKeyShownBytes] = 0;
+}
+
 }  // namespace
 
 AgentBackend::AgentBackend(const Parts& parts, interfaces::Clock& clock, interfaces::WallClock& wall)
@@ -370,10 +381,39 @@ bool AgentBackend::wake(interfaces::TextOut& out) {
   console_known_.wake.update_running = p_.update != nullptr && p_.update->active();
   console_known_.radio.known = p_.identity->sessionUp();
   const std::uint64_t deadline = clock_.nowMs() + core::cycle::kBackendBoundMs;
-  if (p_.duty != nullptr) p_.duty->guard().allow(core::cycle::kBackendBoundMs);
+  // The wake's bound is raised **for this command and no longer** (task p9-04): `allow()` only
+  // ever raises and counts from the boot, so a bench session of several `agent wake`s used to
+  // leave the rest of the boot bounded at twenty minutes from the boot - and the cable coming
+  // out did not bring the drop to 8 mA with it. `raiseFor` answers the bound that was in force
+  // and `putBack` returns to it below, whatever this command does in between.
+  const std::uint32_t was =
+      p_.duty != nullptr ? p_.duty->guard().raiseFor(core::cycle::kBackendBoundMs) : 0;
   const interfaces::Exchanged how = run(console_known_, deadline, &console_answer_, &out);
   sayf(&out, "agent wake: %s%s\n", interfaces::describe(how),
        console_answer_.carried != interfaces::Ask::kNothing ? "; one update step was carried out" : "");
+  if (p_.duty != nullptr) {
+    core::cycle::WakeGuard& guard = p_.duty->guard();
+    guard.putBack(was);
+    // And what that means for the cable, which is the thing a person on the bench wants to
+    // know: how long this wake would last after it comes out, and why that is the figure.
+    const std::uint32_t ends = guard.endsAfterCableMs();
+    const core::cycle::GuardStatus& g = guard.status();
+    if (!guard.armed()) {
+      say(&out, "  the wake's bound is not being timed, so nothing here ends this wake\n");
+    } else if (ends == 0) {
+      sayf(&out, "  the bound is back to %lu s from the boot, but `stay` is on: 'stay off' is "
+                 "what lets this wake end\n", static_cast<unsigned long>(g.bound_ms / 1000u));
+    } else {
+      // Two lines: one of these together is longer than the 200 bytes a line is printed into.
+      sayf(&out, "  the wake's bound is back to %lu s from the boot (awake %lu s)\n",
+           static_cast<unsigned long>(g.bound_ms / 1000u),
+           static_cast<unsigned long>(g.awake_ms / 1000u));
+      sayf(&out, "  pull the cable and this wake ends in %lu s - %s\n",
+           static_cast<unsigned long>(ends / 1000u),
+           g.awake_ms >= g.bound_ms ? "the USB grace, the bound having passed already"
+                                    : "what is left of the bound, which outlasts the USB grace");
+    }
+  }
   return how != interfaces::Exchanged::kFailed || report_.why[0] == 0;
 }
 
@@ -387,21 +427,76 @@ void AgentBackend::jobs(interfaces::TextOut& out) {
   if (p_.firmware != nullptr) {
     const FirmwareJobCounters& f = p_.firmware->counters();
     const UplinkCounters& u = p_.server->uplinkCounters();
-    sayf(&out, "firmware  %lu offer(s): %lu stored, %lu refused, %lu left leased (the result withheld, %lu); "
-               "%lu apply(s): %lu committed, %lu rolled back, %lu refused, %lu stuck, %lu switch(es), %lu owed result(s) posted; "
-               "%lu state(s); %lu power cycle(s), %lu refused; %lu progress, %lu extend(s); %lu bytes downloaded\n",
+    // Three lines and not one: all of this in a single `sayf` is over the 200 bytes a line is
+    // printed into, so it was cut at *0 pow* and lost its newline with the rest - which the
+    // local door's block below then ran on from (task p9-04).
+    sayf(&out, "firmware  %lu offer(s): %lu stored, %lu refused, %lu left leased "
+               "(the result withheld, %lu)\n",
          static_cast<unsigned long>(f.offers), static_cast<unsigned long>(f.offers_stored),
          static_cast<unsigned long>(f.offers_refused), static_cast<unsigned long>(f.offers_left_leased),
-         static_cast<unsigned long>(u.withheld), static_cast<unsigned long>(f.applies),
-         static_cast<unsigned long>(f.committed), static_cast<unsigned long>(f.rolled_back),
-         static_cast<unsigned long>(f.refused), static_cast<unsigned long>(f.stuck),
-         static_cast<unsigned long>(f.switches), static_cast<unsigned long>(f.owed_posted),
+         static_cast<unsigned long>(u.withheld));
+    sayf(&out, "          %lu apply(s): %lu committed, %lu rolled back, %lu refused, %lu stuck, "
+               "%lu switch(es), %lu owed result(s) posted\n",
+         static_cast<unsigned long>(f.applies), static_cast<unsigned long>(f.committed),
+         static_cast<unsigned long>(f.rolled_back), static_cast<unsigned long>(f.refused),
+         static_cast<unsigned long>(f.stuck), static_cast<unsigned long>(f.switches),
+         static_cast<unsigned long>(f.owed_posted));
+    sayf(&out, "          %lu state(s); %lu power cycle(s), %lu refused; %lu progress, "
+               "%lu extend(s); %lu bytes downloaded\n",
          static_cast<unsigned long>(f.states), static_cast<unsigned long>(f.power_cycles),
          static_cast<unsigned long>(f.power_cycles_refused), static_cast<unsigned long>(f.progress_posted),
          static_cast<unsigned long>(f.extends), static_cast<unsigned long>(f.bytes_downloaded));
     JobEntry owed;
     if (p_.firmware->resultOwed(&owed)) {
       sayf(&out, "owed      the result of the Walter's own apply, job %lld, follows its trial\n", owed.job_id);
+    }
+  }
+  sayLocalDoor(out);
+}
+
+// The local door, where the library's own report cannot see it (task p9-04): its counters, and
+// the last ten jobs by the key they named. The library remembers the id, the type and the
+// outcome; **which repeater a job was addressed to** is this end's to remember, and it is the
+// thing that explains 7 November's telemetry job going on the air
+// (`walter_agent/link_mesh.h`, `JobBegun`).
+void AgentBackend::sayLocalDoor(interfaces::TextOut& out) const {
+  if (p_.mesh == nullptr) return;
+  const LinkMesh& mesh = *p_.mesh;
+  const LinkMeshCounters& c = mesh.linkCounters();
+  const std::uint8_t* own = mesh.ownKeyShown();
+  char own_hex[2 * kKeyShownBytes + 1] = {};
+  if (own != nullptr) shortKey(own, own_hex);
+  sayf(&out, "local     %lu job(s) through the door, %lu request(s) made, %lu answered with "
+             "silence, %lu with no request to make\n",
+       static_cast<unsigned long>(c.local_jobs), static_cast<unsigned long>(c.local_requests),
+       static_cast<unsigned long>(c.local_silent), static_cast<unsigned long>(c.local_unserved));
+  if (own != nullptr) {
+    sayf(&out, "          this radio's key %s...; a job naming it is answered here and nothing "
+               "goes on the air\n", own_hex);
+  } else {
+    say(&out, "          this end has no key for its own repeater, so no mesh job is carried at "
+              "all ('agent id')\n");
+  }
+  const std::size_t count = mesh.jobsBegun();
+  if (count == 0) {
+    say(&out, "begun     no job has been begun on the link in this boot\n");
+    return;
+  }
+  say(&out, "begun     newest first: the repeater a job named, and where it went\n");
+  for (std::size_t i = 0; i < count; ++i) {
+    const JobBegun* j = mesh.jobBegunAt(i);
+    if (j == nullptr) break;
+    char hex[2 * kKeyShownBytes + 1] = {};
+    shortKey(j->key, hex);
+    if (j->local) {
+      sayf(&out, "  %s...  the local door: nothing went on the air\n", hex);
+    } else if (!j->own_key_known) {
+      sayf(&out, "  %s...  the mesh; this end had no key of its own to tell it by\n", hex);
+    } else if (own != nullptr) {
+      // The line the 7 November job wanted: both keys, shortened, side by side.
+      sayf(&out, "  %s...  the mesh; NOT this radio's key %s...\n", hex, own_hex);
+    } else {
+      sayf(&out, "  %s...  the mesh; not this radio's key, which this end no longer holds\n", hex);
     }
   }
 }
