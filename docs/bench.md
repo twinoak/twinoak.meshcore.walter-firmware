@@ -1167,37 +1167,62 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
   connection was on** (count forward from `the last few`), **whether that id owed a close** and
   **whether anything had been written off**. If `agent wake` goes through twice, say so: five
   connections in a wake with the new rule and no stall is the result.
-- [ ] **The trace build, if it stalls again.** The stall is one AT command that got no answer for
-  the library's whole 30 s command timeout (`CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS`, and
-  `CONFIG_WALTER_MODEM_DEFAULT_CMD_ATTEMPTS` is 1, so there is no retransmission). The only thing
-  that names the command is the library's own TX/RX trace, which is `ESP_LOGD` and so needs a
-  build with the log at debug - the same build as 23 October (`tasks/phase-6/FOLLOWUPS.md`, *Five
-  fixes from the first hand-run*):
+- [ ] ★ **The trace, from the console** (task p10-06). **The stall is read here, and it needs no
+  build of its own any more.** Until v0.1.3 the modem library's `TX:` and `RX:` lines were stripped
+  from the release build at compile time and the only way to them was a debug build flashed by
+  cable; they are now compiled in and off, and one command raises them (`docs/console.md`, *The
+  modem's own trace*). The stall of 8 November is reproducible in minutes: with a backlog of
+  adverts waiting, the answer to an `/agent/v1/observations` POST is lost almost every time, and
+  meshmaster.dk's log says that answer was sent - a `200` in under a second, every time
+  (`tasks/phase-10/FOLLOWUPS.md`).
 
-  ```powershell
-  # not a release build, never flashed to a unit in service
-  .	oolserify.ps1 -Shell
-  # in the container: add to sdkconfig.defaults, build, flash by cable
-  #   CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
-  #   CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+  ```
+  trace modem on
+  lte up
+  agent obs            # how many adverts are waiting; the stall wants a backlog
+  agent wake
+  trace modem off
   ```
 
-  Then `agent wake` until it stalls, and keep the **whole** paste. What it must show, in order:
-  1. the last `TX:` line before the 30 s gap - **the command that was not answered**. The reading
-     from the code is `AT+SQNSRECV=<id>,<n>`: the request went out (a failed `send` would have
-     said *the request did not go out* instead), the first byte of the response had not arrived
+  `agent wake` is where it happens: the wake's *first* observations POST is the resend of the batch
+  whose answer was lost and comes back in about 1.5 s, and the *second* carries a new batch and
+  stalls for the library's whole 30 s command timeout. **Keep the whole paste**, from `trace modem
+  on` to `trace modem off` - it is the only copy, because nothing of the trace is kept in `dump`.
+  Then read it for these five things, in order:
+  1. **the last `TX:` line before the 30 s gap - the command that was not answered.** The reading
+     from the code is `AT+SQNSRECV=<id>,<n>`: the request went out (a failed `send` would have said
+     *the request did not go out* instead), the first byte of the response had not arrived
      (`r.status == 0`: no status line at all), and the 30 935 ms is the command timeout plus the
      connect;
-  2. whether an `RX:` line came at all in those 30 s, and whether it was `+CME ERROR: 4` (which
+  2. **whether an `RX:` line came at all in those 30 s**, and whether it was `+CME ERROR: 4` (which
      this firmware reads as *nothing buffered yet*), `+SQNSRECV: <id>,<n>` with a length, or
      nothing;
-  3. whether a `+SQNSRECV: <id>,<n>` **before** the gap declared more bytes than followed it: the
+  3. **whether a `+SQNSRECV: <id>,<n>` before the gap declared more bytes than followed it**: the
      library's parser then counts the rest of the UART as that payload (`_receivingPayload`,
      `_receivedPayloadSize`) and swallows the next answer whole - and the command timeout is the
      only thing that clears it (`_processModemCMD` sets `_receivingPayload = false`), which would
      explain why the connection after the stall went through in 3.7 s;
-  4. `+SQNSH:` lines, with their ids and their timing against our own `AT+SQNSH`: whether the
-     modem reports a close for a socket this end closed, and how long after.
+  4. **`+SQNSH:` lines**, with their ids and their timing against our own `AT+SQNSH`: whether the
+     modem reports a close for a socket this end closed, and how long after;
+  5. **the lengths.** The first pattern to put in front of the trace: on 8 November every answer
+     the Walter *received* was **876** bytes at the server (`0 accepted, had it already`) and every
+     one it *lost* was **877 or 878**. So write down the `+SQNSRING: <id>,<n>` and the
+     `+SQNSRECV: <id>,<n>` of an answer that arrived **and** of one that was lost, side by side. If
+     the ring for a lost answer declares 877 or 878 and the receive declares something else - or
+     the ring never comes - that is the fault, in two numbers. (The same 877-byte answers reach the
+     Heltec exit nodes over WiFi without trouble, so the length matters to the modem, not to the
+     route.)
+
+  Two things to check about the trace itself while it is on, because they are this task's own rails
+  and no host test can see them on silicon:
+  - **no secret in any line.** With `lte.pin` and `server.token` both set, the trace must show
+    `AT+CPIN=********` and `Authorization: ****…` and never the values. Search the paste for both,
+    and read `trace`'s own count: *N line(s) printed in this boot, M with a secret taken out* must
+    have an M greater than zero after a wake that posted anything. A PIN or a token in the paste is
+    a finding against task p10-06 and the paste must not be attached to anything.
+  - **it ends at the next boot.** `trace modem on`, then `reboot`; after the boot, `trace` says
+    *are off* and `status` has no `trace:` line. It is not a setting and `get`/`set` know no key
+    for it.
 - [ ] **A dial refused on an id the modem may still hold** (task p9-02, the third shape of
   7 November: a result's `POST` refused at the dial after 12 532 ms, on the third connection of the
   wake, with the next connection going through in 3.7 s). Watch for
@@ -1806,6 +1831,15 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       Worth noting while the cable is in: `agent url` still prints the `X-Agent-Version` the
       agent's calls carry, and it must be the banner's version. A download carries the same one
       now, which the server's own log is the place to confirm.
+
+- [ ] ★ **The stall, with the trace on** (task p10-06). The one item of this pile that is meant
+      to come back with a *paste* rather than a tick, and the reason the pile exists: with a backlog
+      of adverts the answer to an observations POST is lost almost every time, and the server's log
+      says it was sent. It is §13's *The trace, from the console* - `trace modem on`, `lte up`,
+      `agent obs` to see the backlog, `agent wake`, `trace modem off` - run **here**, where the
+      adverts are, because a wake with nothing to post does not stall. Keep the whole paste; it is
+      the only copy. The five things to read it for, and the two rails to check while it is on, are
+      in §13.
 
 ## What to bring back
 

@@ -156,6 +156,12 @@
 //   trust tls             the roots this firmware trusts - subject, fingerprint, expiry - and
 //                         whether the modem's certificate slots hold them
 //
+// and the modem library's own trace (task p10-06; docs/bench.md §13). No slot: a modem has none:
+//
+//   trace                 whether the library's TX and RX lines are going to this port, and what
+//                         the trace is for
+//   trace modem on|off    switch them on, or off again. Not a setting: it ends at the next boot
+//
 // and the agent's uplink (task p4-03; docs/ARCHITECTURE.md §13). No slot: a server is not a radio:
 //
 //   agent url             the server the uplink is configured for, whether a token is set, and
@@ -281,6 +287,10 @@ enum class Verb : std::uint8_t {
   kHttpGet,
   kFetch,
   kTrustTls,
+  // The modem library's own TX/RX trace (task p10-06): `trace` reads, `trace modem on|off` acts
+  // (the word in `on`).
+  kTrace,
+  kTraceModem,
   // Sleep and the battery (task p3-04).
   kWake,       // why this wake happened, and the last ten
   kPower,      // the band, the readings behind it, the next interval

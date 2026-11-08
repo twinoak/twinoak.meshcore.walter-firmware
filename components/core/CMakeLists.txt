@@ -18,6 +18,10 @@ idf_component_register(
        # The terminal's LF -> CR LF, in one place (task p8-02): the platform's console and the
        # console host of host_test/ both convert through it, so a test sees a board's bytes.
        "console/crlf.cpp"
+       # What a trace line may not carry out (task p10-06): the token's and the PIN's two places
+       # in what goes to the modem, and every occurrence of either, taken out before a line is
+       # printed. The hook itself is components/modem/'s - core/ may not name esp_log.
+       "trace/redact.cpp"
        "link/codec/cobs.cpp"
        "link/codec/packet.cpp"
        "link/codec/frame.cpp"

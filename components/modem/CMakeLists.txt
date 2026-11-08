@@ -12,6 +12,11 @@ idf_component_register(
        # The TLS socket and the certificate store (task p3-02): the modem's own TLS over one of
        # its sockets, and the one call that configures a TLS profile.
        "walter_tls.cpp"
+       # The library's own TX/RX trace, switched on from the console (task p10-06): the log hook
+       # that redacts and the one call that raises the library's tag. It is here and not in
+       # platform/ because the tag is the library's name, which core/ and agent/ may not know
+       # (rail R12).
+       "modem_trace.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces core)
 

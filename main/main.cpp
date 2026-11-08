@@ -42,6 +42,7 @@
 #include "core/update/uplink_check.h"
 #include "core/uplink/policy.h"
 #include "core/version.h"
+#include "modem/modem_trace.h"
 #include "modem/walter_tls.h"
 #include "modem/walter_uplink.h"
 #include "platform/boot.h"
@@ -98,6 +99,11 @@ platform::EspClock g_clock;
 platform::RtcRetained g_retained;
 platform::EspRestart g_restart;
 platform::UsbConsole g_usb;
+// The modem library's own TX/RX trace, off until somebody types `trace modem on` (task p10-06).
+// It carries no state of its own - the hook esp_log_set_vprintf installs is the image's - and it
+// is here with the other real things because the console takes it as a seam
+// (core/console/modem_trace.h).
+modem::WalterModemTrace g_modem_trace;
 platform::RadioUart g_uart;
 // Deep sleep and its two wake sources (task p3-04): the timer and a start bit from the radio on
 // GPIO8. USB is not one of them - this chip cannot wake from deep sleep on a cable - so a boot
@@ -595,7 +601,8 @@ extern "C" void app_main() {
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, &mesh_probe, &agent_probe, &identity_probe,
-                                        &backend, &tls_socket.rotation(), &g_wall);
+                                        &backend, &tls_socket.rotation(), &g_wall,
+                                        &g_modem_trace);
   // The library's log goes where every other line of this port goes: the console's print(), and
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
@@ -630,7 +637,7 @@ extern "C" void app_main() {
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, nullptr, nullptr, nullptr, nullptr,
-                                        &tls_socket.rotation(), &g_wall);
+                                        &tls_socket.rotation(), &g_wall, &g_modem_trace);
 #endif
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop
