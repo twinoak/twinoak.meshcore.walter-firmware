@@ -48,7 +48,8 @@ void FakeTlsSocket::deliverClose(int id) {
 
 void FakeTlsSocket::theServerClosed() {
   // A drop in the middle of a body is the close arriving while the body is being read, not the
-  // race between a Content-Length and a FIN: it is never held back.
+  // race between a Content-Length and a FIN: it is never held back, and never lost.
+  if (close_event_lost && !dropped_) return;
   const int late = dropped_ ? 0 : close_event_lateness;
   if (late <= 0) {
     deliverClose(socket_id_);
@@ -77,9 +78,10 @@ void FakeTlsSocket::endConnection() {
   if (as_v0_1_0) return;
   // The scripted server closes *after* it answers. A connection it never answered - a handshake
   // on its own (core/update/tls_check.h), a stall, a request that went nowhere - has no close on
-  // its way, so nothing is owed. The board cannot tell the two apart and owes one either way
-  // (components/modem/walter_tls.cpp, close()); what that costs is in socket_rotation.h, and
-  // test_socket_rotation.cpp is where it is made to happen.
+  // its way, so nothing is owed. The board tells the two apart by whether receive() ever
+  // returned a byte and calls end() or cancel() the same way
+  // (components/modem/walter_tls.cpp, close()); what a debt that is never paid costs, and how
+  // long it lives, is in socket_rotation.h.
   if (!answered_) {
     rotation_.cancel();
     return;

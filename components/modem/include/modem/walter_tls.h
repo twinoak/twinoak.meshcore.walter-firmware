@@ -36,6 +36,12 @@
 // costs nothing for the ids no entry carries. One reserve per modem start; when the library will
 // give none, the rotation runs on one id and its owed-close rule alone.
 //
+// **Every socketConfig here is the current signature; the one deprecated call is a reserve.**
+// The overload above also logs a `DEPRECATION` line at warning level, and it was the one line of
+// the first unit's console that looked like a firmware mistake (the review of phase 8). It is
+// not: the firmware makes no other deprecated call of the library, so walter_tls.cpp silences
+// that tag where the reserve is made and says why.
+//
 // **A failed dial does not say why.** AT+SQNSD answers ERROR whether the name did not resolve,
 // the TCP connection was refused or the TLS handshake failed; the library's WMURCSocketConnRC
 // (TLS_ERROR and friends) is declared and never set at 1.5.0. So open() answers kDialRefused and

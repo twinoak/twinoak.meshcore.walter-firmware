@@ -74,6 +74,14 @@ struct HttpConsole {
     console.reset(new Console(out, radio, health, clock, restart, link, slots, &store.store, nullptr,
                               nullptr, nullptr, nullptr, nullptr, &uplink, &client, &fetch, &trust));
   }
+  // The same, with the socket rotation the fake's TLS socket runs (task p9-02): what main/ hands
+  // over on the board, so that `http get` and `lte` print which id a connection took.
+  void withSockets() {
+    console.reset(new Console(out, radio, health, clock, restart, link, slots, &store.store, nullptr,
+                              nullptr, nullptr, nullptr, nullptr, &uplink, &client, &fetch, &trust,
+                              nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                              nullptr, nullptr, &http.socket.rotation()));
+  }
   // No client at all (main handed over nothing).
   void withoutClient() {
     console.reset(new Console(out, radio, health, clock, restart, link, slots, &store.store, nullptr,
@@ -188,6 +196,65 @@ TEST_CASE("http get: the status, the named headers, the first bytes as hex, the 
   text = rig.run("http get https://server.example/go");
   CHECK(has(text, "-> 302"));
   CHECK(has(text, "http get: 200 ok after a redirect to other.example"));
+}
+
+TEST_CASE("http get and lte print the socket rotation's counters (task p9-02)") {
+  // Two stalls on the first unit on 7 November could not be read, because nothing printed which
+  // socket id a connection had taken or whether a close was owed on it. A build without the
+  // modem's rotation says nothing about sockets; one with it says this.
+  HttpConsole rig;
+  rig.withSockets();
+  rig.run("lte up");
+  REQUIRE(rig.uplink.state() == interfaces::UplinkState::kUp);
+  rig.http.server.serve("/hello", {'h', 'i'});
+
+  std::string text = rig.run("http get https://server.example/hello");
+  INFO(text);
+  CHECK(has(text, "sockets: ids 1 and 2, turn and turn about; 1 connection in this boot"));
+  CHECK(has(text, "this request: 1"));
+  CHECK(has(text, "owed closes: 0 waited for, 0 timed out, 0 written off; 0 discounted; 0 events "
+                  "for an id not in the rotation"));
+
+  // A modem that reports no close at all: each id in turn ends a connection owing one, and the
+  // console says which id and how long the next connection on it will wait.
+  rig.http.socket.close_event_lost = true;
+  text = rig.run("http get https://server.example/hello");  // the second id
+  INFO(text);
+  CHECK(has(text, "this request: 2"));
+  CHECK(has(text, "id 2 owes a close: the next connection on it waits 250 ms for it"));
+  text = rig.run("http get https://server.example/hello");  // the first id, round again
+  INFO(text);
+  CHECK(has(text, "this request: 1"));
+  CHECK(has(text, "id 1 owes a close: the next connection on it waits 250 ms for it"));
+
+  // The next connection on the second id waits for its close, gives up and writes the debt off
+  // (task p9-02's bound): from then on that id is one whose closes do not come.
+  text = rig.run("http get https://server.example/hello");
+  INFO(text);
+  CHECK(has(text, "owed closes: 1 waited for, 1 timed out, 1 written off"));
+  CHECK(has(text, "id 2 expects no close: one was owed and written off, and none has arrived since"));
+  CHECK(has(text, "id 1 owes a close"));
+
+  // A redirect is two connections, and `http get` names both of its own: the first id writing
+  // its debt off, then the second, which expects nothing and so waits for nothing.
+  rig.http.server.hosts.push_back(sim::ScriptedHost{"other.example", core::net::kRootIsrgX1});
+  rig.http.server.redirects["/go"] = sim::Redirect{302, "https://other.example/hello"};
+  text = rig.run("http get https://server.example/go");
+  INFO(text);
+  CHECK(has(text, "this request: 1 2"));
+
+  // And `lte` carries the whole boot's: the ids of the last few connections and the accounting.
+  text = rig.run("lte");
+  INFO(text);
+  CHECK(has(text, "sockets: ids 1 and 2, turn and turn about; 6 connections in this boot"));
+  CHECK(has(text, "the last few: 1 2 1 2 1 2"));
+  CHECK(has(text, "owed closes: 2 waited for, 2 timed out, 2 written off; 0 discounted"));
+
+  // A build with no rotation - every host test but this one, and the board without the modem's
+  // transport - says nothing about sockets at all.
+  rig.full();
+  CHECK_FALSE(has(rig.run("http get https://server.example/hello"), "sockets:"));
+  CHECK_FALSE(has(rig.run("lte"), "sockets:"));
 }
 
 TEST_CASE("fetch: the three steps and the six checks on the console, stored into the candidate slot; a refusal; no store") {

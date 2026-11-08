@@ -36,6 +36,7 @@
 #include "core/image/store.h"
 #include "core/link/client/client.h"
 #include "core/net/client.h"
+#include "core/net/socket_rotation.h"
 #include "core/net/trust.h"
 #include "core/provision/provision.h"
 #include "core/supervisor/supervisor.h"
@@ -105,7 +106,15 @@ class Console {
           // The agent's loop behind `agent wake`, `agent jobs` and `agent state` (task p4-05):
           // components/agent/'s AgentBackend, behind core/console/agent_loop_probe.h. A build
           // without one - WALTER_AGENT=0, the null backend - answers in one line.
-          AgentLoopProbe* loop = nullptr);
+          AgentLoopProbe* loop = nullptr,
+          // The socket rotation behind the connections `http get`, `fetch` and the agent make
+          // (task p9-02): the one the modem's TLS socket runs, so that which id a connection
+          // took and what its close accounting did can be read on the bench rather than guessed
+          // at from a stall. core/ owns the rule (core/net/socket_rotation.h), so this is a
+          // pointer to the real thing and not a seam. A build whose transport is not the modem's
+          // - every host test but one, and WALTER_AGENT=0 - hands over nothing and the two
+          // commands say nothing about sockets.
+          const net::SocketRotation* sockets = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -279,6 +288,11 @@ class Console {
   void httpGet(const char* url);
   void fetch(const char* base_url, image::Which which);
   void trustTls();
+  // The socket rotation's counters (task p9-02), when this build has one: the ids the
+  // connections made since `from` took, and then the whole boot's accounting. `http get` passes
+  // the count it read before its own request and `one_request`, so it names its own connections;
+  // `lte` passes 0 and gets the last few of the boot. Says nothing at all without a rotation.
+  void printSockets(std::uint32_t from, bool one_request);
 
   // The agent's uplink (task p4-03). Neither prints the token: the probe's result has no field
   // for it, and `agent url` says *set* or *unset* as `get server.token` does.
@@ -360,6 +374,7 @@ class Console {
   UplinkProbe* agent_ = nullptr;
   AgentProbe* identity_ = nullptr;
   AgentLoopProbe* loop_ = nullptr;
+  const net::SocketRotation* sockets_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the

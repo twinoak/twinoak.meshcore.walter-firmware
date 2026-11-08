@@ -93,6 +93,14 @@ enum class HttpOutcome : std::uint8_t {
   kTrustFailed = 11,  // the roots could not be loaded into the modem's slots (core/net/trust.h)
   kDialRefused = 12,  // the modem refused the connection without saying whether it was the host
                       // or the handshake (interfaces/tls_socket.h, TlsOpen::kDialRefused)
+  // The socket itself failed while the response was being read: TlsRecv::kError, which on the
+  // board is the modem answering an error to `AT+SQNSRECV` or not answering it at all before the
+  // library's own 30 s command timeout (`WalterModem: Command time-out (TX)`). **Told apart from
+  // kClosed on purpose** (task p9-02): both were reported as *the connection closed before the
+  // body was complete*, and the 7 November stalls - 30935 ms and 31055 ms, each one AT command
+  // that went unanswered - therefore read on the console as a server that hung up. One of the two
+  // sentences is about the other end and the other is about this board's modem.
+  kSocketFailed = 13,
 };
 
 inline const char* describe(HttpOutcome outcome) {
@@ -110,6 +118,7 @@ inline const char* describe(HttpOutcome outcome) {
     case HttpOutcome::kTooLong: return "the response's headers are longer than this firmware holds";
     case HttpOutcome::kTrustFailed: return "the roots could not be loaded into the modem";
     case HttpOutcome::kDialRefused: return "the modem refused the connection: the host was unreachable or the TLS handshake failed (the library does not say which)";
+    case HttpOutcome::kSocketFailed: return "the modem stopped answering for this socket before the body was complete";
   }
   return "?";
 }

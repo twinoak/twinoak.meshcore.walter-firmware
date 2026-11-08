@@ -16,12 +16,15 @@ const char* const kNetDirectories[] = {
     "components/core/include/core/net",
 };
 
-// What core/net/ may include: the freestanding headers, <cstring> and <cstdio> (snprintf into a
+// What core/net/ may include: the freestanding headers, <atomic> (the socket rotation's close
+// accounting, written by the task that delivers the modem's events and read by the task making
+// the request: one lock-free value and no allocation), <cstring> and <cstdio> (snprintf into a
 // stack buffer: no allocation), its own headers, SHA-256 for the roots' record, the version for
 // the User-Agent, and the interfaces it needs of the world - a clock, retained storage, a TLS
 // socket, HTTP, bytes out - each pure virtual. No ESP-IDF, no WalterModem: that is
 // tools/cmake/no_idf_include.cmake's and tools/verify.sh's business too.
 const char* const kNetIncludes[] = {
+    "atomic",
     "cstddef",
     "cstdint",
     "cstring",

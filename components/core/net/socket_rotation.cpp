@@ -3,15 +3,26 @@
 namespace core {
 namespace net {
 
+// Two ids, and the header's arrays are written out in full: a third would need its own
+// initialiser as well as a thought about the rule.
+static_assert(kRotationIds == 2, "the rule and its arrays are written for two ids");
+
+// The whole point of keeping an id's accounting in one value is that one task can change it while
+// another is reading it, so it must be a transition the hardware can make in one go rather than
+// something with a lock inside it. Xtensa has the compare-exchange; this is here so that a
+// toolchain which did not would say so at compile time and not on a bench.
+static_assert(std::atomic<CloseState>::is_always_lock_free,
+              "CloseState must be changed by one atomic instruction: the event task and the main "
+              "task both write it");
+
 void SocketRotation::useIds(int first, int second) {
   id_[0] = first;
   id_[1] = (second == first) ? 0 : second;
   slot_ = -1;
   live_ = false;
   for (int i = 0; i < kRotationIds; ++i) {
-    closed_[i] = false;
-    ring_[i] = false;
-    owed_[i] = false;
+    state_[i].store(CloseState::kClear, std::memory_order_release);
+    ring_[i].store(false, std::memory_order_relaxed);
   }
 }
 
@@ -21,6 +32,16 @@ int SocketRotation::slotOf(int id) const {
     if (id_[i] == id) return i;
   }
   return -1;
+}
+
+CloseState SocketRotation::apply(int slot, CloseStep step) {
+  CloseState was = stateOf(slot);
+  while (!state_[slot].compare_exchange_weak(was, after(step, was), std::memory_order_acq_rel,
+                                             std::memory_order_acquire)) {
+    // `was` now holds what the other task left there: the transition is taken again from it, so
+    // the two tasks' steps always come out in one order or the other and never half of each.
+  }
+  return was;
 }
 
 int SocketRotation::nextId() const {
@@ -33,7 +54,24 @@ int SocketRotation::currentId() const { return slot_ < 0 ? 0 : id_[slot_]; }
 
 bool SocketRotation::owes(int id) const {
   const int slot = slotOf(id);
-  return slot >= 0 && owed_[slot];
+  if (slot < 0) return false;
+  const CloseState state = stateOf(slot);
+  return state == CloseState::kOwed || state == CloseState::kLastChance;
+}
+
+bool SocketRotation::isQuiet(int id) const {
+  const int slot = slotOf(id);
+  return slot >= 0 && stateOf(slot) == CloseState::kQuiet;
+}
+
+std::size_t SocketRotation::recentCount() const {
+  return connections_ < kRecentConnections ? connections_ : kRecentConnections;
+}
+
+int SocketRotation::recentId(std::size_t which) const {
+  const std::size_t count = recentCount();
+  if (which >= count) return 0;
+  return recent_[(connections_ - count + which) % kRecentConnections];
 }
 
 int SocketRotation::begin(int id, std::uint64_t deadline_ms) {
@@ -41,19 +79,22 @@ int SocketRotation::begin(int id, std::uint64_t deadline_ms) {
   if (slot < 0) return 0;
 
   // A close this id still owes: wait for it, briefly, in blocking steps. When it arrives,
-  // onClose() pays the debt and sets no flag, so this connection starts with a clean slate;
-  // when it does not, the debt stays and the first close seen here pays it instead.
-  if (owed_[slot]) {
+  // onClose() pays the debt and sets no flag, so this connection starts with a clean slate; when
+  // it does not, the debt goes into its last chance and the first close seen here pays it
+  // instead - and if none is seen by the end of this connection, end() writes it off.
+  if (stateOf(slot) == CloseState::kOwed) {
     ++owed_waits_;
     const std::uint64_t now = clock_.nowMs();
     std::uint64_t until = now + kOwedCloseWaitMs;
     if (until > deadline_ms) until = deadline_ms;
-    while (owed_[slot] && clock_.nowMs() < until) clock_.delayMs(kOwedCloseStepMs);
-    if (owed_[slot]) ++owed_timeouts_;
+    while (stateOf(slot) == CloseState::kOwed && clock_.nowMs() < until) {
+      clock_.delayMs(kOwedCloseStepMs);
+    }
   }
+  if (apply(slot, CloseStep::kBegin) == CloseState::kOwed) ++owed_timeouts_;
 
-  ring_[slot] = false;
-  closed_[slot] = false;
+  ring_[slot].store(false, std::memory_order_relaxed);
+  recent_[connections_ % kRecentConnections] = static_cast<std::uint8_t>(id);
   slot_ = slot;
   live_ = true;
   ++connections_;
@@ -63,48 +104,52 @@ int SocketRotation::begin(int id, std::uint64_t deadline_ms) {
 void SocketRotation::end() {
   if (!live_) return;
   live_ = false;
-  const int slot = slot_;
-  // Was the close seen? If not, it is still on its way and this id owes one. The flag is read
-  // again afterwards because the event task may have set it between the two lines, in which case
-  // nothing is owed - the close has already been accounted for.
-  const bool seen = closed_[slot];
-  owed_[slot] = !seen;
-  if (!seen && closed_[slot]) owed_[slot] = false;
+  // A debt that has had a whole connection on its id and is still unpaid is one nobody is going
+  // to pay: it is written off and the id goes quiet (socket_rotation.h, *A debt lives for one
+  // connection*). Otherwise: the close seen is the close accounted for, and a close not seen is
+  // one on its way.
+  if (apply(slot_, CloseStep::kEnd) == CloseState::kLastChance) ++write_offs_;
 }
 
-void SocketRotation::cancel() { live_ = false; }
+void SocketRotation::cancel() {
+  if (!live_) return;
+  live_ = false;
+  apply(slot_, CloseStep::kCancel);
+}
 
 void SocketRotation::onRing(int id) {
   const int slot = slotOf(id);
   if (slot < 0) {
-    ++other_id_events_;
+    other_id_events_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  ring_[slot] = true;
+  ring_[slot].store(true, std::memory_order_relaxed);
 }
 
 void SocketRotation::onClose(int id) {
   const int slot = slotOf(id);
   if (slot < 0) {
-    ++other_id_events_;
+    other_id_events_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  if (owed_[slot]) {
-    // The close of an earlier connection on this id, however late. It pays the debt and tells
-    // the connection in progress nothing.
-    owed_[slot] = false;
-    ++discounted_closes_;
-    return;
+  const CloseState was = apply(slot, CloseStep::kCloseEvent);
+  if (was == CloseState::kOwed || was == CloseState::kLastChance) {
+    // The close of an earlier connection on this id, however late: it paid the debt and told the
+    // connection in progress nothing.
+    discounted_closes_.fetch_add(1, std::memory_order_relaxed);
   }
-  closed_[slot] = true;
 }
 
-bool SocketRotation::closedSeen() const { return slot_ >= 0 && closed_[slot_]; }
+bool SocketRotation::closedSeen() const {
+  return slot_ >= 0 && stateOf(slot_) == CloseState::kSeen;
+}
 
-bool SocketRotation::ringSeen() const { return slot_ >= 0 && ring_[slot_]; }
+bool SocketRotation::ringSeen() const {
+  return slot_ >= 0 && ring_[slot_].load(std::memory_order_relaxed);
+}
 
 void SocketRotation::clearRing() {
-  if (slot_ >= 0) ring_[slot_] = false;
+  if (slot_ >= 0) ring_[slot_].store(false, std::memory_order_relaxed);
 }
 
 }  // namespace net
