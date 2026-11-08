@@ -3,11 +3,13 @@
 // range in flight; a resume from what the sink holds; a server that ignores ranges; one that
 // answers 206 with a wrong Content-Range; one whose file changes between ranges (If-Range); a
 // file longer than expected and one shorter; denied and later from the server; the budgets in
-// bytes and seconds, each stopping cleanly at a resumable point.
+// bytes and seconds, each stopping cleanly at a resumable point. Task p10-05: the four headers a
+// range carries, and the 416's new sentence.
 #include <doctest.h>
 
 #include <string>
 
+#include "core/version.h"
 #include "net_bench.h"
 
 using bench::has;
@@ -262,6 +264,33 @@ TEST_CASE("a file longer than expected and one shorter are refused as not this f
   too_far.bytes.assign(5500, 0);
   r = b.download.fetch("https://server.example/f.bin", 6000, Budget{}, too_far);
   CHECK(r.verdict == DownloadVerdict::kWrongFile);
+  // And it says which status and which file it was, with what a 416 means to a download after it
+  // (task p10-05): the client's sentence, and this firmware's clause.
+  CHECK(std::string(r.why) == "http 416 for f.bin: the server's file is shorter than the manifest promised");
+}
+
+TEST_CASE("a range carries four headers: the version, the range, its validator and the token") {
+  // kMaxRequestHeaders is four and a range of a download uses all four since task p10-05, so a
+  // fifth would be a compile error and a missing one a 400 from meshmaster.dk. The second range
+  // is the one that carries them all: If-Range is learned from the first.
+  NetBench b;
+  const std::vector<std::uint8_t> file = patternBytes(2 * kRangeBytes, 31);
+  b.server().serve("/agent/v1/firmware/9/files/f.bin", file, "\"v9\"");
+  MemoryDownloadSink sink;
+  const DownloadResult r =
+      b.download.fetch("https://server.example/agent/v1/firmware/9/files/f.bin",
+                       static_cast<std::uint32_t>(file.size()), Budget{}, sink, "Bearer mma_a_token");
+  CHECK(r.verdict == DownloadVerdict::kComplete);
+  CHECK(sink.bytes == file);
+  REQUIRE(b.server().requests.size() == 2);
+  CHECK(b.server().unversioned_refused == 0);
+  for (const sim::SeenRequest& seen : b.server().requests) {
+    CHECK(seen.header("X-Agent-Version") == core::version());
+    CHECK(seen.header("Authorization") == "Bearer mma_a_token");
+    CHECK(seen.has("Range"));
+  }
+  CHECK(b.server().requests[1].header("If-Range") == "\"v9\"");
+  CHECK(b.server().requests[1].headers.count("content-type") == 0);
 }
 
 TEST_CASE("denied and later from the server stop the download at once, in this wake") {

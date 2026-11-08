@@ -154,6 +154,9 @@ class Download {
   char content_range_[96] = {};
   char etag_[kMaxValidatorLength] = {};
   char last_modified_[kMaxValidatorLength] = {};
+  // A 416's sentence: the client's own (the status and the file, task p10-05) and what a 416
+  // means to a download. Every other `why` here is static text or the client's.
+  char refusal_[kMaxRefusalLength + 64] = {};
 };
 
 }  // namespace net

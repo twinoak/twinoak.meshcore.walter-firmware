@@ -14,6 +14,7 @@
 #include "core/image/trust.h"
 #include "core/net/trust.h"
 #include "core/update/fetch.h"
+#include "core/version.h"
 #include "fakes/capture.h"
 #include "fixtures/manifest_files.h"
 #include "core/net/net_bench.h"
@@ -396,4 +397,87 @@ TEST_CASE("the Walter's own budget stop promises no resume: the slot keeps no pr
   CHECK(again.resumed_from == 0);
   CHECK(again.bytes == 4096);
   CHECK(slot.opens == 2);
+}
+
+// -- who is asking, and what a refusal says (task p10-05) ----------------------------------------
+//
+// Every request of a fetch - the manifest, its signature and every range - carries
+// `X-Agent-Version`, because the client adds it (core/net/client.h). Until this task none of them
+// did, and meshmaster.dk refuses an `/agent/v1` request without it with a 400: job 22841 of
+// 8 November 2026, *a status this firmware does not act on*, which named neither the status nor
+// the file. The scripted server holds that rule now (sim/scripted_server.h), so the two downloads
+// below pass a server that refuses a request that does not say who it is.
+
+TEST_CASE("both products' downloads pass a server that refuses a request without X-Agent-Version, and every request of them carries it") {
+  SUBCASE("a radio image, from a release under the agent API's prefix") {
+    FetchRig rig;
+    const Candidate image("store-a");
+    const std::string base = "/agent/v1/firmware/9";
+    serveRelease(rig.net.server(), base, image);
+    rig.net.server().serve(base + "/files/" + swdName(image), image.file, "\"a\"");
+    const FetchResult r = rig.fetch->run(("https://server.example" + base).c_str(), Which::kCandidate,
+                                         Slot{0}, core::net::Budget{}, "Bearer mma_a_token", "files");
+    INFO(rig.out.text);
+    CHECK(r.verdict == FetchVerdict::kStored);
+    CHECK(r.bytes == image.file.size());
+    CHECK(rig.net.server().unversioned_refused == 0);
+    REQUIRE(rig.net.server().requests.size() == 3);
+    for (const sim::SeenRequest& seen : rig.net.server().requests) {
+      CHECK(seen.header("X-Agent-Version") == core::version());
+      CHECK(seen.header("Authorization") == "Bearer mma_a_token");
+    }
+    CHECK(rig.net.server().requests[0].path == base + "/manifest.json");
+    CHECK(rig.net.server().requests[1].path == base + "/manifest.json.sig");
+    CHECK(rig.net.server().requests[2].path == base + "/files/" + swdName(image));
+  }
+
+  SUBCASE("the Walter's own image, into the other application slot") {
+    FetchRig rig;
+    const Candidate self("self-a");
+    const std::string base = "/agent/v1/firmware/9";
+    serveRelease(rig.net.server(), base, self);
+    rig.net.server().serve(base + "/files/" + otaName(self), self.file, "\"self\"");
+    OwnSlotTarget slot;
+    const FetchResult r = rig.fetch->runInto(("https://server.example" + base).c_str(), slot,
+                                             core::net::Budget{}, "Bearer mma_a_token", "files");
+    INFO(rig.out.text);
+    // The slot stages nothing, so check 4 cannot run here (OwnSlotTarget::staged); what this
+    // subcase is about is that the three requests went out and were served.
+    CHECK(r.verdict == FetchVerdict::kStoreRefused);
+    CHECK(r.bytes == self.file.size());
+    CHECK(rig.net.server().unversioned_refused == 0);
+    REQUIRE(rig.net.server().requests.size() == 3);
+    for (const sim::SeenRequest& seen : rig.net.server().requests) {
+      CHECK(seen.header("X-Agent-Version") == core::version());
+    }
+  }
+}
+
+TEST_CASE("a refused request of a fetch names its status and its file, with the server's own detail") {
+  SUBCASE("the manifest refused with problem details: the sentence job 22841 should have come back with") {
+    FetchRig rig;
+    rig.net.server().statuses["/r/manifest.json"] = sim::StatusRule{
+        400, "",
+        "{\"type\":\"bad-request\",\"title\":\"Request not accepted\",\"status\":400,"
+        "\"detail\":\"Every request carries X-Agent-Version: the agent's build.\"}"};
+    const FetchResult r = rig.fetch->run("https://server.example/r", Which::kCandidate, Slot{0},
+                                         core::net::Budget{});
+    CHECK(r.verdict == FetchVerdict::kFailed);
+    CHECK(r.status == 400);
+    CHECK(std::string(r.why) ==
+          "http 400 for manifest.json: Every request carries X-Agent-Version: the agent's build.");
+    // Nothing of the image was asked for: the first of the three steps ended it.
+    CHECK(rig.net.server().requests.size() == 1);
+  }
+
+  SUBCASE("a signature that is not there: the 404 names the file it asked for") {
+    FetchRig rig;
+    const Candidate image("store-a");
+    rig.net.server().serve("/r/manifest.json", image.manifest);
+    const FetchResult r = rig.fetch->run("https://server.example/r", Which::kCandidate, Slot{0},
+                                         core::net::Budget{});
+    CHECK(r.verdict == FetchVerdict::kFailed);
+    CHECK(r.status == 404);
+    CHECK(std::string(r.why) == "http 404 for manifest.json.sig");
+  }
 }

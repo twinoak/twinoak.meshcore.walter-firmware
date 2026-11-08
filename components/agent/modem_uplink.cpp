@@ -331,7 +331,10 @@ bool ModemUplink::call(const char* endpoint, const std::uint8_t* body, std::size
     std::snprintf(out.error, sizeof out.error, "http %u: a redirect, which an agent route never answers and "
                   "this unit never follows", static_cast<unsigned>(r.status));
   } else {
-    std::snprintf(out.error, sizeof out.error, "http %u", static_cast<unsigned>(r.status));
+    // Any other status: the client's own sentence, which names the status, the route's file and
+    // what the server said about it in problem details (task p10-05, core/net/client.h). It
+    // carries no token: a `detail` that held one is dropped there.
+    std::snprintf(out.error, sizeof out.error, "%.120s", r.why);
   }
   if (out.ok) {
     LOG_I("server: %s -> http %u, %lu bytes, %lu ms", endpoint_, static_cast<unsigned>(r.status),

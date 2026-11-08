@@ -125,6 +125,23 @@ against 0.1.1 or newer, and the hello's version word refuses it there.
 meshmaster.dk, on the **unit's own exit-node page**, and the unit does the rest across one or two of
 its own wakes. Nothing here is typed at a console; the console is only where it can be watched.
 
+> **Correction, 8 November 2026: before v0.1.3 this walk does not finish, and the cable is the way.**
+> The first update of a unit over LTE — job 22841 — failed in two seconds with *a status this
+> firmware does not act on*. meshmaster.dk refuses every `/agent/v1` request that does not carry
+> `X-Agent-Version` with a 400, and **the download never sent it**, in any release up to and
+> including v0.1.2 (`core/update/fetch.cpp` sent the token and a `Range` and nothing else; the
+> agent's own calls always sent the header). So no unit in the field could fetch an image over LTE,
+> neither its own nor its radio's. Two halves fix it, and both are needed:
+> - **meshmaster.dk's pile 4.28, task 177**, which serves the three download routes — the manifest,
+>   its signature and a file — to a request that carries no header, for the units already out there;
+> - **this firmware's v0.1.3** (task p10-05), in which *every* request carries it, and a refusal
+>   names its status and its file: *http 400 for manifest.json*, with the server's own sentence
+>   after it.
+>
+> So: a unit at **0.1.2 or older** takes v0.1.3 over LTE only once meshmaster.dk's 177 is deployed;
+> before that, *If it is wanted by cable instead* at the end of this section. From v0.1.3 onwards
+> the walk needs neither half, because the unit says who it is.
+
 Before pressing anything, two facts about the file:
 
 - **The image comes from meshmaster.dk and never from github.com.** The only path to the Walter's

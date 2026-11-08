@@ -147,6 +147,24 @@ std::vector<std::uint8_t> ScriptedServer::respond(const std::string& text) {
 
   if (no_response) return {};
   if (!raw_response.empty()) return std::vector<std::uint8_t>(raw_response.begin(), raw_response.end());
+
+  // The agent API's own rule, before any script (task p10-05): `X-Agent-Version` on every
+  // request under the prefix, an absent, empty or over-long one refused with the problem details
+  // `AgentV1.RequireVersionHeaderAsync` writes through `ApiProblems.WriteAsync`
+  // (meshmaster.dk at commit d7b9b3ea9deb: `type`, `title`, `status`, `detail`, as
+  // `application/problem+json` with `Cache-Control: no-store`).
+  if (agent_version_required && r.path.rfind(kAgentPrefix, 0) == 0) {
+    const std::string version = r.header(kAgentVersionHeader);
+    if (version.empty() || version.size() > kMaxAgentVersion) {
+      ++unversioned_refused;
+      static const std::string kProblem =
+          "{\"type\":\"bad-request\",\"title\":\"Request not accepted\",\"status\":400,"
+          "\"detail\":\"Every request carries X-Agent-Version: the agent's build.\"}";
+      return response(400, {"Content-Type: application/problem+json", "Cache-Control: no-store"},
+                      reinterpret_cast<const std::uint8_t*>(kProblem.data()), kProblem.size(), true);
+    }
+  }
+
   if (on_request) {
     ScriptedReply reply;
     if (on_request(r, &reply)) {

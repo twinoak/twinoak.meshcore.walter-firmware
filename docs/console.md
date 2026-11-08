@@ -676,6 +676,16 @@ Every connection verifies the server's chain against one of this build's roots *
 name; there is no command and no setting that asks for less, and a host whose chain ends at a root
 this firmware does not carry is refused.
 
+Since v0.1.3 (task p10-05) **every request either line makes carries `X-Agent-Version`**, this
+firmware's own version, whatever the host: meshmaster.dk refuses an `/agent/v1` request without it
+with a 400, and the download sent none until this release. It is not a credential — the
+`User-Agent` has carried the same product and version since task p3-02 — so there is no host it is
+withheld from, and `fetch` of a release on github.com still carries **no token**, as before. A
+request a server refuses is named by its status and its file, with the server's own sentence after
+it when it answered problem details: `error: fetch: a request failed: http 400 for manifest.json:
+Every request carries X-Agent-Version: the agent's build.` A `detail` that holds the token is
+dropped whole.
+
 ```
 > http get https://meshmaster.dk/
 http get: https://meshmaster.dk/ (the chain is verified against this build's roots)

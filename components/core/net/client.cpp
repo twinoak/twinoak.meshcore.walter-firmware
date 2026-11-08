@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "core/net/trust.h"
+#include "core/version.h"
 
 namespace core {
 namespace net {
@@ -63,6 +64,90 @@ bool isRedirect(std::uint16_t status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
+// Two header names, as HTTP compares them (RFC 7230 §3.2: case-insensitive).
+bool sameHeaderName(const char* a, const char* b) {
+  if (a == nullptr || b == nullptr) return false;
+  for (;; ++a, ++b) {
+    const char x = *a >= 'A' && *a <= 'Z' ? static_cast<char>(*a - 'A' + 'a') : *a;
+    const char y = *b >= 'A' && *b <= 'Z' ? static_cast<char>(*b - 'A' + 'a') : *b;
+    if (x != y) return false;
+    if (x == 0) return true;
+  }
+}
+
+// The **file** a request was for, for a refusal's sentence: the last segment of the path, and
+// never the query - a query is nobody's business in a message that reaches a job page (task
+// p10-05). `/agent/v1/firmware/3/manifest.json` is `manifest.json`; a path that ends in a slash
+// has no file name of its own and stands for itself.
+void fileOf(const char* path, std::size_t* at, std::size_t* len) {
+  *at = 0;
+  *len = 0;
+  if (path == nullptr || path[0] == 0) return;
+  std::size_t end = 0;
+  while (path[end] != 0 && path[end] != '?') ++end;
+  std::size_t begin = end;
+  while (begin > 0 && path[begin - 1] != '/') --begin;
+  if (begin == end) {  // nothing after the last slash: the path itself
+    begin = 0;
+  }
+  *at = begin;
+  *len = end - begin;
+}
+
+// The `detail` of an RFC 7807 problem body, copied out as one printable line. Not a JSON parser:
+// the member is found at the top level of the object the server sent
+// (`"detail":"..."`, meshmaster.dk's `src/MeshMaster.Web/Api/ApiProblems.cs`), the two escapes
+// its writer can produce are undone, every byte that is not printable ASCII becomes a space - a
+// CR or a LF would otherwise forge a console line - and a value that does not fit is cut.
+// False when there is no such member, or no closing quote inside what was kept.
+bool problemDetail(const char* body, char* out, std::size_t cap) {
+  out[0] = 0;
+  if (body == nullptr || cap == 0) return false;
+  static const char kMember[] = "\"detail\"";
+  const char* at = std::strstr(body, kMember);
+  if (at == nullptr) return false;
+  at += sizeof kMember - 1;
+  while (*at == ' ' || *at == '\t') ++at;
+  if (*at != ':') return false;
+  ++at;
+  while (*at == ' ' || *at == '\t') ++at;
+  if (*at != '"') return false;
+  ++at;
+  std::size_t n = 0;
+  for (; *at != 0 && *at != '"' && n + 1 < cap; ++at) {
+    char c = *at;
+    if (c == '\\') {
+      ++at;
+      if (*at == 0) return false;
+      switch (*at) {
+        case 'n': case 'r': case 't': c = ' '; break;
+        case 'u':  // a code point this firmware does not guess at; its four digits go with it
+          c = '?';
+          for (int skip = 0; skip < 4 && at[1] != 0 && at[1] != '"'; ++skip) ++at;
+          break;
+        default: c = *at; break;
+      }
+    }
+    out[n++] = c >= 0x20 && c <= 0x7E ? c : ' ';
+  }
+  out[n] = 0;
+  if (*at != '"' && n + 1 < cap) return false;  // the quote never came: not a value we read
+  return n != 0;
+}
+
+// Whether a sentence the **server** wrote holds the credential this request carried. A server
+// that echoed an `Authorization` header into its problem body would otherwise put the token into
+// a job's posted `reason` and into a console line (spec/SYSTEM.md S-12, task p4-03's rail), so
+// such a detail is dropped whole rather than trimmed. Both the whole header value and the secret
+// after the scheme word are looked for.
+bool holdsCredential(const char* text, const char* authorization) {
+  if (text == nullptr || text[0] == 0 || authorization == nullptr || authorization[0] == 0) return false;
+  if (std::strstr(text, authorization) != nullptr) return true;
+  const char* space = std::strrchr(authorization, ' ');
+  if (space == nullptr || space[1] == 0) return false;
+  return std::strstr(text, space + 1) != nullptr;
+}
+
 // `Retry-After` as seconds: digits, or an HTTP-date which this firmware does not read and takes
 // as the cap. Absent is 0: "the server did not say".
 std::uint32_t retryAfterSeconds(const char* text, bool present) {
@@ -118,6 +203,35 @@ void Client::trace(const interfaces::HttpRequest& request, const interfaces::Htt
   if (n > 0) trace_->write(line, static_cast<std::size_t>(n) < sizeof line ? static_cast<std::size_t>(n) : sizeof line - 1);
 }
 
+void Client::refuse(Result* result, const char* path, const char* clause, const char* authorization) {
+  std::size_t at = 0;
+  std::size_t len = 0;
+  fileOf(path, &at, &len);
+  const int n = std::snprintf(refusal_, sizeof refusal_, "http %u for %.*s%s%s",
+                              static_cast<unsigned>(result->status), static_cast<int>(len),
+                              path != nullptr ? path + at : "", clause[0] != 0 ? ": " : "", clause);
+  std::size_t used = n > 0 ? static_cast<std::size_t>(n) : 0;
+  if (used >= sizeof refusal_) used = sizeof refusal_ - 1;
+  // What the server said about it, when it answered problem details. A detail that holds the
+  // credential is dropped whole; one that does not fit is cut where it fits.
+  char detail[kMaxRefusalLength];
+  if (problem_len_ != 0 && problemDetail(problem_, detail, sizeof detail) &&
+      !holdsCredential(detail, authorization) && used + 3 < sizeof refusal_) {
+    // Copied rather than printed: what is left of the buffer is not a constant, and a cut is
+    // what is wanted here rather than a warning about one.
+    const char* join = clause[0] != 0 ? "; " : ": ";
+    std::size_t at = used;
+    refusal_[at++] = join[0];
+    refusal_[at++] = join[1];
+    for (std::size_t i = 0; detail[i] != 0 && at + 1 < sizeof refusal_; ++i) refusal_[at++] = detail[i];
+    refusal_[at] = 0;
+  }
+  // Nothing of the server's body outlives the sentence in this object.
+  std::memset(problem_, 0, sizeof problem_);
+  problem_len_ = 0;
+  result->why = refusal_;
+}
+
 Result Client::run(interfaces::HttpMethod method, const char* url, const std::uint8_t* body,
                    std::size_t body_size, const char* content_type, const Options& options,
                    interfaces::HttpBodySink& sink) {
@@ -170,8 +284,25 @@ Result Client::run(interfaces::HttpMethod method, const char* url, const std::ui
     request.piece_ms = options.piece_ms;
     request.sensitive = options.sensitive;
     request.header_count = 0;
+    // Which build is asking, first of all, so that no caller's header can crowd it out
+    // (kVersionHeader): every request this firmware makes says it, and one whose caller named
+    // the header itself with a value of its own keeps that and is not given a second.
+    bool caller_says_version = false;
+    for (std::size_t i = 0; options.headers != nullptr && i < options.header_count; ++i) {
+      if (sameHeaderName(options.headers[i].name, kVersionHeader) &&
+          options.headers[i].value != nullptr && options.headers[i].value[0] != 0) {
+        caller_says_version = true;
+      }
+    }
+    if (!caller_says_version) {
+      request.headers[request.header_count++] = interfaces::HttpHeader{kVersionHeader, core::version()};
+    }
     if (options.headers != nullptr) {
       for (std::size_t i = 0; i < options.header_count; ++i) {
+        // A caller's version header with no value is dropped: the client's own has gone in its
+        // place, and two of the same name would read at the server as "a, b" and then as no
+        // version at all once it is over 64 characters (`AgentV1.VersionOf`).
+        if (!caller_says_version && sameHeaderName(options.headers[i].name, kVersionHeader)) continue;
         if (request.header_count >= interfaces::kMaxRequestHeaders) {
           result.why = "more request headers than one request carries";
           return result;
@@ -214,21 +345,44 @@ Result Client::run(interfaces::HttpMethod method, const char* url, const std::ui
     DropSink dropped(kRedirectBodyBound);
     class Chooser final : public interfaces::HttpBodySink {
      public:
-      Chooser(const interfaces::HttpResponse& r, BoundedSink& b, DropSink& d, bool follow)
-          : r_(r), b_(b), d_(d), follow_(follow) {}
+      Chooser(const interfaces::HttpResponse& r, BoundedSink& b, DropSink& d, bool follow,
+              char* problem, std::size_t capacity, std::size_t* length)
+          : r_(r), b_(b), d_(d), follow_(follow), problem_(problem), capacity_(capacity),
+            length_(length) {}
       bool piece(const std::uint8_t* data, std::size_t size) override {
         if (follow_ && isRedirect(r_.status)) return d_.piece(data, size);
+        keep(data, size);
         return b_.piece(data, size);
       }
 
      private:
+      // The first bytes of the body of a response that is **not** a 2xx: the problem details a
+      // refusal's sentence reads its `detail` out of (task p10-05). The body still goes to the
+      // caller's sink exactly as before; this is a copy of its beginning, and the client wipes
+      // it the moment the sentence is composed. The status is in the response before the first
+      // piece (interfaces/http.h), so there is no need to keep a 2xx's.
+      void keep(const std::uint8_t* data, std::size_t size) {
+        if (r_.status >= 200 && r_.status < 300) return;
+        while (size != 0 && *length_ + 1 < capacity_) {
+          problem_[(*length_)++] = static_cast<char>(*data++);
+          --size;
+        }
+        problem_[*length_] = 0;
+      }
+
       const interfaces::HttpResponse& r_;
       BoundedSink& b_;
       DropSink& d_;
       bool follow_;
-    } chooser(response, bounded, dropped, options.follow_redirects);
+      char* problem_;
+      std::size_t capacity_;
+      std::size_t* length_;
+    } chooser(response, bounded, dropped, options.follow_redirects, problem_, sizeof problem_,
+              &problem_len_);
 
     ++requests_;
+    problem_len_ = 0;
+    std::memset(problem_, 0, sizeof problem_);
     http_.request(request, wanted, wanted_count, &response, chooser);
     trace(request, response);
     // The client's own two were filled in place; the caller's are copied back.
@@ -314,26 +468,29 @@ Result Client::run(interfaces::HttpMethod method, const char* url, const std::ui
       result.why = "ok";
       return result;
     }
+    // A refusal says what it was: the status, the file it was for, and what the server said
+    // about it (task p10-05). *a status this firmware does not act on* was what job 22841 came
+    // back with on 8 November, and it named neither the 400 nor the manifest.
     if (response.status == 401 || response.status == 403) {
       result.verdict = Verdict::kDenied;
-      result.why = response.status == 401 ? "401: the server wants a credential this unit did not give"
-                                          : "403: the server refused this unit";
+      refuse(&result, request.path,
+             response.status == 401 ? "the server wants a credential this unit did not give"
+                                    : "the server refused this unit",
+             options.authorization);
       return result;
     }
     if (response.status == 429 || (response.status >= 500 && response.status < 600)) {
       result.verdict = Verdict::kLater;
       result.retry_after_s = retryAfterSeconds(retry_after_, retry_after.present);
-      result.why = response.status == 429 ? "429: too many requests; later"
-                                          : "5xx: the server is not well; later";
-      return result;
-    }
-    if (isRedirect(response.status)) {
-      result.verdict = Verdict::kFailed;
-      result.why = "a redirect, and this request does not follow them";
+      refuse(&result, request.path,
+             response.status == 429 ? "too many requests; later" : "the server is not well; later",
+             options.authorization);
       return result;
     }
     result.verdict = Verdict::kFailed;
-    result.why = "a status this firmware does not act on";
+    refuse(&result, request.path,
+           isRedirect(response.status) ? "a redirect, and this request does not follow them" : "",
+           options.authorization);
     return result;
   }
 }

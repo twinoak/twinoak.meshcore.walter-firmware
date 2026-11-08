@@ -489,6 +489,31 @@ manifest's `ota` file and says `self receive`.
 
 The battery thresholds are the radio's update's (`kBatteryMinMv`, `kBatteryFallingMvPerHour`).
 
+## What a download sends (both halves)
+
+Both halves fetch through the same three steps (`core/update/fetch.h`), so the headers are the same
+whichever box the image is for. Each request carries **four at most**
+(`interfaces::kMaxRequestHeaders`), and `core/net/client.h` adds the first of them itself to every
+request this firmware makes:
+
+| Header | On | What it is |
+|---|---|---|
+| `X-Agent-Version` | the manifest, its signature, **every range** | this firmware's own version (`core::version()`). **meshmaster.dk refuses an `/agent/v1` request that does not carry it with a 400** (`AgentV1.RequireVersionHeaderAsync`), and until v0.1.3 the download sent none, so no release of either box could be fetched over LTE: job 22841, 8 November 2026 ([`flashing.md`](flashing.md), the correction in the LTE walk). It is the client's own now, so no path above it can forget it; a caller that names the header itself keeps its own value (the agent's uplink) |
+| `Authorization: Bearer …` | every request to `server.url` | `server.token`, read for the call and wiped; dropped at a redirect that leaves the host. The console's `fetch <base-url>` of a release on github.com carries none |
+| `Range: bytes=a-b` | every range | 64 KB at a time (`core/net/download.h`) |
+| `If-Range` | every range after the first | the `ETag` (or `Last-Modified`) the first range answered, so a file replaced under the same URL restarts the download rather than splicing |
+
+`User-Agent` (the product and the version) and `Host`, `Accept` and `Connection` are the request
+writer's on every request, this firmware's and anybody's (`core/net/http1.h`). Nothing else goes,
+and nothing of a response is believed before the six checks.
+
+**A request the server refuses says what it was**: the status, the file, and - when the server
+answers RFC 7807 problem details - its `detail`, cut to fit and one printable line:
+*http 400 for manifest.json: Every request carries X-Agent-Version: the agent's build.* That
+sentence is what a `twinoak.fw.offer` posts as its `reason`, what the console's `fetch` and
+`http get` print and what the job's log carries. A `detail` that holds the request's own token is
+dropped whole rather than trimmed.
+
 ## What is not here
 
 Downloading the image (phase 3's uplink; today `walterctl.py push --as self`), deciding when to

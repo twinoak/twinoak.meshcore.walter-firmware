@@ -1,10 +1,12 @@
 // The HTTPS client (task p3-02): a small GET or POST by URL over interfaces::Http, with the rules
 // a unit on a mast needs and a browser would not: `https://` only - a URL with any other scheme
 // is refused before the modem is touched (core/net/url.h); redirects followed, **at most three,
-// only to https**, and an `Authorization` header **never carried to a different host**; the
+// only to https**, and an `Authorization` header **never carried to a different host**; every
+// request saying which build made it (`X-Agent-Version`, kVersionHeader below); the
 // status read into a verdict - 2xx *ok*, 401 and 403 *denied* and not retried in this wake, 429
-// and 5xx *later* with `Retry-After` honoured inside a cap, everything else *failed*; and a body
-// larger than the caller's bound **cut off and reported**, never buffered.
+// and 5xx *later* with `Retry-After` honoured inside a cap, everything else *failed* - and a
+// refused one named by its status and its file; and a body larger than the caller's bound **cut
+// off and reported**, never buffered.
 //
 // It is portable and tested against host_test/sim/fake_http.h; the download (download.h) and
 // the fetch of a release (core/update/fetch.h) are written over it.
@@ -38,6 +40,31 @@ constexpr std::size_t kMaxAuthorizationLength = 512;
 // How long a redirect's body is read before it is cut: a 3xx carries at most a line of HTML.
 constexpr std::uint64_t kRedirectBodyBound = 4096;
 
+// **Which build is asking** (task p10-05). meshmaster.dk refuses every `/agent/v1` request that
+// does not carry this header with a 400 that names it
+// (`src/MeshMaster.Web/Agents/AgentV1.cs`, `RequireVersionHeaderAsync`, read at commit
+// d7b9b3ea9deb; `spec/API.md` §3). The agent's calls have always sent it and the download never
+// did, so no release of either box could be fetched over LTE until this release - job 22841,
+// 8 November 2026, *http 400 for manifest.json*. It is added **here**, to every request the
+// client makes, so that no path can be written that forgets it; a caller that names the header
+// itself with a value of its own keeps it (the agent's uplink, whose version is its owner's) and
+// is never given a second one. It goes to every host, not only `server.url`: `User-Agent` has
+// carried the same product and version on every request since task p3-02, so the header
+// discloses nothing new and a rule with an exception is a rule that can be got wrong.
+constexpr const char* kVersionHeader = "X-Agent-Version";
+
+// The refusal sentence the client composes for a status that refused the request: `http 400 for
+// manifest.json`, the clause for the status class, and - when the server answered RFC 7807
+// problem details - its `detail`, cut to fit (task p10-05). A job's posted `reason`, the
+// console's `fetch` and `http get` lines and the job log all read it, so it is bounded here.
+constexpr std::size_t kMaxRefusalLength = 200;
+
+// How much of a refusal's body is kept to read its `detail` out of: meshmaster.dk writes
+// `type`, `title`, `status` and then `detail` (`src/MeshMaster.Web/Api/ApiProblems.cs`), so the
+// member is a few dozen bytes in. The rest of the body is the caller's as before; nothing of it
+// is kept once the sentence is composed.
+constexpr std::size_t kProblemBytesKept = 512;
+
 enum class Verdict : std::uint8_t {
   kOk = 0,        // 2xx, the body delivered whole (or cut by the bound: see kTooLarge)
   kDenied = 1,    // 401 or 403: not retried in this wake
@@ -54,7 +81,7 @@ struct Options {
   // dropped when a redirect leaves it. nullptr for none.
   const char* authorization = nullptr;
   // The caller's own request headers (Range, If-Range ...). At most kMaxRequestHeaders minus
-  // the Authorization and Content-Type the client adds itself.
+  // the X-Agent-Version, Authorization and Content-Type the client adds itself.
   const interfaces::HttpHeader* headers = nullptr;
   std::size_t header_count = 0;
   // The response headers the caller wants (ETag, Content-Range ...). `Location` and
@@ -85,7 +112,11 @@ struct Result {
   std::uint16_t status = 0;
   interfaces::HttpOutcome outcome = interfaces::HttpOutcome::kOk;
   UrlError url_error = UrlError::kNone;
-  const char* why = "";          // one sentence, static text
+  // One sentence. Static text, except for a status that refused the request (task p10-05): that
+  // sentence names the status and the file and is composed into a buffer of **this client**,
+  // which the next refused request on the same client overwrites. Every caller reads it before
+  // making another request; one that must keep it copies it.
+  const char* why = "";
   std::uint8_t redirects = 0;
   std::uint32_t retry_after_s = 0;  // kLater: capped; 0 when the server did not say
   std::uint64_t bytes = 0;          // body bytes delivered to the sink, last response
@@ -117,6 +148,10 @@ class Client {
              std::size_t body_size, const char* content_type, const Options& options,
              interfaces::HttpBodySink& sink);
   void trace(const interfaces::HttpRequest& request, const interfaces::HttpResponse& response);
+  // `http <status> for <file>`, the clause for the status class when there is one, and the
+  // server's own `detail` when it sent problem details - into refusal_, and `result->why` at it.
+  // The bytes kept of the body are wiped here, whatever they were.
+  void refuse(Result* result, const char* path, const char* clause, const char* authorization);
 
   interfaces::Http& http_;
   interfaces::Clock& clock_;
@@ -127,6 +162,12 @@ class Client {
   char first_host_[kMaxHostLength + 1] = {};
   char location_[kMaxUrlLength + 1] = {};
   char retry_after_[32] = {};
+  // The refused request's sentence, and the first bytes of the body it came with. `problem_` is
+  // wiped the moment the sentence is composed, so a server's error page outlives the request in
+  // no buffer of this object (the token rail of task p4-03 greps this whole object).
+  char refusal_[kMaxRefusalLength + 1] = {};
+  char problem_[kProblemBytesKept] = {};
+  std::size_t problem_len_ = 0;
 };
 
 }  // namespace net
