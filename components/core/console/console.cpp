@@ -3314,7 +3314,7 @@ void Console::fetch(const char* base_url, image::Which which) {
     case update::FetchVerdict::kNoSlot:
     case update::FetchVerdict::kStoreRefused:
     case update::FetchVerdict::kWrongFile:
-      printf("error: fetch: %s: %s%s\n", update::describe(r.verdict), r.why,
+      printf("error: fetch: %s: %s%s\n", update::describe(r.verdict, r.own_image), r.why,
              r.held != 0 ? " (the bytes in flash stay for a resume)" : "");
       return;
   }

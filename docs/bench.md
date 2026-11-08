@@ -1757,15 +1757,28 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       **Write down the wall-clock seconds of the download and the wake's own elapsed time**: the
       Walter's slot does **not** resume across wakes (`SelfUpdate::beginWrite` erases it), so the
       whole file has to fit one wake's twenty minutes, and this is the first measurement of whether
-      it does on a real LTE-M plan. If the wake's budget cuts it short, the job's message says *the
-      next wake continues it* and for the Walter that is wrong — the next wake starts at zero;
-      note the bytes that were paid for twice.
+      it does on a real LTE-M plan. If the wake's budget cuts it short, the job's message now says
+      so (task p10-04): the result's reason is *this slot keeps no progress, so the next wake starts
+      the file again from zero* and the console's line ends the same way — note the bytes that were
+      paid for twice. **Write the download's seconds into this item**, whether it finished or not:
+      it is the figure that decides whether a resume is worth building at all, and nothing but the
+      bench can give it.
       Then *Apply the candidate*: the board restarts, the trial's three conditions hold inside the
       next boot's own wake, and that same exchange posts `committed` with `0.1.2+<sha7>` — the
       banner, `agentVersion` on the page and `self status` all saying it, and `self status` `valid`
       rather than `pending-verify`. **If the trial rolls back**, the previous image returns by
       itself and the page says `rolledBack` with the journal: read it before flashing anything by
       cable, because the rollback working is the better half of this item.
+- [ ] **The budget's message, for the box it is about** (task p10-04). Only reachable if the
+      download above is cut short by the wake's budget, which on a megabyte-a-wake cap and a 750 kB
+      file it should not be — so this is the item to read **if** the release above comes back
+      part-downloaded, and otherwise one to force by setting `kWakeDownloadBytes` lower in a bench
+      build. The console's line and the job's `reason` must both say *starts the file again from
+      zero* for the Walter's own product, and *resumes*/*continues it* for a **repeater** release
+      (§18's repeater offer, where the store does keep the bytes: `image list` says `empty; a
+      transfer of sha256 … stopped at N of M bytes (it can be resumed)` and the next wake's
+      `fetch` line says *resuming at N of M bytes already in flash*). A Walter offer that said
+      *continues it* would be v0.1.2's wording and a finding against this task.
 
 ## What to bring back
 

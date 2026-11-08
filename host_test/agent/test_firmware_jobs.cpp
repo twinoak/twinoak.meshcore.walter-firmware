@@ -189,6 +189,70 @@ TEST_CASE("twinoak.fw.offer: the budget ends the wake mid-download with no resul
   CHECK_FALSE(bench.server().anyRequestCarries("mma_zQ7x4LpR8vK2nT6yW1sB3dF5gH9jM0cV"));
 }
 
+TEST_CASE("twinoak.fw.offer stopped by the budget: the two sentences, one per product") {
+  // Until task p10-04 both of them promised a resume for either box (tasks/phase-9/FOLLOWUPS.md).
+  // A radio image's does resume - the image store keeps a progress record and the test above walks
+  // the second wake finishing the file - while the Walter's other application slot is erased when a
+  // write opens on it, so its download starts again from zero and the plan pays twice.
+  //
+  // Two things are read per product: the line a cable shows (the library's log, where
+  // `AgentWorld::logLine` puts every line the copied library formatted) and the `reason` of the
+  // result the extension wrote. The result of a budget stop is **withheld on purpose** - no result,
+  // the lease is left to expire (unit-protocol.md §5) - so the gate is taken off here, which is the
+  // only way to read the body; nothing else in the branch depends on it.
+  SUBCASE("a radio image: the bytes stay, so both sentences still say it resumes") {
+    AgentBench bench;
+    const Candidate golden("update-golden");
+    const Candidate big("store-resume");  // 150 000 bytes
+    readyUnit(bench, golden);
+    bench::serveRelease(bench.world.http.server, big);
+    bench.boot();
+    bench.v().begin();
+    bench.half().server.setResultGate(nullptr);
+    bench.half().backend.setDownloadBytesPerWake(4096);
+    bench.server().queue(bench::ownJob(41, agent::kOfferType, bench::offerPayload(big)).json());
+    interfaces::BackendAnswer out;
+    CHECK(bench.exchange(bench::knowledgeFor(power::Band::kPlenty), 600, &out) == interfaces::Exchanged::kAsked);
+    CHECK(bench.half().firmware.counters().offers_left_leased == 1);
+    const std::string& log = bench.world.agent->log;
+    INFO(log);
+    CHECK(log.find("the wake's budget ended the download at 4096 of 150000 bytes: no result, the lease is "
+                   "left to expire and the next wake continues it") != std::string::npos);
+    const std::string data = bench.lastData(41);
+    REQUIRE_FALSE(data.empty());
+    CHECK(bench::member(data, "reason") == "the wake's budget ended the download; the next wake resumes it");
+  }
+
+  SUBCASE("the Walter's own image: neither sentence promises a resume") {
+    AgentBench bench;
+    const Candidate golden("update-golden");
+    const Candidate self("self-a");  // 12 288 bytes of the Walter's own product
+    readyUnit(bench, golden);
+    bench::serveRelease(bench.world.http.server, self, bench::kBase, nullptr, nullptr, nullptr, true);
+    bench.boot();
+    bench.v().begin();
+    bench.half().server.setResultGate(nullptr);
+    bench.half().backend.setDownloadBytesPerWake(4096);
+    bench.server().queue(bench::ownJob(42, agent::kOfferType, bench::offerPayload(self, agent::kProductWalter)).json());
+    interfaces::BackendAnswer out;
+    CHECK(bench.exchange(bench::knowledgeFor(power::Band::kPlenty), 600, &out) == interfaces::Exchanged::kAsked);
+    CHECK(bench.half().firmware.counters().offers_left_leased == 1);
+    const std::string& log = bench.world.agent->log;
+    INFO(log);
+    CHECK(log.find("the wake's budget ended the download at 4096 of 12288 bytes: no result, the lease is "
+                   "left to expire and the next wake starts the file again from zero") != std::string::npos);
+    CHECK(log.find("the next wake continues it") == std::string::npos);
+    const std::string data = bench.lastData(42);
+    REQUIRE_FALSE(data.empty());
+    CHECK(bench::member(data, "reason") ==
+          "the wake's budget ended the download; this slot keeps no progress, so the next wake starts the "
+          "file again from zero");
+    // And nothing of the file is left to resume into: the slot holds no image and no open write.
+    core::update::SelfPayload none;
+    CHECK_FALSE(bench.v().self.received(&none));
+  }
+}
+
 TEST_CASE("twinoak.fw.offer refused: a tampered manifest at check 1, no image for the slot at check 3, nothing stored") {
   AgentBench bench;
   const Candidate golden("update-golden");

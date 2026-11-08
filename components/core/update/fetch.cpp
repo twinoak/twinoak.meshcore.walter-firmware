@@ -104,13 +104,17 @@ class RangePrinter final : public net::RangeListener {
 
 }  // namespace
 
-const char* describe(FetchVerdict verdict) {
+const char* describe(FetchVerdict verdict, bool own_image) {
   switch (verdict) {
     case FetchVerdict::kStored: return "stored: all six checks passed";
     case FetchVerdict::kRefused: return "refused by one of the six checks";
     case FetchVerdict::kDenied: return "denied by the server (401 or 403): not retried in this wake";
     case FetchVerdict::kLater: return "the server says later (429 or 5xx)";
-    case FetchVerdict::kBudget: return "the wake's budget ran out; the download resumes next wake";
+    case FetchVerdict::kBudget:
+      // Two sentences, because the two slots are not alike (core/update/fetch.h, task p10-04).
+      return own_image ? "the wake's budget ran out; this slot keeps no progress, so the download "
+                         "starts again from zero next wake"
+                       : "the wake's budget ran out; the download resumes next wake";
     case FetchVerdict::kFailed: return "a request failed";
     case FetchVerdict::kBadUrl: return "the base URL was refused";
     case FetchVerdict::kNoSlot: return "no such slot, or the golden image (reached by a promotion, not a fetch)";
@@ -186,6 +190,7 @@ FetchResult Fetch::runInto(const char* base_url, image::TransferTarget& target, 
   // (core/update/self_update.h, canReceive()); here only a write already open refuses.
   if (target.writing() && target.written() == 0) {
     FetchResult result;
+    result.own_image = true;
     result.verdict = FetchVerdict::kStoreRefused;
     result.why = "a transfer is already open on that slot";
     return result;
@@ -198,6 +203,9 @@ FetchResult Fetch::fetchInto(const char* base_url, image::TransferTarget& target
                              image::Which which, board::Slot slot, const net::Budget& budget,
                              const char* authorization, const char* file_dir, net::RangeListener* listener) {
   FetchResult result;
+  // No store beside the target is the Walter's own slot (`runInto`): the slot carries no progress
+  // record, which is the whole of the difference kBudget's sentence has to tell (task p10-04).
+  result.own_image = store == nullptr;
   const std::uint64_t started = clock_.nowMs();
   auto finish = [&](FetchVerdict verdict, const char* why) {
     result.verdict = verdict;

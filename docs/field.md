@@ -116,7 +116,9 @@ at once, which is what the repeater uses when something is wrong.
 1. **offered** — the server names a release; the unit fetches the manifest and the image in ranges
    over several wakes if it must, checks all six, and stores it as the **candidate**. The page
    shows `stored` with the hash and the bytes (`resumed` when a wake took up where another left
-   off). A download that is cut off simply resumes; nothing is reported until it is whole.
+   off). A radio image's download that is cut off simply resumes; the LTE box's own begins again
+   (the two paragraphs below the four steps). Either way nothing is reported until the file is
+   whole, and the job's own message says which of the two happens next.
 2. **applied** — the server asks for the candidate it named. The unit flashes it, resets the radio,
    waits for it to come back as itself, and journals every transition.
 3. **committed** — the new image passed its health check and is now the golden one. The page says

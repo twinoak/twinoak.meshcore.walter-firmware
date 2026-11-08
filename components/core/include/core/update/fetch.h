@@ -45,7 +45,8 @@ enum class FetchVerdict : std::uint8_t {
   kRefused = 1,      // one of the six checks refused it: `check` and `why` say which
   kDenied = 2,       // 401 or 403 from the server
   kLater = 3,        // 429 or 5xx: `retry_after_s`
-  kBudget = 4,       // the download stopped on its budget; the bytes stay, it resumes next wake
+  kBudget = 4,       // the download stopped on its budget; a radio image's bytes stay and the next
+                     // wake resumes, the Walter's own slot starts again (FetchResult::own_image)
   kFailed = 5,       // a request or a range failed; the bytes stay for a resume where there were any
   kBadUrl = 6,       // not an https base URL, or too long once the file name is appended
   kNoSlot = 7,       // this adapter has no radio in that slot, or the golden image was asked for
@@ -53,7 +54,15 @@ enum class FetchVerdict : std::uint8_t {
   kWrongFile = 9,    // the server's file is not the size the manifest promised
 };
 
-const char* describe(FetchVerdict verdict);
+// The verdict as a sentence. `kBudget` is the one whose truth depends on which box's image was
+// being fetched, so the caller says (task p10-04, tasks/phase-9/FOLLOWUPS.md): a **radio** image's
+// bytes and the image store's progress record stay in flash, so the next wake continues the file
+// where this one stopped; the **Walter's own** other application slot keeps no progress record and
+// is erased when a write opens on it (`SelfUpdate::beginWrite` sets `written_ = 0`, and
+// `abandonWrite()` - which every verdict but kStored calls - zeroes it again), so its download
+// starts again from zero at the next wake and the plan pays for the bytes twice. `own_image` is
+// what `FetchResult::own_image` carries; every other verdict reads the same either way.
+const char* describe(FetchVerdict verdict, bool own_image);
 
 struct FetchResult {
   FetchVerdict verdict = FetchVerdict::kFailed;
@@ -75,6 +84,10 @@ struct FetchResult {
   std::uint32_t resumed_from = 0;
   char image_id[image::kMaxIdSize] = {};
   image::Fields descriptor;
+  // Which box's image this was (task p10-04): `runInto`'s target - the Walter's own other
+  // application slot - has no progress record of its own, so a download the budget cut short does
+  // not resume. Only `kBudget`'s sentence differs, and `describe()` takes this to say which.
+  bool own_image = false;
 };
 
 class Fetch {

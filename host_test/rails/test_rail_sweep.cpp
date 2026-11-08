@@ -166,7 +166,7 @@ Clean cleanRun() {
   SweepRig rig;
   const FetchResult fetched = rig.downloadRelease();
   REQUIRE_MESSAGE(fetched.verdict == FetchVerdict::kStored,
-                  std::string(upd::describe(fetched.verdict))
+                  std::string(upd::describe(fetched.verdict, fetched.own_image))
                       << ": " << std::string(fetched.why));
   const State end = rig.updateRadio();
   REQUIRE_MESSAGE(end == State::kDone, std::string(upd::describe(end))
@@ -265,7 +265,7 @@ void injectAt(Where where, std::uint32_t op, Totals* totals) {
     const FetchResult again = rig.downloadRelease();
     CHECK_MESSAGE(again.verdict == FetchVerdict::kStored,
                   std::string(name(where)) << ", operation " << op
-                  << ": the resumed fetch answered " << std::string(upd::describe(again.verdict))
+                  << ": the resumed fetch answered " << std::string(upd::describe(again.verdict, again.own_image))
                   << " (" << std::string(again.why) << ")");
     if (again.verdict == FetchVerdict::kStored) {
       const State end = rig.updateRadio();

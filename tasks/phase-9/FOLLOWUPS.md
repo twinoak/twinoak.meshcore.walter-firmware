@@ -98,7 +98,7 @@ is written.
 
 ## Found while doing 07 (8 November)
 
-- [ ] **[later] The Walter's own download does not resume, and the message says it does.** Writing
+- [x] **[p10-04] The Walter's own download does not resume, and the message says it does.** Writing
   `docs/flashing.md`'s LTE walk against the code turned up a difference between the two boxes that
   nothing says out loud. A radio image's download resumes: `Fetch::fetchInto` calls
   `target.beginWrite(expected)` and the store's `TransferTarget` answers `written() != 0` from its
@@ -114,7 +114,15 @@ is written.
     posts `reason: the wake's budget ended the download; the next wake resumes it`. Both are true
     of a radio image and false of the Walter's own, and the branch already knows which it is in
     (`walter`). One sentence each, and the server's job page stops promising a resume that will not
-    happen.
+    happen. **Done in task p10-04**: `describe(FetchVerdict, bool own_image)` takes which box it is
+    and `FetchResult::own_image` carries it (`runInto`'s target keeps no progress record), the
+    offer's budget branch says *the next wake starts the file again from zero* and posts a `reason`
+    that says the same, and four host tests hold the four sentences. `docs/flashing.md`,
+    `field.md`, `cycle.md`, `ARCHITECTURE.md` §13 and `bench.md` §18 follow. One thing the
+    reading turned up: a budget stop's result is **withheld** by `FirmwareJobs`' own result gate
+    (unit-protocol.md §5's *no result, the lease expires*), so the corrected `reason` reaches the job's
+    log and `out.data` and not meshmaster.dk's job page — the page's wording is the server's, and
+    nothing here can promise on its behalf.
   - **Whether it should resume at all is a design question**, not a bug: the other application slot
     has no progress record of its own and ESP-IDF's `esp_ota_begin` erases what it opens, so a
     resume would need the journal to carry the bytes written and the slot to be reopened without an
@@ -122,3 +130,8 @@ is written.
     one wake: 750 kB in twelve 64 kB ranges, against a megabyte and twenty minutes
     (`kWakeDownloadBytes`, `kBackendBoundMs`). `docs/bench.md` §18's new item is where the real
     figure comes from, and it is the figure that decides whether this is worth building.
+    **Still open after p10-04**, which built no resume (its *Out of scope*): the figure is not on
+    the bench yet — the 8 November offer over LTE failed in two seconds for a missing
+    `X-Agent-Version` header (phase 10's task 05), so no download of the Walter's own image has
+    ever run to completion or to a budget stop on a real plan. `docs/bench.md` §18 now asks for the
+    seconds in so many words, and this item is the decision that waits on them.

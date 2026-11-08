@@ -446,7 +446,10 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
   const bool resumed = r.resumed_from != 0 || held_before != 0;
   const std::uint64_t bytes = static_cast<std::uint64_t>(r.resumed_from) + r.bytes;
 
-  char line_text[160];
+  // 200, not 160: the budget line names the two products' two different next wakes (task p10-04),
+  // and at 160 the longer of them would be cut mid-sentence once the two byte counts are long.
+  // It stays well inside the console's own 200-byte line (task p9-04) through LOG_I's prefix.
+  char line_text[200];
   switch (r.verdict) {
     case upd::FetchVerdict::kStored: {
       counters_.offers_stored = saturate(counters_.offers_stored);
@@ -466,19 +469,29 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
     }
     case upd::FetchVerdict::kBudget:
       // The agreed behaviour (unit-protocol.md §5): no result, the lease expires, the next wake's
-      // claim of the same job continues the file from the store's progress record.
+      // claim of the same job takes the download up again. What the next wake then does with the
+      // bytes already in flash is not the same for the two products, and both messages say which
+      // (task p10-04, tasks/phase-9/FOLLOWUPS.md): a **radio** image continues from the image
+      // store's progress record, while the **Walter's own** other application slot is erased when
+      // a write opens on it (`SelfUpdate::beginWrite`), so the file starts again from zero and the
+      // plan pays for these bytes a second time. Making it resume is not this task's
+      // (`esp_ota_resume` and a journalled byte count); saying so truthfully is.
       counters_.offers_left_leased = saturate(counters_.offers_left_leased);
       left_leased_ = job.id;
       std::snprintf(line_text, sizeof line_text,
                     "the wake's budget ended the download at %lu of %lu bytes: no result, the lease is left to "
-                    "expire and the next wake continues it",
-                    static_cast<unsigned long>(r.held), static_cast<unsigned long>(r.expected));
+                    "expire and the next wake %s",
+                    static_cast<unsigned long>(r.held), static_cast<unsigned long>(r.expected),
+                    walter ? "starts the file again from zero" : "continues it");
       ctx.log(line_text);
       LOG_I("jobs: %s", line_text);
       {
-        const std::size_t n = writeOfferResult(false, nullptr, nullptr, bytes, 0,
-                                               "the wake's budget ended the download; the next wake resumes it",
-                                               resumed);
+        const std::size_t n = writeOfferResult(
+            false, nullptr, nullptr, bytes, 0,
+            walter ? "the wake's budget ended the download; this slot keeps no progress, so the next wake "
+                     "starts the file again from zero"
+                   : "the wake's budget ended the download; the next wake resumes it",
+            resumed);
         if (n != 0) out.data(data_, n);
       }
       out.outcome(mm::Outcome::Timeout);
