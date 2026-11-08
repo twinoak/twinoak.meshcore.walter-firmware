@@ -122,7 +122,53 @@ inline const char* const* serverReadKeys() {
 
 // The same job as `ownConfigRead`, with that list: the scheduled daily read of the unit's own
 // repeater, which is what job 22032 was on 7 November 2026.
-inline fake::Job ownConfigReadServerList(long long id) {
+//
+// `with_password` false is what **meshmaster.dk hands a unit at 0.1.2** for its own repeater
+// (task p9-05): `LocalDoor.HandsNothing` is true for the pair, so the claim carries no
+// `credential` object at all and the library logs in with the empty material at `admin`. Job
+// 22016 was the shape with the password missing and the server still asking for one, and it
+// never left the server.
+inline fake::Job ownConfigReadServerList(long long id, bool with_password = true) {
+  std::string payload = "{\"keys\":[";
+  for (int i = 0; i < kServerReadKeyCount; ++i) {
+    if (i > 0) payload += ",";
+    payload += "\"";
+    payload += serverReadKeys()[i];
+    payload += "\"";
+  }
+  payload += "]}";
+  fake::Job job = fake::Job(id, "config.read")
+                      .forRepeater(17, kOwnName, kOwnKeyHex)
+                      .atClass("admin")
+                      .leasedUntil(0)
+                      .withPayload(payload)
+                      .asDirectNeighbour();
+  if (with_password) job.withAdminPassword("adm1n-pass");
+  return job;
+}
+
+// The **same read, for the repeater that is not the unit's own**: the one that still goes over
+// the air and is still paced (task p9-05). Its console is the library's `FakeMesh`, which carries
+// the sixteen keys of CONFIGURATION §2's default list, so the thirteen the server's list asks for
+// beyond them are seeded with the same values `ownConsole` answers below - otherwise the read is
+// fourteen `??:` lines and becomes a test about the raw-line overflow instead of about pacing.
+inline void seedNeighbourConfig(fake::FakeMesh& repeater) {
+  repeater.setConfig("owner.info", "");
+  repeater.setConfig("flood.max.advert", "3");
+  repeater.setConfig("loop.detect", "on");
+  repeater.setConfig("txdelay", "0");
+  repeater.setConfig("direct.txdelay", "500");
+  repeater.setConfig("rxdelay", "0");
+  repeater.setConfig("int.thresh", "0");
+  repeater.setConfig("cad", "off");
+  repeater.setConfig("radio", "869.618,62.5,8,8");
+  repeater.setConfig("radio.rxgain", "0");
+  repeater.setConfig("radio.fem.rxgain", "0");
+  repeater.setConfig("radio.fem.txgain", "0");
+  repeater.setConfig("powersaving", "off");
+}
+
+inline fake::Job neighbourConfigReadServerList(long long id) {
   std::string payload = "{\"keys\":[";
   for (int i = 0; i < kServerReadKeyCount; ++i) {
     if (i > 0) payload += ",";
@@ -132,12 +178,37 @@ inline fake::Job ownConfigReadServerList(long long id) {
   }
   payload += "]}";
   return fake::Job(id, "config.read")
-      .forRepeater(17, kOwnName, kOwnKeyHex)
+      .forRepeater(18, "Grenaa Chimney #1", fake::repeaterKey())
       .atClass("admin")
       .leasedUntil(0)
       .withAdminPassword("adm1n-pass")
       .withPayload(payload)
       .asDirectNeighbour();
+}
+
+// An `admin`-class CLI line, which is the class every console job of a repeater has. For the
+// unit's **own** repeater `with_password` false is again what the server hands at 0.1.2; for a
+// **neighbour** it is the claim that must still be refused unsent, because that login does go
+// on the air (task p9-05).
+inline fake::Job ownCli(long long id, const char* command, bool with_password = true) {
+  fake::Job job = fake::Job(id, "cli")
+                      .forRepeater(17, kOwnName, kOwnKeyHex)
+                      .atClass("admin")
+                      .leasedUntil(0)
+                      .withPayload(std::string("{\"command\":\"") + command + "\"}")
+                      .asDirectNeighbour();
+  if (with_password) job.withAdminPassword("adm1n-pass");
+  return job;
+}
+inline fake::Job neighbourCli(long long id, const char* command, bool with_password = true) {
+  fake::Job job = fake::Job(id, "cli")
+                      .forRepeater(18, "Grenaa Chimney #1", fake::repeaterKey())
+                      .atClass("admin")
+                      .leasedUntil(0)
+                      .withPayload(std::string("{\"command\":\"") + command + "\"}")
+                      .asDirectNeighbour();
+  if (with_password) job.withAdminPassword("adm1n-pass");
+  return job;
 }
 
 // The unit's own repeater's console, as the local door reaches it (§5.7): what a stock repeater

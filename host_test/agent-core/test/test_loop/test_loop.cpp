@@ -742,6 +742,118 @@ TEST_F(LoopTest, TheHeltecsHeartbeatCarriesNeitherOfTheTwoWakeFields) {
   EXPECT_EQ(server.heartbeats()[0].find("maxTransactionsThisWake"), std::string::npos) << server.heartbeats()[0];
 }
 
+// ---------------------------------------------------------------------------------------------
+// The observer in the heartbeat (task p1.7-28; meshmaster.dk's D-46 and its task p4.17-140)
+//
+// The loop knows nothing about brokers, topics or keys: a consumer that publishes every packet
+// it hears to the community's MQTT maps hands it an `IHeartbeatObserver`, and the loop asks that
+// at every heartbeat and writes whatever it says. These tests are the seam, not the dialect -
+// the bytes are test/test_envelopes', the board's own answer is src/observer/Observer.cpp's.
+
+// A provider as thin as the interface allows: it answers what the test told it to, and counts
+// how often it was asked. The strings are its own, which is the contract (the loop copies none).
+class FakeObserverProvider : public mm::IHeartbeatObserver {
+ public:
+  bool describeObserver(mm::HeartbeatObserver& out) override {
+    asked++;
+    if (!on) return false;
+    slots[0].slot = 1;
+    slots[0].preset = "meshview";
+    slots[0].host = "wss://mqtt.meshview.dk:443/mqtt";
+    slots[0].state = state;
+    slots[0].since = since;
+    slots[0].published = published;
+    slots[0].dropped = 0;
+    slots[1].slot = 2;
+    slots[1].state = "off";
+    out.iata = "AAR";
+    out.hasSlots = true;
+    out.slots = slots;
+    out.slotCount = 2;
+    return true;
+  }
+
+  bool on = true;
+  int asked = 0;
+  const char* state = "connected";
+  uint32_t since = 0;
+  long long published = 0;
+  mm::HeartbeatObserverSlot slots[2];
+};
+
+TEST_F(LoopTest, AHeartbeatWithNoObserverProviderIsTheHeartbeatItAlwaysWas) {
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_EQ(server.heartbeats().size(), 1u);
+  const std::string hb = server.heartbeats()[0];
+  EXPECT_EQ(hb.find("observer"), std::string::npos) << hb;
+  EXPECT_TRUE(fake::followsShapeOf(hb, fake::contract("AgentHeartbeatNoWake"))) << hb;
+}
+
+TEST_F(LoopTest, AProvidersObjectGoesIntoTheHeartbeatAndIsAskedAgainAtEachOne) {
+  FakeObserverProvider provider;
+  provider.state = "connected";
+  provider.since = kNow - 118;
+  provider.published = 1420;
+  loop.setHeartbeatObserver(&provider);
+
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_EQ(server.heartbeats().size(), 1u);
+  const std::string hb = server.heartbeats()[0];
+  EXPECT_EQ(provider.asked, 1) << "asked once per heartbeat, and only at a heartbeat";
+  EXPECT_TRUE(fake::followsShapeOf(hb, fake::contract("AgentHeartbeatObserver"))) << hb;
+  const std::string observer = memberOf(hb, "observer");
+  EXPECT_NE(observer.find("\"iata\":\"AAR\""), std::string::npos) << observer;
+  EXPECT_NE(observer.find("\"slot\":1"), std::string::npos) << observer;
+  EXPECT_NE(observer.find("\"state\":\"connected\""), std::string::npos) << observer;
+  EXPECT_NE(observer.find("\"published\":1420"), std::string::npos) << observer;
+  EXPECT_NE(observer.find("\"state\":\"off\""), std::string::npos) << "the second slot, empty";
+
+  // The next heartbeat asks again and takes the answer as it is then: a slot that has gone to
+  // backing-off is a slot the exit node's page shows backing off within one poll interval.
+  provider.state = "backing-off";
+  provider.published = 1431;
+  while (server.heartbeats().size() < 2 && untilACall()) {
+  }
+  ASSERT_EQ(server.heartbeats().size(), 2u);
+  EXPECT_EQ(provider.asked, 2) << "once per heartbeat, and nothing else of the loop asks";
+  const std::string again = memberOf(server.heartbeats()[1], "observer");
+  EXPECT_NE(again.find("\"state\":\"backing-off\""), std::string::npos) << again;
+  EXPECT_NE(again.find("\"published\":1431"), std::string::npos) << again;
+}
+
+// A provider that answers false is the observer having been turned off between two heartbeats -
+// `set mqtt1.preset none` on the console - and the member is left out exactly as it is for a
+// consumer that never had one. Nothing else of the body moves with it.
+TEST_F(LoopTest, AProviderThatSaysNoLeavesTheMemberOutAndMovesNothingElse) {
+  FakeObserverProvider provider;
+  loop.setHeartbeatObserver(&provider);
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_EQ(server.heartbeats().size(), 1u);
+  const std::string with = server.heartbeats()[0];
+  EXPECT_NE(with.find("\"observer\""), std::string::npos) << with;
+
+  provider.on = false;
+  while (server.heartbeats().size() < 2 && untilACall()) {
+  }
+  ASSERT_EQ(server.heartbeats().size(), 2u);
+  const std::string without = server.heartbeats()[1];
+  EXPECT_EQ(without.find("observer"), std::string::npos) << without;
+  // And nothing else of the body moved: the same members in the same order, less the one. The
+  // values cannot be compared - `at` is a later second and the counters are a later reading -
+  // but a field that appeared or moved with the observer would show up here.
+  std::vector<std::string> members = fake::keysOf(with);
+  ASSERT_FALSE(members.empty());
+  EXPECT_EQ(members.back(), "observer") << "the observer is the record's last member";
+  members.pop_back();
+  EXPECT_EQ(members, fake::keysOf(without));
+}
+
 TEST_F(LoopTest, AWakeAsksForNoMoreJobsThanItsCapCanRunAndLeavesTheRestOnTheServer) {
   // Three traces waiting and a cap of two transactions: a trace is one transaction and no login
   // (EXIT-NODES §7), but the claim is sized before any type is known, so the cap buys one job at
@@ -849,6 +961,57 @@ TEST_F(LoopTest, AJobTheWakesTransactionCapHasNoRoomForIsFailedTheSameWay) {
   EXPECT_EQ(memberOf(server.results()[1].body, "outcome"), "failed");
   EXPECT_NE(server.results()[1].body.find("wake budget"), std::string::npos) << server.results()[1].body;
   EXPECT_LE(report.transactionsSpent, 4) << "the cap was not exceeded";
+}
+
+TEST_F(LoopTest, AJobTheMeshCannotCarryIsDeclinedBeforeItIsPricedAgainstTheWake) {
+  // The 1.6 review's third finding (task p1.7-25). The heartbeat does not advertise a type the
+  // mesh declines, so the server routes none of it here - but a job **bound** to this agent, or
+  // one claimed before a heartbeat said so, arrives all the same. A wake prices each claimed job
+  // before it runs it, and priced first this one came back `failed`, *wake budget*: a wake too
+  // small for a job this unit would never run at all, and a reason the server cannot act on.
+  // Asked first, the answer is `unsupported` at no transaction - the same answer `loop()` gives
+  // the same job, and the only one that is true of it.
+  // The same job under the same tight wake, twice: once on a mesh that **can** carry a trace,
+  // where the answer is the budget's and right, and once on a mesh that cannot. A trace is
+  // estimated at its one transaction's gap plus a reply - nine seconds at this budget - and this
+  // wake has five, so the price is what the old code reached first for both of them.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.queue(fake::Job(14040, "trace").atClass("none").leasedUntil(kLease).json());
+  mm::Budget tight;
+  tight.wakeSeconds = 5;
+
+  const mm::WakeReport outOfTime = loop.wake(hourly(), tight);
+
+  EXPECT_EQ(outOfTime.jobsClaimed, 1);
+  EXPECT_EQ(outOfTime.jobsRun, 0);
+  EXPECT_EQ(outOfTime.jobsNotRun, 1);
+  EXPECT_EQ(outOfTime.jobs, mm::StepOutcome::NoTime);
+  ASSERT_EQ(server.results().size(), 1u);
+  EXPECT_EQ(memberOf(server.results()[0].body, "outcome"), "failed") << "a mesh that carries a trace ran out of time";
+  EXPECT_NE(server.results()[0].body.find("wake budget"), std::string::npos) << server.results()[0].body;
+
+  // And now the mesh cannot carry it. Nothing else about the wake changes.
+  mesh.cannotServe("trace");
+  server.queue(fake::Job(14041, "trace").atClass("none").leasedUntil(kLease).json());
+
+  const mm::WakeReport declined = loop.wake(hourly(), tight);
+
+  EXPECT_EQ(declined.jobsClaimed, 1);
+  EXPECT_EQ(declined.jobsRun, 1) << "the run is where the decline happens, at no transaction";
+  EXPECT_EQ(declined.jobsNotRun, 0) << "it was not priced out of the wake";
+  EXPECT_EQ(declined.jobs, mm::StepOutcome::Done);
+  EXPECT_EQ(declined.transactionsSpent, 0) << "nothing went on the air for it";
+  EXPECT_EQ(mesh.sends().size(), 0u) << "and the radio was never asked, in either wake";
+  EXPECT_EQ(mesh.logins(), 0);
+  ASSERT_EQ(server.results().size(), 2u) << "a job claimed is always answered";
+  const std::string body = server.results()[1].body;
+  EXPECT_EQ(server.results()[1].jobId, 14041);
+  EXPECT_EQ(memberOf(body, "outcome"), "unsupported") << body;
+  EXPECT_EQ(memberOf(body, "transactions"), "0") << body;
+  EXPECT_NE(body.find("this mesh cannot carry a "), std::string::npos) << body;
+  EXPECT_EQ(body.find("wake budget"), std::string::npos) << "the reason is the mesh's, not the budget's: " << body;
+  EXPECT_TRUE(fake::followsShapeOf(body, fake::contract("JobResultReport"))) << body;
+  EXPECT_EQ(loop.counters().consecutiveFailures, 0u) << "neither answer is a failure of the server's";
 }
 
 TEST_F(LoopTest, NoWakeEverLeavesAJobLeasedAndSilent) {
@@ -1566,6 +1729,62 @@ TEST_F(LoopTest, AStoreTooSmallKeepsTheOldestWholeResultAndTheOldestAdvertsAndCo
   EXPECT_NE(server.heartbeats()[0].find("\"observationsDropped\":17"), std::string::npos) << server.heartbeats()[0];
 }
 
+TEST_F(LoopTest, AnAdvertNothingCanDateIsDroppedAtTheWriteAndCountedRatherThanKept) {
+  // Task p1.7-25, the 1.6 review's second finding. The clock of this boot never got the time -
+  // a Walter with no RTC whose heartbeat has not come back - and the server is away, which is
+  // **exactly** the wake that keeps adverts. Nothing can date what the radio heard: there is no
+  // epoch to write, `heardAtMillis` dies with the sleep, and the sleep's length is unknown. The
+  // image used to carry epoch 0 and the next boot's `restoreKept` stamped the advert with the
+  // moment of the restore - wrong by the whole outage, on the one observation the server draws a
+  // coverage map from. So the advert is dropped at the write, and counted, which the heartbeat
+  // says as soon as there is a server to say it to.
+  platform.fakeClock().unset();
+  ASSERT_FALSE(platform.clock().hasTime());
+  server.failAlways(fake::FakeUplink::Fault::Unreachable);
+  fake::FakeRetained store;
+  Boot unit = boot(store);
+  ASSERT_FALSE(unit.restored) << "a first boot: the store holds nothing";
+  for (uint8_t i = 0; i < 5; i++) unit.loop->ring().push(advert(i, platform.millis()));
+
+  const mm::WakeReport first = unit.loop->wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(first.heartbeat, mm::StepOutcome::Failed) << "the server is away, so the clock stays unset";
+  ASSERT_FALSE(platform.clock().hasTime());
+  EXPECT_TRUE(first.keptImageWritten) << "an image is still written: the counters cross the sleep in it";
+  EXPECT_EQ(first.observationsNotKept, 5);
+  EXPECT_EQ(first.observationsLeft, 0);
+  EXPECT_EQ(unit.loop->ring().size(), 0u) << "the ring is made to agree with the image";
+  EXPECT_EQ(unit.loop->ring().dropped(), 5u);
+  EXPECT_TRUE(fake::LogCapture::the().holds("nothing can date them"));
+  EXPECT_FALSE(fake::LogCapture::the().holds("do not fit")) << "the store was large; this is not a size";
+  mm::KeptImageReader image;
+  ASSERT_EQ(image.check(store.image().data(), store.image().size()), nullptr);
+  EXPECT_EQ(image.advertCount(), 0u) << "not one of them is in the image";
+  EXPECT_EQ(image.resultCount(), 0u);
+  EXPECT_EQ(image.observationsDropped(), 5u) << "and the loss crosses the sleep";
+
+  // The boot after the sleep, with a server that answers: the ring is empty, the count came back
+  // with the image, and the heartbeat carries it - which is the whole of what the server learns
+  // about an advert this unit could not date.
+  server.answerAgain();
+  server.answerHeartbeat(60, 1, 3600, false, kNow);
+  Boot woken = boot(store, &unit);
+  EXPECT_TRUE(woken.restored) << "an empty image is an image";
+  EXPECT_EQ(woken.loop->ring().size(), 0u);
+  EXPECT_EQ(woken.loop->ring().dropped(), 5u);
+  platform.advanceSeconds(3600);  // past the backoff the failed wake left in the state
+
+  const mm::WakeReport second = woken.loop->wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(second.heartbeat, mm::StepOutcome::Done);
+  ASSERT_EQ(server.heartbeats().size(), 2u) << "the one the fake recorded before it faulted, and this one";
+  EXPECT_NE(server.heartbeats().back().find("\"observationsDropped\":5"), std::string::npos)
+      << server.heartbeats().back();
+  EXPECT_TRUE(platform.clock().hasTime()) << "and the clock came from that heartbeat";
+}
+
+// The other side of the same rule: an advert the clock **can** date is kept with the moment it
+// was heard, which is what task p1.6-22 put in the image and p1.7-25 did not touch.
 TEST_F(LoopTest, AdvertsKeepTheMomentTheyWereHeardAcrossASleepThatRestartsEveryClock) {
   fake::FakeRetained store;
   Boot unit = boot(store);

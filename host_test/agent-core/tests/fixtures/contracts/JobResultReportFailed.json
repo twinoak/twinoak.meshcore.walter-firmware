@@ -1,0 +1,1 @@
+{"clientId":"e7c2","outcome":"unreachable","startedAt":"2026-10-14T13:39:00Z","finishedAt":"2026-10-14T13:39:21Z","pathUsed":["a1"],"hops":1,"transactions":2,"log":"login (guest) try 1: no reply; login (guest) try 2: no reply","failedAt":"login"}

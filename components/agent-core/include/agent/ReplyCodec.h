@@ -2,8 +2,8 @@
 //
 // The board **is** the companion, so these are one layer thinner than the .NET agent's frames:
 // there the reply travels on to an app over a cable and arrives wrapped in a push code, a
-// reserved byte and a prefix or a tag (`MyMesh::onContactResponse`, `companion-v1.17.1` at
-// d9296435); here the same bytes arrive in `Mesh::onPeerDataRecv`, whose `data` is the
+// reserved byte and a prefix or a tag (`MyMesh::onContactResponse`, `companion-v1.18.0` at
+// 81dbae59); here the same bytes arrive in `Mesh::onPeerDataRecv`, whose `data` is the
 // repeater's reply with a four-byte tag in front of it. So what a handler parses is `data[4..]`,
 // which is exactly the part of the transcribed fixture that follows the wrapper -
 // tests/fixtures/companion/README.md is the table, and test/test_reply_codec strips the wrapper
@@ -19,7 +19,7 @@
 
 namespace mm {
 
-// ClientACL.h at d9296435: the role is the low two bits of the permissions byte.
+// ClientACL.h at 81dbae59: the role is the low two bits of the permissions byte.
 constexpr uint8_t kPermRoleMask = 0x03;
 constexpr uint8_t kPermGuest = 0;
 constexpr uint8_t kPermReadOnly = 1;
@@ -43,7 +43,7 @@ uint8_t roleNeededFor(CredentialClass c);
 // ---------------------------------------------------------------------------------------------
 // The login reply
 
-// What `MyMesh::handleLoginReq` (repeater-v1.17.1, examples/simple_repeater/MyMesh.cpp:90-145)
+// What `MyMesh::handleLoginReq` (repeater-v1.18.0, examples/simple_repeater/MyMesh.cpp:90-145)
 // answers, after the four-byte tag: RESP_SERVER_LOGIN_OK(1), keep_alive/16(1), is_admin(1),
 // permissions(1), a random blob(4), FIRMWARE_VER_LEVEL(1) - thirteen bytes in all, of which a
 // legacy repeater sends only the literal "OK".
@@ -69,7 +69,7 @@ bool parseLoginReply(const uint8_t* data, size_t len, LoginReply& out);
 // ---------------------------------------------------------------------------------------------
 // The status reply
 
-// `RepeaterStats` of examples/simple_repeater/MyMesh.h:44-60 at d9296435, 56 bytes on current
+// `RepeaterStats` of examples/simple_repeater/MyMesh.h:44-60 at 81dbae59, 56 bytes on current
 // firmware and 48 on one from before the last two counters were added - which is why those two
 // are optional here rather than zero.
 struct StatusReading {
@@ -199,7 +199,7 @@ void toHexLower(const uint8_t* bytes, size_t len, char* out);
 // The access-list reply (task p3.5-43)
 
 // REQ_TYPE_GET_ACCESS_LIST (0x05), answered to an **admin** session and to nobody else - a
-// session below admin gets no reply at all (`MyMesh::handleRequest` at d9296435,
+// session below admin gets no reply at all (`MyMesh::handleRequest` at 81dbae59,
 // examples/simple_repeater/MyMesh.cpp:262-275, guarded by `sender->isAdmin()` and returning 0).
 // After the four-byte tag: {pub_key[6], permissions} per entry, entries with permissions 0
 // skipped by the firmware, then the cipher block's zero padding.
@@ -235,7 +235,7 @@ bool parseAccessList(const uint8_t* data, size_t len, AccessListEntry* out, int 
 // A repeater answers a CLI command with a TXT_MSG datagram of its own: a timestamp (4), a flags
 // byte whose upper six bits are the text type - TXT_TYPE_CLI_DATA (1) since v1.17, TXT_TYPE_PLAIN
 // (0) from older firmware - and the reply text, zero-padded to the cipher block
-// (`MyMesh::onPeerDataRecv`, examples/simple_repeater/MyMesh.cpp:739-758 at d9296435). The
+// (`MyMesh::onPeerDataRecv`, examples/simple_repeater/MyMesh.cpp:739-758 at 81dbae59). The
 // reply's own timestamp is the repeater's clock and is matched on nothing.
 constexpr uint8_t kTxtTypePlain = 0;
 constexpr uint8_t kTxtTypeCliData = 1;

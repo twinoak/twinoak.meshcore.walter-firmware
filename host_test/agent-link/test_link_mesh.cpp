@@ -790,6 +790,43 @@ TEST_F(LinkMeshTest, AJobForANeighbourAfterALocalOneIsAMeshJobAgain) {
   EXPECT_EQ(world().requestsOf(link::type::kJobBegin), 1u);
 }
 
+// The interface's own question (task p9-05): `IMesh::answersLocally()` is true from a `beginJob`
+// for the unit's own repeater until the `endJob` that closes it, and false otherwise. The
+// library reads it at every `spend` and at every login, so the whole of the contract is *when*
+// it is true - a door that stayed open would stop pacing a stranger's job, and one that opened
+// early would send no password to a repeater that wants one.
+TEST_F(LinkMeshTest, TheDoorAnswersForTheOwnRepeaterOnlyAndOnlyInsideItsJob) {
+  EXPECT_FALSE(link().answersLocally()) << "no job, no door - and no own key yet either";
+  makeItLocal();
+  EXPECT_FALSE(link().answersLocally()) << "the key alone is not a job";
+
+  ASSERT_TRUE(link().beginJob(repeater().c_str(), nullptr, 0, 0));
+  EXPECT_TRUE(link().answersLocally());
+  EXPECT_TRUE(link().local()) << "the console's name for the same question";
+  link().endJob();
+  EXPECT_FALSE(link().answersLocally()) << "between jobs it is false";
+
+  // A stranger's job, begun straight after a local one: the door is shut for the whole of it.
+  ASSERT_TRUE(link().beginJob(fake::strangerKey().c_str(), nullptr, 0, 0));
+  EXPECT_FALSE(link().answersLocally());
+  link().endJob();
+  EXPECT_FALSE(link().answersLocally());
+
+  // And a key this end cannot parse begins no job, so it cannot open the door either.
+  EXPECT_FALSE(link().beginJob("not-a-key", nullptr, 0, 0));
+  EXPECT_FALSE(link().answersLocally());
+
+  // The key going away shuts it under a job in progress, which is what a radio that was swapped
+  // looks like (`clearOwnKey`, task p8-04): the next `beginJob` is a mesh job.
+  ASSERT_TRUE(link().beginJob(repeater().c_str(), nullptr, 0, 0));
+  EXPECT_TRUE(link().answersLocally());
+  link().endJob();
+  link().clearOwnKey();
+  ASSERT_TRUE(link().beginJob(repeater().c_str(), nullptr, 0, 0));
+  EXPECT_FALSE(link().answersLocally()) << "this end no longer knows which repeater is its own";
+  link().endJob();
+}
+
 // ---------------------------------------------------------------------------------------------
 // Where the last ten jobs went (task p9-04)
 

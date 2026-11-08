@@ -13,7 +13,7 @@
 //     and a reply the mesh ate is not evidence the command was not applied (§5a's lost reply,
 //     recorded as `no-reply` for the next config read to settle);
 //   - the sender timestamps of an apply and its re-read are **strictly increasing**:
-//     MyMesh::onPeerDataRecv at d9296435 (examples/simple_repeater/MyMesh.cpp:709-711) treats a
+//     MyMesh::onPeerDataRecv at 81dbae59 (examples/simple_repeater/MyMesh.cpp:709-711) treats a
 //     timestamp equal to the last one as a *retry* and runs nothing, so a sequence sent faster
 //     than one line a second - which a region load is, its lines expecting no reply - would be
 //     one command and a run of silently discarded ones;

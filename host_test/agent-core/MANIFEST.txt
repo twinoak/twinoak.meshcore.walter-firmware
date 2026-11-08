@@ -1,17 +1,17 @@
 # The agent core's host fakes, contract fixtures and own two suites, copied - never edited here.
-# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit cc5a34366b316ead6248f651e8263c294bb6feea
+# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit 8c24da5bca3dda6e788ab294d3b5357130140e1b
 # written by tools/sync-agent-core.ps1; docs/upstream.md says how and when
 #
 # sha256                                                           bytes  name
-ab3e5364aedcf995255dbc4f43c3d41a183ca958f41c16e154bc226aeefd4c4e    17231  platformio.ini
-46628217e9112488bdf2ee2ec73ff51e27c05e79ecc112b8e35b5b3acbd8ba67    46668  test/support/FakeMesh.h
+9e0ec1c280b9a037744c41759c57669056204e821e3a6b6edcc852e767d2f686    21876  platformio.ini
+ff8d17d09929c67187259a6a12b83e41c407a37555f8e94da8dd802a0f5dec52    51953  test/support/FakeMesh.h
 3fa0f2fd8eba516f30b3ef3399b217e8531ad6316e5fa3d97d152b06599462db     5983  test/support/FakePlatform.h
 66e0fa1a31b021bed11421b6df6daec4d94ea4e6d4a3251faf64c0d9236099ed     2660  test/support/FakeRetained.h
 ef86253e1bec4743e933644638caa213af1290f4280bae37b421efa18a5e9acc    14512  test/support/FakeUplink.h
 01172f3677f0bd2d04ca4600cb3217bd862aae8afeeddd1b02626d49983912b6     6683  test/support/Fixtures.h
 e26dfebb90161012ab8187bba70b41c4775ff79ec8dfa8d75a71a228ebe0a349     6340  test/support/Jobs.h
-3ba27aa476fd4b1fc5e5160bfd95d847e2b30d707c74e015b34325b414333122    99751  test/test_loop/test_loop.cpp
-3e12c1d9b45d9388805be9cc2a2491058630aa947eed9c743ea52456f54a339a    59526  test/test_runner/test_runner.cpp
+6b46578f7d90b5c75556a0d2a2deb50ef13fee20430969c18db6db9d1796907f   111494  test/test_loop/test_loop.cpp
+283c74e5914a3fce8b875d401b9422757482b9616063e076c5c07d43c0f962f9    89243  test/test_runner/test_runner.cpp
 0708a3b026116c1ac387d09d2c6b1fb7c9a20db09ac68fd8822e30d8c6d98bf5     1451  tests/fixtures/companion/access-list-response.hex
 ebfa67bcdf0617c577c093010f475fdd7e949886e3cc3745ddd665d990f844d8     2221  tests/fixtures/companion/access-list-response-full.hex
 e9044d5ff237821c677aebad7e818659ead316c601d4398a847b9827c75a15a3      288  tests/fixtures/companion/advert.hex
@@ -66,8 +66,15 @@ f8bd77ec8f7ee343a997921072df8ad890110f710b51fb714e38d099772314f7      755  tests
 4716835472f634990290eaca0692a8fe9a49911330ab2dfdb74068f882b16c98       46  tests/fixtures/contracts/AdvertRequestResult.json
 486664f1a504c8df318c3385f693b8944142ce1fc19856d739e41addd5abc10b       50  tests/fixtures/contracts/AgentBudget.json
 26c224b258135d329aecd0df24994acc0a238466b0ede9d5365100e48eb0edc3      186  tests/fixtures/contracts/AgentConfig.json
+d2fbe1ade4e5076051135b53cf71bcb2468df285d167096822e10583a066b07b       92  tests/fixtures/contracts/AgentFlood.json
 7536f7d030b008d05c6b3c253bd0d6581d22f9d2309933842b90edf5c036a68f      544  tests/fixtures/contracts/AgentHeartbeat.json
+2c8443fa07a2b147d501f1299422fe7a650de2958074fc02b50851d284cc3313      644  tests/fixtures/contracts/AgentHeartbeatFlood.json
+a7389b66dbacf0b120fef712c51b073f6c0d6942b291e09d50d32005de2425ca      260  tests/fixtures/contracts/AgentHeartbeatNoKey.json
 2991fa2724df8d42187922d9cd8a56a768cfe1fcd9d999009366c52ad02657c5      495  tests/fixtures/contracts/AgentHeartbeatNoWake.json
+082d3883487506e3910dfd63a822dc9b7b78a766fe0ed26226e4f268e1c628e1      936  tests/fixtures/contracts/AgentHeartbeatObserver.json
+f0362154dfac93d78c4274a0b00afc007700eca22c304545620bfa66e8b96931      381  tests/fixtures/contracts/AgentObserver.json
+c678c7403596ceb9d46ed4257f5c1979d2ae60f39a8de6147787a285cad2f6e9      204  tests/fixtures/contracts/AgentObserverSlot.json
+90c99cdfc099939b0782803cc17ecd758fb35b82de38c984c1320c70f7d8e6e6       51  tests/fixtures/contracts/AgentTransportList.json
 3fa33377dffa8e89994ce866cd3174e1574dbf0583167e0f8aeb417000366dea      422  tests/fixtures/contracts/ClaimedJob.json
 c4014a3c623935dc4451d33152df277780772059953fca9bf5ada01723797db5       10  tests/fixtures/contracts/ClaimRequest.json
 af48c3e6a7efc745168c8665305d4eb9c32316281b866cc60e177b7f5a20d770      469  tests/fixtures/contracts/ClaimResponse.json
@@ -105,9 +112,10 @@ dc7ff0a2038bb700cea361ce1766f3dda059896ecf25e77518ce6efae5fc81f0      135  tests
 6ee498fbe9c18e1db7baec435f5d0e72fc13b0ce8681327666dd45de1c286a0d      126  tests/fixtures/contracts/JobCredential.json
 f39804cbd8b263563ddf42a595076e1102ed76a4dcbcc0baeeb70b009ea35865       65  tests/fixtures/contracts/JobResultReply.json
 34cd010a95cad09aedd255f885380001052975cf9ddb7ae90befd956e865f80e      545  tests/fixtures/contracts/JobResultReport.json
+0aef12f18aa353b60a291a93aaae9514e3a8b0ac06daf2e8b86699d7d965970b      247  tests/fixtures/contracts/JobResultReportFailed.json
 35e98e9b2f5470ade07dfca24441c5f7a3fc420bda6df6c56fdcb7dea2c00933       33  tests/fixtures/contracts/JobTimeouts.json
 196a5c5249aad26ce839d5a5a525b18989a89f6273da54edad373d0a473643df      147  tests/fixtures/contracts/JsonEscaping.json
-a4c1ab3e39260ea8de74575ab76073fee52bdf226911a3e13f0625bee0312443     6932  tests/fixtures/contracts/MANIFEST.txt
+2ebbd9a973aa863547cc46a27c7984f800ab5dc48ef4e29966214690694e354f     7711  tests/fixtures/contracts/MANIFEST.txt
 ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356        3  tests/fixtures/contracts/NeighboursPayload.json
 a4137b88462e1f7ef8786145e5549ec97b2d9844eb18a0a4df08a099bd87ea22      105  tests/fixtures/contracts/NeighboursResult.json
 a4902440aff8b2eba4e06d4e448cef8afbdbbf496b764d19e35c34d4ea85e6dd      265  tests/fixtures/contracts/Observation.json

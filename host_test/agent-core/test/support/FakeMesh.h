@@ -25,50 +25,51 @@
 //
 // ---- answers (the manifest) ------------------------------------------------------------------
 //
-// answer: login-ok              cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:135-144 MyMesh::handleLoginReq -- the reply is timestamp(4), RESP_SERVER_LOGIN_OK, 0, is_admin, permissions, a random blob(4), FIRMWARE_VER_LEVEL
+// answer: login-ok              cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:135-144 MyMesh::handleLoginReq -- the reply is timestamp(4), RESP_SERVER_LOGIN_OK, 0, is_admin, permissions, a random blob(4), FIRMWARE_VER_LEVEL
 // answer: login-ok              cite: fixture login-success.hex
 // answer: login-ok              cite: fixture login-success-readonly.hex
-// answer: login-acl-entry       cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:91-99 MyMesh::handleLoginReq -- a blank password is the ACL alone: the entry's own level, and no password check at all
-// answer: login-password        cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:100-128 MyMesh::handleLoginReq -- the admin password is admin, the guest password is guest, and the password rewrites the entry's role
-// answer: login-silent-password cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:106-111 MyMesh::handleLoginReq -- a password that is neither is `return 0`, which is silence and not a refusal
-// answer: login-silent-replay   cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:113-117 MyMesh::handleLoginReq -- a sender timestamp at or below the last one is silence
+// answer: login-acl-entry       cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:91-99 MyMesh::handleLoginReq -- a blank password is the ACL alone: the entry's own level, and no password check at all
+// answer: login-password        cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:100-128 MyMesh::handleLoginReq -- the admin password is admin, the guest password is guest, and the password rewrites the entry's role
+// answer: login-silent-password cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:106-111 MyMesh::handleLoginReq -- a password that is neither is `return 0`, which is silence and not a refusal
+// answer: login-silent-replay   cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:113-117 MyMesh::handleLoginReq -- a sender timestamp at or below the last one is silence
 // answer: login-refused         cite: fixture login-failed.hex
 // answer: status                cite: fixture status-response.hex
-// answer: status                cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:216-240 MyMesh::handleRequest -- REQ_TYPE_GET_STATUS answers every login, guests included
+// answer: status                cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:216-240 MyMesh::handleRequest -- REQ_TYPE_GET_STATUS answers every login, guests included
 // answer: telemetry             cite: fixture telemetry-response.hex
-// answer: telemetry             cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:241-263 MyMesh::handleRequest -- REQ_TYPE_GET_TELEMETRY_DATA answers Cayenne LPP after the tag
+// answer: telemetry             cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:241-263 MyMesh::handleRequest -- REQ_TYPE_GET_TELEMETRY_DATA answers Cayenne LPP after the tag
 // answer: neighbours            cite: fixture binary-response-neighbours.hex
-// answer: neighbours            cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:277-371 MyMesh::handleRequest -- REQ_TYPE_GET_NEIGHBOURS pages by the count asked for: total(i16), returned(i16), then prefix, heard_seconds_ago(u32), snr(i8)
+// answer: neighbours            cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:277-371 MyMesh::handleRequest -- REQ_TYPE_GET_NEIGHBOURS pages by the count asked for: total(i16), returned(i16), then prefix, heard_seconds_ago(u32), snr(i8)
 // answer: owner-info            cite: fixture binary-response-owner-info.hex
-// answer: owner-info            cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:372-375 MyMesh::handleRequest -- REQ_TYPE_GET_OWNER_INFO is "FIRMWARE_VERSION\nnode_name\nowner_info"
+// answer: owner-info            cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:372-375 MyMesh::handleRequest -- REQ_TYPE_GET_OWNER_INFO is "FIRMWARE_VERSION\nnode_name\nowner_info"
 // answer: access-list           cite: fixture access-list-response.hex
-// answer: access-list           cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:264-276 MyMesh::handleRequest -- REQ_TYPE_GET_ACCESS_LIST is {pub_key[6], permissions} per entry, entries at permissions 0 skipped, admin only
-// answer: request-silent        cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:376-377 MyMesh::handleRequest -- an unknown request type is `return 0`, which is silence
-// answer: forgotten-session     cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:663-671 MyMesh::onPeerDataRecv -- a sender the login table does not hold is answered nothing at all
-// answer: request-silent-replay cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:676-700 MyMesh::onPeerDataRecv -- a REQ whose timestamp is not above the client's last is silence
-// answer: datagram-too-long     cite: fw companion-v1.17.1 d9296435 src/Mesh.cpp:488-493 Mesh::createDatagram -- a plaintext past MAX_PACKET_PAYLOAD - CIPHER_MAC_SIZE - (CIPHER_BLOCK_SIZE - 1) = 167 bytes is never sent at all
-// answer: reply-padding         cite: fw companion-v1.17.1 d9296435 src/Utils.cpp:85-126 Utils::encrypt -- the plaintext is zero-padded to the cipher block, so a reply arrives a multiple of sixteen long
+// answer: access-list           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:264-276 MyMesh::handleRequest -- REQ_TYPE_GET_ACCESS_LIST is {pub_key[6], permissions} per entry, entries at permissions 0 skipped, admin only
+// answer: request-silent        cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:376-377 MyMesh::handleRequest -- an unknown request type is `return 0`, which is silence
+// answer: forgotten-session     cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:663-671 MyMesh::onPeerDataRecv -- a sender the login table does not hold is answered nothing at all
+// answer: request-silent-replay cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:676-700 MyMesh::onPeerDataRecv -- a REQ whose timestamp is not above the client's last is silence
+// answer: datagram-too-long     cite: fw companion-v1.18.0 81dbae59 src/Mesh.cpp:488-493 Mesh::createDatagram -- a plaintext past MAX_PACKET_PAYLOAD - CIPHER_MAC_SIZE - (CIPHER_BLOCK_SIZE - 1) = 167 bytes is never sent at all
+// answer: reply-padding         cite: fw companion-v1.18.0 81dbae59 src/Utils.cpp:85-126 Utils::encrypt -- the plaintext is zero-padded to the cipher block, so a reply arrives a multiple of sixteen long
 // answer: reply-padding         cite: fixture binary-response-telemetry-padded.hex
-// answer: path-return           cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:596-608 MyMesh::onAnonDataRecv -- a flooded request is answered with a path return, which is how a login teaches the way home
-// answer: cli-not-admin         cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:701-702 MyMesh::onPeerDataRecv -- a text message from a sender below admin is dropped without a word
-// answer: cli-retry             cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:709-740 MyMesh::onPeerDataRecv -- a sender timestamp equal to the last is a retry: nothing is run and the empty reply is not sent, and one below it is a replay
-// answer: cli-reply             cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:741-758 MyMesh::onPeerDataRecv -- a non-empty reply is a TXT_MSG of the repeater's own clock, TXT_TYPE_CLI_DATA in the flags byte, then the text
-// answer: cli-setperm           cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:1239-1260 MyMesh::handleCommand -- `setperm <pubkey-hex> <level>` answers OK, or Err - bad params / Err - bad pubkey / Err - invalid params
-// answer: cli-region-load       cite: fw repeater-v1.17.1 d9296435 examples/simple_repeater/MyMesh.cpp:1197-1229 MyMesh::handleCommand -- in load mode a region line is answered with nothing and the blank line ends the load with `OK - loaded N regions`
-// answer: cli-reboot            cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:185-186 CommonCLI::handleCommand -- `reboot` is _board->reboot(), which does not return: the silence is the answer
-// answer: cli-advert            cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:191-198 CommonCLI::handleCommand -- `advert` answers `OK - Advert sent` and `advert.zerohop` answers `OK - zerohop advert sent`
-// answer: cli-time              cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:217-228 CommonCLI::handleCommand -- `time <unix>` above the clock answers `OK - clock set: ...` and at or below it `(ERR: clock cannot go backwards)`
-// answer: cli-password          cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:256-261 CommonCLI::handleCommand -- `password <new>` stores at most fifteen bytes and echoes `password now: <what it stored>`
-// answer: cli-ver               cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:272-273 CommonCLI::handleCommand -- `ver` is the firmware version and the build date
-// answer: cli-board             cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:274-275 CommonCLI::handleCommand -- `board` is the board's manufacturer name
-// answer: cli-unknown           cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:443-444 CommonCLI::handleCommand -- a command it does not know is `Unknown command`
-// answer: cli-get               cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:807-986 CommonCLI::handleGetCmd -- a key it knows is `> <value>` and one it does not is `??: <key>`
-// answer: cli-set               cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:448-804 CommonCLI::handleSetCmd -- a value it took is `OK` (`OK - repeat is now ON`/`OFF` for repeat), a key it does not know is `unknown config: <rest>`
-// answer: cli-guest-password    cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:506-509 CommonCLI::handleSetCmd -- `set guest.password <new>` answers OK
-// answer: cli-region            cite: fw companion-v1.17.1 d9296435 src/helpers/CommonCLI.cpp:1041-1140 CommonCLI::handleRegionCmd -- `region` exports the map into 160 characters, `region default` answers ` default scope is <name>`, `region load` answers nothing and `region save` answers OK
+// answer: path-return           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:596-608 MyMesh::onAnonDataRecv -- a flooded request is answered with a path return, which is how a login teaches the way home
+// answer: cli-not-admin         cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:701-702 MyMesh::onPeerDataRecv -- a text message from a sender below admin is dropped without a word
+// answer: cli-retry             cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:709-740 MyMesh::onPeerDataRecv -- a sender timestamp equal to the last is a retry: nothing is run and the empty reply is not sent, and one below it is a replay
+// answer: cli-reply             cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:741-758 MyMesh::onPeerDataRecv -- a non-empty reply is a TXT_MSG of the repeater's own clock, TXT_TYPE_CLI_DATA in the flags byte, then the text
+// answer: cli-setperm           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:1241-1262 MyMesh::handleCommand -- `setperm <pubkey-hex> <level>` answers OK, or Err - bad params / Err - bad pubkey / Err - invalid params
+// answer: cli-region-load       cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:1199-1231 MyMesh::handleCommand -- in load mode a region line is answered with nothing and the blank line ends the load with `OK - loaded N regions`
+// answer: cli-reboot            cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:196-197 CommonCLI::handleCommand -- `reboot` is _board->reboot(), which does not return: the silence is the answer
+// answer: cli-advert            cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:202-209 CommonCLI::handleCommand -- `advert` answers `OK - Advert sent` and `advert.zerohop` answers `OK - zerohop advert sent`
+// answer: cli-time              cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:228-239 CommonCLI::handleCommand -- `time <unix>` above the clock answers `OK - clock set: ...` and at or below it `(ERR: clock cannot go backwards)`
+// answer: cli-password          cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:267-272 CommonCLI::handleCommand -- `password <new>` stores at most fifteen bytes and echoes `password now: <what it stored>`
+// answer: cli-ver               cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:283-284 CommonCLI::handleCommand -- `ver` is the firmware version and the build date
+// answer: cli-board             cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:285-286 CommonCLI::handleCommand -- `board` is the board's manufacturer name
+// answer: cli-unknown           cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:481-482 CommonCLI::handleCommand -- a command it does not know is `Unknown command`
+// answer: cli-get               cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:701-834 CommonCLI::handleGetCmd -- a key it knows is `> <value>` and one it does not is `??: <key>`
+// answer: cli-set               cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:486-699 CommonCLI::handleSetCmd -- a value it took is `OK` (`OK - repeat is now ON`/`OFF` for repeat), a key it does not know is `unknown config: <rest>`
+// answer: cli-guest-password    cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:513-516 CommonCLI::handleSetCmd -- `set guest.password <new>` answers OK
+// answer: cli-region            cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:889-988 CommonCLI::handleRegionCmd -- `region` exports the map into 160 characters, `region default` answers ` default scope is <name>`, `region load` answers nothing and `region save` answers OK
 // answer: trace                 cite: fixture trace-data.hex
-// answer: trace                 cite: fw companion-v1.17.1 d9296435 src/Mesh.cpp:42-67 Mesh::onRecvPacket -- a TRACE states its hash size as an exponent in the flags byte and carries one SNR a hop, the final one measured on the packet home
-// answer: discovery             cite: fw companion-v1.17.1 d9296435 examples/companion_radio/MyMesh.cpp:1602-1630 MyMesh::handleCmdFrame -- path discovery is a flooded base-telemetry request, so what answers it is the telemetry reply and a path return
+// answer: trace                 cite: fw companion-v1.18.0 81dbae59 src/Mesh.cpp:42-67 Mesh::onRecvPacket -- a TRACE states its hash size as an exponent in the flags byte and carries one SNR a hop, the final one measured on the packet home
+// answer: discovery             cite: fw companion-v1.18.0 81dbae59 examples/companion_radio/MyMesh.cpp:1651-1679 MyMesh::handleCmdFrame -- path discovery is a flooded base-telemetry request, so what answers it is the telemetry reply and a path return
+// answer: flood-scope           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:556-567 MyMesh::onRecvPacket -- a scoped flood is matched against the region map and an unscoped one against the wildcard, and a flood with no region behind it is forwarded by nobody (allowPacketForward, same file 434-443)
 //
 // ---- end of the manifest ---------------------------------------------------------------------
 
@@ -126,7 +127,14 @@ struct Send {
   uint8_t reqType = 0;  // Request only
   std::string text;     // Cli only
   bool sensitive = false;
+  // Login only: the login carried a password, rather than the empty material of the ACL login,
+  // the guest door or a job the mesh answers locally (task p1.10-41). The **value** is never
+  // kept here - what a test asserts is that a login carried one or did not.
+  bool withMaterial = false;
   bool answered = false;  // a reply was delivered for this send
+  // Which shape a flood went out in (IMesh::setFloodMode, task p1.8-32); false for a direct send
+  // and for a mesh whose scope is `*`.
+  bool scoped = false;
 
   const char* kindName() const {
     switch (kind) {
@@ -189,6 +197,32 @@ class FakeMesh : public mm::IMesh {
   void setFirmware(const std::string& ver) { firmware_ = ver; }
   void setBoardName(const std::string& board) { board_ = board; }
   void setRegionListing(const std::string& listing) { regionListing_ = listing; }
+  // The flood scope this mesh reports (IMesh::floodScope): a region's name, `*`, or the empty
+  // string for a mesh that says **nothing** about scope, which answers nullptr as the interface's
+  // own default does - and which is this fake's own default, so that every suite written before
+  // task p1.8-32 sends the heartbeat it always sent. A test of the scope says `setFloodScope("dk")`
+  // and gets what the board's key table falls back to.
+  void setFloodScope(const std::string& scope) { floodScope_ = scope; }
+  // The path-hash width this mesh floods at (IMesh::floodPathHashSize), two bytes by default.
+  void setFloodPathHashSize(uint8_t bytes) { floodPathHashSize_ = bytes; }
+  // This mesh answers for the repeater without the air (IMesh::answersLocally, task p1.10-40):
+  // the Walter's *local door*, where the radio a job is for is the one wired to the board. The
+  // repeater behind the fake answers exactly the same bytes either way - it is a repeater and not
+  // a radio - so what a test of the door asserts is the **pacing** and, since task p1.10-41, the
+  // **material** the login carries (`loginsWithMaterial`). Those two are the library's whole side
+  // of the door. The real door answers a login *at admin whatever it carried*
+  // (`LinkMesh::localLogin`); this fake is a stock repeater and answers an empty login at the
+  // level its ACL holds this board's key at, so a test that wants a local **admin** session says
+  // `grant(self(), kPermAdmin)` and gets the same answer by the stock route. False by default, as
+  // the interface is and as this board's mesh is.
+  void setAnswersLocally(bool local) { answersLocally_ = local; }
+  // answer: flood-scope - which shape of flood reaches this repeater at all. A repeater with no
+  // region map drops a `dk` flood it would have forwarded unscoped, and a mesh of repeaters
+  // running `flood.max.unscoped=0` never carries an unscoped one. Both reach it by default.
+  void setFloodsReaching(bool scoped, bool unscoped) {
+    scopedReaches_ = scoped;
+    unscopedReaches_ = unscoped;
+  }
   void setRegionDefault(const std::string& scope) { regionDefault_ = scope; }
   void setNeighbours(std::vector<NeighbourEntry> list) { neighbours_ = std::move(list); }
   void setRepeaterClock(uint32_t epoch) { repeaterNow_ = epoch; }
@@ -244,6 +278,25 @@ class FakeMesh : public mm::IMesh {
     return n;
   }
   int logins() const { return count(Send::Kind::Login); }
+  // How many of those logins carried a password at all (task p1.10-41): a job the mesh answers
+  // locally must log in with none, at every class, and this is how a test sees that the claim's
+  // password stayed where it was.
+  int loginsWithMaterial() const {
+    int n = 0;
+    for (const Send& s : sends_) {
+      if (s.kind == Send::Kind::Login && s.withMaterial) n++;
+    }
+    return n;
+  }
+  // The shape of every flood that went out, in order: true scoped, false unscoped. A direct send
+  // contributes nothing.
+  std::vector<bool> floodShapes() const {
+    std::vector<bool> out;
+    for (const Send& s : sends_) {
+      if (!s.direct) out.push_back(s.scoped);
+    }
+    return out;
+  }
   int requests() const { return count(Send::Kind::Request); }
   int cliLines() const { return count(Send::Kind::Cli); }
   int requestsOf(uint8_t reqType) const {
@@ -290,6 +343,15 @@ class FakeMesh : public mm::IMesh {
   void forgetSends() { sends_.clear(); }
 
   // ------------------------------------------------------------------ IMesh
+
+  const char* floodScope() const override { return floodScope_.empty() ? nullptr : floodScope_.c_str(); }
+  void setFloodMode(mm::FloodMode mode) override { nextMode_ = mode; }
+  // The width this mesh's floods originate at (IMesh::floodPathHashSize, task p1.10-39): two
+  // bytes, as the Heltec's `AgentMesh::kFloodPathHashSize` is and as the rail asks. A test that
+  // wants to see the library *ask* rather than assume says `setFloodPathHashSize(4)`.
+  uint8_t floodPathHashSize() const override { return floodPathHashSize_; }
+  // Whether a job of this mesh is served off the air (IMesh::answersLocally, task p1.10-40).
+  bool answersLocally() const override { return answersLocally_; }
 
   void setRing(mm::ObservationRing* ring) override { ring_ = ring; }
   mm::ObservationRing* ring() const { return ring_; }
@@ -368,6 +430,7 @@ class FakeMesh : public mm::IMesh {
     const bool direct = note(Send::Kind::Login, senderTimestamp);
     const std::string offered =
         password == nullptr ? std::string() : std::string(password).substr(0, mm::kMaxPasswordLen);
+    sends_.back().withMaterial = !offered.empty();
     const mm::SendResult how = direct ? mm::SendResult::Direct : mm::SendResult::Flood;
     if (!reachable()) return how;
 
@@ -538,7 +601,7 @@ class FakeMesh : public mm::IMesh {
 
   // getCurrentTimeUnique(): the time, or one above the last one handed out, so the series a
   // repeater sees from this key is strictly increasing across REQs and CLI lines alike
-  // (src/MeshCore.h:108-114 at d9296435). This is the **exit node's** series.
+  // (src/MeshCore.h:119-125 at 81dbae59). This is the **exit node's** series.
   uint32_t unique() {
     const uint32_t now = platform_.clock().hasTime() ? platform_.clock().now() : platform_.millis() / 1000u;
     if (now <= lastUnique_) return ++lastUnique_;
@@ -555,6 +618,9 @@ class FakeMesh : public mm::IMesh {
     s.kind = kind;
     s.atMs = platform_.millis();
     s.direct = alwaysDirect || (!alwaysFlood && havePath_);
+    // What the mesh was last told, as this mesh's own scope allows it: `*` and "nothing at all"
+    // have no scope to carry, so every flood of theirs is unscoped.
+    s.scoped = !s.direct && floodScope_ != "*" && !floodScope_.empty() && nextMode_ == mm::FloodMode::Scoped;
     s.tag = tag;
     sends_.push_back(s);
     counters_.tx++;
@@ -567,7 +633,15 @@ class FakeMesh : public mm::IMesh {
       silentSends_--;
       return false;
     }
+    if (!floodReaches()) return false;
     return addressed();
+  }
+  // answer: flood-scope - a flood whose scope this repeater's region map does not hold with
+  // flood allowed is never seen by it, and neither is an unscoped one on a mesh that stopped
+  // forwarding those. From here that is a silence, exactly as being off the air is.
+  bool floodReaches() const {
+    if (sends_.empty() || sends_.back().direct) return true;  // direct routing is not scoped
+    return sends_.back().scoped ? scopedReaches_ : unscopedReaches_;
   }
   // A job begun for another key reaches nobody: there is one repeater on this mesh.
   bool addressed() const { return peerSet_ && peer_ == key_; }
@@ -965,6 +1039,12 @@ class FakeMesh : public mm::IMesh {
   std::string firmware_ = "v1.17.1 (Build: 27 Sep 2025)";
   std::string board_ = "Heltec";
   std::string regionListing_ = "* F\n dk F\n";
+  std::string floodScope_;
+  uint8_t floodPathHashSize_ = 2;
+  bool answersLocally_ = false;
+  mm::FloodMode nextMode_ = mm::FloodMode::Scoped;
+  bool scopedReaches_ = true;
+  bool unscopedReaches_ = true;
   std::string regionDefault_ = "dk";
   uint32_t repeaterNow_ = 1790000000;
   uint32_t lastRepeaterUnique_ = 0;

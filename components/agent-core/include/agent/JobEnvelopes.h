@@ -8,13 +8,13 @@
 //   ClaimResponse(DateTime ServerTime, IReadOnlyList<ClaimedJob> Jobs)
 //   JobResultReport(string ClientId, Outcome Outcome, DateTime StartedAt, DateTime FinishedAt,
 //                   IReadOnlyList<string>? PathUsed, int? Hops, int? RttMs, int? Transactions,
-//                   JsonElement? Data, string? Log)
+//                   JsonElement? Data, string? Log, string? FailedAt)
 //   ExtendRequest(int Seconds) / ExtendReply(long JobId, DateTime LeaseUntil)
 //   ProgressReport(JsonElement? Data, string? Note) / ProgressReply(long JobId, DateTime RecordedAt)
 //
 // (src/MeshMaster.Contracts/Envelopes.cs in twinoak/meshmaster.dk; the bytes are held against
-// tests/fixtures/contracts/ClaimedJob.json, JobResultReport.json, ExtendRequest.json,
-// ExtendReply.json, ProgressReport.json and ProgressReply.json.)
+// tests/fixtures/contracts/ClaimedJob.json, JobResultReport.json, JobResultReportFailed.json,
+// ExtendRequest.json, ExtendReply.json, ProgressReport.json and ProgressReply.json.)
 //
 // Host-portable, like the envelopes beside it: the claim is read with ArduinoJson and the result
 // is written by JsonWriter.h, and both are what test/test_claim exercises without a board.
@@ -207,7 +207,20 @@ struct JobReport {
   const char* data = nullptr;
 
   const char* log = nullptr;
+
+  // **Where a failed job failed** (meshmaster.dk's task p4.17-136): one of the two words below,
+  // or nullptr to leave the field out. `unreachable` is two different things - a login nobody
+  // answered, which on stock firmware is also a wrong password, and a request lost twice after
+  // a login that *was* answered - and only the first of them is a reason to tell an owner that
+  // the stored password is probably wrong. The server reads a result without the field exactly
+  // as it did before, so an older exit node is unaffected.
+  const char* failedAt = nullptr;
 };
+
+// The two words `JobReport::failedAt` may carry (the server's `JobFailedAt`). Static strings, so
+// a report can carry one without a buffer of its own.
+extern const char kFailedAtLogin[];    // no login was answered: silence to the password, or a refusal
+extern const char kFailedAtRequest[];  // a login was answered and the request after it was not
 
 size_t writeJobResult(const JobReport& r, char* out, size_t cap);
 

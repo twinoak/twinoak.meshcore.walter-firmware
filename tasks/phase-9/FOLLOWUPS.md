@@ -5,7 +5,7 @@ is written.
 
 ## Found while doing 01 (7 November)
 
-- [ ] **[05] The access list is asked for twice on a local job, and the local door is documented
+- [x] **[done by p9-05] The access list is asked for twice on a local job, and the local door is documented
   never to answer it.** `LinkMesh::localRequest` answers `kReqTypeGetAccessList` by *sending*
   nothing and letting the silence stand — on purpose (its comment: the library's own rule is that
   the ACL's silence is *no ACL in this snapshot, no evidence either way*). But agent-core's
@@ -16,6 +16,23 @@ is written.
   spends the budget — makes the *cost* nil, so this may need no code at all; what it needs is a
   look, because the retry is still a request the door is known to swallow, and the figure 35 in
   that test is what will change if 40 alters the pacing.
+  - **Looked at, and it needs no code.** `readAccessList` does ask with `retry`
+    (`agent/JobRunner.cpp`), and `LinkMesh::localRequest` does answer `kReqTypeGetAccessList` by
+    sending nothing, so a local `config.read` still spends **two** sends on a request this
+    firmware knows cannot be answered. What changed is the price: with the exit-node firmware's
+    task 40 in the copy, `JobRunner::spend` returns before the airtime gate for a job the door
+    answers, so neither try waits for a slot, spends one or counts a transaction. The 20-to-40
+    second wait the second try used to cost is gone, and what is left is two UART round trips of
+    a few milliseconds each.
+  - **The figure moved as predicted**: 35 transactions became **0**.
+    `host_test/agent-backend/test_agent_watchdog.cpp` holds the new figure, and
+    `test_agent_local_door.cpp` holds `local_silent` at exactly **2** - so a door that learns to
+    answer the access list (link 1.2, task 06) is a visible change rather than a quiet one.
+  - **Not changed, deliberately.** Suppressing the second try would mean the Walter deciding
+    something about the library's retry policy from inside an `IMesh`, and the library's reading
+    of the silence - *no ACL in this snapshot, no evidence either way* - is the reading that keeps
+    a local `config.read` from reporting an empty access list as a fact. Task 06 is where the
+    door gets a real answer for it (`LOCAL_REQUEST`).
 
 - [ ] **[later] `wake` says how long each wake was, not what it did.** 7 November, the 5-minute wake
   test: the list showed three wakes of about 40 s and four of 6–7 s. They were read as wakes that
@@ -60,3 +77,21 @@ is written.
   to a socket id and inherited when the id is reused, and what `AT+SQNSD` answers on an id the
   modem still holds open or closing. A machine with a PDF reader, or Sequans' own portal, settles
   both in ten minutes.
+
+## Found while doing 05 (8 November)
+
+- [ ] **[later] The wake still prices a local job as air.** `AgentLoop::wakeJobs` asks
+  `transactionsOf(job)` and `estimateJobMs(job)` - `n x (minGapSeconds + loginMs)` - *before* it
+  runs a claimed job, and reports it `failed`, *wake budget: about N s left of this wake and
+  config.read needs about M s*, at no transaction when the wake's slice is smaller. A 34-line
+  local `config.read` is priced at 34 x (20 s + 8 s) = **952 s** by that arithmetic, whatever the
+  door does, because `spend` is a different gate from this one. It does not bite today: the
+  exchange is given `kBackendBoundMs`, **1 200 s** (`core/cycle/wake_cycle.h`), and the
+  transaction cap is sized to the dearest job at every band but `critical`
+  (`agent::intent::kLargestJob`). But the margin is 248 s on the dearest job this unit really
+  runs, so a shorter backend bound, a longer key list or a larger `minGapSeconds` from the server
+  would refuse in seconds the very job task 05 made fast. The exit-node firmware's report
+  p1.10-40 named this for the Walter's pile 9 and `AgentLoop` is in the hash-checked copy, so
+  the fix is upstream's: price a job the mesh answers locally at the reply waits and not at the
+  gaps. Named here with the arithmetic so that the next pile can take it upstream rather than
+  rediscover it from a bench refusal.

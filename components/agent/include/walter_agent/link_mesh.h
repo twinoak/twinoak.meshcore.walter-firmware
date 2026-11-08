@@ -31,6 +31,10 @@
 //     list is answered with silence (the library reads that as *no ACL, no evidence either way*),
 //     and status, neighbours, owner-info, discovery and trace have no request on the link that
 //     yields the same bytes and are Failed. client_tx does not move for a local job.
+//     Since task p9-05 the library is **told** so, by `answersLocally()` below: such a job
+//     neither waits for the airtime budget nor spends it, counts no transaction, and logs in
+//     with no material at any class - `admin` included, so no admin password is stored for a
+//     unit's own repeater anywhere.
 //
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
@@ -146,7 +150,9 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // ------------------------------------------------------------------ what the console reads
 
   bool jobBegun() const { return job_.begun; }
-  bool local() const { return job_.begun && job_.local; }
+  // The same question the library asks as `answersLocally()` below, under the name this end has
+  // called it since task p4-02. One expression, two names: the console's and the interface's.
+  bool local() const { return answersLocally(); }
   bool awaiting() const { return await_ != Await::kNone; }
   // MESH_COUNTERS now, into counters(). False when the link did not answer; counters() then
   // keeps what it had.
@@ -186,6 +192,35 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // that a wake which cannot yet tell a local job from a stranger's advertises no mesh type at
   // all (task p8-04; `setOwnKey` above).
   bool supports(const char* jobType) const override;
+
+  // **The local door, in the library's own words** (`IMesh::answersLocally`, agent-core at
+  // 8c24da5b: the exit-node firmware's tasks p1.10-40 and p1.10-41). True from a `beginJob` for
+  // the unit's own repeater until the `endJob` that closes it, and false otherwise - which is
+  // exactly `job_.local` for the span `job_.begun` holds, because `beginJob` sets the pair
+  // together and `endJob` clears the whole `Job`. The default of the interface is false, so this
+  // override is the whole of what the Walter adds: the one mesh in the fleet that reaches a
+  // repeater by something other than the mesh.
+  //
+  // What the library then does, and why it is right here:
+  //
+  //   - **no airtime budget and no transaction.** `JobRunner::spend` returns before the gate,
+  //     so a local job neither waits for a slot nor spends one, and its exchanges count no
+  //     transaction (EXIT-NODES §7: a transaction is an exchange with a repeater *over the
+  //     mesh*). Nothing of a local job touches the channel - the login is answered by this end,
+  //     a CLI line is §5.7's CLI request and a telemetry read §5.8's LPP_GET - so there is no
+  //     channel to share. On 7 November 2026 a 34-line `config.read` of the first unit's own
+  //     repeater was paced at the server's *2 a minute, gap 20 s* anyway and its first 40 s wait
+  //     outlived the task watchdog (task p9-01 ended the reset; this ends the wait).
+  //   - **no login material at any class.** `loginMaterialFor` answers the empty string the
+  //     moment this is true, `admin` included, because `localLogin()` below answers the login
+  //     itself at admin and never reads the password it was handed. So a unit configures its own
+  //     repeater with **no admin password stored anywhere** - the refusal of 7 November, for a
+  //     radio whose settings had been lost and whose admin password is a random one nobody knows
+  //     (S-13).
+  //
+  // The lease still ends such a job: it is the server's claim on the repeater and says nothing
+  // about the air.
+  bool answersLocally() const override { return job_.begun && job_.local; }
 
   bool beginJob(const char* publicKeyHex, const std::uint8_t* pathHashes, std::uint8_t hopCount,
                 std::uint8_t hashSize) override;

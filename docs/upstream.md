@@ -15,12 +15,15 @@ This firmware is built **against** that library, not forked from it. The pin is
 one line, twice:
 
 ```
-components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit cc5a3436…
-host_test/agent-core/MANIFEST.txt    # source: … at commit cc5a3436…
+components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit 8c24da5b…
+host_test/agent-core/MANIFEST.txt    # source: … at commit 8c24da5b…
 ```
 
-`cc5a3436` is `v0.3.0`, and `AGENT_CORE_VERSION` in the copy says the same
-number. The two manifests are the
+`8c24da5b` is **four commits past `v0.6.0`**, which is what `AGENT_CORE_VERSION`
+in the copy says: the pin is a *commit* and not always a tag, because the work a
+consumer needs is sometimes in the library before its next release. Task p9-05
+is the first such pin — the exit-node firmware's tasks p1.10-40 and p1.10-41,
+which the local door could not do without. The two manifests are the
 only places the commit is written down, and
 `host_test/rails/test_rail_agent_core.cpp` fails if they disagree: the board
 would be running one release of the agent and the suites testing another.
@@ -41,7 +44,7 @@ dependencies:
   twinoak/agent-core:
     git: https://github.com/twinoak/twinoak.meshmaster.exitnode-firmware.git
     path: lib/agent-core
-    version: cc5a34366b316ead6248f651e8263c294bb6feea
+    version: 8c24da5bca3dda6e788ab294d3b5357130140e1b
 ```
 
 **That repository is private.** The component manager resolves a `git` source by
@@ -57,7 +60,7 @@ here, held byte for byte against a manifest.**
 
 | | |
 |---|---|
-| `tools/sync-agent-core.ps1 -Ref v0.3.0` | `git archive` of that commit out of a clone beside this one, into the two trees, and a `MANIFEST.txt` of SHA-256, size and commit for each. Reads the exit-node clone; writes nothing in it |
+| `tools/sync-agent-core.ps1 -Ref v0.6.0` | `git archive` of that commit out of a clone beside this one, into the two trees, and a `MANIFEST.txt` of SHA-256, size and commit for each. Reads the exit-node clone; writes nothing in it |
 | `tools/sync-agent-core.ps1 -Verify` | every file of both trees against its manifest line, plus the two commits against each other. No network, no clone. `tools/verify.ps1` runs it **before the container starts**, and so does CI |
 | `components/agent-core/` | the library, as an ESP-IDF component — its own `CMakeLists.txt` and `idf_component.yml`, unedited; ArduinoJson 7.4.3 comes from the public component registry, which needs no credential |
 | `host_test/agent-core/` | the four fakes, both fixture sets, the library's own two suites and upstream's `platformio.ini`, at **upstream's own paths**, so that every case of both suites runs here unmodified |
@@ -103,7 +106,11 @@ mornings and on demand:
 
 1. `tools/upstream-check.ps1` reads the exit-node repository's `v*` tags and
    compares the newest with the version in the copy. Nothing newer: it says so
-   and stops.
+   and stops. **It compares versions and not commits**, so a pin taken past a
+   tag — as task p9-05's is, four commits past `v0.6.0` — reads as *up to date*
+   until the next tag is cut. That is the right answer for a watch whose job is
+   to notice releases, and it is why the row in *The pin's history* below carries
+   the commit as well as the version.
 2. Something newer: `tools/sync-agent-core.ps1 -Ref <tag>` over a clone the job
    made in `/tmp`, a branch `upstream/<tag>` carrying both re-copied trees and
    both rewritten manifests, pushed, and a pull request **agent-core \<tag\>**
@@ -221,5 +228,6 @@ this firmware is [`ARCHITECTURE.md`](ARCHITECTURE.md) §13.
 | Tag | Commit | When | Why |
 |---|---|---|---|
 <!-- upstream.yml inserts the newest row directly under this line -->
+| `v0.6.0`+4 | `8c24da5b` | 8 November 2026 | task p9-05, and the first pin that is not a tag: `IMesh` gained `answersLocally()` (p1.10-40) and `loginMaterialFor` a second parameter (p1.10-41), which together are the local door's *no airtime, no password* — the work the unit needed four commits before the library's next release. Three releases came with it (`v0.3.1` the UTF-8 strings, `v0.4.0` the heartbeat's observer and `failedAt`, `v0.5.0` the flood scope and the neighbours, `v0.6.0` a lighter TLS on a Heltec), every one of them additive: nothing of this repository changed to compile against them |
 | `v0.3.0` | `cc5a3436` | 22 October 2026 | the pin task p4-01 landed with (its second session): `IRetained` and the image a sleep keeps, a wake that keeps its budget, `IMesh::supports()`, `MeshReply` without `viaPath`/`snr`, and both of p4-01's upstream findings taken — so this repository compiles the library in its own dialect and exempts no warning of it |
 | `v0.2.0` | `bbe7ae05` | 15 October 2026 | the first copy (task p4-01, first session): the first release of the library a consumer may pin, and the first ESP-IDF build of it anywhere - never on `main` |

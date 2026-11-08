@@ -258,11 +258,20 @@ An independent read of the code and tests against the task files; nothing built,
     bytes that follow it leaves the library's parser counting the rest of the UART as that payload
     until the command timeout clears it - which would explain a single 30 s gap with the next
     connection going through in 3.7 s.
-- [ ] **[next Walter pile / agent-core] A local job is paced like the air.** 7 November: `telemetry` for
+- [x] **[done by p9-05] A local job is paced like the air.** 7 November: `telemetry` for
   the unit's own repeater went through the local door, `ok after 2 transaction(s)`, and took 20 s,
   which is the server's `gap 20 s` between two transactions. Neither went on the air (the local login
   and `LPP_GET`). The airtime budget is the mesh's, so a local job should neither spend it nor wait
   for it.
+  - **Done by the exit-node firmware's task p1.10-40 and this repository's p9-05.** `mm::IMesh`
+    gained a defaulted `answersLocally()`; `JobRunner::spend` returns before the airtime gate when
+    it is true - no wait, no slot, no transaction - and `LinkMesh` overrides it from `job_.local`,
+    true from a `beginJob` for the unit's own key to its `endJob` and never otherwise.
+  - The pin is `8c24da5b`, four commits past `v0.6.0` (`docs/upstream.md`). Measured: the 34-line
+    `config.read` of the own repeater is **3.4 s** of simulated time at 0 transactions, where it
+    was **983 s** at 35; the same read of a **neighbour** is still 983 s at 34, which is the test
+    that says the pacing was taken away from the door and not from the air
+    (`host_test/agent-backend/test_agent_local_door.cpp`, `test_agent_watchdog.cpp`).
 - [x] **[done by p9-02] `DEPRECATION: Use socketConfig(socket_id, pdp_ctx_id, mtu, exchange_timeout,
   conn_timeout, send_delay_ms, rsp, cb, args) instead`** on the first connection of a boot. Move
   `walter_tls.cpp` to the library's current signature.
@@ -295,7 +304,7 @@ An independent read of the code and tests against the task files; nothing built,
   - One thing found on the way and fixed: `agent jobs`'s `firmware` line was a single `sayf` of
     more than the 200 bytes a line is printed into, so it had been cut at *0 pow* and had lost
     its newline. It is three lines now.
-- [ ] **[next Walter pile / agent-core] An admin job for the unit's own repeater needs a password nobody
+- [x] **[done by p9-05] An admin job for the unit's own repeater needs a password nobody
   reads.**
   - agent-core decides what to log in with before it knows a job is local. `loginMaterialFor`
     (`LoginSequence.cpp`) answers `nullptr` for an `admin`-class job whose claim carries no password,
@@ -310,7 +319,15 @@ An independent read of the code and tests against the task files; nothing built,
     `advert.request`, `acl.set`, `password.set`) is `admin`-class.
   - **Fix:** skip the material check for a job the local door will answer. Then meshmaster.dk drops
     its exception and hands nothing at any class.
-- [x] **[p9-01 did fix 1 and fix 3; fix 2 is p9-05's] A busy wait below one tick still starves the watchdog: a config read
+  - **Done by the exit-node firmware's task p1.10-41 and this repository's p9-05**, and that is
+    the fix as written: `loginMaterialFor` answers the **empty string at every class** the moment
+    the mesh says the job is local, `admin` included, one line before the check it used to fail.
+    A password the claim did carry is not sent either, because the door ignores it.
+  - **And meshmaster.dk has already dropped the exception** (its tasks p4.27-173 and 175):
+    `LocalDoor.HandsNothing` hands nothing at any class for a unit's own repeater from
+    `NoMaterialFrom` = **0.1.2**, read off the heartbeat's `agentVersion`. So this closes on the
+    bench when the unit is at v0.1.2 (`docs/bench.md` §18), not when the branch merges.
+- [x] **[done: fixes 1 and 3 by p9-01, fix 2 by p9-05] A busy wait below one tick still starves the watchdog: a config read
   resets the Walter.** 7 November, 19:12 UTC, Walter 0.1.1, `agent wake` with job 22032
   (`config.read`, the unit's own repeater 41, 34 lines through the local door):
   `task_wdt: … IDLE0 (CPU 0) … CPU 0: main … Aborting`, a core dump to flash, a reboot.
@@ -349,7 +366,10 @@ An independent read of the code and tests against the task files; nothing built,
     - **fix 3:** `host_test/agent-backend/test_agent_watchdog.cpp` - the 34-line local
       `config.read` at *2 a minute, gap 20 s* through the real `JobRunner` and the real `LinkMesh`.
       It measured **1,020,000 ms** without a blocking wait before the fix and **0** after.
-    - **fix 2 is not done here** and is still the thing that would have saved this job: it is the
-      exit-node firmware's task 40 and this phase's task 05.
+    - **fix 2 is done by task p9-05**, and it is the thing that would have saved this job: the
+      exit-node firmware's task 40 in the copy, `LinkMesh::answersLocally()` here, and the read
+      that measured 1,020,000 ms now walks 3,420 ms with the gate never entered. The measurement
+      above did **not** go with it: the same read of a *neighbour* still waits out 966 s of
+      budget, and `test_agent_watchdog.cpp` holds the 2 s stretch on that one now.
     - The watchdog is unchanged (30 s, panic, both idle tasks).
 

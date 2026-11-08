@@ -67,7 +67,7 @@ namespace {
 bool typeAllowsClass(const char* type, CredentialClass c) {
   if (std::strcmp(type, "trace") == 0) return c == CredentialClass::None;
   // The three any login is answered. `neighbours` joined them in task p1.2-10, read from the
-  // firmware this project pins: examples/simple_repeater/MyMesh.cpp at d9296435 guards
+  // firmware this project pins: examples/simple_repeater/MyMesh.cpp at 81dbae59 guards
   // REQ_TYPE_GET_ACCESS_LIST with `sender->isAdmin()` (line 262) and REQ_TYPE_GET_NEIGHBOURS
   // with nothing at all (line 276), so a guest login gets the neighbour list. The server sends
   // the job at class `guest` for a guest-only pair since its task p4.7-94
@@ -375,6 +375,9 @@ bool parseClaimResponse(char* json, size_t len, ClaimedJob* jobs, int max, int& 
   return true;
 }
 
+const char kFailedAtLogin[] = "login";
+const char kFailedAtRequest[] = "request";
+
 size_t writeJobResult(const JobReport& r, char* out, size_t cap) {
   JsonWriter w(out, cap);
   char when[24];
@@ -418,6 +421,10 @@ size_t writeJobResult(const JobReport& r, char* out, size_t cap) {
     w.key("log");
     const size_t n = std::strlen(r.log);
     w.string(n > kMaxJobLogChars ? r.log + (n - kMaxJobLogChars) : r.log, kMaxJobLogChars);
+  }
+  if (r.failedAt != nullptr) {
+    w.key("failedAt");
+    w.string(r.failedAt);
   }
   w.endObject();
   return w.overflowed() ? 0 : w.length();

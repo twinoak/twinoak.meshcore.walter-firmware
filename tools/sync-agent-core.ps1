@@ -158,6 +158,16 @@ function Write-Manifest {
     return $n
 }
 
+function Set-TreeTimes {
+    # One moment on every file and directory of a copied tree: the moment the sync ran. See the
+    # call site for why a build's correctness depends on it.
+    param([string]$TreeRoot, [datetime]$When)
+    Get-ChildItem -LiteralPath $TreeRoot -Recurse -Force | ForEach-Object {
+        $_.LastWriteTime = $When
+    }
+    (Get-Item -LiteralPath $TreeRoot).LastWriteTime = $When
+}
+
 function Test-Tree {
     param([string]$TreeRoot, [string]$Label)
     $manifest = Read-Manifest (Join-Path $TreeRoot $manifestName)
@@ -231,14 +241,26 @@ if (-not (Test-Path (Join-Path $Repo '.git'))) {
 $commit = (& git -C $Repo rev-parse "$Ref^{commit}" 2>$null)
 if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}') { throw "$Ref is not a ref of $Repo" }
 $commit = $commit.Trim()
-$describe = (& git -C $Repo describe --tags --exact-match $commit 2>$null)
-Write-Host "agent-core: copying $upstreamName at $commit$(if ($describe) { " ($($describe.Trim()))" })"
+# The tag, if the commit is one, for the line below and nothing else. `git describe
+# --exact-match` *fails* on a commit that is not tagged - which is every `-Ref <commit>` between
+# two releases, the shape this script's own help documents - and PowerShell 5.1 turns a native
+# command's stderr into an ErrorRecord, which under this script's `$ErrorActionPreference =
+# 'Stop'` ended the sync before it copied anything (task p9-05: the first sync at a commit rather
+# than a tag). `2>$null` does not help: the record is made before the redirection. So the
+# preference is lowered for that one call and the exit code is what is read.
+$describe = ''
+$ErrorActionPreference = 'Continue'
+$tag = & git -C $Repo describe --tags --exact-match $commit 2>$null
+$ErrorActionPreference = 'Stop'
+if ($LASTEXITCODE -eq 0 -and $tag) { $describe = $tag.Trim() }
+Write-Host "agent-core: copying $upstreamName at $commit$(if ($describe) { " ($describe)" })"
 Write-Host "            from $Repo, which is read and never written"
 
 # git archive of one commit into a tar, then tar -x: no checkout, no index, nothing of that
 # repository's working tree touched (tasks/RUNBOOK.md: a sibling repository is read-only). A tar
 # file rather than a pipe, because PowerShell 5.1 turns a native-to-native pipe into text and
 # these trees have bytes in them that are not text.
+$syncStarted = Get-Date
 $work = Join-Path ([IO.Path]::GetTempPath()) ("agent-core-sync-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
 try {
@@ -280,6 +302,16 @@ try {
             }
             if (-not $Quiet) { Write-Host ("            {0} -> {1}" -f $path, ($tree.Dest + '/' + $landing)) }
         }
+        # Every copied file is stamped **now**, and this is not tidiness. `git archive` writes the
+        # *commit's* timestamp into the tar and `tar -x` keeps it, so a copy made today of a commit
+        # made yesterday lands with yesterday's mtime - older than the object files of a build that
+        # ran in between. Ninja compares mtimes, so an incremental build then keeps a stale object
+        # compiled against the *previous* header, and C++ answers that with a silent ODR
+        # violation rather than an error: task p9-05's first build of this sync had `mm::Heartbeat`
+        # at 152 bytes in a test and 168 in the library, and the suite died in the sanitizer
+        # instead of saying what was wrong. CI never sees it (a fresh checkout stamps everything
+        # at checkout), which is exactly why the local machine has to be right.
+        Set-TreeTimes $dest $syncStarted
         $n = Write-Manifest $dest $tree.What $tree.From $commit
         Write-Host ("{0}: {1} files, MANIFEST.txt written" -f $tree.Dest, $n)
     }

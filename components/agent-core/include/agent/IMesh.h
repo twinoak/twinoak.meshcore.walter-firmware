@@ -27,12 +27,13 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <agent/FloodScope.h>
 #include <agent/Observations.h>
 #include <agent/ReplyCodec.h>
 
 namespace mm {
 
-// The sizes a reply is held in. These are MeshCore's at the pin (MeshCore.h at d9296435:
+// The sizes a reply is held in. These are MeshCore's at the pin (MeshCore.h at 81dbae59:
 // MAX_PACKET_PAYLOAD 184, MAX_PATH_SIZE 64) written as the library's own numbers, and the link
 // protocol's too - LINK-PROTOCOL §6.1 caps a path at 64 bytes. AgentMesh.h asserts that
 // MeshCore's fit inside them.
@@ -83,7 +84,7 @@ struct MeshReply {
 // What a send came to. The words are MeshCore's MSG_SEND_* and mean the same thing.
 enum class SendResult : uint8_t { Failed, Flood, Direct };
 
-// The request types of examples/simple_repeater/MyMesh.cpp at d9296435 that the runner sends.
+// The request types of examples/simple_repeater/MyMesh.cpp at 81dbae59 that the runner sends.
 // kReqTypeGetAccessList (0x05) is beside its parser in mesh/ReplyCodec.h.
 constexpr uint8_t kReqTypeGetStatus = 0x01;
 constexpr uint8_t kReqTypeGetTelemetry = 0x03;
@@ -125,6 +126,74 @@ class IMesh {
     return true;
   }
 
+  // ------------------------------------------------------------------ the flood scope
+
+  // The region every flood of this mesh goes out in (meshmaster.dk's D-47; task p1.8-32): a
+  // region's name, `*` for *no transport code at all*, or **nullptr for a mesh that says nothing
+  // about scope** - whatever its radio holds decides, which is every exit node built before the
+  // setting existed and what the heartbeat leaves the `flood` object out for. The string outlives
+  // the call; nothing copies it.
+  virtual const char* floodScope() const { return nullptr; }
+
+  // Scoped or unscoped for the **next** flood, told per send and never per job (the companion's
+  // own `send_unscoped`, examples/companion_radio/MyMesh.cpp at 81dbae59). A direct send ignores
+  // it, and so does a mesh whose scope is `*` or nullptr - there is nothing to drop. The rule
+  // that decides which send gets which is agent/FloodScope.h's and lives in the job runner.
+  virtual void setFloodMode(FloodMode mode) { (void)mode; }
+
+  // ------------------------------------------------------------------ the path-hash width
+
+  // The path-hash width every flood of this mesh originates, in bytes (task p1.10-39). The
+  // library chooses a width in exactly one place - a trace to a **direct neighbour**, where there
+  // is no learned hop to take a width from and the only hash is one it computes itself from the
+  // repeater's key - and this is the number it chooses. Everywhere else it passes through the
+  // width the claim's path carried, because the extra byte of a narrow hop belongs to no node.
+  //
+  // The default is **2**, which is the rail of this repository and meshmaster.dk's D-33: path
+  // hashes are two bytes or more, never one, because two repeaters that share a first byte both
+  // repeat a packet addressed to that byte - the first bench showed exactly that, and so did job
+  // 20005 of 5 November 2026, a trace whose `86` could have been any of three repeaters. A mesh
+  // that overrides nothing floods no narrower than the rail allows. Override it only to say
+  // *wider*: 1, 2, 4 and 8 are what a trace packet can state (`isTraceableHashSize`), and a mesh
+  // answering anything else makes a trace to a direct neighbour `unsupported` rather than a frame
+  // nothing on the path can follow.
+  virtual uint8_t floodPathHashSize() const { return 2; }
+
+  // ------------------------------------------------------------------ the local door
+
+  // **This job is answered without the air** (task p1.10-40): true from a beginJob() for a
+  // repeater this mesh reaches by something other than the mesh, until the endJob() that closes
+  // that job - and false between jobs. The one such mesh is the repeater-v2 unit's Walter, whose
+  // own radio is wired to it over a UART: a job for *that* radio is served over the link (the
+  // *local door* of `components/agent/include/walter_agent/link_mesh.h` in
+  // twinoak.meshcore.walter-firmware) and nothing leaves an antenna.
+  //
+  // Such a job **neither waits for the airtime budget nor spends it**, and its exchanges count
+  // no transaction. The budget exists to share one radio channel (EXIT-NODES §8), and a job that
+  // never touches the channel has nothing to share: before this, a 34-line `config.read` of a
+  // unit's own repeater was paced at the default *2 a minute, gap 20 s* and spent eleven minutes
+  // waiting for air it was not going to use - on 7 November 2026 the first of those waits, about
+  // 40 s, outlived the Walter's task watchdog and reset it mid-job.
+  //
+  // Such a job also **logs in with no material at all** (task p1.10-41): the door answers the
+  // login itself, at admin, whatever it carried, so `loginMaterialFor` answers the empty string
+  // at every class - `admin` included, where a claim with no password is otherwise *nothing to
+  // log in with* and the job is refused unsent. A unit therefore configures its own repeater with
+  // no admin password stored anywhere, and a password the claim did carry is not sent to a door
+  // that would ignore it. If your mesh answers true, the login you are handed may be the blank
+  // one at any class.
+  //
+  // Two things do **not** change for a local job. The **lease** still ends it: a lease is the
+  // server's claim on the repeater and says nothing about the air. And the result's
+  // `transactions` stays what EXIT-NODES §7 defines it as - "one request/response exchange with
+  // one repeater over the mesh" - so a local job reports **0** of them, which is the reading that
+  // keeps meshmaster.dk's planned load a figure about the air.
+  //
+  // The default is **false**: a mesh that overrides nothing is on the air for every job, which is
+  // what every mesh was until now and what this board's `AgentMesh` is - the Heltec's radio is
+  // its own and it has no local door. Cheap, const, never blocks.
+  virtual bool answersLocally() const { return false; }
+
   // ------------------------------------------------------------------ a job's exchanges
 
   // The repeater this job is for, and the path the server knows to it (the hop hashes as the
@@ -161,7 +230,7 @@ class IMesh {
 
   // One CLI line as a TXT_MSG datagram of type CLI data, on the admin session. The mesh draws
   // the sender timestamp - the one the repeater judges replays by, which must be strictly above
-  // the last one it saw from this key (MyMesh::onPeerDataRecv at d9296435 answers an equal one
+  // the last one it saw from this key (MyMesh::onPeerDataRecv at 81dbae59 answers an equal one
   // with nothing and does not run the command) - from its unique-time series, puts it in the
   // packet and hands it back in `timestamp`; a retry calls again and gets a fresh one. The reply
   // is a TXT_MSG of the repeater's own and is awaited with awaitText(). `sensitive` is a line

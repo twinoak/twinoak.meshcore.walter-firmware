@@ -31,7 +31,7 @@
 
 namespace mm {
 
-// BaseChatMesh::sendLogin at d9296435 keeps at most 15 characters of a password, and so does
+// BaseChatMesh::sendLogin at 81dbae59 keeps at most 15 characters of a password, and so does
 // this board: a longer one is cut here, once, and the job's log says so - without the value.
 constexpr size_t kMaxPasswordLen = 15;
 
@@ -72,7 +72,7 @@ void wipeBytes(void* p, size_t len);
 // CMD_SEND_LOGIN and a sensitive CLI line: the bytes that are not made from the secret stay
 // hex, and every byte that was is one `*`. On the air a login is an ANON_REQ whose payload is
 // the destination's hash (1), our public key (32) and then the encrypted body
-// (Mesh::createAnonDatagram at d9296435), so the first kLoginPayloadClearBytes are printed and
+// (Mesh::createAnonDatagram at 81dbae59), so the first kLoginPayloadClearBytes are printed and
 // the rest is stars; a CLI line is a TXT_MSG datagram whose payload is the destination's hash
 // (1), our hash (1), and then the MAC and the cipher of the text (Mesh::createDatagram,
 // src/Mesh.cpp:488-510), so for a `password` line the first kDatagramClearBytes are printed and

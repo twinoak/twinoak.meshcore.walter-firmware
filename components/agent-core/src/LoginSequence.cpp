@@ -24,8 +24,21 @@ void noteCut(char* out, size_t cap, const char* which) {
 
 }  // namespace
 
-const char* loginMaterialFor(const ClaimedJob& job, char* out, size_t cap) {
+const char* loginMaterialFor(const ClaimedJob& job, bool answeredLocally, char* out, size_t cap) {
   if (out != nullptr && cap > 0) out[0] = '\0';
+  if (answeredLocally) {
+    // The local door answers this login itself, at admin, and never looks at what it carried
+    // (IMesh::answersLocally, task p1.10-41): the empty material at **every** class, so a job for
+    // a unit's own repeater needs no stored password, and a password the claim did carry is not
+    // sent to a door that would ignore it. Asked before the class, which is the whole fix: at
+    // `admin` the answer below is `nullptr` and the caller refuses the job without sending
+    // anything.
+    if (out != nullptr && cap > 0) {
+      std::snprintf(out, cap, "answered by the board, no password needed: the empty material at class %s",
+                    credentialClassName(job.credentialClass));
+    }
+    return "";
+  }
   switch (job.credentialClass) {
     case CredentialClass::Admin:
       if (!job.credential.hasAdminPassword) {

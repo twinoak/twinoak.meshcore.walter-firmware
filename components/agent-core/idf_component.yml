@@ -16,7 +16,7 @@
 ## the component registry: the component manager resolves it and adds it to this component's
 ## requirements, so CMakeLists.txt names it nowhere. Pinned exactly and not as a range, which is
 ## this repository's rule for every dependency (tasks/README.md) and the Walter's too.
-version: "0.3.0"
+version: "0.6.0"
 description: >-
   The portable half of the MeshMaster exit-node agent: the job runner, the agent loop, the agent
   API's envelopes and results, the reply codec, the airtime budget, the session cache, the

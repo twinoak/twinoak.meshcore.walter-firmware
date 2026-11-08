@@ -4,7 +4,12 @@
 //                  string? CompanionFirmware, RadioParameters? Radio, IReadOnlyList<string>? JobTypes,
 //                  AgentBudget? Budget, bool CompanionConnected, int QueueDepth,
 //                  IReadOnlyDictionary<string, long>? Errors, string? Board, int? NextCheckInS,
-//                  int? MaxTransactionsThisWake)
+//                  int? MaxTransactionsThisWake, AgentObserver? Observer, AgentFlood? Flood)
+//   AgentObserver(string? Iata, IReadOnlyList<AgentObserverSlot>? Slots)
+//   AgentObserverSlot(int Slot, string? Preset, string? Host, string State, DateTime? Since,
+//                     long Published, long Dropped, string? LastError)
+//   AgentFlood(string? Scope, bool UnscopedRetry, long AnsweredScoped, long AnsweredUnscoped,
+//              long Unanswered)
 //   RadioParameters(double? FreqMHz, double? BwKHz, int? Sf, int? Cr)
 //   Observation(DateTime At, string Kind, string PublicKey, IReadOnlyList<string>? Path, int? Hops,
 //               double? Snr, double? Rssi, ObservationFields? Fields)
@@ -18,7 +23,8 @@
 //
 // Host-portable, like the reply parser beside it (ConfigReply.h): test/test_envelopes holds the
 // heartbeat against tests/fixtures/contracts/AgentHeartbeat.json byte for byte, for the input
-// that fixture was written from.
+// that fixture was written from - and against AgentHeartbeatNoWake.json and
+// AgentHeartbeatObserver.json for the two other shapes the same sample has.
 
 #pragma once
 
@@ -44,6 +50,54 @@ struct RadioParameters {
 struct ErrorCounter {
   const char* name;
   long long value;
+};
+
+// One broker a consumer publishes to as an *observer*, as the heartbeat reports it
+// (AgentObserverSlot; meshmaster.dk's D-46 and its task p4.17-140). This library knows nothing
+// about what an observer is or does - no broker, no topic, no key - and nothing here is filled
+// in by it: a consumer that has one gives the loop a provider (AgentLoop.h,
+// `IHeartbeatObserver`) and the provider fills these. The field names and their order are the
+// record's, because the bytes are this library's to write.
+//
+// The server bounds every string (AgentObserverRules: preset 32, host 64, state 32, lastError
+// 120 characters, and at most six slots) and **a field over its bound is refused by name while
+// the rest of the heartbeat is still taken** - a bad observer object must never take an exit
+// node off the air. Nothing is bounded here: a provider that sends more than the server accepts
+// loses the object and keeps its exit node.
+struct HeartbeatObserverSlot {
+  int slot = 0;                        // which slot, as its console numbers them: 1, 2
+  const char* preset = nullptr;        // nullptr: the field is left out
+  const char* host = nullptr;          // nullptr: the field is left out
+  const char* state = "off";           // one word; the server keeps one it has not heard of
+  uint32_t since = 0;                  // when the slot entered this state; 0: the field is left out
+  long long published = 0;             // always written, as the record's non-nullable long is
+  long long dropped = 0;
+  const char* lastError = nullptr;     // nullptr: the field is left out
+};
+
+// The observer's state as the heartbeat reports it (AgentObserver): the region and one entry per
+// slot. `hasSlots` false leaves `slots` out entirely, which is not the same as an empty array.
+struct HeartbeatObserver {
+  const char* iata = nullptr;  // nullptr: the field is left out
+  bool hasSlots = false;
+  const HeartbeatObserverSlot* slots = nullptr;
+  int slotCount = 0;
+};
+
+// The flood scope as the heartbeat reports it (AgentFlood; meshmaster.dk's D-47 and its task
+// p4.20-151). Like the observer above, this library knows nothing about what a scope *is*: it
+// writes the bytes a consumer fills in. MeshMaster keeps the newest object on the exit node's row,
+// shows one line of it and configures nothing - the scope is set where the exit node runs.
+//
+// `scope` nullptr is **the companion's own**: the exit node says nothing about scope and whatever
+// its radio holds decides. The serializer omits a null member, so on the wire that is the absence
+// of `scope` inside a `flood` object that is present, which is not the same as no `flood` at all.
+struct HeartbeatFlood {
+  const char* scope = nullptr;      // a region's name, "*", or nullptr: the member is left out
+  bool unscopedRetry = false;       // the second try of a flooded transaction drops the scope
+  long long answeredScoped = 0;     // always written, as the record's non-nullable longs are
+  long long answeredUnscoped = 0;
+  long long unanswered = 0;
 };
 
 struct Heartbeat {
@@ -89,6 +143,18 @@ struct Heartbeat {
   int nextCheckInS = 0;
   bool hasMaxTransactionsThisWake = false;
   int maxTransactionsThisWake = 0;
+
+  // The observer, last, as the record has it (meshmaster.dk's D-46): nullptr for every consumer
+  // that is not one - which is every consumer until its owner turns one on - and then the
+  // heartbeat is byte for byte what it was. The object and every string in it must outlive the
+  // call that posts the heartbeat; nothing here is copied.
+  const HeartbeatObserver* observer = nullptr;
+
+  // The flood scope, after the observer as the record has it (D-47): nullptr for an exit node
+  // that says nothing about scope, which is every one built before the field existed, and then
+  // the heartbeat is byte for byte what it was. The object and its `scope` string must outlive
+  // the call that posts the heartbeat; nothing here is copied.
+  const HeartbeatFlood* flood = nullptr;
 };
 
 struct ObservationFields {

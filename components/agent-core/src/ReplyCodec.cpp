@@ -181,7 +181,7 @@ bool parseLoginReply(const uint8_t* data, size_t len, LoginReply& out) {
   if (data == nullptr || len < 2) return false;
   LoginReply r;
   // A legacy repeater answers the two letters "OK" where the new one answers a status byte
-  // (MyMesh::onContactResponse, companion-v1.17.1: the same two branches).
+  // (MyMesh::onContactResponse, companion-v1.18.0: the same two branches).
   if (data[0] == 'O' && data[1] == 'K') {
     r.legacy = true;
     out = r;

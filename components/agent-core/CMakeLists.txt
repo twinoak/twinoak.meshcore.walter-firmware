@@ -1,6 +1,6 @@
 # agent-core as an ESP-IDF component.
 #
-# The twenty-three sources of `src/` and the one include directory of `include/` - what
+# The twenty-four sources of `src/` and the one include directory of `include/` - what
 # `library.json` gives PlatformIO as `srcDir` and `includeDir` - named one by one in the form the
 # ESP-IDF's build system reads, because a component lists its sources. A consumer drops this directory
 # into `components/` (or names it in `EXTRA_COMPONENT_DIRS`, or takes it from this repository at a
@@ -34,6 +34,7 @@ idf_component_register(
     "src/ConfigReply.cpp"
     "src/Credentials.cpp"
     "src/Envelopes.cpp"
+    "src/FloodScope.cpp"
     "src/Iso8601.cpp"
     "src/JobEnvelopes.cpp"
     "src/JobResults.cpp"

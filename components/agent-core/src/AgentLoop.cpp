@@ -215,6 +215,31 @@ void AgentLoop::buildHeartbeat(Heartbeat& hb) {
   hb.nextCheckInS = static_cast<int>(intent_.nextCheckInS);
   hb.hasMaxTransactionsThisWake = intent_.maxTransactionsThisWake > 0;
   hb.maxTransactionsThisWake = intent_.maxTransactionsThisWake;
+  // The observer (task p1.7-28; meshmaster.dk's D-46): whatever the consumer's provider says,
+  // and nothing at all when there is none - this library knows only that it is an object the
+  // provider fills. A provider that answers false is one whose observer was turned off between
+  // two heartbeats, and the member is left out for it as it is for a consumer that has none.
+  hb.observer = nullptr;
+  if (observerProvider_ != nullptr) {
+    observer_ = HeartbeatObserver();
+    if (observerProvider_->describeObserver(observer_)) hb.observer = &observer_;
+  }
+  // The flood scope (task p1.8-32; meshmaster.dk's D-47): the scope is the mesh's own
+  // (IMesh::floodScope) and the three counts are the runner's, per flooded transaction since
+  // boot. A mesh that says nothing about scope writes **no object at all** - its floods go out in
+  // whatever its radio holds, which is what every exit node did before the field existed - and
+  // its heartbeat is byte for byte what it was.
+  hb.flood = nullptr;
+  if (const char* scope = mesh_->floodScope()) {
+    flood_ = HeartbeatFlood();
+    flood_.scope = scope;
+    flood_.unscopedRetry = jobs_->floodUnscopedRetry();
+    const FloodCounts& counts = jobs_->floodCounts();
+    flood_.answeredScoped = counts.answeredScoped;
+    flood_.answeredUnscoped = counts.answeredUnscoped;
+    flood_.unanswered = counts.unanswered;
+    hb.flood = &flood_;
+  }
 }
 
 // The board's own link, proven: the link up *and* a time that came off the network. An RTC that
@@ -656,6 +681,18 @@ void AgentLoop::wakeJobs(WakeReport& report) {
 
   for (int i = 0; i < count; i++) {
     const ClaimedJob& job = jobs_->claimed(i);
+    // A type the mesh declines is declined **before it is priced** (task p1.7-25). It spends no
+    // transaction and puts nothing on the air, so there is no budget for it to be too large for:
+    // run it and the runner answers `unsupported` with the reason in its log, which is what the
+    // same job gets in `loop()`. Priced first, a bound `trace` on a mesh with no trace came back
+    // `failed`, *wake budget*, which says this wake was too small for a job this unit will never
+    // run at all.
+    if (jobs_->meshDeclines(job)) {
+      jobs_->runClaimed(i);
+      report.jobsRun++;
+      if (report.jobs == StepOutcome::Skipped) report.jobs = StepOutcome::Done;
+      continue;
+    }
     const int price = transactionsOf(job);
     const int left = transactionsLeft();
     const uint32_t needMs = estimateJobMs(job);
@@ -918,16 +955,29 @@ bool AgentLoop::restoreKept() {
     if (body != nullptr) results.push(jobId, body, len);
   }
   const uint32_t nowMs = millis();
+  size_t undated = 0;
   for (size_t i = 0; i < image.advertCount(); i++) {
     HeardAdvert a;
     if (!image.advert(i, a)) break;
+    // An advert with no epoch is one no clock could date, and this version does not write one
+    // (keepAcrossSleep, task p1.7-25). An image a build before 0.3.1 left behind can hold one:
+    // it is dropped and counted here rather than stamped with the moment of this restore, which
+    // is what gave it the wrong time in the first place.
+    if (a.heardAtEpoch == 0) {
+      undated++;
+      continue;
+    }
     // The moment it was heard travels as `heardAtEpoch`; the uptime clock it was heard on is
     // gone, so on this boot's clock it was heard "now" - which only the batch-due timer reads.
     a.heardAtMillis = nowMs;
     ring_.push(a);
   }
+  if (undated > 0) {
+    LOG_W("kept: %u advert(s) in the image carry no time at all; they are dropped rather than stamped with now",
+          static_cast<unsigned>(undated));
+  }
   results.addDropped(image.resultsDropped());
-  ring_.addDropped(image.observationsDropped());
+  ring_.addDropped(image.observationsDropped() + static_cast<uint32_t>(undated));
   imagesRefused_ += image.imagesRefused();
   imageKnown_ = true;
   lastImageCrc_ = image.crc();
@@ -957,15 +1007,34 @@ void AgentLoop::keepAcrossSleep(WakeReport& report) {
   const size_t resultsOut = results.count() - keptResults;
 
   // Then the adverts, with the moment each was heard: the one it came back from a sleep with, or
-  // the clock's reading of the uptime it was heard at. No clock is 0, which the batch after the
-  // next boot stamps as "now" - the same as it would have without a store.
+  // the clock's reading of the uptime it was heard at.
+  //
+  // **An advert neither of those can date is dropped here** (task p1.7-25). With no clock there
+  // is no epoch to write and no age to carry: `heardAtMillis` is this boot's uptime, the sleep
+  // is of unknown length, and the next boot's `restoreKept` would stamp the advert with the
+  // moment of the restore - which is the wake that keeps adverts, the one where the heartbeat
+  // failed, so it is wrong by the whole outage and not by seconds. An observation with the wrong
+  // time is worse than none: it is what the server draws a coverage map from. So it is dropped
+  // and counted in `observationsDropped`, where the heartbeat says so once a clock is back, and
+  // the sleep is not asked to carry a duration no part of this image can bound.
+  //
+  // Every undatable advert is newer than every datable one - the restore gives each advert it
+  // reads back an epoch, so only an advert heard on *this* boot can be without one - which is
+  // why `dropNewest` below drops exactly these and the ones the store had no room for.
   const uint32_t nowMs = millis();
+  const bool haveClock = clock_->hasTime();
   size_t keptAdverts = 0;
-  for (; keptAdverts < ring_.size(); keptAdverts++) {
-    const HeardAdvert& a = ring_.at(keptAdverts);
+  size_t undated = 0;
+  for (size_t i = 0; i < ring_.size(); i++) {
+    const HeardAdvert& a = ring_.at(i);
     uint32_t epoch = a.heardAtEpoch;
-    if (epoch == 0 && clock_->hasTime()) epoch = epochOf(a.heardAtMillis, nowMs);
+    if (epoch == 0 && haveClock) epoch = epochOf(a.heardAtMillis, nowMs);
+    if (epoch == 0) {
+      undated++;
+      continue;
+    }
     if (!image.addAdvert(a, epoch)) break;
+    keptAdverts++;
   }
   const size_t advertsOut = ring_.size() - keptAdverts;
 
@@ -976,10 +1045,19 @@ void AgentLoop::keepAcrossSleep(WakeReport& report) {
     ring_.dropNewest(advertsOut);
     report.resultsNotKept = static_cast<int>(resultsOut);
     report.observationsNotKept = static_cast<int>(advertsOut);
-    LOG_W("kept: %u result(s) and %u advert(s) do not fit the %u bytes of the store and are dropped "
-          "(%lu result(s), %lu advert(s) dropped in all)",
-          static_cast<unsigned>(resultsOut), static_cast<unsigned>(advertsOut), static_cast<unsigned>(cap),
-          static_cast<unsigned long>(results.dropped()), static_cast<unsigned long>(ring_.dropped()));
+    if (undated > 0) {
+      LOG_W("kept: %u advert(s) were heard on a boot that never got the time and nothing can date them; "
+            "they are dropped rather than kept with the time of the next restore",
+            static_cast<unsigned>(undated));
+    }
+    const size_t advertsTooMany = advertsOut - undated;
+    if (resultsOut > 0 || advertsTooMany > 0) {
+      LOG_W("kept: %u result(s) and %u advert(s) do not fit the %u bytes of the store and are dropped "
+            "(%lu result(s), %lu advert(s) dropped in all)",
+            static_cast<unsigned>(resultsOut), static_cast<unsigned>(advertsTooMany),
+            static_cast<unsigned>(cap), static_cast<unsigned long>(results.dropped()),
+            static_cast<unsigned long>(ring_.dropped()));
+    }
   }
 
   const size_t len = image.finish(results.dropped(), ring_.dropped(), imagesRefused_);

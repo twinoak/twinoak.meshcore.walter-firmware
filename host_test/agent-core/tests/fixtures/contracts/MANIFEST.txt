@@ -1,5 +1,5 @@
 # The contract fixtures of the .NET agent, copied - never edited here.
-# source: twinoak/meshmaster.dk/tests/fixtures/contracts at commit 79b1e9cbaf97ea2dc7b58f69ac06d5a116efb9b9
+# source: twinoak/meshmaster.dk/tests/fixtures/contracts at commit 42e4d45145eb9c64bda89f7b4c98288fd71a12c4
 # written by tools/sync-fixtures.ps1; see README.md in this directory
 #
 # sha256                                                           bytes  name
@@ -9,8 +9,15 @@
 4716835472f634990290eaca0692a8fe9a49911330ab2dfdb74068f882b16c98      46  AdvertRequestResult.json
 486664f1a504c8df318c3385f693b8944142ce1fc19856d739e41addd5abc10b      50  AgentBudget.json
 26c224b258135d329aecd0df24994acc0a238466b0ede9d5365100e48eb0edc3     186  AgentConfig.json
+d2fbe1ade4e5076051135b53cf71bcb2468df285d167096822e10583a066b07b      92  AgentFlood.json
 7536f7d030b008d05c6b3c253bd0d6581d22f9d2309933842b90edf5c036a68f     544  AgentHeartbeat.json
+2c8443fa07a2b147d501f1299422fe7a650de2958074fc02b50851d284cc3313     644  AgentHeartbeatFlood.json
+a7389b66dbacf0b120fef712c51b073f6c0d6942b291e09d50d32005de2425ca     260  AgentHeartbeatNoKey.json
 2991fa2724df8d42187922d9cd8a56a768cfe1fcd9d999009366c52ad02657c5     495  AgentHeartbeatNoWake.json
+082d3883487506e3910dfd63a822dc9b7b78a766fe0ed26226e4f268e1c628e1     936  AgentHeartbeatObserver.json
+f0362154dfac93d78c4274a0b00afc007700eca22c304545620bfa66e8b96931     381  AgentObserver.json
+c678c7403596ceb9d46ed4257f5c1979d2ae60f39a8de6147787a285cad2f6e9     204  AgentObserverSlot.json
+90c99cdfc099939b0782803cc17ecd758fb35b82de38c984c1320c70f7d8e6e6      51  AgentTransportList.json
 3fa33377dffa8e89994ce866cd3174e1574dbf0583167e0f8aeb417000366dea     422  ClaimedJob.json
 c4014a3c623935dc4451d33152df277780772059953fca9bf5ada01723797db5      10  ClaimRequest.json
 af48c3e6a7efc745168c8665305d4eb9c32316281b866cc60e177b7f5a20d770     469  ClaimResponse.json
@@ -48,6 +55,7 @@ dc7ff0a2038bb700cea361ce1766f3dda059896ecf25e77518ce6efae5fc81f0     135  Heartb
 6ee498fbe9c18e1db7baec435f5d0e72fc13b0ce8681327666dd45de1c286a0d     126  JobCredential.json
 f39804cbd8b263563ddf42a595076e1102ed76a4dcbcc0baeeb70b009ea35865      65  JobResultReply.json
 34cd010a95cad09aedd255f885380001052975cf9ddb7ae90befd956e865f80e     545  JobResultReport.json
+0aef12f18aa353b60a291a93aaae9514e3a8b0ac06daf2e8b86699d7d965970b     247  JobResultReportFailed.json
 35e98e9b2f5470ade07dfca24441c5f7a3fc420bda6df6c56fdcb7dea2c00933      33  JobTimeouts.json
 196a5c5249aad26ce839d5a5a525b18989a89f6273da54edad373d0a473643df     147  JsonEscaping.json
 ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356       3  NeighboursPayload.json
