@@ -2,6 +2,7 @@
 
 #include "core/flasher/board_profile.h"
 #include "core/link/codec/wire.h"
+#include "core/link/radio_identity.h"
 
 namespace core {
 namespace update {
@@ -57,13 +58,14 @@ const char* describe(State state) {
     case State::kRestored: return "restored";
     case State::kStuck: return "stuck";
     case State::kRefused: return "refused";
+    case State::kNodeFault: return "node-fault";
   }
   return "?";
 }
 
 bool isTerminal(State state) {
   return state == State::kDone || state == State::kRestored || state == State::kStuck ||
-         state == State::kRefused;
+         state == State::kRefused || state == State::kNodeFault;
 }
 
 const char* describe(Kind kind) {
@@ -110,6 +112,7 @@ const char* describe(Reason reason) {
     case Reason::kJournal: return "the journal could not be written";
     case Reason::kStore: return "the image store refused";
     case Reason::kNoImageToReturnTo: return "no image to return to";
+    case Reason::kIdentityLost: return "the radio refuses: its identity is lost, and no image mends that";
   }
   return "?";
 }
@@ -124,6 +127,7 @@ const char* describe(ProveStep step) {
     case ProveStep::kPower: return "POWER_GET answers";
     case ProveStep::kScanner: return "a scanner shows itself";
     case ProveStep::kPassed: return "passed";
+    case ProveStep::kIdentity: return "IDENTITY answers, or has no key yet";
   }
   return "?";
 }
@@ -144,7 +148,7 @@ void encode(const Payload& p, std::uint8_t out[kPayloadBytes]) {
 
 bool decode(const Entry& e, Payload* out) {
   if (e.kind != kind::kRadioUpdate || e.size < kPayloadBytes || out == nullptr) return false;
-  if (e.payload[0] > static_cast<std::uint8_t>(State::kRefused)) return false;
+  if (e.payload[0] > static_cast<std::uint8_t>(State::kNodeFault)) return false;
   if (e.payload[1] > static_cast<std::uint8_t>(Kind::kRoleRepeater)) return false;
   out->state = static_cast<State>(e.payload[0]);
   out->kind = static_cast<Kind>(e.payload[1]);
@@ -272,6 +276,46 @@ StepResult RadioUpdate::fail(Reason reason, ProveStep step, std::uint32_t detail
     return enter(State::kStuck, describe(Reason::kStore), Reason::kStore, step, detail);
   }
   return enter(State::kRollingBack, describe(reason), reason, step, detail);
+}
+
+// A fault of the **node** and not of the image (task p10-03). The candidate booted, answered a
+// HELLO that is its descriptor's, and then refused to say who it is: no image can mend a file
+// system that will not mount, so the one thing a rollback would achieve is a second flash with
+// the same answer at the end of it. Terminal at once: nothing on the bad list (the candidate is
+// still a good image and may be flashed again once a person has typed `erase` and `reboot` at the
+// radio), no promotion (it has not proved itself), and the reason in the journal.
+StepResult RadioUpdate::nodeFault(Reason reason, ProveStep step, std::uint32_t detail) {
+  reason_ = reason;
+  if (!rollback_image_) {
+    status_.fail_reason = reason;
+    status_.fail_step = step;
+  }
+  return enter(State::kNodeFault, describe(reason), reason, step, detail);
+}
+
+bool RadioUpdate::nodeRefusesIdentity(std::uint8_t* status) {
+  const link::client::Answer<link::IdentityResponse> id = radio_.identity();
+  link::IdentityReading reading;
+  reading.key = id.ok() && link::keyIsReal(id.message.pubkey.data, id.message.pubkey.size);
+  reading.refused_state =
+      id.fault == link::client::Fault::kRefused && id.status == link::status::kState;
+  reading.caps = radio_.session().caps;
+  if (status != nullptr) *status = id.status;
+  return link::identityState(reading) == link::IdentityState::kLost;
+}
+
+// Check 2 failed. **Before it costs a rollback: is this the node and not the image?** (task
+// p10-03.) A radio in the lost mode brings no clock up either, so TIME_SET and TIME_GET are both
+// ERR_UNSUPPORTED to it - and a run that stopped at *the radio would not take the clock* would put
+// a good image on the bad list and flash the golden one into a file system that will refuse it in
+// exactly the same words. One §5.6 request, on a path that was going to end the run anyway, so a
+// candidate whose clock really is broken fails as it always did.
+StepResult RadioUpdate::failTime(std::uint32_t detail) {
+  std::uint8_t status = 0;
+  if (nodeRefusesIdentity(&status)) {
+    return nodeFault(Reason::kIdentityLost, ProveStep::kIdentity, status);
+  }
+  return fail(Reason::kTimeRefused, ProveStep::kTime, detail);
 }
 
 image::Which RadioUpdate::sourceOf(Kind kind) const {
@@ -423,6 +467,7 @@ StepResult RadioUpdate::step() {
     case State::kRestored:
     case State::kStuck:
     case State::kRefused:
+    case State::kNodeFault:
       return waiting(isTerminal(state_) ? describe(state_) : "idle");
     case State::kCheck: return stepCheck();
     case State::kFlashing: return stepFlashing(false);
@@ -630,6 +675,18 @@ StepResult RadioUpdate::stepProving(bool rollback) {
       Reason why = Reason::kNone;
       if (!helloMatches(&why)) return fail(why, ProveStep::kHello);
       prove_step_ = ProveStep::kTime;
+      // **Check 1a, and not a frame on the wire unless §5.1 says to look** (task p10-03).
+      // Between this check and the clock's, this end may make no call of its own: the client
+      // sends a session's pending TIME_SET before any other request (§5.4), so an IDENTITY
+      // asked here would have check 2 reading a TIME_GET where it means to read a TIME_SET. The
+      // lost mode advertises `caps 0x21` and nothing else, so that is where it is looked for,
+      // and a healthy radio's proof is what it always was, request for request.
+      if (link::capsSayIdentityLost(radio_.session().caps)) {
+        std::uint8_t status = 0;
+        if (nodeRefusesIdentity(&status)) {
+          return nodeFault(Reason::kIdentityLost, ProveStep::kIdentity, status);
+        }
+      }
       return waiting("HELLO is the descriptor's");
     }
     case ProveStep::kTime: {
@@ -645,7 +702,7 @@ StepResult RadioUpdate::stepProving(bool rollback) {
       if (sent == lc::Fault::kNoSession && pending && radio_.timePending()) {
         // No time to give. TIME_GET must answer: the clock machinery is there.
         const lc::Answer<link::TimeGetResponse> got = radio_.timeGet();
-        if (!got.ok()) return fail(Reason::kTimeRefused, ProveStep::kTime);
+        if (!got.ok()) return failTime(0);
         status_.time_skipped = true;
         prove_step_ = ProveStep::kStatus;
         return waiting("no time to give: the clock check is skipped, TIME_GET answered");
@@ -654,11 +711,11 @@ StepResult RadioUpdate::stepProving(bool rollback) {
         // Nothing pending: the clock was set already in this session (the client does it on
         // the first call after a restart). TIME_GET must still answer.
         const lc::Answer<link::TimeGetResponse> got = radio_.timeGet();
-        if (!got.ok()) return fail(Reason::kTimeRefused, ProveStep::kTime);
+        if (!got.ok()) return failTime(0);
         prove_step_ = ProveStep::kStatus;
         return waiting("the clock was already set");
       }
-      return fail(Reason::kTimeRefused, ProveStep::kTime, sent == lc::Fault::kRefused ? 1 : 0);
+      return failTime(sent == lc::Fault::kRefused ? 1u : 0u);
     }
     case ProveStep::kStatus: {
       const lc::Answer<link::StatusResponse> status = radio_.status();
@@ -705,6 +762,8 @@ StepResult RadioUpdate::stepProving(bool rollback) {
     case ProveStep::kNone:
     case ProveStep::kScanner:
     case ProveStep::kPassed:
+    // Check 1a is made inside the HELLO step and named only when it fails, as kScanner is.
+    case ProveStep::kIdentity:
       break;
   }
   return waiting("?");

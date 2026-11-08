@@ -217,6 +217,18 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
     --refuse_type_times_;
     return std::vector<std::uint8_t>{refuse_type_status_};
   }
+  // The lost mode (task p10-03), as repeater v0.1.2 answers in it. `HELLO`, `PING`, `STATUS` and
+  // `REBOOT` fall through to the fixtures' own answers, with `caps 0x21` patched into the HELLO.
+  if (identity_lost_) {
+    if (type == link::type::kIdentity) {
+      *case_name = "identity lost";
+      return std::vector<std::uint8_t>{link::status::kState};
+    }
+    if (type == link::type::kTimeSet || type == link::type::kTimeGet) {
+      *case_name = "identity lost: no clock";
+      return std::vector<std::uint8_t>{link::status::kUnsupported};
+    }
+  }
   if (answer_with_) {
     answer_with_ = false;
     const Value* one = findCase(answer_case_);
@@ -493,6 +505,16 @@ void ScriptedRadio::answerWith(const std::string& case_name) {
 void ScriptedRadio::refuseNext(std::uint8_t status) {
   refuse_ = true;
   refuse_status_ = status;
+}
+
+void ScriptedRadio::loseIdentity() {
+  identity_lost_ = true;
+  caps = link::kCapsIdentityLost;
+}
+
+void ScriptedRadio::keepIdentity() {
+  identity_lost_ = false;
+  caps = kDefaultCaps;
 }
 
 void ScriptedRadio::refuseType(std::uint8_t type, std::uint8_t status, int times) {

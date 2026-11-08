@@ -199,6 +199,103 @@ TEST_CASE("proving fails: silence after a good start") {
                      });
 }
 
+TEST_CASE("a candidate that refuses IDENTITY is not a failed image: no rollback, no bad list") {
+  // **Both halves of task p10-03's fourth deliverable, and this is the first.** The image boots,
+  // answers a HELLO that is its descriptor's and then refuses to say who it is: repeater v0.1.2
+  // on a file system that would not mount. No image can mend that - the golden one would be
+  // refused in the same words - so the run ends *node-fault*: the candidate's hash goes on no
+  // bad list, the golden image is not flashed back, and the journal says why.
+  ReadyUnit unit;
+  unit.world.boot = Boot::kIdentityLost;
+  bench::Walter& w = *unit.walter;
+  const unsigned resets_before_run = unit.world.chip.counters().resets;
+  REQUIRE(w.update.start(unit.request()));
+  const State end = w.run();
+  INFO(w.transitionText());
+  CHECK(end == State::kNodeFault);
+  CHECK(w.update.reason() == Reason::kIdentityLost);
+  CHECK(w.update.status().fail_reason == Reason::kIdentityLost);
+  CHECK(w.update.status().fail_step == upd::ProveStep::kIdentity);
+
+  // The journal's last entry is the one a person reads afterwards, and §3's own byte is in it.
+  const upd::Payload last = lastEntry(w);
+  CHECK(last.state == State::kNodeFault);
+  CHECK(last.reason == Reason::kIdentityLost);
+  CHECK(last.step == upd::ProveStep::kIdentity);
+  CHECK(last.detail == core::link::status::kState);
+
+  // **Nothing was spent.** No rolling-back entry at all, one flash in the run (the candidate's),
+  // and the candidate is neither on the bad list nor promoted.
+  for (const State state : statesOf(w)) {
+    CHECK(state != State::kRollingBack);
+    CHECK(state != State::kRollbackBooting);
+    CHECK(state != State::kRestored);
+  }
+  CHECK(unit.world.store.store.badCount() == 0);
+  CHECK_FALSE(unit.world.store.store.isBad(unit.read(Which::kCandidate).sha256));
+  CHECK(unit.goldenVersion() == unit.golden.version);
+  CHECK(unit.read(Which::kCandidate).present);
+  // The candidate is what the chip holds and what runs: the flash was not undone.
+  CHECK(unit.world.chipHolds(unit.candidate));
+  CHECK(unit.world.running_version == unit.candidate.version);
+  CHECK_MESSAGE(unit.world.chip.counters().resets == resets_before_run + 1,
+                "one flash, one reset: no rollback flash followed");
+  CHECK(unit.world.chip.counters().tripwire == 0);
+
+  // And the same candidate may be tried again once a person has typed `erase` and `reboot` at
+  // the radio - which is the whole point of not banning it. The second run proves it and
+  // commits.
+  unit.world.boot = Boot::kNormal;
+  unit.world.radioBoots();
+  w.update.clear();
+  REQUIRE(w.update.start(unit.request()));
+  CHECK(w.run() == State::kDone);
+  CHECK(unit.goldenVersion() == unit.candidate.version);
+}
+
+TEST_CASE("the other half: a candidate that does not answer HELLO is still a failed image") {
+  // The line between the two is the one the task asks for: a radio that *answered* and refused
+  // is the node, and a radio that did not answer is the image. This holds the second, where the
+  // whole of the old behaviour must be untouched - the bad list, the rollback, the refusal of a
+  // second run - and `failsAndIsRestored` is what holds it, case by case, above.
+  failsAndIsRestored(Boot::kSilent, Reason::kNoBoot, upd::ProveStep::kHello);
+}
+
+TEST_CASE("a radio that refuses its clock and its identity alike is the node, not the image") {
+  // The lost mode brings no clock up either (TIME_SET and TIME_GET are both ERR_UNSUPPORTED to
+  // it), so without check 1a this run would end at *the radio would not take the clock* - a good
+  // image on the bad list and the golden one flashed into the same unmountable file system. The
+  // check that catches it costs a frame only when §5.1 says to look, so a radio whose clock
+  // really is broken fails as it always did (the TIME_SET case of `failsAndIsRestored`).
+  ReadyUnit unit;
+  unit.world.boot = Boot::kIdentityLost;
+  bench::Walter& w = *unit.walter;
+  REQUIRE(w.update.start(unit.request()));
+  CHECK(w.run() == State::kNodeFault);
+  CHECK(w.update.reason() != Reason::kTimeRefused);
+  CHECK(w.update.status().fail_step != upd::ProveStep::kTime);
+}
+
+TEST_CASE("node-fault is terminal, and resuming a journal that ends there starts nothing") {
+  ReadyUnit unit;
+  unit.world.boot = Boot::kIdentityLost;
+  bench::Walter& w = *unit.walter;
+  REQUIRE(w.update.start(unit.request()));
+  REQUIRE(w.run() == State::kNodeFault);
+  CHECK(upd::isTerminal(State::kNodeFault));
+  CHECK_FALSE(w.update.active());
+  // A Walter that restarts over this journal reads the entry and has nothing to take up: a node
+  // fault waits for a person, not for a resume.
+  unit.reboot();
+  CHECK_FALSE(unit.walter->update.resume());
+  CHECK(unit.walter->update.state() == State::kIdle);
+  // The entry still decodes - the state is one this firmware knows - which is what `rak update
+  // status` reads the story out of.
+  const upd::Payload last = lastEntry(*unit.walter);
+  CHECK(last.state == State::kNodeFault);
+  CHECK(last.reason == Reason::kIdentityLost);
+}
+
 TEST_CASE("the bad list is written before the rollback flash, and the failed candidate is never flashed twice") {
   ReadyUnit unit;
   unit.world.boot = Boot::kSilent;

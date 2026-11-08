@@ -6,7 +6,7 @@
 // picks up where it was (resume()) and never guesses.
 //
 //   idle ─► check ─► flashing ─► booting ─► proving ─► committing ─► done
-//             │          │           │          │
+//             │          │           │          │  └─► node-fault (the image is fine, the node is not)
 //             │          └───────────┴──────────┴──► rolling-back ─► (booting, proving) ─► restored
 //             └─► refused (a precondition; nothing was touched)              └──► stuck
 //
@@ -26,6 +26,14 @@
 //      (spec/FIRMWARE-MANIFEST.md §4: "After a flash, the Walter's health check holds the HELLO
 //      it gets against the descriptor it flashed"), and its link major is one this Walter speaks
 //      (the client refuses a HELLO for a major it does not speak: kRefused);
+//   1a. **the node is there, and not refusing** (task p10-03): one IDENTITY. A radio that has
+//      lost its identity answers it with ERR_STATE and advertises caps 0x21, and *that is not a
+//      failed image* - the image booted, answered and said what it is. It ends the run in
+//      kNodeFault: no rollback is spent, the candidate's hash goes on no bad list, the journal
+//      says why, and a person's `erase` and `reboot` at the radio are the way out
+//      (core/link/radio_identity.h; the repeater firmware's docs/flashing.md §3a). A radio with
+//      **no** identity yet is not a fault at all: a first install is exactly that, and the check
+//      goes on;
 //   2. the clock can be set: TIME_SET accepted (spec/LINK-PROTOCOL.md §5.4, the first thing a
 //      healthy repeater must take). A Walter with no time to give (interfaces::WallClock answers
 //      false until phase 3's modem) cannot make this check; it is recorded as skipped, not as a
@@ -122,6 +130,11 @@ enum class State : std::uint8_t {
   kRestored = 10,        // terminal: the golden image is back and proved
   kStuck = 11,           // terminal: the golden image did not come back, or there was none
   kRefused = 12,         // terminal: a precondition failed at check; nothing was touched
+  // Terminal: the image proved what an image can and the **node** is the fault - today that is
+  // one thing, a radio that has lost its identity and refuses to make a key (task p10-03). No
+  // rollback was spent and nothing is on the bad list, so the same candidate may be flashed
+  // again once a person has typed `erase` and `reboot` at the radio.
+  kNodeFault = 13,
 };
 
 const char* describe(State state);
@@ -173,6 +186,8 @@ enum class Reason : std::uint8_t {
   kJournal = 44,              // the journal could not be written: the machine stops where it is
   kStore = 45,                // the store refused the promotion or the bad list
   kNoImageToReturnTo = 46,    // a first install failed: stuck, there is no golden image
+  // -- the node, not the image
+  kIdentityLost = 47,         // IDENTITY is ERR_STATE: the radio refuses, and no image mends it
 };
 
 const char* describe(Reason reason);
@@ -187,6 +202,9 @@ enum class ProveStep : std::uint8_t {
   kPower = 5,
   kScanner = 6,
   kPassed = 7,
+  // The numbers are the journal's, so they only ever grow: check 1a came after the rest (task
+  // p10-03) and is made between kHello and kTime.
+  kIdentity = 8,
 };
 
 const char* describe(ProveStep step);
@@ -315,6 +333,17 @@ class RadioUpdate final : public link::client::RestartWatcher {
                    ProveStep step = ProveStep::kNone, std::uint32_t detail = 0);
   StepResult fail(Reason reason, ProveStep step, std::uint32_t detail = 0);
   StepResult refuse(Reason reason);
+  // A fault of the node and not of the image (task p10-03): terminal at once, no bad list and no
+  // rollback - from the candidate's path and from the golden image's alike, because the one thing
+  // a rollback could do about it is flash an image the same file system will refuse as well.
+  StepResult nodeFault(Reason reason, ProveStep step, std::uint32_t detail = 0);
+  // One §5.6 request, read in the one place that decides the three states
+  // (core/link/radio_identity.h): true when the radio **refuses** - it has lost its identity.
+  // False for a radio that has no key yet, which is what every first install starts as, and for
+  // one that answered a key. `status` takes §3's own byte, for the journal's detail.
+  bool nodeRefusesIdentity(std::uint8_t* status);
+  // Check 2 has failed. Whether that is the image or the node, and the run ends accordingly.
+  StepResult failTime(std::uint32_t detail);
   StepResult waiting(const char* note);
 
   StepResult stepCheck();

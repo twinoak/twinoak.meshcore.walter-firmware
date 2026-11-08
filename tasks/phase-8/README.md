@@ -32,8 +32,11 @@ Each task here takes one of them and ticks it.
   radio stays one this Walter must talk to.
 
 **Not on the board.** This pile runs at a desk. The unit on Thomas's bench has v0.1.0 on its Walter,
-v0.1.0 on its radio (recovered over the radio's own USB with the `.uf2`, its key kept) and a radio slot
-marked *stuck*. **No session opens its ports**: neither the Walter's COM port nor the radio's, and
+v0.1.0 on its radio (recovered over the radio's own USB with the `.uf2`, and **as a new node: its key
+was not kept** — corrected 8 November by task p10-03, which found the reading in the repeater
+firmware's `tasks/phase-3.9/reports/01.md`: that firmware's own `InternalFS.begin()` formatted a
+torn volume and drew a new key, and from its `v0.1.2` a radio in that state refuses instead) and a
+radio slot marked *stuck*. **No session opens its ports**: neither the Walter's COM port nor the radio's, and
 not through `tools/bench` either. Each task adds its bench lines to `docs/bench.md`, for Thomas.
 
 ## Order and dependencies

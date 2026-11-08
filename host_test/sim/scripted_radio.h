@@ -30,6 +30,7 @@
 #include "core/link/codec/frame.h"
 #include "core/link/codec/packet.h"
 #include "core/link/codec/wire.h"
+#include "core/link/radio_identity.h"
 #include "fakes/fake_clock.h"
 #include "fixtures/json.h"
 #include "interfaces/byte_stream.h"
@@ -71,9 +72,10 @@ class ScriptedRadio final : public interfaces::ByteStream {
 
   // What HELLO and EV_BOOT say about it (§5.1). The fixture's own body is used and these three
   // fields are patched into it, so a test can take a capability away or make it restart.
-  std::uint32_t caps = core::link::cap::kCli | core::link::cap::kPower | core::link::cap::kEnv |
-                       core::link::cap::kMeshClient | core::link::cap::kObservations |
-                       core::link::cap::kAttention;
+  static constexpr std::uint32_t kDefaultCaps =
+      core::link::cap::kCli | core::link::cap::kPower | core::link::cap::kEnv |
+      core::link::cap::kMeshClient | core::link::cap::kObservations | core::link::cap::kAttention;
+  std::uint32_t caps = kDefaultCaps;
   std::uint8_t role = core::link::role::kRepeater;
   std::uint32_t boot_id = 0x1a2b3c4d;
   // What it calls its firmware and its board in the HELLO body, when a test wants something other
@@ -93,6 +95,28 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // The event seq the next event carries (§3: the radio counts from 0 and wraps). Public so that a
   // test can skip one and make a gap.
   std::uint8_t event_seq = 0;
+
+  // **A radio that has lost its identity** (task p10-03): the lost mode repeater `v0.1.2` boots
+  // into when its file system would not mount and is not blank. Not a knob of ours - it is that
+  // firmware's own behaviour, from its `tasks/phase-3.9/reports/01.md`, its `docs/link.md` and
+  // its `docs/flashing.md` §3a:
+  //
+  //   - `HELLO`, `PING`, `STATUS` and `REBOOT` answer as always, because the radio did come up;
+  //   - `caps` is **0x21** (`CLI`, `ATTENTION`) and nothing else: that boot brings up no
+  //     identity, no clock, no telemetry, no mesh client, no observations and no request
+  //     handler;
+  //   - `IDENTITY` is answered **`ERR_STATE`**: there is no key and none will be made;
+  //   - `TIME_SET` and `TIME_GET` are `ERR_UNSUPPORTED`, the answer a session whose clock
+  //     interface is null gives (§3, §4) - the Walter's client sends them whatever `caps` says,
+  //     because §4 calls them *always*;
+  //   - `EV_ATTENTION` reason 6 detail 1 is raised once, which `raiseAttention` does on the
+  //     bench's own word.
+  //
+  // A boot is a fresh firmware, so `keepIdentity()` is what a bench calls when the chip holds
+  // something else again.
+  void loseIdentity();
+  void keepIdentity();
+  bool identityLost() const { return identity_lost_; }
 
   // Phase 2's health check (task p2-03) wants a radio that misbehaves at one request type and
   // answers every other: the next `times` requests of `type` are refused with `status`, or
@@ -235,6 +259,7 @@ class ScriptedRadio final : public interfaces::ByteStream {
   int refuse_type_times_ = 0;
   std::uint8_t ignore_type_ = 0;
   int ignore_type_times_ = 0;
+  bool identity_lost_ = false;
 };
 
 }  // namespace sim

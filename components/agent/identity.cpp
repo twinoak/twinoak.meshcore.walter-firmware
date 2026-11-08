@@ -132,8 +132,16 @@ Identity::Identity(lc::Client& radio, const char* version) : radio_client_(radio
   forget();
 }
 
+int addRadioIdentityLost(mm::ErrorCounter* out, int count, int capacity, bool lost) {
+  if (!lost || out == nullptr || count < 0 || count >= capacity) return count;
+  out[count] = mm::ErrorCounter{kRadioIdentityLostKey, 1};
+  return count + 1;
+}
+
 void Identity::forget() {
   key_known_ = false;
+  state_ = link::IdentityState::kNotMadeYet;
+  caps_lost_ = false;
   for (std::size_t i = 0; i < link::kPubkeySize; ++i) key_[i] = 0;
   key_hex_[0] = 0;
   name_[0] = 0;
@@ -206,25 +214,26 @@ bool Identity::refresh() {
 
 bool Identity::readKey() {
   const lc::Answer<link::IdentityResponse> answer = radio_client_.identity();
-  if (!answer.ok()) {
-    ++counters_.no_identity;
-    return false;
-  }
-  ++counters_.identity_reads;
   const link::Bytes key = answer.message.pubkey;
-  if (key.data == nullptr || key.size != link::kPubkeySize) {
+  // The three states out of this one answer and the session it came from, in the one place that
+  // decides them (task p10-03, core/link/radio_identity.h). A radio with no application, or one
+  // that has not made an identity yet, answers a key of all zeros - which is not a key, and a
+  // unit that sent it would be asking the server to know it by nothing
+  // (tasks/phase-4/FOLLOWUPS.md's `[04]`); a radio that has **lost** its identity answers
+  // ERR_STATE and needs a person, not an install.
+  link::IdentityReading reading;
+  reading.key = answer.ok() && link::keyIsReal(key.data, key.size);
+  reading.refused_state =
+      answer.fault == lc::Fault::kRefused && answer.status == link::status::kState;
+  reading.caps = radio_client_.session().caps;
+  state_ = link::identityState(reading);
+  caps_lost_ = link::capsSayIdentityLost(reading.caps);
+  // `identity_reads` is requests that were *answered*, as it always was - a radio that answered
+  // a key of all zeros answered - and `no_identity` is the ones that left this end with no key.
+  if (answer.ok()) ++counters_.identity_reads;
+  if (!reading.key) {
     ++counters_.no_identity;
-    return false;
-  }
-  // A radio with no application, or one that has not made an identity yet, answers a key of all
-  // zeros - which is not a key, and a unit that sent it would be asking the server to know it by
-  // nothing (tasks/phase-4/FOLLOWUPS.md's `[04]`).
-  bool any = false;
-  for (std::size_t i = 0; i < key.size; ++i) {
-    if (key.data[i] != 0) any = true;
-  }
-  if (!any) {
-    ++counters_.no_identity;
+    if (state_ == link::IdentityState::kLost) ++counters_.identity_lost;
     return false;
   }
   for (std::size_t i = 0; i < link::kPubkeySize; ++i) {
@@ -296,7 +305,7 @@ void Identity::fillHeartbeat(mm::Heartbeat* out, const mm::IMesh* mesh,
   out->queueDepth = extras.queue_depth;
   out->board = identity_.board;
 
-  if (errors != nullptr && error_capacity >= kErrorCount) {
+  if (errors != nullptr && error_capacity >= kLibraryErrorCount) {
     errors[0] = mm::ErrorCounter{"overheard", extras.overheard};
     errors[1] = mm::ErrorCounter{"wifiReconnects", extras.wifi_reconnects};
     errors[2] = mm::ErrorCounter{"httpFailures", extras.http_failures};
@@ -304,7 +313,13 @@ void Identity::fillHeartbeat(mm::Heartbeat* out, const mm::IMesh* mesh,
     errors[4] = mm::ErrorCounter{"resultsDropped", extras.results_dropped};
     errors[5] = mm::ErrorCounter{"reboots", extras.reboots};
     out->errors = errors;
-    out->errorCount = kErrorCount;
+    // And this board's own, while the radio refuses (task p10-03): the server's `errors` is an
+    // open key space, so the one thing meshmaster.dk could not see - a radio that has lost its
+    // identity, which reads on the page exactly like one awaiting its first install - costs no
+    // new field. Nothing is added when the radio has not refused, so an ordinary unit's
+    // heartbeat is byte for byte what it was.
+    out->errorCount =
+        addRadioIdentityLost(errors, kLibraryErrorCount, error_capacity, identityLost());
   }
 
   // The two of an agent that paces itself, written only when set - as the library writes them.

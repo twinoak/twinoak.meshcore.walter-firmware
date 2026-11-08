@@ -240,6 +240,57 @@ TEST_CASE("POST /agent/v1/heartbeat: the body is what the library wrote, the rep
   rig.tokenNowhere("after the heartbeat");
 }
 
+TEST_CASE("the heartbeat of a unit whose radio refuses carries radioIdentityLost, and no other does") {
+  // Task p10-03. The library builds the heartbeat and writes its six counters whole at every
+  // call (agent/AgentLoop.cpp's `doHeartbeat`), so this object is where a counter of the board's
+  // can be added at all - and meshmaster.dk's `errors` is an open key space, which is why one
+  // counter is enough and no field was added to the envelope.
+  Rig rig;
+  const std::string fixture = contract("HeartbeatReply");
+  rig.serve("/agent/v1/heartbeat", fixture);
+  mm::Heartbeat hb;
+  hb.agentVersion = kVersion;
+  hb.transport = "native";
+  hb.at = kNow;
+  hb.board = "walter";
+  const mm::ErrorCounter six[] = {
+      {"overheard", 41},   {"wifiReconnects", 0},       {"httpFailures", 2},
+      {"observationsDropped", 0}, {"resultsDropped", 0}, {"reboots", 1},
+  };
+  hb.errors = six;
+  hb.errorCount = 6;
+  mm::HeartbeatReply reply;
+
+  SUBCASE("a radio with its key, or one awaiting its first install: the library's six and no more") {
+    CHECK_FALSE(rig.uplink.radioIdentityLost());
+    REQUIRE(rig.uplink.postHeartbeat(hb, reply));
+    const std::string body = rig.last().body;
+    CHECK(body.find("\"overheard\":41") != std::string::npos);
+    CHECK(body.find("radioIdentityLost") == std::string::npos);
+  }
+
+  SUBCASE("a radio that refuses: the seventh counter, behind the library's own") {
+    rig.uplink.setRadioIdentityLost(true);
+    REQUIRE(rig.uplink.postHeartbeat(hb, reply));
+    const std::string body = rig.last().body;
+    CHECK(body.find("\"radioIdentityLost\":1") != std::string::npos);
+    // Behind them, and nothing of the library's lost: the key space is open and the order is the
+    // writer's.
+    CHECK(body.find("\"overheard\":41") != std::string::npos);
+    CHECK(body.find("\"reboots\":1") != std::string::npos);
+    CHECK(body.find("\"reboots\":1") < body.find("radioIdentityLost"));
+    // And the heartbeat the caller handed over is untouched: the copy is this object's.
+    CHECK(hb.errorCount == 6);
+    CHECK(hb.errors == six);
+
+    // The person at the radio types `erase` and `reboot`, the next wake reads a key, and the
+    // counter is gone from the body - it is a state and not a tally.
+    rig.uplink.setRadioIdentityLost(false);
+    REQUIRE(rig.uplink.postHeartbeat(hb, reply));
+    CHECK(rig.last().body.find("radioIdentityLost") == std::string::npos);
+  }
+}
+
 TEST_CASE("POST /agent/v1/observations: the batch's bytes carried unchanged, accepted and duplicate read") {
   Rig rig;
   const std::string batch = contract("ObservationBatch");

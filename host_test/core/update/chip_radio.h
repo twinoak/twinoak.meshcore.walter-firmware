@@ -111,6 +111,7 @@ struct ChipRadio {
     radio.refuseType(0, 0, 0);
     radio.ignoreType(0, 0);
     radio.scanner = false;
+    radio.keepIdentity();
     core::image::Fields f;
     if (!chipApplication(&f)) {
       radio.deaf = true;
@@ -149,6 +150,7 @@ struct ChipRadio {
         break;
       case Boot::kNoPower: radio.ignoreType(core::link::type::kPowerGet, 100); break;
       case Boot::kRefuseHello: radio.refuseType(core::link::type::kHello, core::link::status::kUnsupported, 100); break;
+      case Boot::kIdentityLost: radio.loseIdentity(); break;
     }
     radio.restart(!radio.deaf);
   }

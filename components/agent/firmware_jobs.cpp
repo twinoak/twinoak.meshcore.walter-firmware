@@ -179,6 +179,9 @@ const char* stepWord(upd::State state) {
     case upd::State::kRestored: return "restored";
     case upd::State::kStuck: return "stuck";
     case upd::State::kRefused: return "refused";
+    // Not one of the eight words unit-protocol.md §5 lists, and the page says "the step words are
+    // yours": the server stores the journal verbatim and reads only the outcome (task p10-03).
+    case upd::State::kNodeFault: return "node-fault";
   }
   return "?";
 }
@@ -731,6 +734,16 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
       outcome = ApplyOutcome::kRefused;
       refusal = refusalFor(parts_.update->reason());
       counters_.refused = saturate(counters_.refused);
+      break;
+    case upd::State::kNodeFault:
+      // **`stuck`, and the journal says why** (task p10-03). The server's vocabulary is four
+      // words (`FirmwareApplyOutcomes`, unit-protocol.md §5) and a node fault is none of them:
+      // not `committed` (nothing was promoted), not `rolledBack` (no rollback was spent, on
+      // purpose), and not `refused` (the flash happened). `stuck` is the one that means *a
+      // person's business now*, which this is - and the journal's last line names the refusal
+      // and the two words that end it. A fifth outcome is the server's to add, not ours.
+      outcome = ApplyOutcome::kStuck;
+      counters_.stuck = saturate(counters_.stuck);
       break;
     default:
       outcome = ApplyOutcome::kStuck;

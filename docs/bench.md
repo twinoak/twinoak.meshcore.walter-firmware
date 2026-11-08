@@ -822,6 +822,19 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   `boot` (the reset-reason line, `docs/console.md`) right after the flash finishes, and again
   after the proving period. A `watchdog` there - even one, even with the update *done* - means
   some stretch of the run still monopolises the CPU for 30 s and is a finding against this task.
+- [ ] **A radio that refuses its identity costs no rollback** (task p10-03; **needs a radio in
+      repeater `v0.1.2`'s lost mode**, which is that repository's own bench line - one word
+      written over `0xED000` with `"identity": "disposable"`, or a radio that has arrived there by
+      itself). With a golden image in the store and a candidate pushed, `rak update`: expected
+      `-> booting`, `-> proving`, and then **`rak update: the image is fine, the node is not: the
+      radio refuses: its identity is lost, and no image mends that`** — *not* a rollback. Then
+      check the three things the words promise: `image bad` is **empty** (or at least does not
+      name this candidate), `image list` still shows the same golden image, and `rak update
+      status` ends `node-fault`. `rak hello` says the **candidate's** version, because the flash
+      was not undone. Afterwards `rak cli erase`, `rak cli reboot`, and the same `rak update`
+      again must reach *done* — the image was never the fault. Write down whether the radio's
+      `caps` in `rak hello` is `0x21`: that is what makes the check cost no frame on a healthy
+      radio.
 - [ ] **The numbers.** Against the lines above, `docs/update.md`'s table: the boot window (how long
   a real repeater takes from reset to `HELLO`; the window must be comfortably more), the proving
   period (long enough to catch a build that restarts itself after its first advert; short enough
@@ -1434,6 +1447,19 @@ everything in §18 needs this section first.
       what a unit registered before its repeater sends, and the page must show it **alive and
       *radio not identified*** rather than refusing it. `rak role repeater`, then `rak hello`, and
       the next `agent id` has the key again.
+- [ ] **A radio that refuses, told apart from one awaiting its first install** (task p10-03;
+      **needs a radio in repeater `v0.1.2`'s lost mode** — that repository's `docs/flashing.md`
+      §3a, and its own bench line for making one). `agent id` must say **the radio refuses: its
+      identity is lost**, name its evidence (*IDENTITY answered ERR_STATE*, and `caps 0x21` if
+      the session carries it), and tell the person to read `docs/flashing.md` §3a and then type
+      `rak cli erase` and `rak cli reboot` — and it must **not** say *the radio has no identity
+      yet*, which is the sentence for a radio awaiting its install and which is what this
+      firmware said at it until 8 November. `agent heartbeat` carries `"radioIdentityLost":1`
+      among its `errors` and no `companionPublicKey`; after a wake, meshmaster.dk's exit-node
+      page shows `radioIdentityLost 1` in its **Counters** row — read it there, because that row
+      is the whole point of the counter. Then the way out, as a person: `rak cli erase`, `rak cli
+      reboot`, `rak hello`, `agent id` — a key again, a **new** node, so confirm the key on
+      meshmaster.dk and register the repeater again (§3a's *What then*).
 - [ ] **The repeater registered, and the unit shown as its uplink** (meshmaster.dk's pile 4.16,
       task 132). With the radio's key in hand (`agent id`), *Register this unit's repeater* on the
       exit node's page: the repeater's own page then shows **this unit as its uplink, at once**,

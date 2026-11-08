@@ -2094,6 +2094,15 @@ void Console::printUpdateOutcome() {
     case update::State::kRefused:
       printf("error: rak update: refused at check: %s (nothing was touched)\n", update::describe(st.reason));
       break;
+    case update::State::kNodeFault:
+      // The image is fine and the node is not (task p10-03). Three printf calls: together the
+      // lines are longer than printf's 200-byte buffer.
+      printf("rak update: the image is fine, the node is not: %s\n", update::describe(st.reason));
+      printf("  %s is on the radio and proved everything an image can; no rollback was spent and\n",
+             st.version);
+      print("  it is on no bad list. 'rak cli erase' then 'rak cli reboot' (docs/flashing.md 3a,\n"
+            "  the old key cannot be recovered), then this update can be run again.\n");
+      break;
     default:
       printf("rak update: %s\n", update::describe(st.state));
       break;
@@ -3072,6 +3081,21 @@ void Console::agentId() {
   if (!v.session) {
     print("agent id: the radio has answered nothing in this boot, so there is no identity to read "
           "out of it ('rak hello')\n");
+  } else if (v.identity == link::IdentityState::kLost) {
+    // **A radio that refuses** (task p10-03): from repeater v0.1.2 a node whose file system
+    // would not mount makes no new key, and says so in §5.6. It is not a radio awaiting its
+    // first install and no image can mend it - the way out is a person's two words. In pieces,
+    // because printf's line buffer is 200 bytes and this is longer (task p9-04).
+    print("agent id: the radio refuses: its identity is lost. No key was made, so the heartbeat\n");
+    print("  carries no key, no radio block and no job types - and a counter that says which of\n");
+    print("  the two this is (radioIdentityLost).\n");
+    printf("  the evidence: IDENTITY answered ERR_STATE%s.\n",
+           v.caps_identity_lost ? ", and HELLO advertises caps 0x21 (CLI, ATTENTION) and nothing"
+                                  " else"
+                                : "");
+    print("  what a person does: read docs/flashing.md 3a first - the old key cannot be\n");
+    print("  recovered - then 'rak cli erase' and 'rak cli reboot' make this radio a new node,\n");
+    print("  whose key MeshMaster has to be told and whose settings have to be set again.\n");
   } else if (!known) {
     // A unit registered before its repeater: it checks in all the same, with no key and no job
     // types (tasks/phase-4/FOLLOWUPS.md's [04], meshmaster.dk's p4.16-132).
@@ -3141,6 +3165,11 @@ void Console::agentId() {
   }
   if (v.no_identity != 0) {
     printf(", %lu answer(s) with no key", static_cast<unsigned long>(v.no_identity));
+  }
+  // Of those, the refusals (task p10-03): the number a person reads to tell "this radio has
+  // never had a key" from "this radio will not make one".
+  if (v.identity_lost != 0) {
+    printf(", %lu of them a refusal (ERR_STATE)", static_cast<unsigned long>(v.identity_lost));
   }
   print("\n");
 }

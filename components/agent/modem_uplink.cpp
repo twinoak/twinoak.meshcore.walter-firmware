@@ -6,6 +6,7 @@
 #include <agent/Credentials.h>
 #include <agent/Log.h>
 
+#include "walter_agent/identity.h"
 #include "walter_agent/json_scan.h"
 
 namespace agent {
@@ -395,7 +396,21 @@ bool ModemUplink::fetchConfig() {
 
 bool ModemUplink::postHeartbeat(const mm::Heartbeat& hb, mm::HeartbeatReply& reply) {
   wipeReply();
-  const std::size_t body_len = mm::writeHeartbeat(hb, request_, sizeof request_);
+  // This board's own counter behind the library's (task p10-03): a copy of the heartbeat with one
+  // more `errors` entry while the radio refuses, and the heartbeat itself untouched otherwise -
+  // the library owns `hb.errors` and writes the array whole at every call, so this is where a
+  // counter of ours can be added at all. `addRadioIdentityLost` is shared with the console's
+  // `agent heartbeat`, so the printed body and the posted one carry the same key.
+  mm::Heartbeat sending = hb;
+  mm::ErrorCounter errors[kHeartbeatErrorsMax];
+  if (radio_identity_lost_ && hb.errors != nullptr && hb.errorCount >= 0 &&
+      hb.errorCount < static_cast<int>(kHeartbeatErrorsMax)) {
+    for (int i = 0; i < hb.errorCount; ++i) errors[i] = hb.errors[i];
+    sending.errors = errors;
+    sending.errorCount = addRadioIdentityLost(errors, hb.errorCount,
+                                              static_cast<int>(kHeartbeatErrorsMax), true);
+  }
+  const std::size_t body_len = mm::writeHeartbeat(sending, request_, sizeof request_);
   if (body_len == 0) {
     last_call_ = Call();
     last_call_.via = "lte";

@@ -26,7 +26,12 @@ A whole image is minutes of SWD traffic. Nothing on that path ever blocks:
 The idle task of the core never runs, and the task watchdog resets the Walter after 30 s. The journal
 then resumes the flash at every boot, exactly as designed, and the supervisor ends the run as *stuck*
 after twelve. The radio was left with a half-written application. Thomas recovered it over its own
-USB-C, and its key survived.
+USB-C, **and it came back as a new node: its key did not survive** (corrected 8 November by task
+p10-03; the reading is the repeater firmware's `tasks/phase-3.9/reports/01.md` — its own
+`InternalFS.begin()` erases and formats the file-system region when the volume will not mount, and a
+torn page is what an interrupted flash leaves. From repeater `v0.1.2` a radio in that state refuses
+instead of making a new key, and this firmware tells that refusal from a radio awaiting its first
+install).
 
 Every radio image is far longer than 30 s at 125 kHz. So is `rak provision`'s base (185 kB of flash):
 it ran on the bench tool, never through this firmware. **No image can be flashed by v0.1.0.** This

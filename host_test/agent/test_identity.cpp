@@ -4,7 +4,9 @@
 // numbers meshmaster.dk's `RadioParameters.json` carries.
 //
 // What is held here: every field's source, the radio block's parse, a `boot_id` change, a radio
-// with no identity, and the per-band intent.
+// with no identity, **a radio that refuses to have one** (task p10-03: repeater v0.1.2's lost
+// mode, and the heartbeat counter that tells meshmaster.dk which of the two it is), and the
+// per-band intent.
 #include <doctest.h>
 
 #include <string>
@@ -14,6 +16,7 @@
 #include "core/link/client/client.h"
 #include "core/link/client/port.h"
 #include "core/link/codec/wire.h"
+#include "core/link/radio_identity.h"
 #include "core/power/interval_policy.h"
 #include "fakes/fake_clock.h"
 #include "fakes/fake_pins.h"
@@ -218,6 +221,119 @@ TEST_CASE("a radio with no identity: the heartbeat carries no key, and the key i
   CHECK(rig.identity.refresh());
   CHECK(std::string(rig.identity.publicKeyHex()) == kKeyHex);
   CHECK(rig.requestsOf(link::type::kCli) == 1u);
+}
+
+TEST_CASE("a radio that refuses: ERR_STATE is a lost identity and not a radio awaiting its first install") {
+  Rig rig;
+  // Repeater v0.1.2's lost mode, as that firmware answers in it (sim/scripted_radio.h, from its
+  // tasks/phase-3.9/reports/01.md): HELLO as always with caps 0x21, IDENTITY answered ERR_STATE.
+  rig.rak.loseIdentity();
+  rig.hello();
+  CHECK_FALSE(rig.identity.refresh());
+
+  // The three states, where there used to be two. Before this task both this radio and a RAK
+  // with no application answered `known() == false` and nothing told them apart.
+  CHECK(rig.identity.identityState() == link::IdentityState::kLost);
+  CHECK(rig.identity.identityLost());
+  CHECK_MESSAGE(rig.identity.capsSayIdentityLost(),
+                "the evidence beside the refusal: HELLO advertises CLI and ATTENTION and nothing else");
+  CHECK(rig.client.session().caps == link::kCapsIdentityLost);
+
+  // And what it costs the unit: no key, so no local door and no mesh job - exactly as for a
+  // radio with no key at all, because that part of it is the same fact.
+  CHECK(rig.identity.publicKeyHex() == nullptr);
+  CHECK(rig.identity.publicKey() == nullptr);
+  CHECK_FALSE(rig.identity.radio().known);
+  CHECK(rig.requestsOf(link::type::kCli) == 0u);
+  // Counted apart: `no_identity` is every answer that left this end with no key, and
+  // `identity_lost` is the ones that were a refusal.
+  CHECK(rig.identity.counters().no_identity == 1u);
+  CHECK(rig.identity.counters().identity_lost == 1u);
+  CHECK_MESSAGE(rig.identity.counters().identity_reads == 0u,
+                "a refusal is not an answer with a key in it");
+
+  // It is asked again at the next wake, as a radio with no key is: a person may have typed
+  // `erase` and `reboot` between two wakes. Still a refusal, and counted again.
+  CHECK_FALSE(rig.identity.refresh());
+  CHECK(rig.requestsOf(link::type::kIdentity) == 2u);
+  CHECK(rig.identity.counters().identity_lost == 2u);
+
+  // The way out is a person's, and after it the radio is a new node with a key.
+  rig.rak.keepIdentity();
+  rig.rak.restart(false);
+  rig.client.radioWasReset();
+  rig.hello();
+  CHECK(rig.identity.refresh());
+  CHECK(rig.identity.identityState() == link::IdentityState::kKnown);
+  CHECK_FALSE(rig.identity.identityLost());
+  CHECK_FALSE(rig.identity.capsSayIdentityLost());
+  CHECK(std::string(rig.identity.publicKeyHex()) == kKeyHex);
+}
+
+TEST_CASE("the heartbeat's counters say which of the three the radio is in") {
+  // The library's own six are written at every heartbeat (agent/AgentLoop.cpp), and this board's
+  // `radioIdentityLost` goes behind them **only while the radio refuses**: meshmaster.dk's
+  // `errors` is an open key space, so the one thing its page could not show costs no new field.
+  mm::ErrorCounter errors[agent::Identity::kErrorCount];
+  mm::Heartbeat hb;
+  const agent::HeartbeatExtras extras;
+  const mm::WakeIntent intent;
+
+  SUBCASE("a radio that refuses: seven counters, and the seventh says so") {
+    Rig rig;
+    rig.rak.loseIdentity();
+    rig.hello();
+    REQUIRE_FALSE(rig.identity.refresh());
+    rig.identity.fillHeartbeat(&hb, nullptr, nullptr, extras, intent, errors,
+                               agent::Identity::kErrorCount);
+    REQUIRE(hb.errorCount == agent::Identity::kLibraryErrorCount + 1);
+    CHECK(std::string(hb.errors[6].name) == "radioIdentityLost");
+    CHECK(std::string(hb.errors[6].name) == std::string(agent::kRadioIdentityLostKey));
+    CHECK(hb.errors[6].value == 1);
+    // Nothing else about the heartbeat changes: a unit whose radio refuses still checks in.
+    CHECK(hb.companionPublicKey == nullptr);
+    CHECK_FALSE(hb.hasRadio);
+    CHECK_FALSE(hb.companionConnected);
+  }
+
+  SUBCASE("a radio awaiting its first install: the library's six and no more") {
+    Rig rig;
+    bool zero_key = true;
+    rig.rak.on_request = [&zero_key](const link::Packet& packet,
+                                     std::vector<std::uint8_t>* payload) {
+      if (packet.type != link::type::kIdentity || !zero_key) return false;
+      payload->assign(1 + link::kPubkeySize + 1, 0);
+      (*payload)[0] = link::status::kOk;
+      return true;
+    };
+    rig.hello();
+    REQUIRE_FALSE(rig.identity.refresh());
+    REQUIRE(rig.identity.identityState() == link::IdentityState::kNotMadeYet);
+    rig.identity.fillHeartbeat(&hb, nullptr, nullptr, extras, intent, errors,
+                               agent::Identity::kErrorCount);
+    CHECK(hb.errorCount == agent::Identity::kLibraryErrorCount);
+  }
+
+  SUBCASE("a radio with its key: the library's six, byte for byte as before") {
+    Rig rig;
+    rig.hello();
+    REQUIRE(rig.identity.refresh());
+    rig.identity.fillHeartbeat(&hb, nullptr, nullptr, extras, intent, errors,
+                               agent::Identity::kErrorCount);
+    CHECK(hb.errorCount == agent::Identity::kLibraryErrorCount);
+  }
+}
+
+TEST_CASE("the counter is added in one place, and to the heartbeat the library built") {
+  mm::ErrorCounter errors[8] = {};
+  errors[0] = mm::ErrorCounter{"overheard", 41};
+  CHECK(agent::addRadioIdentityLost(errors, 1, 8, false) == 1);
+  CHECK(agent::addRadioIdentityLost(errors, 1, 8, true) == 2);
+  CHECK(std::string(errors[1].name) == std::string(agent::kRadioIdentityLostKey));
+  CHECK(errors[1].value == 1);
+  CHECK_MESSAGE(agent::addRadioIdentityLost(errors, 8, 8, true) == 8,
+                "no room: the counters the library wrote are kept and nothing is added");
+  CHECK(agent::addRadioIdentityLost(nullptr, 0, 8, true) == 0);
 }
 
 TEST_CASE("a radio whose console does not know `get radio`: no radio block, and the key stands") {

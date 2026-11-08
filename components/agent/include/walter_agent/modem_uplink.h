@@ -83,6 +83,12 @@ constexpr std::size_t kClaimReplyBytes = 6144;
 // optional fields and a few error counters fits with room.
 constexpr std::size_t kHeartbeatBodyBytes = 1536;
 
+// How many `errors` entries one heartbeat may carry through here: the library's six and room for
+// a few of this board's own behind them (task p10-03's `radioIdentityLost` is the first). A
+// heartbeat with more than this keeps the ones the library wrote, because a counter is worth
+// less than the heartbeat it would cost.
+constexpr std::size_t kHeartbeatErrorsMax = 10;
+
 // The least that may be left of the wake's uplink deadline for a call to be begun: a connect and
 // a TLS handshake over LTE-M are seconds each before a byte of the request goes, and a call begun
 // with less than this ends in a timeout that cost the modem for nothing. TO BE SET ON THE BENCH
@@ -165,6 +171,15 @@ class ModemUplink final : public mm::IUplink {
   // here on takes what is left of it as its total deadline.
   void setDeadline(std::uint64_t deadline_ms) { deadline_ms_ = deadline_ms; }
   std::uint64_t deadline() const { return deadline_ms_; }
+  // **Whether the radio has lost its identity** (task p10-03), as the identity read before this
+  // wake found it (walter_agent/identity.h, `identityLost()`). The library builds the heartbeat
+  // and its six counters itself (agent/AgentLoop.cpp's `doHeartbeat` writes `hb.errors` whole,
+  // so a board cannot add one there), and this is the seam the bytes pass through: while it is
+  // set, the body carries `radioIdentityLost: 1` behind the library's own six and the exit
+  // node's page shows it among its *Counters*. Set at every wake by whoever read the identity;
+  // nothing else changes about the body.
+  void setRadioIdentityLost(bool lost) { radio_identity_lost_ = lost; }
+  bool radioIdentityLost() const { return radio_identity_lost_; }
   // Where a 401 is raised (task p4-04): the Walter's own attention, for the next wake record and
   // for `status`. A null one is a build with no duty cycle, and then a 401 is a log line and the
   // `Call` record and nothing more.
@@ -240,6 +255,7 @@ class ModemUplink final : public mm::IUplink {
 
   LinkState link_;
   std::uint64_t deadline_ms_ = 0;
+  bool radio_identity_lost_ = false;
   core::cycle::AgentAttention* attention_ = nullptr;
   ResultGate* gate_ = nullptr;
   KeptPayload payloads_[mm::kClaimMax];
