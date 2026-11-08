@@ -159,6 +159,8 @@ TEST_CASE("twinoak.fw.apply: the link and battery refusals read the supervisor's
     bench.server().queue(bench::ownJob(91, agent::kApplyType, bench::applyPayload(sha)).json());
     oneExchange(bench);
 
+    // The claim, as in every state where the radio does not answer: no key, so no mesh type.
+    CHECK_FALSE(bench.half().mesh.hasOwnKey());
     const std::string data = applyData(bench, 91);
     REQUIRE_FALSE(data.empty());
     CHECK(bench::member(data, "outcome") == "refused");
@@ -180,6 +182,7 @@ TEST_CASE("twinoak.fw.apply: the link and battery refusals read the supervisor's
     bench.server().queue(bench::ownJob(92, agent::kApplyType, bench::applyPayload(sha)).json());
     oneExchange(bench);
 
+    CHECK_FALSE(bench.half().mesh.hasOwnKey());
     const std::string data = applyData(bench, 92);
     REQUIRE_FALSE(data.empty());
     CHECK(bench::member(data, "outcome") == "refused");
@@ -200,6 +203,7 @@ TEST_CASE("twinoak.fw.apply: the link and battery refusals read the supervisor's
     // Not a refusal: the machine ran. There is no gauge either - the INA3221 is on the radio's
     // I2C - and the battery-unknown refusal is lifted by the same classification, which is the
     // whole reason task p2-05's supervisor can put an image on a radio that will not answer.
+    CHECK_FALSE(bench.half().mesh.hasOwnKey());
     const std::string data = applyData(bench, 93);
     REQUIRE_FALSE(data.empty());
     CHECK(bench::member(data, "outcome") != "refused");
@@ -337,6 +341,13 @@ TEST_CASE("twinoak.fw.apply of the Walter's own image: the trial's radio conditi
     bench.v().begin();
     primeBattery(bench);
     putRadio(bench, Radio::kDeaf);
+    // The ask that found it silent and decided nothing - `rak hello`, or the agent's own
+    // `Identity::open()` on the console's `agent wake`, which runs no step 2. The session goes
+    // down and the last good reading stays (core/update/last_good_battery.h), and **that** is the
+    // state p8-04's flag read as *the link is known down*: this is the one case of this file where
+    // a `HELLO` that went unanswered used to waive a trial's second condition.
+    (void)bench.v().link.hello();
+    REQUIRE_FALSE(bench.v().link.session().up);
     REQUIRE(bench.v().supervisor->health() == sup::Health::kUnknown);
     bench.server().queue(apply);
     oneExchange(bench);
