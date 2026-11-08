@@ -926,12 +926,18 @@ the link up or classified down; the battery above `kBatteryMinMv` and not fallin
 journalled as unfinished and the Walter's own update not on trial, S-7) → *flashing-candidate*
 (the flasher) → *booting* (`EV_BOOT` or `HELLO` inside `kBootWindowMs`) → *proving*, the health
 check held against the descriptor the store kept of the image flashed: `HELLO`'s version, role,
-board and link major; `TIME_SET` taken (or, with no time to give yet, `TIME_GET` answering and the
+board and link major; **the node not refusing its identity** (task p10-03: a radio that answers
+`IDENTITY` with `ERR_STATE`, which repeater `v0.1.2` does when its file system would not mount, is
+*the image is fine, the node is not*); `TIME_SET` taken (or, with no time to give yet, `TIME_GET`
+answering and the
 step said to be skipped); `STATUS`'s *radio initialised*; a `PING` every few seconds through
 `kProvingPeriodMs` with the `boot_id` unchanged; `POWER_GET` where the role has it → *committing*
 (the store's promotion) → *done*. Any failure: the candidate's hash on the store's bad list
 **first**, then the golden image flashed back, booted and proved by the same check → *restored*;
-if it does not come back either, *stuck*, and nothing is retried. A switch to the scanner image and
+if it does not come back either, *stuck*, and nothing is retried. The one answer that is not a
+failed image is the refusal above: *node-fault*, with no rollback spent, nothing on the bad list
+and nothing promoted, because no image can mend a file system that will not mount - the way out is
+a person's `erase` and `reboot` at the radio, and the same candidate may be applied afterwards. A switch to the scanner image and
 back (`rak role`) is the same machine with another source, a smaller proof and no promotion.
 
 **The journal** (`core/update/journal.h`): the `journal` partition of §11 as a ring of 64-byte
@@ -1267,7 +1273,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | `rak provision` (S-5a) | ✔ the sequence over the door, against each factory state: provisioned word for word with one pin reset and the port after it; every refusal before the first write with the chip's counters at zero (the wrong id, `locked` for an open radio, an id for a closed one, a radio with an identity named by its key, no base, a base that fails 5p again, the radio held, the battery low, the kill line); an unknown variant refused with nothing erased on an open radio and, on a locked one, erased, refused, the table extended, finished; a verify difference named and the radio provisioned again; a power cut at every flash and UICR operation, at the chip erase and at the transfers between the writes, each followed by `rak provision check` and the line it says; the reset spacing waited out; the timing from the simulator's clock; a provisioned radio left alone across a simulated week of wakes, the first install clearing the mark over an erased settings page, a restart and a power cut keeping it; and the supervisor, an update and a week of wakes against a factory radio with the tripwire armed | — | a factory RUI3 radio through the D-subs at 125 kHz (`docs/bench.md` §4a, phase 6) |
 | manifest, signature, descriptor | ✔ spec fixtures, RFC vectors | — | — |
 | image store, journal | ✔ simulated flash, power loss | partition access | — |
-| updates | ✔ scripted radio and flash | — | a deliberate bad image rolls back |
+| updates | ✔ scripted radio and flash, and a radio in repeater v0.1.2's lost mode (the image fine, the node not: no rollback, no bad list) | — | a deliberate bad image rolls back; a radio that refuses its identity costs no rollback |
 | supervisor | ✔ a radio silent on cue, fake pins, a simulated chip, a month of random behaviour | — | nRESET held to ground: the ladder climbs and stops; the Walter's own power-up is not an incident |
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |

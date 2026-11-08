@@ -337,9 +337,28 @@ and waits for a person's `erase` and `reboot`.
 ```
 
 and on meshmaster.dk, the unit's exit-node page: the **companion key changed**, and the audit log
-has `agent.companion_changed` with the old key and the new one. A radio in the lost mode has no
-key to print at all: `agent id` says *the radio has no identity yet*, and the heartbeat carries no
-radio key, no radio block and no job types.
+has `agent.companion_changed` with the old key and the new one.
+
+**A radio in the lost mode has no key to print at all, and since 8 November this firmware says
+which of the two that is** (task p10-03). Up to `v0.1.2` of this firmware `agent id` printed *the
+radio has no identity yet* at it - the sentence written for a unit registered before its repeater
+- because every `IDENTITY` answer that was not a key was read alike. It now says:
+
+```
+agent id: the radio refuses: its identity is lost. No key was made, so the heartbeat
+  carries no key, no radio block and no job types - and a counter that says which of
+  the two this is (radioIdentityLost).
+  the evidence: IDENTITY answered ERR_STATE, and HELLO advertises caps 0x21 (CLI, ATTENTION) and nothing else.
+  what a person does: read docs/flashing.md 3a first - the old key cannot be
+  recovered - then 'rak cli erase' and 'rak cli reboot' make this radio a new node,
+  whose key MeshMaster has to be told and whose settings have to be set again.
+```
+
+and the heartbeat carries `radioIdentityLost: 1` among its `errors`, which the exit node's page
+shows in its *Counters* row. A radio that is **awaiting its first install** - an all-zero key, or
+no answer - still says *the radio has no identity yet*, and that one needs its install and not a
+person. An update applied to a radio in the lost mode ends *node-fault* and spends no rollback
+(`docs/update.md`, check 1a).
 
 **What then**, when the key is new — in this order, because each step needs the one before it:
 

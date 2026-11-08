@@ -17,6 +17,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/link/radio_identity.h"
+
 namespace core {
 namespace console {
 
@@ -25,6 +27,12 @@ struct AgentIdentityView {
   // it still checks in, and the heartbeat then carries no key, no radio block and no job types.
   bool known = false;
   bool session = false;  // a HELLO has been answered in this boot
+  // **Which of the three states** (task p10-03, core/link/radio_identity.h): `known` is
+  // `kKnown`, and the other two are what `known == false` covered alone - a radio awaiting its
+  // first install, and a radio that **refuses** §5.6 because it has lost its identity. The two
+  // need opposite things, so `agent id` says which, with its evidence.
+  link::IdentityState identity = link::IdentityState::kNotMadeYet;
+  bool caps_identity_lost = false;  // the session advertises the lost mode's `caps 0x21`
 
   char public_key[65] = {};   // 64 lowercase hex, or empty
   char companion_name[49] = {};  // §5.6's advert name - the unit's **own** repeater's
@@ -68,6 +76,7 @@ struct AgentIdentityView {
   std::uint32_t boot_changes = 0;
   std::uint32_t unreadable = 0;
   std::uint32_t no_identity = 0;
+  std::uint32_t identity_lost = 0;  // of those, the ones that were ERR_STATE: a refusal
 
   // **The local door** (task p9-04): a job begun for the unit's own repeater is answered by this
   // end and nothing goes on the air (`walter_agent/link_mesh.h`). Until this line the four

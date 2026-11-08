@@ -141,12 +141,23 @@ void AgentBackend::sayRadio(bool radio_known, bool radio_up) const {
     }
   }
   types[at] = 0;
-  // Inside the library's own 239-character line (agent/Log.cpp), with the longest of the two
+  // Inside the library's own 239-character line (agent/Log.cpp), with the longest of the three
   // reasons and the four types in it: a line that said why and was cut off would say neither.
+  // **Three reasons and not two** (task p10-03): a radio that answered but refuses §5.6 is not a
+  // radio awaiting its first install, and until this line both read as *has made no identity
+  // yet*.
+  const char* why = "the radio did not answer a HELLO";
+  if (radio_up) {
+    // Not a word longer than the reason it replaces: the library's line is 239 characters and
+    // the four job types are in it, so a reason that grew by a clause would cut off *is not
+    // claimed* - which the first run of this line's own test did. `agent id` is where the
+    // evidence and the way out are written out.
+    why = p_.identity->identityLost() ? "the radio refuses: its identity is lost"
+                                      : "the radio answered but has made no identity yet";
+  }
   LOG_I("agent: %s: only this unit's own job types are claimed (%s); a mesh job this end cannot "
         "tell is its own is not claimed",
-        radio_up ? "the radio answered but has made no identity yet" : "the radio did not answer a HELLO",
-        at == 0 ? "none in this build" : types);
+        why, at == 0 ? "none in this build" : types);
 }
 
 // -- the state across a sleep ----------------------------------------------------------------------
@@ -220,6 +231,10 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   const bool radio_known = knowTheRadio();
   const bool radio_up = p_.identity->sessionUp();
   sayRadio(radio_known, radio_up);
+  // What the heartbeat of this wake says about a radio that **refuses** (task p10-03): the state
+  // the read above found, handed to the one seam the body's bytes pass through. A radio that lost
+  // its identity reads on meshmaster.dk exactly like one awaiting its first install without it.
+  p_.server->setRadioIdentityLost(p_.identity->identityLost());
   p_.server->setLinkUp(known.uplink.up);
   p_.server->setDeadline(deadline_ms);
   if (p_.firmware != nullptr) {

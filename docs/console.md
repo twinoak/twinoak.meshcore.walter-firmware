@@ -850,6 +850,18 @@ yet** - a RAK with no application, or one turned into a scanner - is not a failu
 checks in, and the line says that the heartbeat will carry no key, no radio block and no job types,
 which is how a unit registered before its repeater says *radio not identified*.
 
+**And a radio may refuse, which is the third thing and not the second** (task p10-03). From
+repeater `v0.1.2` a node whose file system would not mount makes no key and says so: `IDENTITY`
+answered `ERR_STATE`, `caps 0x21`, an attention of reason 6 detail 1. `agent id` then prints *the
+radio refuses: its identity is lost*, the evidence it read it from, and what a person does -
+`docs/flashing.md` §3a first, because the old key cannot be recovered, then `rak cli erase` and
+`rak cli reboot`, which make the radio a **new node**. The last line counts the refusals beside
+the answers with no key (*1 of them a refusal (ERR_STATE)*), the heartbeat carries
+`radioIdentityLost: 1` among its `errors` - meshmaster.dk's *Counters* row shows it - and an
+update applied to such a radio ends *node-fault* without spending a rollback (`docs/update.md`).
+A radio awaiting its first install is unchanged: it needs its install, and this one needs a
+person.
+
 **Every wake reads this before it claims anything** (task p8-04). A timer wake's step 2 opens the
 session; `agent wake` has no step 2 and opens one itself, so neither needs a `rak hello` typed
 first, and one line of the log says which of the two happened:

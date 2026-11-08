@@ -25,6 +25,9 @@ idf_component_register(
        "link/client/port.cpp"
        "link/client/client.cpp"
        "link/client/words.cpp"
+       # The radio's identity in three states, in one place (task p10-03): known, not made
+       # yet, and lost - the refusal repeater v0.1.2 answers IDENTITY with.
+       "link/radio_identity.cpp"
        "swd/wire.cpp"
        "swd/dp.cpp"
        "swd/mem_ap.cpp"

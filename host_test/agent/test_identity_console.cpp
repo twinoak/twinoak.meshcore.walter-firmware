@@ -143,6 +143,41 @@ TEST_CASE("agent id: every field, its source, and never the token") {
   CHECK(holds(text, "1 identity read(s), 1 radio read(s)"));
 }
 
+TEST_CASE("agent id on a radio that refuses: *its identity is lost*, with the evidence and the way out") {
+  Rig rig;
+  // Repeater v0.1.2's lost mode: caps 0x21 in the HELLO, IDENTITY answered ERR_STATE
+  // (sim/scripted_radio.h). A fresh boot, because `caps` is what a session learned.
+  rig.rak.radio.loseIdentity();
+  rig.rak.radio.restart(false);
+  rig.client.radioWasReset();
+  REQUIRE(rig.client.hello().ok());
+
+  const std::string text = rig.run("agent id");
+  CHECK(holds(text, "the radio refuses: its identity is lost"));
+  CHECK(holds(text, "radioIdentityLost"));
+  // The evidence, so that a person at the console can tell this from a radio that has simply
+  // never had a key - and the way out, which is theirs and not an image's.
+  CHECK(holds(text, "IDENTITY answered ERR_STATE"));
+  CHECK(holds(text, "caps 0x21"));
+  CHECK(holds(text, "docs/flashing.md 3a"));
+  CHECK(holds(text, "'rak cli erase'"));
+  CHECK(holds(text, "'rak cli reboot'"));
+  // **And never the sentence written for a unit registered before its repeater**, which is what
+  // this firmware said about the lost mode until this task.
+  CHECK_FALSE(holds(text, "the radio has no identity yet"));
+  // The rest of the line is what a unit with no key says, because that part is the same fact.
+  CHECK(holds(text, "job types (0): none"));
+  CHECK(holds(text, "local door: shut"));
+  CHECK_FALSE(holds(text, kKeyHex));
+  // And the count of refusals, beside the count of answers with no key.
+  CHECK(holds(text, "answer(s) with no key"));
+  CHECK(holds(text, "1 of them a refusal (ERR_STATE)"));
+  // The heartbeat it would post carries the counter and nothing else new.
+  const std::string body = rig.run("agent heartbeat");
+  CHECK(holds(body, "\"radioIdentityLost\":1"));
+  CHECK_FALSE(holds(body, "companionPublicKey"));
+}
+
 TEST_CASE("agent id with no time of day says so, and the heartbeat's `at` is 0") {
   Rig rig;
   const std::string text = rig.run("agent id");

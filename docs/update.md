@@ -23,7 +23,7 @@ loses power in the middle reads the journal at boot and picks up where it was. I
 
 ```
 idle ─► check ─► flashing-candidate ─► booting ─► proving ─► committing ─► done
-           │            │                 │          │
+           │            │                 │          │  └─► node-fault
            │            └─────────────────┴──────────┴──► rolling-back ─► rolling-back (booting the golden image)
            └─► refused (a precondition; nothing was touched)                 │
                                                                              ▼
@@ -52,6 +52,7 @@ runs it to the end inside the command.
 | **restored** | the golden image is back, proved and still golden; the candidate is in the store but on the bad list | terminal |
 | **stuck** | the golden image did not come back either, or there was none (a first install that failed): the radio has no proved application. The supervisor's last rung, a report, and no further attempt by this machine | terminal |
 | **refused** | a precondition failed at check; nothing was touched | terminal |
+| **node-fault** | the image proved everything an image can and **the node** is the fault: today that is one thing, a radio that has lost its identity (check 1a below). No rollback is spent, nothing goes on the bad list, nothing is promoted - the candidate is on the radio and in the store, the golden image is untouched, and the way out is a person's `erase` and `reboot` at the radio. The same candidate may then be applied again | terminal |
 
 ## The preconditions (check)
 
@@ -90,6 +91,19 @@ health check holds the `HELLO` it gets against the descriptor it flashed"):
 1. **`HELLO` answers**, and its `fw_version`, `role` and `board` are the descriptor's, and its link
    major is one this Walter speaks. A radio that refuses `HELLO` with `ERR_UNSUPPORTED` has booted
    and does not speak this major (`spec/LINK-PROTOCOL.md` §5.1): a failure, not a silence.
+1a. **The node is there, and not refusing.** From repeater `v0.1.2` a radio whose file system
+   would not mount makes no key: it keeps the link up, advertises `caps 0x21` (`CLI`, `ATTENTION`),
+   answers `IDENTITY` with **`ERR_STATE`** and raises `EV_ATTENTION` reason 6 detail 1 (the
+   repeater repository's `docs/flashing.md` §3a and its `tasks/phase-3.9/reports/01.md`). **That
+   is not a failed image** - the image booted, answered and said what it is - and no image can
+   mend it, so the run ends **node-fault** and not in a rollback: a rollback would ban a good
+   image and flash the golden one into the same unmountable file system. A radio that has **no**
+   identity yet - an all-zero key, or none asked for - is no fault at all: a first install starts
+   exactly there, and the check goes on. The three states are told apart in one place,
+   `components/core/include/core/link/radio_identity.h`. The frame costs nothing in the ordinary
+   case: it is sent only when §5.1's `caps` are the lost mode's own, or when check 2 is about to
+   fail (a radio in that mode has no clock either, and *the radio would not take the clock* was
+   what spent the rollback before this check existed).
 2. **The clock can be set**: `TIME_SET` accepted - the first thing a healthy repeater must take
    (§5.4). A Walter with no time of its own **in this boot** cannot make this check; it says so
    (*the clock check was skipped*) and asks `TIME_GET` instead, which must answer. Its own clock
@@ -108,7 +122,9 @@ Anything else is a failure, named with the step it failed at: *no HELLO inside t
 board is not the flashed image's*, *the radio speaks a link major this Walter does not*, *the radio
 would not take the clock*, *STATUS does not say the radio initialised*, *the radio restarted inside
 the proving period*, *the radio went silent inside the proving period*, *POWER_GET did not answer
-though the role advertises it*, *the flasher did not finish*.
+though the role advertises it*, *the flasher did not finish*. The one answer that is **not** a
+failed image is check 1a's: *the radio refuses: its identity is lost, and no image mends that*,
+which ends the run *node-fault*.
 
 The scanner's proof (`rak role scanner`) is different and smaller: inside `kScannerWindowMs`,
 something that calls itself a scanner must be there - the text-mode detection of task p1-02 (no
@@ -157,7 +173,7 @@ What the unit is in, by the entry the journal shows last:
 | **done** | the candidate, golden | nothing: the run is over |
 | **rolling-back** | from the failed candidate through a half-written golden image, in its bootloader meanwhile | the hash onto the bad list again (a no-op the second time), the golden image flashed again, the reset |
 | **rolling-back (booting / proving the golden image)** | the golden image on the chip | the golden image's proving over, from the start |
-| **restored**, **stuck**, **refused** | as the word says | nothing: the run is over |
+| **restored**, **stuck**, **refused**, **node-fault** | as the word says | nothing: the run is over |
 
 The host tests run exactly this: the Walter reset after every one of the journal's entries of the
 good path and of a rollback, and the power cut during every write of every entry, and the run
@@ -189,6 +205,12 @@ rak update: done: 0.3.1+abc1234 (sha256 1f2e3d4c5b6a7988...) is the golden image
   proved` - a rollback, and the next `rak update` with that candidate is refused. `rak update:
   STUCK: <reason> - the radio has no proved application; a person's business now` - the golden
   image did not come back (or, after `--first-install`, *no image to return to*).
+- `rak update: the image is fine, the node is not: the radio refuses: its identity is lost, and no
+  image mends that` and, under it, that the candidate is on the radio, on no bad list, and that
+  `rak cli erase` then `rak cli reboot` (`docs/flashing.md` §3a) is the way out - check 1a. The
+  radio becomes a **new node** when a person does that, so its key has to be confirmed and its
+  repeater registered again on meshmaster.dk, and the settings set again; then this update can be
+  applied a second time, because the image was never the fault.
 - `error: rak update: refused at check: <reason> (nothing was touched)` - a precondition.
 - `error: rak update: an update is already running (<state>); 'rak update status' says where` - a
   resumed run is being driven from the main loop; wait for it.

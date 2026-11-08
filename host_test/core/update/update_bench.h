@@ -82,6 +82,10 @@ enum class Boot {
   kNotInitialised,  // STATUS flags without bit 4
   kNoPower,         // POWER_GET never answers
   kRefuseHello,     // every HELLO refused ERR_UNSUPPORTED: §5.1, a radio that does not speak this major
+  // **The image is fine and the node is not** (task p10-03): the image boots and answers a HELLO
+  // that is its descriptor's, with the lost mode's `caps 0x21`, and refuses IDENTITY with
+  // ERR_STATE - repeater v0.1.2 on a file system that would not mount (sim/scripted_radio.h).
+  kIdentityLost,
 };
 
 struct UpdateWorld {
@@ -182,6 +186,7 @@ struct UpdateWorld {
     radio.refuseType(0, 0, 0);
     radio.ignoreType(0, 0);
     radio.scanner = false;
+    radio.keepIdentity();
     core::image::Fields f;
     if (!chipApplication(&f)) {
       radio.deaf = true;  // in its bootloader: nothing answers on the link
@@ -220,6 +225,9 @@ struct UpdateWorld {
         break;
       case Boot::kNoPower: radio.ignoreType(core::link::type::kPowerGet, 100); break;
       case Boot::kRefuseHello: radio.refuseType(core::link::type::kHello, core::link::status::kUnsupported, 100); break;
+      // The lost mode is the radio's whole behaviour and not one refusal, so it is one call
+      // (sim/scripted_radio.h): caps 0x21, IDENTITY ERR_STATE, no clock.
+      case Boot::kIdentityLost: radio.loseIdentity(); break;
     }
     radio.restart(!radio.deaf);  // EV_BOOT on the wire, unless nothing is
   }

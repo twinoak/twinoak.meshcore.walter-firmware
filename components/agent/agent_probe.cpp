@@ -75,6 +75,10 @@ bool IdentityProbe::identity(core::console::AgentIdentityView* out) {
   observations_.useOwnKey(identity_.publicKey());
   out->known = known;
   out->session = identity_.sessionUp();
+  // Three states, not two (task p10-03): the one place that decides them answered this at the
+  // refresh above, and the console prints what it is given.
+  out->identity = identity_.identityState();
+  out->caps_identity_lost = identity_.capsSayIdentityLost();
   copyInto(out->public_key, sizeof out->public_key,
            identity_.publicKeyHex() == nullptr ? "" : identity_.publicKeyHex());
   copyInto(out->companion_name, sizeof out->companion_name, identity_.name());
@@ -146,6 +150,7 @@ bool IdentityProbe::identity(core::console::AgentIdentityView* out) {
   out->boot_changes = counted.boot_changes;
   out->unreadable = counted.unreadable;
   out->no_identity = counted.no_identity;
+  out->identity_lost = counted.identity_lost;
   return known;
 }
 

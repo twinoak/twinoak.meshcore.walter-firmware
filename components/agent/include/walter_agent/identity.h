@@ -44,6 +44,13 @@
 // alive and *radio not identified*. The first heartbeat after the radio has an identity carries
 // the key.
 //
+// **And a radio may refuse** (task p10-03): from repeater `v0.1.2` a node that has lost its
+// identity answers §5.6 with `ERR_STATE` and waits for a person. That is not a radio awaiting
+// its first install and it must not read as one, so the state is one of **three**
+// (core/link/radio_identity.h, which decides it) and not one of two: `known()` is the first,
+// `identityState()` tells the other two apart, and a heartbeat sent while the radio refuses
+// carries the counter `radioIdentityLost: 1` beside the library's own six.
+//
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
 
@@ -60,6 +67,7 @@
 #include <agent/JobEnvelopes.h>
 
 #include "core/link/client/client.h"
+#include "core/link/radio_identity.h"
 #include "core/power/interval_policy.h"
 
 namespace agent {
@@ -74,6 +82,22 @@ constexpr const char kTransport[] = "native";
 // The line that carries the radio block, and the `>` the repeater's console prefixes a `get`
 // reply with (MeshCore's CommonCLI at d9296435).
 constexpr const char kRadioQuery[] = "get radio";
+
+// -- what meshmaster.dk is told about a radio that refuses -------------------------------------
+//
+// The heartbeat's `errors` is **an open key space on both ends** (meshmaster.dk's
+// `AgentHeartbeat.Errors`: "most are counters, `overheard` is not"; at most 4 000 characters of
+// JSON, stored verbatim, shown on the exit node's page as its *Counters* row), so a radio that
+// refuses needs no new field: one counter says it. Written **only while the radio refuses**, so
+// an ordinary unit's heartbeat is byte for byte what it was.
+constexpr const char kRadioIdentityLostKey[] = "radioIdentityLost";
+
+// That counter appended to a heartbeat's own, in one place: the console's `agent heartbeat`
+// (`Identity::fillHeartbeat`) and the wake's own heartbeat (`ModemUplink::postHeartbeat`, which
+// takes the six the library built) go through this, so the two bodies cannot disagree about the
+// key or about when it is there. Returns the new count; `count` unchanged when there is no room
+// or the radio has not refused.
+int addRadioIdentityLost(mm::ErrorCounter* out, int count, int capacity, bool lost);
 
 // -- what one wake promises the server ---------------------------------------------------------
 //
@@ -176,6 +200,10 @@ struct IdentityCounters {
   std::uint32_t boot_changes = 0;    // a new boot_id: everything read again
   std::uint32_t unreadable = 0;      // a `get radio` reply these four numbers are not in
   std::uint32_t no_identity = 0;     // IDENTITY answered with a key of all zeros, or did not
+  // Of those, the ones that were a **refusal** (task p10-03): §5.6 answered ERR_STATE, which is
+  // repeater v0.1.2 saying it has lost its identity and will make no new key. Counted apart
+  // because the two need opposite things - an install, and a person.
+  std::uint32_t identity_lost = 0;
   std::uint32_t sessions_asked = 0;  // open() found no session and sent a HELLO
   std::uint32_t no_session = 0;      // of those, the ones the radio did not answer
 };
@@ -217,6 +245,15 @@ class Identity {
 
   // True when the radio has an identity: the key is known and is not all zeros.
   bool known() const { return key_known_; }
+  // **Which of the three states the radio is in** (task p10-03, core/link/radio_identity.h):
+  // `known()` is this one being `kKnown`, and the other two are what `known() == false` used to
+  // cover alone - a radio awaiting its first install, and one that refuses. Decided by
+  // `core::link::identityState` out of §5.6's and §5.1's answers, at the last read.
+  core::link::IdentityState identityState() const { return state_; }
+  bool identityLost() const { return state_ == core::link::IdentityState::kLost; }
+  // The evidence beside the refusal, for the line a person reads: the session advertises the
+  // lost mode's `caps 0x21` and nothing else.
+  bool capsSayIdentityLost() const { return caps_lost_; }
   // 64 lowercase hex characters, or **nullptr** while the radio has made no identity - which is
   // exactly what `AgentLoop::setIdentity` takes for "it has none".
   const char* publicKeyHex() const { return key_known_ ? key_hex_ : nullptr; }
@@ -257,8 +294,11 @@ class Identity {
                              const HeartbeatExtras& extras, const mm::WakeIntent& intent,
                              char* out, std::size_t cap);
 
-  // How many error counters `fillHeartbeat` writes: the library's six.
-  static constexpr int kErrorCount = 6;
+  // How much room `fillHeartbeat`'s `errors` needs: the library's six, and this board's own
+  // `radioIdentityLost` behind them, which is written only while the radio refuses (task
+  // p10-03). `mm::Heartbeat::errorCount` is what was actually written - six, or seven.
+  static constexpr int kLibraryErrorCount = 6;
+  static constexpr int kErrorCount = kLibraryErrorCount + 1;
 
  private:
   bool readKey();
@@ -267,6 +307,9 @@ class Identity {
   lc::Client& radio_client_;
 
   bool key_known_ = false;
+  // The three states and the evidence for the third, as the last read left them (task p10-03).
+  core::link::IdentityState state_ = core::link::IdentityState::kNotMadeYet;
+  bool caps_lost_ = false;
   std::uint8_t key_[core::link::kPubkeySize] = {};
   char key_hex_[2 * core::link::kPubkeySize + 1] = {};
   char name_[lc::kVersionMax] = {};

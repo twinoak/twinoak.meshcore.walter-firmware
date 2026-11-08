@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "agent/agent_bench.h"
+#include "core/link/radio_identity.h"
 
 using bench::AgentBench;
 using core::cycle::Pass;
@@ -138,6 +139,46 @@ TEST_CASE("a wake before the fix: without the key no mesh type is offered, so no
   // The whole of it: the library's line buffer is 239 characters and this is the longer of the
   // two reasons, so a line that grew would be cut off exactly where it says why.
   CHECK(has(text, "is not claimed"));
+}
+
+TEST_CASE("a radio that refuses: the wake says so, and the heartbeat carries radioIdentityLost") {
+  // Task p10-03, end to end: repeater v0.1.2's lost mode behind the whole wake. The unit still
+  // checks in and still runs its own job types - a Walter whose radio refuses is exactly the one
+  // that has to reach its uplink and say so - and what it says is the one thing meshmaster.dk
+  // could not see before: that this is a refusal and not a radio awaiting its first install.
+  AgentBench bench(nullptr, false);
+  bench.modemWorks();
+  bench.world.rak.loseIdentity();
+  bench.v().begin();
+  (void)bench.v().runLine("lte up");
+  bench.server().queue({strangerStatus(75), bench::ownJob(76, agent::kStateType, "{}").json()});
+  const std::string text = bench.v().runLine("agent wake");
+  INFO(text);
+
+  // The session is up - the radio did come up - and `caps` is the lost mode's own.
+  CHECK(bench.v().link.session().up);
+  CHECK(bench.v().link.session().caps == link::kCapsIdentityLost);
+  CHECK(bench.half().identity.identityState() == link::IdentityState::kLost);
+  CHECK_FALSE(bench.half().identity.known());
+  CHECK_FALSE(bench.half().mesh.hasOwnKey());
+
+  // The heartbeat: the counter, and otherwise what a unit with no key sends.
+  REQUIRE(bench.server().heartbeats.size() == 1);
+  const std::string& hb = bench.server().heartbeats[0];
+  CHECK(has(hb, "\"radioIdentityLost\":1"));
+  CHECK_FALSE(has(hb, "companionPublicKey"));
+  CHECK_FALSE(has(hb, "\"status\""));
+  CHECK(has(hb, "twinoak.fw.state"));
+
+  // Its own job ran; the mesh job was never claimed; nothing went on the air.
+  REQUIRE_FALSE(bench.lastResult(76).empty());
+  CHECK(bench.lastResult(75).empty());
+  CHECK_FALSE(anythingWentOnTheAir(bench));
+
+  // And the line says which of the three this was, inside the library's 239 characters.
+  CHECK(has(text, "the radio refuses: its identity is lost"));
+  CHECK(has(text, "is not claimed"));
+  CHECK_FALSE(has(text, "has made no identity yet"));
 }
 
 TEST_CASE("a silent radio: the unit's own job types are still claimed and run, and no mesh job is") {
