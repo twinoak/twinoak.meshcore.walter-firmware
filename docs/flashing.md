@@ -138,7 +138,11 @@ Before pressing anything, two facts about the file:
 - **The Walter's own download does not resume across wakes.** A radio image does: the store keeps a
   progress record and the next wake continues the file. The Walter's own slot is erased when a write
   opens on it (`SelfUpdate::beginWrite` → `written_ = 0`), so a download the wake's budget cuts
-  short is started again from zero at the next wake, whatever the job's own message says. In
+  short is started again from zero at the next wake and the plan pays for those bytes twice. Since
+  v0.1.3 the messages say so: the job's result carries *this slot keeps no progress, so the next
+  wake starts the file again from zero*, and the line the cable shows ends *the next wake starts the
+  file again from zero* where a radio image's ends *the next wake continues it* (task p10-04; before
+  that both promised a resume). In
   practice it fits: the exchange is given **twenty minutes** (`kBackendBoundMs`) and a megabyte a
   wake (`kWakeDownloadBytes`), and the application is about 750 kB in **twelve 64 kB ranges**, each
   its own request with its own deadline and three attempts. A range that stalls is retried; three

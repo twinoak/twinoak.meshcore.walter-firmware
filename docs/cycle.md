@@ -262,7 +262,10 @@ the agent on the other side of that line (§13), so each of these now lives **ab
 - **Partial progress and lease extension.** `agent::FirmwareJobs` (task p4-05) posts `progress`
   and asks `extend` as a `twinoak.fw.offer` downloads in resumable ranges; a wake that runs out of
   download budget stops mid-image, posts no result, and the next wake resumes. This is
-  `spec/proposals/02`'s shape, now built.
+  `spec/proposals/02`'s shape, now built — for a **radio** image. The Walter's own slot keeps no
+  progress record and is erased when a write opens on it, so there the next wake starts the file
+  again from zero, which is what that branch's messages now say (task p10-04;
+  [`flashing.md`](flashing.md) has the arithmetic of whether it fits one wake).
 - **`nextCheckInS` and the per-wake budget** (proposal 01's B and C). The library proposes them in
   the heartbeat; the wake cycle honours an accepted `nextCheckInS` **only when it is longer** than
   the band's own interval (`BackendAnswer::sleep_at_least_s`), because the battery's say wins. The

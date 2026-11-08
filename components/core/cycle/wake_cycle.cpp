@@ -1056,7 +1056,7 @@ bool WakeCycle::runFetch(std::uint64_t deadline_ms) {
     return false;
   }
   refuse(Step::kUpdate, interfaces::Ask::kFetchRelease, interfaces::Refusal::kFailed,
-         update::describe(r.verdict));
+         update::describe(r.verdict, r.own_image));
   return false;
 }
 

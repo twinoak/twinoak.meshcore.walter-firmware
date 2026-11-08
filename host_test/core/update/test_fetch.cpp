@@ -10,6 +10,7 @@
 #include <string>
 
 #include "core/image/store_bench.h"
+#include "core/image/this_image.h"
 #include "core/image/trust.h"
 #include "core/net/trust.h"
 #include "core/update/fetch.h"
@@ -258,4 +259,141 @@ TEST_CASE("the manifest is bounded: one larger than 8 KB is refused before the s
   CHECK(r.verdict == FetchVerdict::kFailed);
   CHECK(has(r.why, "8 KB"));
   CHECK(rig.net.server().requests.size() == 1);
+}
+
+// -- the budget's sentence, per product (task p10-04) ---------------------------------------------
+//
+// A radio image's download resumes and the Walter's own does not, and until this task both
+// sentences promised a resume (tasks/phase-9/FOLLOWUPS.md, *The Walter's own download does not
+// resume, and the message says it does*). The difference is the target, so `Fetch` is where it is
+// decided: `run()` writes into the image store, which keeps a progress record; `runInto()` writes
+// into a target of the caller's - the Walter's other application slot - which does not.
+
+namespace {
+
+// The Walter's other application slot as a transfer target, in the one respect this is about: it
+// keeps **no** progress record. `SelfUpdate::beginWrite` sets `written_ = 0` and the platform's
+// erases the slot, and `abandonWrite()` zeroes it again, so a download the budget cut short has
+// nothing to continue from (core/update/self_update.cpp). The three words are this image's own, as
+// `SelfUpdate`'s are, so the fixture release of the Walter's product passes check 3.
+class OwnSlotTarget final : public core::image::TransferTarget {
+ public:
+  OwnSlotTarget() {
+    needs_.slot = Slot{0};
+    needs_.role = core::image::role_name(self_.role);
+    needs_.board = self_.board;  // the member's own bytes: a SlotNeeds only points at them
+    needs_.band = self_.band;
+  }
+
+  const core::image::SlotNeeds& needs() const override { return needs_; }
+  core::image::Use use() const override { return core::image::Use::kOta; }
+  const core::flasher::BoardProfile* profile() const override { return nullptr; }
+  const char* name() const override { return "the other application slot"; }
+  bool writing() const override { return open_; }
+  std::uint32_t written() const override { return written_; }
+  std::uint32_t expectedSize() const override { return expected_; }
+  const char* beginWrite(const core::image::ExpectedFile& expected) override {
+    open_ = true;
+    expected_ = expected.size();
+    written_ = 0;  // the slot is erased when a write opens on it
+    ++opens;
+    return nullptr;
+  }
+  const char* write(const std::uint8_t*, std::uint32_t size) override {
+    written_ += size;
+    return nullptr;
+  }
+  const char* endWrite() override { return nullptr; }
+  const core::flasher::ImageSource* staged(const char** why) override {
+    *why = "this target stages nothing";
+    return nullptr;
+  }
+  const char* commit(const core::image::AcceptedImage&) override { return nullptr; }
+  void abandonWrite() override {
+    open_ = false;
+    written_ = 0;
+  }
+
+  int opens = 0;
+
+ private:
+  const core::image::Fields self_ = core::image::this_image();
+  core::image::SlotNeeds needs_;
+  bool open_ = false;
+  std::uint32_t written_ = 0;
+  std::uint32_t expected_ = 0;
+};
+
+// The `ota` entry's name, as swdName reads the `swd` one: the Walter's own file.
+std::string otaName(const Candidate& image) {
+  const std::string text(image.manifest.begin(), image.manifest.end());
+  const std::size_t use = text.find("\"use\": \"ota\"");
+  REQUIRE(use != std::string::npos);
+  const std::size_t name = text.find("\"name\": \"", use);
+  REQUIRE(name != std::string::npos);
+  const std::size_t start = name + 9;
+  return text.substr(start, text.find('"', start) - start);
+}
+
+}  // namespace
+
+TEST_CASE("describe(kBudget) says what the next wake does with the bytes, and the two products' next wakes differ") {
+  CHECK(std::string(core::update::describe(FetchVerdict::kBudget, false)) ==
+        "the wake's budget ran out; the download resumes next wake");
+  CHECK(std::string(core::update::describe(FetchVerdict::kBudget, true)) ==
+        "the wake's budget ran out; this slot keeps no progress, so the download starts again from zero next wake");
+  // Nothing else reads differently: the flag is kBudget's alone.
+  const FetchVerdict others[] = {FetchVerdict::kStored,  FetchVerdict::kRefused, FetchVerdict::kDenied,
+                                 FetchVerdict::kLater,   FetchVerdict::kFailed,  FetchVerdict::kBadUrl,
+                                 FetchVerdict::kNoSlot,  FetchVerdict::kStoreRefused,
+                                 FetchVerdict::kWrongFile};
+  for (const FetchVerdict v : others) {
+    CHECK(std::string(core::update::describe(v, false)) == std::string(core::update::describe(v, true)));
+  }
+}
+
+TEST_CASE("a radio image's budget stop is the resumable one: the result says so, and the next wake finishes it") {
+  FetchRig rig;
+  const Candidate big("store-resume");
+  serveRelease(rig.net.server(), "/r", big);
+  rig.net.server().serve("/r/" + swdName(big), big.file, "\"big\"");
+  core::net::Budget one_range;
+  one_range.bytes = core::net::kRangeBytes;
+  const FetchResult r = rig.fetch->run("https://server.example/r", Which::kCandidate, Slot{0}, one_range);
+  CHECK(r.verdict == FetchVerdict::kBudget);
+  CHECK_FALSE(r.own_image);
+  const std::string said = core::update::describe(r.verdict, r.own_image);
+  CHECK(has(said, "resumes next wake"));
+  CHECK_FALSE(has(said, "starts again from zero"));
+  // And it is a promise the store can keep: the bytes and the progress record are in flash.
+  CHECK(rig.store.read(Which::kCandidate).transfer);
+  CHECK(rig.store.read(Which::kCandidate).transferred == core::net::kRangeBytes);
+}
+
+TEST_CASE("the Walter's own budget stop promises no resume: the slot keeps no progress, and the sentence says so") {
+  FetchRig rig;
+  const Candidate self("self-a");  // 12 288 bytes of the Walter's own product
+  serveRelease(rig.net.server(), "/w", self);
+  rig.net.server().serve("/w/" + otaName(self), self.file, "\"self\"");
+  OwnSlotTarget slot;
+  core::net::Budget part;
+  part.bytes = 4096;  // a third of the file: the download stops with the budget spent
+  const FetchResult r = rig.fetch->runInto("https://server.example/w", slot, part);
+  INFO(rig.out.text);
+  CHECK(r.verdict == FetchVerdict::kBudget);
+  CHECK(r.own_image);
+  CHECK(r.held == 4096);
+  CHECK(r.expected == self.file.size());
+  const std::string said = core::update::describe(r.verdict, r.own_image);
+  CHECK(has(said, "starts again from zero"));
+  CHECK_FALSE(has(said, "resumes next wake"));
+  // Why it says so: the abandoned write left nothing behind, so the next wake opens the slot again
+  // and the download begins at zero - the bytes above were paid for twice.
+  CHECK(slot.written() == 0);
+  CHECK_FALSE(slot.writing());
+  const FetchResult again = rig.fetch->runInto("https://server.example/w", slot, part);
+  CHECK(again.verdict == FetchVerdict::kBudget);
+  CHECK(again.resumed_from == 0);
+  CHECK(again.bytes == 4096);
+  CHECK(slot.opens == 2);
 }
