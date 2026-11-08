@@ -103,6 +103,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakPower:
     case Verb::kRakEnv:
     case Verb::kRakCli:
+    case Verb::kRakRequest:
     case Verb::kRakEvents:
     case Verb::kRakText:
     case Verb::kRakSwdConnect:
@@ -458,6 +459,9 @@ void Console::runLine(const char* line) {
     case Verb::kRakPower: rakPower(); return;
     case Verb::kRakEnv: rakEnv(); return;
     case Verb::kRakCli: rakCli(p.command.text, p.command.text_size); return;
+    case Verb::kRakRequest:
+      rakRequest(p.command.req_type, p.command.bytes, p.command.bytes_size);
+      return;
     case Verb::kRakEvents: rakEvents(); return;
     case Verb::kRakText: rakText(); return;
     case Verb::kRakSwdConnect: rakSwdConnect(); return;
@@ -1054,6 +1058,76 @@ void Console::rakCli(const char* line, std::size_t size) {
   }
   print("reply: ");
   printText(answer.message.text);
+}
+
+// §5.9's LOCAL_REQUEST (link 1.2, task p9-06): one question of the radio's own request handler,
+// answered as it answers an admin over the mesh and with nothing on the air. The answer is the
+// handler's own bytes, so they are printed as hex - and for a status, which is the one a person
+// on the bench reads for meaning, field by field in the layout the fixtures were written from
+// (`link::decodeRepeaterStats`; spec/fixtures/link/link-v1.2.json).
+void Console::rakRequest(std::uint8_t req_type, const std::uint8_t* data, std::size_t size) {
+  const lc::Answer<link::LocalRequestResponse> answer =
+      radio_.localRequest(req_type, link::Bytes{size == 0 ? nullptr : data, size});
+  printf("local request 0x%02x (%s)", static_cast<unsigned>(req_type),
+         lc::localRequestName(req_type));
+  if (size > 0) {
+    printBytes(", data ", link::Bytes{data, size});
+  }
+  print("\n");
+  if (!answer.ok()) {
+    linkError("rak request", answer.fault, answer.status);
+    if (answer.fault == lc::Fault::kUnsupported) {
+      print("  this radio does not carry LOCAL_REQUEST (link 1.2): a status, an access list, a "
+            "neighbour list and the owner info can only be read over the mesh from it\n");
+    } else if (answer.fault == lc::Fault::kRefused && answer.status == link::status::kRange) {
+      // §5.9: a request the handler gives no answer to. Over the mesh it would have been silence.
+      print("  the handler answered nothing, which over the mesh would have been silence: this "
+            "request type, or this `data`, is not one it answers\n");
+    }
+    return;
+  }
+  const link::Bytes body = answer.message.data;
+  printf("  %s: %u byte(s)", lc::statusName(answer.status), static_cast<unsigned>(body.size));
+  if (body.size > 0) {
+    printBytes("\n  ", body);
+  }
+  print("\n");
+  if (req_type != link::local_req::kStatus) {
+    return;
+  }
+  link::RepeaterStats s;
+  if (!link::decodeRepeaterStats(body, &s)) {
+    printf("  a RepeaterStats is at least %u bytes; this answer is not one\n",
+           static_cast<unsigned>(link::kRepeaterStatsMinLen));
+    return;
+  }
+  // The SNR is quarter-decibels on the wire (§6.3's own unit) and printed as a tenth of a dB
+  // without floating point, as `rak env` prints its hundredths.
+  const int snr_tenths = (static_cast<int>(s.last_snr_q4) * 10) / 4;
+  printf("  battery %u mV, uptime %lu s, tx queue %u\n", static_cast<unsigned>(s.battery_mv),
+         static_cast<unsigned long>(s.uptime_s), static_cast<unsigned>(s.tx_queue_len));
+  printf("  noise floor %d dBm, last rssi %d dBm, last snr %s%d.%d dB\n",
+         static_cast<int>(s.noise_floor_dbm), static_cast<int>(s.last_rssi),
+         snr_tenths < 0 && snr_tenths > -10 ? "-" : "", snr_tenths / 10,
+         snr_tenths < 0 ? -(snr_tenths % 10) : snr_tenths % 10);
+  printf("  packets: %lu received (%lu flood, %lu direct), %lu sent (%lu flood, %lu direct)\n",
+         static_cast<unsigned long>(s.packets_recv), static_cast<unsigned long>(s.recv_flood),
+         static_cast<unsigned long>(s.recv_direct), static_cast<unsigned long>(s.packets_sent),
+         static_cast<unsigned long>(s.sent_flood), static_cast<unsigned long>(s.sent_direct));
+  printf("  airtime %lu s transmitting; duplicates %u flood, %u direct\n",
+         static_cast<unsigned long>(s.airtime_s), static_cast<unsigned>(s.flood_dups),
+         static_cast<unsigned>(s.direct_dups));
+  if (s.has_rx_airtime) {
+    printf("  airtime %lu s receiving\n", static_cast<unsigned long>(s.rx_airtime_s));
+  } else {
+    print("  airtime receiving: not said (an older RepeaterStats)\n");
+  }
+  printf("  error events %u, receive errors ", static_cast<unsigned>(s.err_events));
+  if (s.has_recv_errors) {
+    printf("%lu\n", static_cast<unsigned long>(s.recv_errors));
+  } else {
+    print("not said (an older RepeaterStats)\n");
+  }
 }
 
 void Console::printEvent(const lc::QueuedEvent& event, std::size_t number) {
@@ -3036,6 +3110,15 @@ void Console::agentId() {
          static_cast<unsigned long>(v.local_jobs), static_cast<unsigned long>(v.local_requests),
          static_cast<unsigned long>(v.local_silent),
          static_cast<unsigned long>(v.local_unserved));
+  // Which of the four requests of §5.9 the door answers out of the radio's own handler (link 1.2,
+  // task p9-06), read off the session's capability bit. A radio at 1.1 answers none of them, and
+  // then a status, a neighbour list and the owner info of this unit's own repeater are *Failed*
+  // and its access list silence - which is what kept repeater 41 *stale* on meshmaster.dk.
+  printf("  from LOCAL_REQUEST: %s\n",
+         v.door_local_request
+             ? "status, access list, neighbours, owner info (telemetry stays LPP_GET)"
+             : "none - this radio is older than link 1.2, so status, neighbours and owner info "
+               "are failed and the access list silent");
   printf("intent: next check-in %lu s, at most %d transaction(s) this wake (band %s)\n",
          static_cast<unsigned long>(v.next_check_in_s), v.max_transactions_this_wake, v.band);
   if (v.time_known) {

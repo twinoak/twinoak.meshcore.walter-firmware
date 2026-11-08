@@ -137,6 +137,8 @@ bool IdentityProbe::identity(core::console::AgentIdentityView* out) {
   out->local_requests = door.local_requests;
   out->local_silent = door.local_silent;
   out->local_unserved = door.local_unserved;
+  // §5.9 (link 1.2, task p9-06): the same question the door asks at every request send.
+  out->door_local_request = mesh_.answersRequestsLocally();
 
   const IdentityCounters& counted = identity_.counters();
   out->identity_reads = counted.identity_reads;

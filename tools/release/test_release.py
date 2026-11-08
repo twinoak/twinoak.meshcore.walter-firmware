@@ -167,7 +167,7 @@ class TheManifest(ReleaseCase):
         self.assertEqual(manifest["tag"], "v0.0.0-dryrun")
         self.assertEqual(manifest["commit"], COMMIT)
         self.assertEqual(manifest["built_at"], BUILT_AT)
-        self.assertEqual(manifest["link"], {"major": 1, "minor": 1})  # spec/LINK-PROTOCOL.md
+        self.assertEqual(manifest["link"], {"major": 1, "minor": 2})  # spec/LINK-PROTOCOL.md
         self.assertEqual([i["id"] for i in manifest["images"]], ["manager.walter.lte-m"])
         self.assertEqual(sorted(result["written"]),
                          sorted(["NOTES.md", "SHA256SUMS", "manifest.json",
@@ -221,7 +221,9 @@ class TheManifest(ReleaseCase):
         # The ESP-IDF the image says it was built with, and the pinned modem library.
         self.assertIn("v5.5.5", text)
         self.assertIn("walter-modem", text)
-        self.assertIn("1.1 (`spec/LINK-PROTOCOL.md`)", text)  # the box link this build speaks
+        # The box link this build speaks, from the one place that says it (build_release.LINK,
+        # which the descriptor inside the image is held against).
+        self.assertIn("%d.%d (`spec/LINK-PROTOCOL.md`)" % (build_release.LINK["major"], build_release.LINK["minor"]), text)
 
     def test_a_release_versions_notes_do_not_say_dry_run(self):
         self.build(version=RELEASE)

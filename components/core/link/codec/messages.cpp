@@ -1,6 +1,6 @@
-// The payloads of protocol 1.1, spec/LINK-PROTOCOL.md §5-§8. spec/tools/linkref.py's encode()
-// and decode() are the reference and every case of spec/fixtures/link/link-v1.json and of
-// link-v1.1.json is held against this file by
+// The payloads of protocol 1.2, spec/LINK-PROTOCOL.md §5-§8. spec/tools/linkref.py's encode()
+// and decode() are the reference and every case of spec/fixtures/link/link-v1.json,
+// link-v1.1.json and link-v1.2.json is held against this file by
 // host_test/core/link/codec/test_link_fixtures.cpp - in both directions it
 // implements: a request's fields become its payload, a response's or an event's payload becomes
 // its fields.
@@ -221,6 +221,17 @@ Encoded encode(const LppGetRequest& request, std::uint8_t* out, std::size_t out_
   return done(w);
 }
 
+Encoded encode(const LocalRequestRequest& request, std::uint8_t* out, std::size_t out_size) {
+  Writer w(out, out_size);
+  if (request.data.size > kMaxLocalRequestData) {
+    w.fail();  // §5.9: `data` over 32 bytes is ERR_MALFORMED
+    return done(w);
+  }
+  w.u8(request.req_type);
+  w.span(request.data);
+  return done(w);
+}
+
 Encoded encode(const JobBeginRequest& request, std::uint8_t* out, std::size_t out_size) {
   Writer w(out, out_size);
   if (request.pubkey.size != kPubkeySize) {
@@ -404,6 +415,17 @@ bool decode(Bytes payload, LppGetResponse* out) {
   return r.ok();
 }
 
+bool decode(Bytes payload, LocalRequestResponse* out) {
+  Reader r(payload);
+  bool body = false;
+  if (!takeStatus(r, &out->status, &body) || !body) {
+    return r.ok();
+  }
+  // §5.9: the body is `data` : rest, and an empty one is a legal answer (an empty access list).
+  out->data = r.rest();
+  return r.ok();
+}
+
 bool decode(Bytes payload, PathGetResponse* out) {
   Reader r(payload);
   bool body = false;
@@ -477,6 +499,31 @@ bool decode(Bytes payload, EvMeshReply* out) {
 bool decode(Bytes payload, EvAttention* out) {
   Reader r(payload);
   return r.u8(&out->reason) && r.u16(&out->detail) && r.u8(&out->repeat);
+}
+
+// ---------------------------------------------------------------- §5.9's `data`, for a person
+
+bool decodeRepeaterStats(Bytes data, RepeaterStats* out) {
+  if (data.size < kRepeaterStatsMinLen) {
+    return false;
+  }
+  Reader r(data);
+  RepeaterStats s;
+  const bool through_48 =
+      r.u16(&s.battery_mv) && r.u16(&s.tx_queue_len) && r.i16(&s.noise_floor_dbm) &&
+      r.i16(&s.last_rssi) && r.u32(&s.packets_recv) && r.u32(&s.packets_sent) &&
+      r.u32(&s.airtime_s) && r.u32(&s.uptime_s) && r.u32(&s.sent_flood) && r.u32(&s.sent_direct) &&
+      r.u32(&s.recv_flood) && r.u32(&s.recv_direct) && r.u16(&s.err_events) &&
+      r.i16(&s.last_snr_q4) && r.u16(&s.direct_dups) && r.u16(&s.flood_dups);
+  if (!through_48) {
+    return false;
+  }
+  // The struct grew at the end: a shorter answer is not malformed, and the two it stops short of
+  // are *not known* rather than zero.
+  s.has_rx_airtime = r.u32(&s.rx_airtime_s);
+  s.has_recv_errors = s.has_rx_airtime && r.u32(&s.recv_errors);
+  *out = s;
+  return true;
 }
 
 }  // namespace link

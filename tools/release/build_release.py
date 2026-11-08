@@ -68,7 +68,7 @@ ROLE = "manager"
 BOARD = "walter"
 BAND = "lte-m"
 MCU = "esp32s3"
-LINK = {"major": 1, "minor": 1}  # spec/LINK-PROTOCOL.md is "protocol 1.1"
+LINK = {"major": 1, "minor": 2}  # spec/LINK-PROTOCOL.md is "protocol 1.2"
 SLOT_ANY = 0xFF  # the manager's image is not for a radio position (§4)
 
 # A released version: X.Y.Z and the commit it was built from, nothing else. A dry run's

@@ -386,7 +386,7 @@ TEST_CASE("every request case: the call puts the fixture's payload on the wire")
       // Two of the four head bytes are this firmware's own rather than the case's: §5.1,
       // *Versions*, says a Walter asks for the highest minor **it** knows, so the minor is
       // kProtoMinor whatever minor the case was written by (1.0's file has the 1.0 Walter's
-      // request; the bytes this firmware's own HELLO is are the 1.1 case's, held against it in
+      // request; the bytes this firmware's own HELLO is are the 1.2 case's, held against it in
       // test_link_client_session.cpp). `fw_version` is this build's and not the fixture's, so the
       // str8 after the head is core::version().
       REQUIRE(seen.payload.size() >= 5);
@@ -404,6 +404,58 @@ TEST_CASE("every request case: the call puts the fixture's payload on the wire")
     ++checked;
   }
   CHECK(checked == 30);  // the 30 request cases of the fixtures
+}
+
+TEST_CASE("LOCAL_REQUEST goes only with the bit, and carries the fixtures' bytes both ways") {
+  // §5.9 (link 1.2, task p9-06). The fixtures' own request and its own answer, through the typed
+  // call: `rak request` and the agent's local door both go this way, so what is held here is that
+  // the call puts §5.9's two fields on the wire in that order and hands back the handler's bytes
+  // untouched. The 1.0 file the scripted radio answers from has no case for this type, so the
+  // answer is named.
+  const Value* asked = fixtures::linkCaseIn(fixtures::linkFixture12(),
+                                            "local request: neighbours, ten newest first, six-byte prefixes");
+  const Value* answered =
+      fixtures::linkCaseIn(fixtures::linkFixture12(), "local request: two neighbours");
+  REQUIRE(asked != nullptr);
+  REQUIRE(answered != nullptr);
+  const std::vector<std::uint8_t> data = hexOf((*asked)["fields"], "data");
+  const std::uint8_t req_type = u8((*asked)["fields"], "req_type");
+
+  // -- a radio that carries it: the request's bytes out, the handler's bytes back.
+  sim::LinkBench bench;
+  bench.radio.caps |= link::cap::kLocalRequest;
+  REQUIRE(bench.client.hello().ok());
+  REQUIRE(bench.client.hasCapability(link::cap::kLocalRequest));
+  bench.radio.answerWith("local request: two neighbours");
+  const lc::Answer<link::LocalRequestResponse> answer =
+      bench.client.localRequest(req_type, viewOf(data));
+  REQUIRE(answer.ok());
+  CHECK(answer.message.status == link::status::kOk);
+  CHECK(asHex(answer.message.data) == (*answered)["fields"]["data"].string());
+  REQUIRE(bench.radio.requests.size() == 2);  // the HELLO, then this
+  const sim::ScriptedRadio::Seen& seen = bench.radio.requests.back();
+  CHECK(seen.type == link::type::kLocalRequest);
+  CHECK(fixtures::toHex(seen.payload) == fixtures::toHex(hexOf(*asked, "payload")));
+
+  // -- §5.9's refusal: a request the handler gives no answer to. The caller sees the status, and
+  // the local door turns it into the silence a mesh client would have heard.
+  bench.radio.refuseNext(link::status::kRange);
+  const lc::Answer<link::LocalRequestResponse> refused =
+      bench.client.localRequest(req_type, viewOf(data));
+  CHECK_FALSE(refused.ok());
+  CHECK(refused.fault == lc::Fault::kRefused);
+  CHECK(refused.status == link::status::kRange);
+
+  // -- a radio at 1.1: §4's capability is missing, so nothing is sent at all (§5.1).
+  sim::LinkBench older;
+  REQUIRE(older.client.hello().ok());
+  REQUIRE_FALSE(older.client.hasCapability(link::cap::kLocalRequest));
+  const std::size_t before = older.radio.requests.size();
+  const lc::Answer<link::LocalRequestResponse> nothing =
+      older.client.localRequest(req_type, viewOf(data));
+  CHECK_FALSE(nothing.ok());
+  CHECK(nothing.fault == lc::Fault::kUnsupported);
+  CHECK(older.radio.requests.size() == before);
 }
 
 TEST_CASE("the answer's views point into the client and survive until the next call") {

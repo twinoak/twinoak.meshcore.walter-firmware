@@ -31,6 +31,7 @@ const char* replyStateName(std::uint8_t value);           // §6.3
 const char* pathModeName(std::uint8_t value);              // §6.1
 const char* attentionName(std::uint8_t value);           // §8
 const char* eventName(std::uint8_t value);            // §4
+const char* localRequestName(std::uint8_t req_type);     // §5.9
 
 // The capability bits of §5.1, comma-separated, with any bit this firmware does not know as
 // "unknown 0x..". Always terminated; returns the length written; `none` when no bit is set.

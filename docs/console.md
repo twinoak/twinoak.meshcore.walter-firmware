@@ -28,7 +28,7 @@ a provisioned unit, line by line, and it is replayed by a host test so that it c
 ```
 twinoak-walter 0.0.0-dev
 running from ota_0 at 0x010000 (3072 KB), ota state valid
-image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.1
+image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.2
 settings: nvs namespace 'walter', 11 keys; 'get' prints them, 'set <key> <value>' changes one
 settings: NOT encrypted - flash encryption is the owner's choice and is not assumed: a person with this board and a cable can read lte.pin and server.token out of it (docs/console.md)
 uplink: the modem on UART2 behind interfaces::Uplink; not started yet ('lte', 'lte up')
@@ -93,6 +93,7 @@ supervisor's stop is printed at every level.
 | `rak power` | POWER_GET: the three current-sense channels |
 | `rak env` | ENV_GET: temperature, humidity, pressure |
 | `rak cli <line>` | CLI: one line run by the radio's own console interpreter, and what it answered. The reply is printed and not logged |
+| `rak request <type> [hex data]` | LOCAL_REQUEST (`spec/LINK-PROTOCOL.md` §5.9, link 1.2): one request of the radio's own handler, answered as it answers an admin over the mesh and with nothing on the air — `01` status, `05` access list, `06` neighbours, `07` owner info. The answer is printed as hex, and a status also field by field |
 | `rak events` | the events the client has queued |
 | `rak text` | the lines a scanner has sent instead of frames (§9), printed and not logged |
 | `rak swd connect` | acquire the SWD lines, connect, print DPIDR and the power-up, release |
@@ -140,7 +141,7 @@ supervisor's stop is printed at every level.
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
 | `agent url` | (task p4-03) the server the agent's uplink is configured for (`server.url` as it is used, a trailing slash off), whether `server.token` is set, and the `X-Agent-Version` header every call to it carries - this firmware's own version. It reads; it does not call |
 | `agent probe` | (task p4-03) one `GET /agent/v1/config` now, with the token: the status, `Retry-After` and `X-RateLimit-Remaining` when the answer carried them, and the config the server answered (the agent's id and label, its transport, the budget, the poll interval, the server's time). The bench's first look at a server; the uplink must be up (`lte up` first). See *The agent's uplink* |
-| `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, the local door's four counters (task p9-04), what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
+| `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, the local door's four counters (task p9-04) and which of §5.9's four requests it answers (task p9-06), what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
 | `agent heartbeat` | (task p4-04) the body `POST /agent/v1/heartbeat` would carry, built and **not sent**: the bench's way to compare it with meshmaster.dk's contract fixture by eye. It asks the radio nothing |
 | `agent obs [pull]` | (task p4-04) the observation ring the agent posts from: how many adverts wait, how many were heard, how many were dropped (the figure the heartbeat carries), what the radio's own ring has lost and how much is still in it, and the last five - the key, how long ago, the hops, the signal and the role, and **never the name** a stranger chose (`spec/LINK-PROTOCOL.md` §7). `agent obs pull` drains the radio's ring into it first (§7's `OBS_PULL`, as many pages as it answers) |
 | `agent wake` | (task p4-05) one wake of the agent's loop now, through the backend seam the wake cycle's step 8 runs: **the radio asked who it is first** - a `HELLO` when there is no session and then `IDENTITY`, so that a job for the unit's own repeater can be told from a neighbour's (task p8-04) - then the offline buffer flushed, one heartbeat with this wake's intent, the claim, and the jobs the claim handed over: a neighbour's over the mesh, the unit's own through the local door, a firmware job into a slot or onto the chip. It restores the loop's retained state before the wake and saves it after, as a real wake across a sleep does. The uplink must be up (`lte up` first); **no `rak hello` is needed before it**, and a radio that does not answer one leaves the wake claiming only this unit's own `twinoak.*` job types, which one line says. See *The agent's identity* |
@@ -304,6 +305,7 @@ are sent* (§9), or *the UART is not ours* (the rail is off, or a `rak kill` too
 | `rak power` | `POWER_GET`: the three current-sense channels — panel, battery (positive = charging), total load — in millivolts and milliamps, with the shunts already applied by the radio, and which of them were read |
 | `rak env` | `ENV_GET`: temperature, humidity and pressure, and which of them were read |
 | `rak cli <line>` | `CLI`: the rest of the line, 1 to 160 bytes, run by the radio's own console interpreter as if typed on its serial port, and its reply. A line that restarts the radio (`reboot`) never answers, and the console says that is expected |
+| `rak request <type> [hex data]` | `LOCAL_REQUEST` (§5.9, link 1.2): one request of the radio's **own request handler**, run as it runs one that arrived over the mesh from a client logged in as admin, with nothing on the air and no job needed. The type is two hex digits — `01` the status, `05` the access list, `06` the neighbours, `07` the owner info — and the data an even number of hex digits, at most 32 bytes (`06`'s page is chosen by it: version, count, offset, order, prefix length). Prints the status in words and the answer as hex, and for a status the fields by name: battery, uptime, transmit queue, noise floor, last RSSI and SNR, packets in and out by flood and direct, airtime, duplicates and errors. *the handler answered nothing* is §5.9's `ERR_RANGE`, which over the mesh would have been silence; *the radio does not advertise the capability* is a radio older than link 1.2, and then only the mesh yields these four answers |
 | `rak events` | the events the radio has sent and the client has queued — `EV_BOOT`, `EV_MESH_REPLY`, `EV_ATTENTION` — decoded, newest last, and how many have been seen, dropped for want of room, or lost to a gap in their sequence numbers. Printing them takes them out of the queue |
 | `rak text` | the lines a scanner has sent instead of frames (§9), and how many were seen, dropped or truncated. Printing them clears them |
 
@@ -823,6 +825,7 @@ repeater: 7f3a9c02e1b44d9a0f6c2b7d8e9a1c3f5d7b9e0a2c4e6f8a0b1c2d3e4f5a6b7c
 radio: 869.618 MHz, bw 62.5 kHz, sf 8, cr 8
 job types (13): status, telemetry, neighbours, config.read, config.apply, cli, trace, discover, advert.request, clock.sync, password.set, acl.set, reboot
 local door: open: a job naming this radio is answered here; 2 job(s), 3 request(s), 1 answered with silence, 0 with no request to make
+  from LOCAL_REQUEST: status, access list, neighbours, owner info (telemetry stays LPP_GET)
 intent: next check-in 3600 s, at most 37 transaction(s) this wake (band normal)
 clock: 1791936000, from the network
 heap: 176880 free, 160224 the least ever
@@ -837,7 +840,12 @@ key is read once a boot and again whenever `boot_id` changes; the radio block ag
 or after a `set` line has crossed the link for the unit's own repeater. **The `local door: open`
 line is also what it costs** (task p9-05): a job naming this radio is answered here, so it needs no
 password at any class — nothing is stored on meshmaster.dk for this unit's own repeater — and it
-spends no airtime, so `agent jobs` shows it at `0` transactions. **A radio with no identity
+spends no airtime, so `agent jobs` shows it at `0` transactions. **The `from LOCAL_REQUEST` line
+under it is what the door can answer** (task p9-06, link 1.2): with that capability in the session
+a status, an access list, a neighbour list and the owner info of this unit's own repeater come
+out of the radio's own request handler over the link (§5.9), and without it — a radio older than
+link 1.2 — the line says so and those four are what they were before: three *failed* and one
+silence, which is what kept the first unit's repeater *stale* on meshmaster.dk. **A radio with no identity
 yet** - a RAK with no application, or one turned into a scanner - is not a failure: the unit still
 checks in, and the line says that the heartbeat will carry no key, no radio block and no job types,
 which is how a unit registered before its repeater says *radio not identified*.

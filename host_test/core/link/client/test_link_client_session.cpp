@@ -73,14 +73,14 @@ TEST_CASE("hello brings the session, and the request carries this firmware's own
 
 TEST_CASE("the HELLO this firmware sends asks for the minor it speaks, byte for byte") {
   // §5.1, *Versions*: a Walter asks for the highest minor it knows. The head of the request it
-  // puts on the wire is the fixtures' case of that minor - 1.1's, as of 6 November - and the
-  // str8 after it is this build's own version and not the fixture's.
+  // puts on the wire is the fixtures' case of that minor - 1.2's, as of 8 November (task p9-06,
+  // LOCAL_REQUEST) - and the str8 after it is this build's own version and not the fixture's.
   sim::LinkBench bench;
   REQUIRE(bench.client.hello().ok());
   REQUIRE(bench.radio.requests.size() == 1);
   const std::vector<std::uint8_t>& sent = bench.radio.requests.back().payload;
   const jsonfix::Value* asked =
-      fixtures::linkCaseIn(fixtures::linkFixture11(), "hello request, 1.1");
+      fixtures::linkCaseIn(fixtures::linkFixture12(), "hello request, 1.2");
   REQUIRE(asked != nullptr);
   const std::vector<std::uint8_t> want = fixtures::hexOf(*asked, "payload");
   REQUIRE(sent.size() >= 4);

@@ -38,6 +38,7 @@ const CommandLine kCommandLines[] = {
     {"rak power", "rak power"},
     {"rak env", "rak env"},
     {"rak cli", "rak cli get radio"},
+    {"rak request", "rak request 01"},
     {"rak events", "rak events"},
     {"rak text", "rak text"},
     {"rak swd connect", "rak swd connect"},

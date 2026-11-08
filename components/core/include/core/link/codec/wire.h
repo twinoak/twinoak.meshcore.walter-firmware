@@ -1,4 +1,4 @@
-// The box link's numbers, protocol 1.1: spec/LINK-PROTOCOL.md §2-§8 as one header. Nothing here
+// The box link's numbers, protocol 1.2: spec/LINK-PROTOCOL.md §2-§8 as one header. Nothing here
 // is a decision - every constant is a cell of one of that document's tables, with the section it
 // comes from beside it, so that a reader can hold the two side by side. spec/tools/linkref.py is
 // the same numbers as Python and the fixtures it generates are what the tests check them against.
@@ -18,12 +18,17 @@ namespace link {
 // The version this firmware speaks (§5.1). A RAK that does not speak this major answers
 // ERR_UNSUPPORTED; within a major, a minor only adds things.
 constexpr std::uint8_t kProtoMajor = 1;
-constexpr std::uint8_t kProtoMinor = 1;
+constexpr std::uint8_t kProtoMinor = 2;
 
 // §5.1, *Versions* and *The band, and why it is here*: 1.1 added `band` at the end of HELLO's
 // response body (which EV_BOOT carries too). A body says its own minor, so this is read off the
 // body and never off what was asked for - a 1.0 RAK answers a 1.1 request without a band.
 constexpr std::uint8_t kBandMinor = 1;
+
+// §5.9: 1.2 added LOCAL_REQUEST and its capability bit. The minor is here for the record only -
+// what decides whether the request may be made is the **capability bit** the session carries
+// (cap::kLocalRequest below, `capabilityOf`), as it is for every other optional type of §4.
+constexpr std::uint8_t kLocalRequestMinor = 2;
 
 // §2, the shape of a packet and of a frame.
 //
@@ -92,6 +97,7 @@ constexpr std::uint8_t kCli = 0x09;           // CLI           §5.7
 constexpr std::uint8_t kPowerGet = 0x0A;      // POWER         §5.8
 constexpr std::uint8_t kEnvGet = 0x0B;        // ENV           §5.8
 constexpr std::uint8_t kLppGet = 0x0C;        // CLI           §5.8
+constexpr std::uint8_t kLocalRequest = 0x0D;  // LOCAL_REQUEST §5.9
 // 0x10-0x1F reserved: provisioning
 constexpr std::uint8_t kJobBegin = 0x20;      // MESH_CLIENT   §6.1
 constexpr std::uint8_t kJobEnd = 0x21;        // MESH_CLIENT   §6.1
@@ -146,6 +152,7 @@ constexpr std::uint32_t kMeshClient = 0x08;
 constexpr std::uint32_t kObservations = 0x10;
 constexpr std::uint32_t kAttention = 0x20;
 constexpr std::uint32_t kTimePersist = 0x40;
+constexpr std::uint32_t kLocalRequest = 0x80;  // 1.2, §5.9: a role with a request handler
 }  // namespace cap
 
 // §4's third column as code: the capability bit a message's type needs, or 0 for "always". A radio
@@ -162,6 +169,8 @@ constexpr std::uint32_t capabilityOf(std::uint8_t message_type) {
       return cap::kPower;
     case type::kEnvGet:
       return cap::kEnv;
+    case type::kLocalRequest:  // §5.9: the capability of a role with a request handler
+      return cap::kLocalRequest;
     case type::kJobBegin:
     case type::kJobEnd:
     case type::kPathSet:
@@ -230,6 +239,26 @@ constexpr std::uint8_t kApplication = 0, kUf2Bootloader = 1, kSerialDfu = 2, kOt
 namespace perm {
 constexpr std::uint8_t kBase = 0x01, kLocation = 0x02, kEnvironment = 0x04;
 }
+
+// §5.9, LOCAL_REQUEST's `req_type`: MeshCore's own request numbers, the four the node answers
+// over this link. Any other is ERR_RANGE - which includes 0x03 telemetry, whose local form is
+// LPP_GET (§5.8), and 0x02 keep-alive, which belongs to a login session this link does not have.
+namespace local_req {
+constexpr std::uint8_t kStatus = 0x01;       // the node's RepeaterStats, as it packs them
+constexpr std::uint8_t kAccessList = 0x05;   // per entry a 6-byte key prefix and a permissions byte
+constexpr std::uint8_t kNeighbours = 0x06;   // a page of the neighbour table, chosen by `data`
+constexpr std::uint8_t kOwnerInfo = 0x07;    // the firmware version, the name and the owner info
+
+// Whether the node has an answer for this one at all (§5.9's table). Everything else is ERR_RANGE.
+constexpr bool isAnswered(std::uint8_t req_type) {
+  return req_type == kStatus || req_type == kAccessList || req_type == kNeighbours ||
+         req_type == kOwnerInfo;
+}
+}  // namespace local_req
+
+// §5.9: `data` is 0 to 32 bytes; over that the radio answers ERR_MALFORMED, so the encoder
+// refuses it here rather than letting a frame go that cannot be answered.
+constexpr std::size_t kMaxLocalRequestData = 32;
 
 // §6.1, a path's `path_mode`. This one selects the layout of what follows, so a decoder refuses a
 // value it does not know rather than guessing (codec/messages.h).

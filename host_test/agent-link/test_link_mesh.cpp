@@ -28,6 +28,7 @@
 #include <support/Jobs.h>
 
 #include "core/link/codec/wire.h"
+#include "sim/local_door.h"
 #include "sim/mesh_world.h"
 #include "walter_agent/link_mesh.h"
 
@@ -227,6 +228,22 @@ class LinkMeshTest : public ::testing::Test {
     link().setOwnKey(key);
     rak().console = localConsole;
   }
+
+  // ... and the radio is one at **link 1.2** (task p9-06): the capability bit in the session, and
+  // the repeater's own request handler behind the RAK (§5.9). `makeItLocal()` alone leaves a 1.1
+  // radio, which is every case written before this task and the first unit's own radio until its
+  // pile 3.9 reaches it.
+  void makeIt12(int neighbours = 11) {
+    makeItLocal();
+    door.fillNeighbours(neighbours);
+    rak().local_door = door.handler();
+    rak().radio.caps |= link::cap::kLocalRequest;
+    world().client.radioWasReset();
+    ASSERT_TRUE(world().client.hello().ok());
+    ASSERT_TRUE(link().answersRequestsLocally());
+  }
+
+  sim::FixtureLocalDoor door;
 
   fake::FakePlatform platform;
   fake::FakeMesh mesh{platform};
@@ -750,6 +767,103 @@ TEST_F(LinkMeshTest, LocalModeServesWhatTheLinkCarriesAndFailsTheRest) {
   EXPECT_EQ(mesh.repeater().sendCount(), 0);
   EXPECT_EQ(link().linkCounters().local_unserved, 3u);
   EXPECT_GE(link().linkCounters().local_requests, 10u);
+}
+
+// Link 1.2 (task p9-06): the four of §5.9 come out of the radio's own handler, and the three that
+// were *Failed* before it are answers now. The test above is the same thirteen types against a
+// **1.1** radio and must keep passing unchanged: that is the first unit's own radio until the
+// repeater firmware's pile 3.9 reaches it.
+TEST_F(LinkMeshTest, With12TheDoorAnswersStatusNeighboursOwnerInfoAndTheAccessList) {
+  makeIt12();
+  const std::uint32_t silent_before = link().linkCounters().local_silent;
+
+  // -- the status, as the node packs it. The reading is the fixtures' own figures.
+  const std::string status =
+      run(fake::Job(160, "status").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+  EXPECT_EQ(outcomeOf(status), "ok") << status;
+  EXPECT_NE(status.find("\"batteryMv\":4012"), std::string::npos) << status;
+  EXPECT_NE(status.find("\"uptimeS\":86400"), std::string::npos) << status;
+  EXPECT_NE(status.find("\"noiseFloorDbm\":-112"), std::string::npos) << status;
+  // A status at class `acl` reads the firmware version too, which is the owner info (0x07).
+  EXPECT_NE(status.find("\"firmware\":\"v1.18.0\""), std::string::npos) << status;
+
+  // -- the neighbours, paged: eleven rows and nine to a page, so a second request at offset 9.
+  door.page_offsets.clear();
+  const std::string neighbours =
+      run(fake::Job(161, "neighbours").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+  EXPECT_EQ(outcomeOf(neighbours), "ok") << neighbours;
+  ASSERT_EQ(door.page_offsets.size(), 2u) << "eleven neighbours, nine to a page: two pages";
+  EXPECT_EQ(door.page_offsets[0], 0);
+  EXPECT_EQ(door.page_offsets[1], 9);
+  EXPECT_NE(neighbours.find("\"prefix\":\"0111223344556677\""), std::string::npos) << neighbours;
+  EXPECT_NE(neighbours.find("\"prefix\":\"0b11223344556677\""), std::string::npos)
+      << "the eleventh row, which only the second page carries: " << neighbours;
+
+  // -- the access list, which before 1.2 was the one request the door answered with silence.
+  const std::string read = run(fake::Job(162, "config.read")
+                                   .atClass("admin")
+                                   .leasedUntil(kLease)
+                                   .withAdminPassword("adm1n-pass")
+                                   .withPayload("{\"keys\":[\"name\",\"acl\"]}"));
+  EXPECT_EQ(outcomeOf(read), "ok") << read;
+  EXPECT_EQ(logOf(read).find("no ACL in this snapshot"), std::string::npos)
+      << "the door answers the access list now: " << read;
+  EXPECT_NE(read.find("a1b2c3d4e5f6"), std::string::npos)
+      << "the fixtures' one admin entry: " << read;
+  EXPECT_EQ(link().linkCounters().local_silent, silent_before)
+      << "nothing was answered with silence";
+
+  // -- and nothing of it went on the air, at any point.
+  EXPECT_EQ(rak().client_tx(), 0u);
+  EXPECT_EQ(world().sendsExecuted(), 0u);
+  EXPECT_EQ(world().requestsOf(link::type::kJobBegin), 0u);
+  EXPECT_EQ(mesh.repeater().sendCount(), 0);
+  EXPECT_EQ(link().linkCounters().local_unserved, 0u);
+  EXPECT_GT(world().requestsOf(link::type::kLocalRequest), 0u);
+}
+
+// §5.9: "A request the handler gives no answer to is ERR_RANGE... Over the mesh it would have been
+// silence." So the library must read it as silence and not as a failure - for the access list that
+// is the difference between *no ACL in this snapshot, no evidence either way* and a read that
+// reports an empty list as a fact.
+TEST_F(LinkMeshTest, With12AnErrRangeReachesTheRunnerAsSilence) {
+  makeIt12();
+  door.answers_access_list = false;  // a handler that answers none of them
+  const std::string read = run(fake::Job(163, "config.read")
+                                   .atClass("admin")
+                                   .leasedUntil(kLease)
+                                   .withAdminPassword("adm1n-pass")
+                                   .withPayload("{\"keys\":[\"name\",\"acl\"]}"));
+  EXPECT_EQ(outcomeOf(read), "ok") << read;
+  EXPECT_NE(logOf(read).find("no ACL in this snapshot"), std::string::npos)
+      << "an ERR_RANGE is the silence the library's own rule is written for: " << read;
+  // `readAccessList` asks with `retry`, so the silence is heard twice - the figure
+  // tasks/phase-9/FOLLOWUPS.md's [05] item holds.
+  EXPECT_EQ(link().linkCounters().local_silent, 2u);
+  EXPECT_EQ(rak().client_tx(), 0u);
+  EXPECT_EQ(link().linkCounters().local_unserved, 0u) << "a request was made; it answered nothing";
+}
+
+TEST_F(LinkMeshTest, With12DiscoveryAndTraceAreStillFailedAndTelemetryIsStillLppGet) {
+  makeIt12();
+  rak().lpp = fake::afterPrefix("telemetry-response");
+  // §5.9 answers 0x03 ERR_RANGE on purpose: telemetry's local form is §5.8's LPP_GET, and it
+  // stays there.
+  const std::string telemetry =
+      run(fake::Job(164, "telemetry").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+  EXPECT_EQ(outcomeOf(telemetry), "ok") << telemetry;
+  EXPECT_NE(telemetry.find("\"type\":\"voltage\""), std::string::npos) << telemetry;
+  ASSERT_EQ(rak().lpp_masks.size(), 1u);
+  EXPECT_EQ(rak().lpp_masks[0], agent::kLocalLppPermissions);
+  for (const sim::SimRak::LocalAsked& one : rak().local_asked) {
+    EXPECT_NE(one.req_type, 0x03) << "telemetry never went as a LOCAL_REQUEST";
+  }
+
+  // An exchange of a radio with itself over zero hops means nothing, at any version.
+  const std::string trace = run(fake::Job(165, "trace").atClass("none").leasedUntil(kLease));
+  EXPECT_EQ(outcomeOf(trace), "failed") << trace;
+  EXPECT_EQ(rak().client_tx(), 0u);
+  EXPECT_EQ(link().linkCounters().local_unserved, 1u);
 }
 
 TEST_F(LinkMeshTest, TheLocalDoorIsSilentWithoutASessionThatHasCli) {

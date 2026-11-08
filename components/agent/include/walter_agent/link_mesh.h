@@ -23,18 +23,31 @@
 //   - **the path, cached.** hasPath()/pathHopCount()/describePath() read what this end last sent
 //     or last read with PATH_GET, refreshed after every reply to a flooded send, because a
 //     returned path changes it (§6.3) and that is how the route a flood discovered is learned.
-//   - **the local door.** A job begun for the unit's own repeater (setOwnKey(); task p4-04
-//     supplies it from IDENTITY, and since task p8-04 every wake does so before it claims)
-//     sends nothing on the mesh: the login is answered by this end
-//     with a synthetic admin reply (the link has console privileges, §5.7), a CLI line is §5.7's
-//     CLI request, a telemetry request is §5.8's LPP_GET at an admin's permissions, the access
-//     list is answered with silence (the library reads that as *no ACL, no evidence either way*),
-//     and status, neighbours, owner-info, discovery and trace have no request on the link that
-//     yields the same bytes and are Failed. client_tx does not move for a local job.
-//     Since task p9-05 the library is **told** so, by `answersLocally()` below: such a job
-//     neither waits for the airtime budget nor spends it, counts no transaction, and logs in
-//     with no material at any class - `admin` included, so no admin password is stored for a
-//     unit's own repeater anywhere.
+//   - **the local door** (8 November 2026, link 1.2). A job begun for the unit's own repeater
+//     (setOwnKey(); task p4-04 supplies it from IDENTITY, and since task p8-04 every wake does so
+//     before it claims) sends nothing on the mesh. What answers each of the library's sends:
+//       * the **login** is answered by this end with a synthetic admin reply - the link has
+//         console privileges (§5.7) - and is silent without a session that carries CLI;
+//       * a **CLI line** is §5.7's CLI request;
+//       * a **telemetry** request (0x03) is §5.8's LPP_GET at an admin's permissions, and stays
+//         so: that is its local form, and §5.9 answers 0x03 ERR_RANGE on purpose;
+//       * **status** (0x01), the **access list** (0x05), **neighbours** (0x06) and **owner info**
+//         (0x07) are §5.9's `LOCAL_REQUEST`, when the session carries `cap::kLocalRequest`: the
+//         request's own `data` and `len` go as they are, `OK` is a held *Response* whose data is
+//         the handler's answer (as the access list's and telemetry's are), `ERR_RANGE` is
+//         silence - what a mesh client hears when the handler answers nothing - counted in
+//         `local_silent`, and any other status is Failed;
+//       * **without that bit** (a radio at 1.1 or older) it is as it was before 1.2: the access
+//         list is answered with silence (the library reads that as *no ACL, no evidence either
+//         way*), and status, neighbours and owner info have no request on the link that yields
+//         the same bytes and are Failed;
+//       * **discovery and trace** are Failed at every version: an exchange of a radio with itself
+//         over zero hops means nothing.
+//     client_tx does not move for a local job, at either version.
+//     Since task p9-05 the library is **told** the job is local, by `answersLocally()` below:
+//     such a job neither waits for the airtime budget nor spends it, counts no transaction, and
+//     logs in with no material at any class - `admin` included, so no admin password is stored
+//     for a unit's own repeater anywhere.
 //
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
@@ -94,8 +107,9 @@ struct LinkMeshCounters {
   std::uint32_t counter_reads = 0;  // MESH_COUNTERS
   std::uint32_t restarts = 0;       // the radio restarted under a mesh job: everything forgotten
   std::uint32_t local_jobs = 0;     // jobs begun for the unit's own repeater
-  std::uint32_t local_requests = 0; // CLI and LPP_GET requests made for one
-  std::uint32_t local_silent = 0;   // local sends answered with silence on purpose (the access list)
+  std::uint32_t local_requests = 0; // CLI, LPP_GET and LOCAL_REQUEST requests made for one
+  std::uint32_t local_silent = 0;   // local sends answered with silence on purpose (§5.9's ERR_RANGE,
+                                    // and the access list on a radio that has no LOCAL_REQUEST)
   std::uint32_t local_unserved = 0; // local sends the link has no request for (Failed)
 };
 
@@ -153,6 +167,10 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // The same question the library asks as `answersLocally()` below, under the name this end has
   // called it since task p4-02. One expression, two names: the console's and the interface's.
   bool local() const { return answersLocally(); }
+  // §5.9: whether the session carries `LOCAL_REQUEST` (link 1.2). One expression, two readers -
+  // `localRequest` below asks it at every send, and `agent id` prints which of the four requests
+  // the door answers from it - so the line and the behaviour cannot drift apart.
+  bool answersRequestsLocally() const { return client_.hasCapability(link::cap::kLocalRequest); }
   bool awaiting() const { return await_ != Await::kNone; }
   // MESH_COUNTERS now, into counters(). False when the link did not answer; counters() then
   // keeps what it had.
@@ -284,7 +302,7 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   void cachePath(const link::Path& path);
 
   mm::SendResult localLogin();
-  mm::SendResult localRequest(std::uint8_t reqType);
+  mm::SendResult localRequest(std::uint8_t reqType, const std::uint8_t* data, std::uint8_t len);
   mm::SendResult localCli(const char* text, std::size_t size, bool sensitive);
   bool localAwait(bool text, std::uint32_t tag);
 

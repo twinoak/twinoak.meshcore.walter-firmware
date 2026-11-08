@@ -447,6 +447,80 @@ TEST_CASE("rak cli runs a line and prints the reply; silence after one is expect
   CHECK(contains(quiet, "some lines (reboot) restart the radio and never answer"));
 }
 
+TEST_CASE("rak request asks the radio's own handler and prints a status field by field") {
+  // §5.9 (link 1.2, task p9-06). The bench's radio carries the capability and answers the
+  // fixtures' own status bytes, so what the console prints is read out of
+  // spec/fixtures/link/link-v1.2.json and not out of a transcription of it.
+  Rig rig;
+  rig.rak.caps |= core::link::cap::kLocalRequest;
+  REQUIRE(rig.link.hello().ok());
+  rig.rak.answerWith("local request: the status, as the node packs it");
+  const std::string text = rig.run("rak request 01");
+  CHECK(contains(text, "local request 0x01 (status)\n"));
+  CHECK(contains(text, "ok: 56 byte(s)"));
+  CHECK(contains(text, "ac0f000090ff9fff"));  // the answer's own bytes, as hex
+  CHECK(contains(text, "battery 4012 mV, uptime 86400 s, tx queue 0\n"));
+  CHECK(contains(text, "noise floor -112 dBm, last rssi -97 dBm, last snr 6.2 dB\n"));
+  CHECK(contains(text, "packets: 12345 received (9800 flood, 1500 direct), 6789 sent (2100 flood, 840 direct)\n"));
+  CHECK(contains(text, "airtime 1834 s transmitting; duplicates 3400 flood, 12 direct\n"));
+  CHECK(contains(text, "airtime 5400 s receiving\n"));
+  CHECK(contains(text, "error events 0, receive errors 7\n"));
+  // §5.9's two fields, in that order, and nothing else.
+  REQUIRE(rig.rak.requests.size() >= 2);
+  const sim::ScriptedRadio::Seen& seen = rig.rak.requests.back();
+  CHECK(seen.type == core::link::type::kLocalRequest);
+  REQUIRE(seen.payload.size() == 1);
+  CHECK(seen.payload[0] == core::link::local_req::kStatus);
+
+  // The data word is hex and goes after the type: a neighbours request's page.
+  rig.rak.answerWith("local request: two neighbours");
+  const std::string page = rig.run("rak request 06 000a0000000611223344");
+  CHECK(contains(page, "local request 0x06 (neighbours), data 000a0000000611223344\n"));
+  CHECK(contains(page, "a1b2c3d4e5f6"));
+  CHECK_FALSE(contains(page, "battery"));  // only a status is read field by field
+  const std::vector<std::uint8_t>& asked = rig.rak.requests.back().payload;
+  REQUIRE(asked.size() == 11);
+  CHECK(asked[0] == core::link::local_req::kNeighbours);
+
+  // §5.9: a request the handler gives no answer to is ERR_RANGE, which over the mesh would have
+  // been silence. The console says so rather than leaving a person with a status number.
+  rig.rak.refuseNext(core::link::status::kRange);
+  const std::string refused = rig.run("rak request 03");
+  CHECK(contains(refused, "local request 0x03 (unknown)\n"));
+  CHECK(contains(refused, "error: rak request: refused: range: a value is outside what is accepted\n"));
+  CHECK(contains(refused, "the handler answered nothing, which over the mesh would have been silence"));
+}
+
+TEST_CASE("rak request sends nothing to a radio older than link 1.2") {
+  // §4 and §5.1: the type needs the capability, and a call without it is refused by this end
+  // without a byte on the wire. The bench's default radio is a 1.1 one.
+  Rig rig;
+  REQUIRE(rig.link.hello().ok());
+  REQUIRE_FALSE(rig.link.hasCapability(core::link::cap::kLocalRequest));
+  const std::size_t before = rig.rak.requests.size();
+  const std::string text = rig.run("rak request 01");
+  CHECK(contains(text, "error: rak request: the radio does not advertise the capability"));
+  CHECK(contains(text, "this radio does not carry LOCAL_REQUEST (link 1.2)"));
+  CHECK(rig.rak.requests.size() == before);
+}
+
+TEST_CASE("rak request refuses a type or a data word that is not hex, before anything is sent") {
+  Rig rig;
+  rig.rak.caps |= core::link::cap::kLocalRequest;
+  REQUIRE(rig.link.hello().ok());
+  const std::size_t before = rig.rak.requests.size();
+  CHECK(contains(rig.run("rak request"), "rak request needs a request type"));
+  CHECK(contains(rig.run("rak request 1"), "the type is two hex digits (01, 05, 06, 07): 1"));
+  CHECK(contains(rig.run("rak request zz"), "the type is two hex digits (01, 05, 06, 07): zz"));
+  CHECK(contains(rig.run("rak request 01 abc"), "the data takes an even number of hex digits: abc"));
+  CHECK(contains(rig.run("rak request 01 abzz"), "the data is hex digits only: abzz"));
+  CHECK(contains(rig.run("rak request 01 00 11"), "rak request takes a type and one hex word"));
+  const std::string too_much =
+      "rak request 01 " + std::string(2 * (core::link::kMaxLocalRequestData + 1), '0');
+  CHECK(contains(rig.run(too_much.c_str()), "the data is at most 32 bytes"));
+  CHECK(rig.rak.requests.size() == before);
+}
+
 TEST_CASE("rak events prints what the radio sent, decoded") {
   Rig rig;
   REQUIRE(rig.link.hello().ok());

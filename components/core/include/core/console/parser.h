@@ -49,6 +49,12 @@
 //   rak power             POWER_GET: the three channels
 //   rak env               ENV_GET: temperature, humidity, pressure
 //   rak cli <line>        CLI: one line run by the radio's own console interpreter
+//   rak request <type> [hex data]
+//                         LOCAL_REQUEST (§5.9, link 1.2): one request of the radio's own handler,
+//                         answered as it answers an admin over the mesh and with nothing on the
+//                         air. The type is two hex digits (01 status, 05 access list, 06
+//                         neighbours, 07 owner info) and the data an even number of hex digits,
+//                         at most 32 bytes
 //   rak events            the events the client has queued
 //   rak text              the lines a scanner has sent (§9)
 //
@@ -208,6 +214,9 @@ enum class Verb : std::uint8_t {
   kRakPower,
   kRakEnv,
   kRakCli,
+  // §5.9's LOCAL_REQUEST (link 1.2, task p9-06): `rak request <type> [hex data]` - the type in
+  // `req_type`, the data in `bytes`/`bytes_size`.
+  kRakRequest,
   kRakEvents,
   kRakText,
   // The debug port (task p1-03) and the nRF52 behind it (task p1-04).
@@ -311,6 +320,11 @@ struct Command {
   std::uint32_t epoch = 0;                // kRakTimeSet
   char text[kMaxCliLine + 1] = {};        // kRakCli: the rest of the line, verbatim
   std::size_t text_size = 0;
+  // kRakRequest: §5.9's `req_type` and its `data`, 0 to 32 bytes, parsed from a hex word here so
+  // that a typo is one line from the parser rather than a frame the radio refuses.
+  std::uint8_t req_type = 0;
+  std::uint8_t bytes[link::kMaxLocalRequestData] = {};
+  std::size_t bytes_size = 0;
   std::uint32_t address = 0;              // kRakSwdMem: word-aligned
   std::uint32_t words = 1;                // kRakSwdMem: 1..kMaxMemWords
   // kImageVerify, kImageErase, kImageReceive: core::image::Which as a number (0 golden,
