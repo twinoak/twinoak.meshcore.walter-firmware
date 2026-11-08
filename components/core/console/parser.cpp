@@ -718,6 +718,23 @@ Parsed parseLine(const char* line) {
     if (std::strcmp(rest, "tls") == 0) return accept(Verb::kTrustTls);
     return refuse2("trust takes no argument, or 'tls': ", rest);
   }
+  // The modem library's own trace (task p10-06). `trace` reads; `trace modem on|off` acts. The
+  // second word is there because the library's lines are the modem's and a later task may want a
+  // trace of something else - the grammar should not have to change for it.
+  if (std::strcmp(verb, "trace") == 0) {
+    if (!hasRest) return accept(Verb::kTrace);
+    Parsed p = accept(Verb::kTraceModem);
+    if (std::strcmp(rest, "modem on") == 0) {
+      p.command.on = true;
+      return p;
+    }
+    if (std::strcmp(rest, "modem off") == 0) {
+      p.command.on = false;
+      return p;
+    }
+    if (std::strcmp(rest, "modem") == 0) return refuse("trace modem needs 'on' or 'off'");
+    return refuse2("trace takes no argument, or 'modem on' or 'modem off': ", rest);
+  }
   if (std::strcmp(verb, "http") == 0) return parseHttp(rest);
   if (std::strcmp(verb, "fetch") == 0) return parseFetch(rest);
   // The agent's uplink (task p4-03), its identity (task p4-04) and its loop (task p4-05): two

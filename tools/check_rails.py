@@ -621,9 +621,25 @@ def rail_no_secrets(r):
         elif row.group(1) != "true":
             r.broken("%s is no longer marked secret in core/settings/keys.cpp" % key)
     r.looked_at("core/settings/keys.cpp marks lte.pin and server.token secret")
+    # The one place in this firmware where both values really do go out on a wire, and so the one
+    # new way a printed line could carry one: the modem library's TX/RX trace (task p10-06), which
+    # since v0.1.3 the release build can switch on. Its lines do not pass through the console, so
+    # the capture above cannot see them; they pass through core/trace/redact.h instead, and that
+    # test puts a real request head with a known token through the whole of the hook.
+    r.problems(must_exist("components/core/trace/redact.cpp",
+                          "host_test/core/trace/test_redact.cpp"),
+               "the trace's redaction, which the modem's TX/RX lines go through, is gone:")
+    r.problems(must_contain("host_test/core/trace/test_redact.cpp",
+                            "a request with a known token through the hook",
+                            "AT+CPIN=********"),
+               "the trace's own secret test no longer covers both secrets:")
+    r.problems(must_contain("components/modem/modem_trace.cpp", "formatAndRedact"),
+               "the log hook no longer redacts the line it prints:")
+    r.looked_at("the modem's trace prints through core/trace/redact.h and nothing else")
     r.says("held by host_test/rails/test_rail_secrets.cpp: two secrets provisioned, a simulated "
            "day of wakes, every command of the table, and the console, the log ring, `status`, the "
-           "journal's bytes, the retained records and the wake records all searched")
+           "journal's bytes, the retained records and the wake records all searched; and, for the "
+           "modem's trace, by host_test/core/trace/test_redact.cpp")
     return r
 
 

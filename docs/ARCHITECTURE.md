@@ -1141,6 +1141,20 @@ byte of the image is asked for, the image into the store in ranges, checks 4-6 o
 they lie in flash, the record. The console's `http get`, `fetch` and `trust tls` drive them;
 the wake cycle (task p3-05) will.
 
+**What the modem was told, and what it answered** (task p10-06). The library prints every AT
+command and every buffer the modem sends back at ESP-IDF's *debug* level, and the release build
+used to strip those lines at compile time: reading a stall meant a build of its own, flashed by
+cable. Since v0.1.3 `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG` compiles them in (12 432 bytes) and the
+default level leaves them silent, and `trace modem on` at the console raises the library's own tag
+until the next boot - `components/modem/modem_trace.cpp`, which is also the one place
+`esp_log_set_vprintf` is used. It is installed once and never taken off, because every line that
+goes out through it is first put through `core/trace/redact.h`: the UART carries the HTTP head in
+plaintext (TLS is inside the modem), so `Authorization: Bearer <server.token>` and `AT+CPIN=<pin>`
+are on the wire, and a trace is a printed line. The redaction takes out the value of each of those
+two by position - the position is this firmware's own doing, not a guess at what a secret looks
+like - and every occurrence of either value as the settings have it. The trace is kept in no
+`dump` (one stall is longer than the 4 kB ring) and is not a setting.
+
 The self-update trial's third condition (S-6) is a TLS handshake with the configured server
 (`core/update/tls_check.h`), its chain verified; no server is configured until task p3-03, so the
 condition does not apply, as before.

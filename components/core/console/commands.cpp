@@ -164,6 +164,13 @@ const CommandDef kCommands[kCommandCount] = {
      "a release from <base-url>/manifest.json into the candidate (default) or scanner image: the "
      "three steps, each of the six checks as it passes, the image in ranges (minutes). Without a "
      "base URL it uses the setting fetch.url"},
+    {"trace", "trace", Group::kUplink,
+     "whether the modem library's TX and RX lines are going to this port, what the trace is for, "
+     "and how many lines it has printed"},
+    {"trace modem on|off", "trace modem", Group::kUplink,
+     "switch the library's own account of every AT command and every answer on, or off again - "
+     "the bench's way to read a stall (docs/bench.md §13). It is not a setting: it ends at the "
+     "next boot, and no secret reaches a trace line"},
     {"agent url", "agent url", Group::kUplink,
      "the server the agent's uplink is configured for (server.url), whether a token is set, and "
      "the X-Agent-Version header it sends"},

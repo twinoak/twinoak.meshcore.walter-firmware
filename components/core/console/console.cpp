@@ -61,6 +61,9 @@ bool isRadioVerb(Verb verb) {
     case Verb::kHttpGet:
     case Verb::kFetch:
     case Verb::kTrustTls:
+    // The modem library's trace (task p10-06): the modem's lines, and a modem has no slot.
+    case Verb::kTrace:
+    case Verb::kTraceModem:
     // The agent's uplink (task p4-03) and its identity (task p4-04): a server and this unit's
     // own name for itself, not a radio - `agent id` does ask the radio who it is, but a unit has
     // one (spec/SYSTEM.md S-11) and the line takes no slot.
@@ -138,13 +141,13 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
                  AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets,
-                 cycle::NetworkClock* wall)
+                 cycle::NetworkClock* wall, ModemTrace* trace)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
       mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets), wall_(wall),
-      flasher_(pins, clock, slots),
+      trace_(trace), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -498,6 +501,8 @@ void Console::runLine(const char* line) {
     case Verb::kHttpGet: httpGet(p.command.url); return;
     case Verb::kFetch: fetch(p.command.url, static_cast<image::Which>(p.command.which)); return;
     case Verb::kTrustTls: trustTls(); return;
+    case Verb::kTrace: trace(); return;
+    case Verb::kTraceModem: traceModem(p.command.on); return;
     case Verb::kAgentUrl: agentUrl(); return;
     case Verb::kAgentProbe: agentProbe(); return;
     case Verb::kAgentId: agentId(); return;
@@ -719,6 +724,13 @@ void Console::status() {
       cycle::agentAttentionLetters(raised, letters);
       printf("agent: ATTENTION %s - %s\n", letters, cycle::describeAgentAttention(raised));
     }
+  }
+  // The modem library's trace, **only while it is on** (task p10-06): a unit nobody switched it
+  // on for has one line fewer in `status` than it had before this task, which is none.
+  if (trace_ != nullptr && trace_->on()) {
+    printf("trace: the modem library's TX and RX lines are ON, %lu line(s) so far - the bench "
+           "only ('trace modem off', or the next boot)\n",
+           static_cast<unsigned long>(trace_->lines()));
   }
   if (server_ != nullptr) {
     if (server_->serverHost()[0] == 0) {
@@ -3357,6 +3369,55 @@ void Console::trustTls() {
   printf("every other host -> root %u\n", static_cast<unsigned>(net::kRootIsrgX1));
   if (trust_ != nullptr) {
     printf("  %lu root(s) written in this boot\n", static_cast<unsigned long>(trust_->writesThisBoot()));
+  }
+}
+
+// -- the modem library's trace (task p10-06) ------------------------------------------------------
+
+bool Console::traceOk() {
+  if (trace_ != nullptr) return true;
+  print("error: this build cannot trace the modem: nothing was given to the console "
+        "(main/main.cpp)\n");
+  return false;
+}
+
+// The one sentence that must be said every time, so that nobody reads a trace on a unit in
+// service and wonders why the port is loud.
+void Console::trace() {
+  if (!traceOk()) return;
+  printf("trace: the modem library's TX and RX lines are %s\n", trace_->on() ? "ON" : "off");
+  printf("  %lu line(s) printed in this boot, %lu with a secret taken out\n",
+         static_cast<unsigned long>(trace_->lines()),
+         static_cast<unsigned long>(trace_->redacted()));
+  print("  the trace is for the bench: every AT command and every answer, which is how a stall is "
+        "read (docs/bench.md, HTTPS)\n");
+  print("  it is not a setting - it ends at the next boot - and it is kept in no 'dump': the "
+        "terminal's own paste is the capture\n");
+  if (!trace_->on()) print("  'trace modem on' switches it on\n");
+}
+
+void Console::traceModem(bool on) {
+  if (!traceOk()) return;
+  // The two values no trace line may carry out, read from the store where they already are. An
+  // unset key is "" and holds nothing; a build with no store hands over nothing, and then the
+  // positional rails are what hold (core/trace/redact.h).
+  const char* token = settings_ != nullptr ? settings_->serverToken() : "";
+  const char* pin = settings_ != nullptr ? settings_->pin() : "";
+  char why[120] = {};
+  if (!trace_->turn(on, token, pin, why, sizeof why)) {
+    printf("error: trace modem %s: %s\n", on ? "on" : "off", why[0] != 0 ? why : "it would not");
+    return;
+  }
+  if (on) {
+    print("trace modem on: every AT command this firmware sends and everything the modem answers "
+          "goes to this port, until the next boot\n");
+    print("  the SIM PIN and the server token are taken out of every line before it is printed; "
+          "nothing of the trace is kept in 'dump'\n");
+    print("  this is for the bench, not for a unit in service: it is slow and loud, and a unit on "
+          "a mast prints it into nothing ('trace modem off' ends it)\n");
+  } else {
+    print("trace modem off: the library's lines stop; what it printed is in this terminal and "
+          "nowhere else\n");
   }
 }
 

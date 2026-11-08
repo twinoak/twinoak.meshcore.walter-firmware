@@ -139,6 +139,8 @@ supervisor's stop is printed at every level.
 | `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. **The only place this firmware prints them**, and they are in no log line, no journal entry and no `status` |
 | `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time, and (task p9-02) the socket id each of this request's connections took and what the close accounting did. The response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
+| `trace` | (task p10-06) whether the modem library's own TX and RX lines are going to this port, how many it has printed in this boot and how many had a secret taken out, and the three things to know before using it: it is for the bench, it is not a setting, and it is kept in no `dump`. It reads |
+| `trace modem on\|off` | (task p10-06) switch the library's account of **every AT command and everything the modem answers** on, or off again. It is what a stall is read with (`docs/bench.md`, *HTTPS*), it ends at the next boot, and it needs no special build since v0.1.3. The SIM PIN and the server token are taken out of every line before it is printed. `status` says so while it is on |
 | `agent url` | (task p4-03) the server the agent's uplink is configured for (`server.url` as it is used, a trailing slash off), whether `server.token` is set, and the `X-Agent-Version` header every call to it carries - this firmware's own version. It reads; it does not call |
 | `agent probe` | (task p4-03) one `GET /agent/v1/config` now, with the token: the status, `Retry-After` and `X-RateLimit-Remaining` when the answer carried them, and the config the server answered (the agent's id and label, its transport, the budget, the poll interval, the server's time). The bench's first look at a server; the uplink must be up (`lte up` first). See *The agent's uplink* |
 | `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, the local door's four counters (task p9-04) and which of §5.9's four requests it answers (task p9-06), what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
@@ -228,7 +230,10 @@ reaches:
 * `set` echoes the value as asterisks as it is typed, and answers `ok <key>` — the same reply
   every other key gets;
 * no log line, no journal entry, no `status`, no `dump` and no refusal contains one. A refusal
-  about a PIN says *digits only*, not which digits.
+  about a PIN says *digits only*, not which digits;
+* and since v0.1.3, **no line of the modem's trace either** (`trace modem on`), which is the one
+  place in this firmware where both values really do go out on a wire: see *The modem's own
+  trace*.
 
 A host test (`host_test/core/console/test_console_secrets.cpp`) sets both and then runs **every
 command of the table**, greps everything the port printed — replies, refusals, boot lines, the
@@ -786,6 +791,67 @@ The slots are written at the first request of a boot whose record says they diff
 boot, a power cut (retained storage does not survive one), a release with another root - and not
 otherwise; `trust tls` before that says *not written yet: written at the next request*.
 
+## The modem's own trace
+
+From task p10-06. Two lines, no slot, and the only thing in this firmware that makes the port
+loud on purpose.
+
+The modem library prints what it sends and what it receives - `TX:` for every AT command and for
+every payload it hands the modem, `RX:` for every buffer the modem sends back - at ESP-IDF's
+*debug* level. **Until v0.1.3 those lines existed only in a build of their own**, made and flashed
+by cable; the release build stripped them at compile time. They are the only account of what the
+modem was told and what it answered, and the 30-second stall that silences this unit
+(`tasks/phase-10/FOLLOWUPS.md`) cannot be read without them. Since v0.1.3 they are compiled in -
+12 432 bytes of the image - and off, and `trace modem on` raises the library's own log level until
+the next boot.
+
+```
+> trace
+trace: the modem library's TX and RX lines are off
+  0 line(s) printed in this boot, 0 with a secret taken out
+  the trace is for the bench: every AT command and every answer, which is how a stall is read (docs/bench.md, HTTPS)
+  it is not a setting - it ends at the next boot - and it is kept in no 'dump': the terminal's own paste is the capture
+  'trace modem on' switches it on
+> trace modem on
+trace modem on: every AT command this firmware sends and everything the modem answers goes to this port, until the next boot
+  the SIM PIN and the server token are taken out of every line before it is printed; nothing of the trace is kept in 'dump'
+  this is for the bench, not for a unit in service: it is slow and loud, and a unit on a mast prints it into nothing ('trace modem off' ends it)
+> lte up
+...
+D (18244) WalterModem: TX: AT+SQNSD=1,0,443,"meshmaster.dk",0,0,1
+D (18402) WalterModem: RX: 
+OK
+
+D (21750) WalterModem: TX: POST /agent/v1/observations HTTP/1.1
+Host: meshmaster.dk
+...Authorization: ***************************
+
+{...}
+D (22104) WalterModem: RX: 
++SQNSRING: 1,876
+
+D (22106) WalterModem: TX: AT+SQNSRECV=1,1500
+```
+
+**What is never in a trace line.** The request that goes to the modem carries
+`Authorization: Bearer <server.token>` in plaintext - TLS is inside the modem, so the UART carries
+the HTTP head as it is - and the SIM's PIN goes out as `AT+CPIN=<lte.pin>` on the same wire. Both
+are taken out before a line reaches the port (`core/trace/redact.h`), three ways over: the value of
+`Authorization:` to the end of the header, the value of `AT+CPIN=` to the end of the command, and
+every occurrence of either secret as the settings have it. The first two are positional and need no
+copy of the value, so they hold even for a token typed while the trace was already on; the third
+holds wherever a value turns up. `trace` says how many lines have had something taken out of them,
+so a bench walk can see the rail work.
+
+**It is kept in no `dump`.** The 4 kB ring is the console's own lines, and one stall's trace is
+longer than the whole ring: keeping it would push out the boot lines, the journal's summary and the
+command replies that `dump` exists for, and a unit found quiet would have less to say, not more.
+The trace is read in the terminal that asked for it, and the capture is that terminal's paste.
+
+**It is not a setting.** No key names it, `get` and `set` have never heard of it, and the next boot
+has it off. A unit nobody switches it on for prints exactly what it printed before this command
+existed - the default log level is unchanged, and only this command raises the library's tag.
+
 ## The agent's uplink
 
 From task p4-03 (`components/agent/modem_uplink.h`; `docs/ARCHITECTURE.md` §13). Two lines, no
@@ -1021,6 +1087,11 @@ which of them a port sees:
 A resumed update's transitions and a self-update trial's steps are printed as they happen, from
 the main loop, whatever the level: they are the answer to a command somebody typed before the
 reset. The prompt and `type 'help' for the commands` are always printed.
+
+One more thing can be printed without being asked for, and only after somebody asked for it
+once: the modem library's `TX:` and `RX:` lines, while `trace modem on` is in force (*The modem's
+own trace*). They are the library's own, not the console's, they go to the port and **not** into
+the ring, and they stop at the next boot.
 
 Everything above goes into the 4 kB ring that `dump` prints, and so does every reply. What does
 **not** go into it is anything the radio sent as text - a scanner's NDJSON line, a CLI reply, an

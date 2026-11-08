@@ -34,6 +34,7 @@
 #include "core/uplink/policy.h"
 #include "fakes/capture.h"
 #include "fakes/fake_clock.h"
+#include "fakes/fake_modem_trace.h"
 #include "fakes/fake_pins.h"
 #include "fakes/fake_retained.h"
 #include "fakes/fake_sleeper.h"
@@ -85,6 +86,11 @@ struct SettingsConsole {
   sim::SimFlash journal_flash{core::update::kJournalPartitionBytes};
   core::update::Journal journal{journal_flash};
   core::update::LinkBattery battery{link};
+  // The modem library's trace behind its seam (task p10-06): `trace` and `trace modem on|off`
+  // reach something here, so that the test which runs every command of the table runs those two
+  // as well - and so that the secrets test can switch the trace on with both secrets set and
+  // grep the transcript for them.
+  fakes::FakeModemTrace trace;
   // The duty cycle (task p3-04), so that `wake`, `power`, `sleep` and `stay` reach something and
   // so that `status`'s last two lines are the ones a real unit prints - docs/provisioning.md is
   // replayed against this console, and a document that showed a line no unit prints would be
@@ -123,7 +129,11 @@ struct SettingsConsole {
     console.reset(new core::console::Console(out, radio, health, clock, restart, link, slots,
                                              &store, &receiver, nullptr, &journal, nullptr,
                                              supervisor.get(), &uplink, nullptr, nullptr, nullptr,
-                                             &settings, &server, duty.get()));
+                                             &settings, &server, duty.get(),
+                                             // cycle, battery, mesh, agent, identity, loop,
+                                             // sockets, wall: none of them here.
+                                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                             nullptr, nullptr, &trace));
   }
 
   // A console with no settings store at all, as a build whose `nvs` partition would not open has.

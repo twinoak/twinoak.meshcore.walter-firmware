@@ -88,6 +88,26 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # Logging at info: what the bench reads. A task that needs debug output raises it locally.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+# **The debug level compiled in, and nothing printed at it** (task p10-06). The default level
+# above is what a unit prints; this says which levels exist in the binary at all. ESP-IDF's
+# default is "the same as the default level", which strips every ESP_LOGD at compile time -
+# including the modem library's TX and RX lines (managed_components/dptechnics__walter-modem/src:
+# the `_transmitCmd` macro's `TX: ...`, `_processModemRSP`'s `RX: ...`, and the payload line at
+# the data prompt, the last two inside `#if CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG`). Those
+# three lines are the only account of what the modem was told and what it answered, and the stall
+# that silences this unit (tasks/phase-10/FOLLOWUPS.md) cannot be read without them. Until this
+# task they needed a build of their own, made and flashed by cable; now they are in the release
+# build and `trace modem on` switches them on until the next boot.
+#
+# It is the whole-image switch and not the library's files alone, because the library's two main
+# lines are guarded by `CONFIG_LOG_MAXIMUM_LEVEL` itself - a Kconfig macro from sdkconfig.h,
+# which no per-component `LOG_LOCAL_LEVEL` can raise - so a per-file level would have compiled in
+# the `TX:` of a command and left out the `RX:` of every answer, which is the half that matters.
+# What it costs is the debug strings of every component that has them: this one line took the
+# image from 766 912 to 779 344 bytes, 12 432 more in a 3 MB slot, measured on its own (report
+# p10-06). What it does not cost is a line of output: CONFIG_LOG_DEFAULT_LEVEL stays at info,
+# every tag starts there, and only `esp_log_level_set` from the console raises one.
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
 # ---- The compiler -------------------------------------------------------------------------------
 # Optimise for size, asserts kept: 3 MB slots are generous today and will not stay so, and an

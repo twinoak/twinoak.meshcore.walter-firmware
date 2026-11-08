@@ -74,6 +74,8 @@ const CommandLine kCommandLines[] = {
     {"lte id", "lte id"},
     {"http get", "http get https://r.example/x"},
     {"fetch", "fetch https://r.example/v1"},
+    {"trace", "trace"},
+    {"trace modem", "trace modem on"},
     {"agent url", "agent url"},
     {"agent probe", "agent probe"},
     {"agent id", "agent id"},

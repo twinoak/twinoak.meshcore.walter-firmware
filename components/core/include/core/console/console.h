@@ -25,6 +25,7 @@
 #include "core/console/commands.h"
 #include "core/console/log_ring.h"
 #include "core/console/mesh_probe.h"
+#include "core/console/modem_trace.h"
 #include "core/console/parser.h"
 #include "core/cycle/agent_attention.h"
 #include "core/cycle/duty_cycle.h"
@@ -121,7 +122,13 @@ class Console {
           // this pointer existed only the wake cycle's step 6 and the agent's server time ever
           // filled it. A pointer like the rest; a build without one brings the uplink up and
           // says so in one line.
-          cycle::NetworkClock* wall = nullptr);
+          cycle::NetworkClock* wall = nullptr,
+          // The modem library's own TX/RX trace (task p10-06): the one thing that can say what
+          // the modem was told and what it answered, switched on from here and gone at the next
+          // boot. The hook is components/modem/'s - core/ may not name esp_log or the library's
+          // tag (rail R12) - so this is a seam (core/console/modem_trace.h). A build without one
+          // answers in one line.
+          ModemTrace* trace = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -294,6 +301,12 @@ class Console {
   bool httpOk();    // false, with one error line, when this build has no client
   bool uplinkUp();  // false, with one error line, when the uplink is not up ('lte up' first)
   void httpGet(const char* url);
+  // The modem library's trace (task p10-06): `trace` reads, `trace modem on|off` acts. The two
+  // secrets it must keep out of a line are read from the settings here, where they already are,
+  // and go no further than the hook (core/trace/redact.h).
+  bool traceOk();  // false, with one error line, when this build cannot trace
+  void trace();
+  void traceModem(bool on);
   void fetch(const char* base_url, image::Which which);
   void trustTls();
   // The socket rotation's counters (task p9-02), when this build has one: the ids the
@@ -384,6 +397,7 @@ class Console {
   AgentLoopProbe* loop_ = nullptr;
   const net::SocketRotation* sockets_ = nullptr;
   cycle::NetworkClock* wall_ = nullptr;
+  ModemTrace* trace_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the
