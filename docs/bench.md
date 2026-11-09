@@ -1923,6 +1923,47 @@ Needs §18 walked, and the unit on the battery with the cable out for the first 
       `get guest.password: >` line under `raw`. Before the sync the key arrived as a raw line and
       the server left its stored guest password alone.
 
+## 20. What a wake did
+
+From task p10-02 (`interfaces/backend.h`'s `Reached`, `core/cycle/wake_reason.h`'s `kDid*`,
+`core/cycle/wake_cycle.cpp`'s `journalWake`). The night of §19 was read wrong twice, in this
+firmware's own words: `wake` gave each wake's length and nothing else, and the journal said *the
+backend was reached* about wakes that had sent nothing. These items are whether the console now
+says what each wake did. **Nothing here needs a night of its own** — §19's walk produces every
+case — and nothing here changes what the unit does, only what it says it did.
+
+- [ ] ★ **`wake`'s letters, read against `lte` and `agent state`.** After a few wakes on the
+      battery, `wake` must print the legend *M the uplink came up, S the server answered, J a job
+      ran; '-' not, '?' not recorded* and then three letters beside each wake of the list.
+      Expected on a healthy unit with nothing queued: **`MS-`** for every wake, `MSJ` for a wake
+      that ran a job, and `M--` for a wake whose heartbeat failed. Check them against `lte` (the
+      attempts and the failures) and the server's own page: the two readings that went wrong on
+      7 November were exactly *did the modem come up* and *did the server answer*. **No line of
+      `wake` may run past 100 columns.**
+
+- [ ] ★ **A wake that never reached sleep shows `???`, and only that one.** The wake that was
+      running when the cable or the reset took it has no letters: `wake` prints `???` and *it
+      never reached sleep*. A `???` beside a wake that *did* reach sleep would mean step 10 is not
+      writing the bits down.
+
+- [ ] ★ **The journal says *reached* only when the server answered.** `journal` after a wake that
+      heartbeated must carry *the backend was reached*; after a wake that sent nothing it must
+      carry **none** of that and instead *nothing sent: …* with the reason — and the one to look
+      for is `nothing sent: a wait still owed, N s` on a timer wake, which is §19's symptom made
+      visible. A unit before `server.url` is set says *nothing sent: not configured* in its wake
+      record line at every wake and writes **no** journal entry for it: one entry a wake would
+      wrap the 1024-entry log in ten days, and this is the item that catches it if it does.
+
+- [ ] **`agent wake` names which of the three it was.** Its last line is *asked for something (the
+      backend answered)*, *nothing to do (a wait still owed)*, *the exchange failed (it did not
+      say)* and so on. With the token deliberately wrong (set a bad `server.token`, then put the
+      right one back), two wakes in a row must read *halted on a 401* and *the loop did not run* —
+      and no part of either token may appear in any line of it.
+
+- [ ] **The wake record line of a unit that sends nothing.** The one line the port prints at every
+      wake ends `, nothing sent: <reason>`; an answered wake's line has no such clause. This is
+      what a person watching the port at 3 a.m. reads, and it is the cheapest of these items.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the

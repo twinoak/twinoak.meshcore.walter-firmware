@@ -339,6 +339,14 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
     }
     if (report_.sleepAtLeastS > 0) counters_.holds = saturate(counters_.holds);
     out->sleep_at_least_s = at_least;
+    // **Whether anybody was reached, and when nobody was, why nothing was sent** (task p10-02).
+    // The seam's three values could not tell *answered, nothing to do* from *never opened its
+    // mouth*, so the journal said "the backend was reached" about the wakes of 8 November 2026
+    // that sent nothing. `interfaces::Reached` is the second half of the answer.
+    out->reached = reachedThisWake(known);
+    out->jobs_ran = report_.jobsRun < 0 ? 0
+                    : report_.jobsRun > 0xFF ? 0xFF
+                                             : static_cast<std::uint8_t>(report_.jobsRun);
   }
 
   if (talk != nullptr) printReport(*talk);
@@ -346,13 +354,40 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   // How it went, in the seam's three words. A heartbeat the server did not answer is the
   // exchange failing (news for the journal); a wake that did nothing because it had nobody to
   // talk to - not configured, halted on a 401, a wait still running - is *nothing to do*, which
-  // is the null backend's answer and is not news every wake.
+  // is the null backend's answer and is not news every wake. **Which of the two kinds of
+  // *nothing* it was is `out->reached`**, written above.
   if (!ran) return interfaces::Exchanged::kNothing;
   if (report_.heartbeat != mm::StepOutcome::Done) return interfaces::Exchanged::kFailed;
   const bool did_something = report_.jobsRun > 0 || report_.jobsNotRun > 0 || report_.resultsFlushed > 0 ||
                              report_.batchesPosted > 0 || posted_owed ||
                              (p_.firmware != nullptr && p_.firmware->did().asks != 0);
   return did_something ? interfaces::Exchanged::kAsked : interfaces::Exchanged::kNothing;
+}
+
+// Why this wake sent nothing, or that it was answered (task p10-02).
+//
+// **The library decides whether anything was sent and this only names it.** `report_.why` is one
+// of `mm::AgentLoop::wake`'s five static sentences and it is empty when the wake ran its steps,
+// so *whether* is read off the library and never guessed at; what cannot be read off it is a
+// code, because `why` is prose. So the naming walks the library's own chain, in the library's own
+// order (`src/AgentLoop.cpp`: halted, then not configured, then the uplink, then the hold), over
+// the same state the library read - and a host test walks every branch of it through the real
+// library, so that an upstream sync which changed that order would fail here rather than mislabel
+// a wake (host_test/agent/test_what_a_wake_did.cpp).
+interfaces::Reached AgentBackend::reachedThisWake(const interfaces::BackendKnowledge& known) const {
+  if (report_.why[0] == 0) {
+    // It ran its steps. **Answered means the heartbeat came back** and nothing less: a heartbeat
+    // that failed is the exchange failing, and the journal's *reached* is a claim about a server.
+    return report_.heartbeat == mm::StepOutcome::Done ? interfaces::Reached::kAnswered
+                                                      : interfaces::Reached::kUnsaid;
+  }
+  if (report_.halted) return interfaces::Reached::kHalted;
+  if (p_.server == nullptr || !p_.server->configured()) return interfaces::Reached::kNotConfigured;
+  if (!known.uplink.up) return interfaces::Reached::kNoUplink;
+  if (report_.sleepAtLeastS > 0) return interfaces::Reached::kWait;
+  // The loop said it sent nothing and none of the four fits: *the loop has not begun*, or a
+  // sentence a later library added. Not labelled as one of ours.
+  return interfaces::Reached::kElse;
 }
 
 // -- the console -------------------------------------------------------------------------------------
@@ -416,7 +451,11 @@ bool AgentBackend::wake(interfaces::TextOut& out) {
   const std::uint32_t was =
       p_.duty != nullptr ? p_.duty->guard().raiseFor(core::cycle::kBackendBoundMs) : 0;
   const interfaces::Exchanged how = run(console_known_, deadline, &console_answer_, &out);
-  sayf(&out, "agent wake: %s%s\n", interfaces::describe(how),
+  // The seam's own answer, in its three words rather than two (task p10-02): *the backend
+  // answered*, or why nothing was sent. `printReport` above has already said the library's
+  // sentence; this is the line that says what the wake cycle was told.
+  sayf(&out, "agent wake: %s (%s)%s\n", interfaces::describe(how),
+       interfaces::describe(console_answer_.reached),
        console_answer_.carried != interfaces::Ask::kNothing ? "; one update step was carried out" : "");
   if (p_.duty != nullptr) {
     core::cycle::WakeGuard& guard = p_.duty->guard();
@@ -441,7 +480,13 @@ bool AgentBackend::wake(interfaces::TextOut& out) {
                                     : "what is left of the bound, which outlasts the USB grace");
     }
   }
-  return how != interfaces::Exchanged::kFailed || report_.why[0] == 0;
+  // **"The loop ran"**, which is the one thing this bool has ever been asked (the console prints
+  // *the loop did not run* on a false). The library's own answer to it is whether it had a
+  // sentence to give for sending nothing, so that is what is read - rather than the old
+  // expression over `how`, which could only be false for a stale report of a loop that had not
+  // begun, a case the guard at the top of this function already answers (task p10-02).
+  (void)how;
+  return report_.why[0] == 0;
 }
 
 void AgentBackend::jobs(interfaces::TextOut& out) {

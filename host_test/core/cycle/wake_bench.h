@@ -115,21 +115,46 @@ class ScriptedBackend final : public ifs::Backend {
     const std::uint32_t spend = static_cast<std::uint32_t>(
         deadline_ms > now && cost_ms > deadline_ms - now ? deadline_ms - now : cost_ms);
     clock_.advance(spend);
-    if (answers == ifs::Exchanged::kAsked && out != nullptr) *out = answer;
+    // **Written for every answer but a failure** (task p10-02): `reached`, `jobs_ran` and the
+    // rest say what happened rather than what is wanted, and a wake that sent nothing has those
+    // to say. The default `answer` says nothing was reached and gives no reason, which is what a
+    // backend that has not been scripted honestly is.
+    if (answers != ifs::Exchanged::kFailed && out != nullptr) *out = answer;
     return answers;
   }
 
   // The script, as a test writes it.
   void askFor(ifs::Ask ask) {
     answers = ifs::Exchanged::kAsked;
+    answer.reached = ifs::Reached::kAnswered;
     answer.want(ask);
+  }
+  // *It talked and there was nothing to do*: the ordinary wake of a unit a server has nothing
+  // for, which is the one the journal may say *the backend was reached* about.
+  void answered() {
+    answers = ifs::Exchanged::kNothing;
+    answer.reached = ifs::Reached::kAnswered;
+  }
+  // *It sent nothing, and this is why.* `owed_s` is the wait still owed, which also lengthens the
+  // sleep, exactly as the agent's loop carries one out of a wake.
+  void sentNothing(ifs::Reached why, std::uint32_t owed_s = 0) {
+    answers = ifs::Exchanged::kNothing;
+    answer.reached = why;
+    answer.sleep_at_least_s = owed_s;
+  }
+  void ranJobs(std::uint8_t jobs) {
+    answers = ifs::Exchanged::kAsked;
+    answer.reached = ifs::Reached::kAnswered;
+    answer.jobs_ran = jobs;
   }
   void takeReadings() {
     answers = ifs::Exchanged::kAsked;
+    answer.reached = ifs::Reached::kAnswered;
     answer.took_readings = true;
   }
   void setSetting(const char* key, const char* value) {
     answers = ifs::Exchanged::kAsked;
+    answer.reached = ifs::Reached::kAnswered;
     answer.want(ifs::Ask::kSetSettings);
     REQUIRE(answer.settings < ifs::kBackendSettingsMax);
     ifs::BackendSetting& s = answer.setting[answer.settings++];

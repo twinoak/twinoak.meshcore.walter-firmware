@@ -319,6 +319,12 @@ struct Pass {
   std::uint32_t wakes = 0;
   // The seam.
   interfaces::Exchanged exchanged = interfaces::Exchanged::kFailed;
+  // Whether a backend was reached, and when none was, why nothing was sent (task p10-02;
+  // interfaces/backend.h). `interfaces::wasAnswered(exchanged, answer())` is the one reading of
+  // the pair, and the journal's flag, the record's clause and `wake`'s letter all come from it.
+  interfaces::Reached reached = interfaces::Reached::kUnsaid;
+  std::uint32_t owed_s = 0;    // the wait still owed, when `reached` is kWait
+  std::uint8_t jobs_ran = 0;   // work of the backend's own that ran in the exchange, saturating
   std::uint8_t asks = 0;                                   // what the answer asked for, as bits
   std::uint8_t did = 0;                                    // what the exchange carried out itself (task p4-05)
   interfaces::Ask carried = interfaces::Ask::kNothing;     // the one thing that was done
@@ -344,7 +350,7 @@ std::size_t recordLine(const Pass& pass, char* out, std::size_t cap);
 // what crosses the backend seam.
 void stepLetters(const Pass& pass, char* out, std::size_t cap);
 
-// -- the journal entry: kind::kWakeCycle, 32 bytes ---------------------------------------------
+// -- the journal entry: kind::kWakeCycle, 37 bytes ---------------------------------------------
 //
 //    0  wake        u8   a core::cycle::Wake
 //    1  band        u8   a core::power::Band
@@ -357,6 +363,13 @@ void stepLetters(const Pass& pass, char* out, std::size_t cap);
 //   20  interval_s  u32  what the next sleep was asked for
 //   24  at_epoch    u32  0 when there was no time of day
 //   28  wakes       u32  wakes counted since the retained record began
+//   32  reached     u8   an interfaces::Reached (task p10-02): who was reached, or why nobody was
+//   33  owed_s      u32  the wait still owed, when `reached` is kWait
+//
+// **The five bytes cost nothing**: a journal slot is 64 bytes whatever the payload holds
+// (core/update/journal.h, kEntryBytes), and kPayloadMax is 48. What they *could* have cost is the
+// entries already on a unit's flash, so the decoder reads a 32-byte payload too and answers
+// `kUnsaid` and 0 for it - which is what 0.1.2's entries honestly are, having kept neither.
 //
 // **Not every wake**, and the reason is task p3-04's: the journal is 1024 entries in one 64 KB
 // partition and it exists so that an update is never guessed at, and a unit checking in every
@@ -366,12 +379,22 @@ void stepLetters(const Pass& pass, char* out, std::size_t cap);
 // fetch happened; an exchange happened; the wake was a crash or a watchdog. "A page a person can
 // read" is what the task asks `journal` to be after a week on a mast, and seven hundred identical
 // lines are not a page. Said again in tasks/phase-3/reports/05.md under *Deviations*.
-constexpr std::size_t kWakePayloadBytes = 32;
+constexpr std::size_t kWakePayloadBytes = 37;
 static_assert(kWakePayloadBytes <= update::kPayloadMax, "the payload has to fit a journal entry");
+
+// What every build up to and including 0.1.2 wrote. `decode()` accepts it and reads the two
+// fields past it as *not said*, so that the entries on a unit's flash go on being a page a
+// person can read after this firmware is updated (task p10-02).
+constexpr std::size_t kWakePayloadBytesV1 = 32;
+static_assert(kWakePayloadBytesV1 < kWakePayloadBytes, "v1 is the shorter one");
 
 constexpr std::uint8_t kWakeFlagOnTrial = 0x01;
 constexpr std::uint8_t kWakeFlagClockSet = 0x02;
-constexpr std::uint8_t kWakeFlagExchanged = 0x04;
+// **An answered heartbeat, and nothing else** (task p10-02). It used to be set for every exchange
+// that did not fail, so a wake that sent nothing because of a hold said *the backend was reached*
+// - which is what the morning of 8 November 2026 was read wrong from. `interfaces::wasAnswered()`
+// is the only thing that sets it.
+constexpr std::uint8_t kWakeFlagAnswered = 0x04;
 constexpr std::uint8_t kWakeFlagReadingsTaken = 0x08;
 constexpr std::uint8_t kWakeFlagBandChanged = 0x10;
 constexpr std::uint8_t kWakeFlagClimbed = 0x20;
@@ -390,6 +413,8 @@ struct WakePayload {
   std::uint32_t interval_s = 0;
   std::uint32_t at_epoch = 0;
   std::uint32_t wakes = 0;
+  interfaces::Reached reached = interfaces::Reached::kUnsaid;
+  std::uint32_t owed_s = 0;
 };
 
 void encode(const WakePayload& payload, std::uint8_t out[kWakePayloadBytes]);

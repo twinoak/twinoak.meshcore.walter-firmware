@@ -34,12 +34,25 @@ is written.
     a local `config.read` from reporting an empty access list as a fact. Task 06 is where the
     door gets a real answer for it (`LOCAL_REQUEST`).
 
-- [ ] **[later] `wake` says how long each wake was, not what it did.** 7 November, the 5-minute wake
+- [x] **[done by p10-02] `wake` says how long each wake was, not what it did.** 7 November, the 5-minute wake
   test: the list showed three wakes of about 40 s and four of 6–7 s. They were read as wakes that
   skipped the modem, then as a failed connection. Both were wrong: `lte` said seven attempts and no
   failures. The journal keeps only wakes with news (`WakeCycle::journalWake`), so a quiet wake leaves
   nothing but its length. One letter per wake would have said it: modem up, backend reached, jobs
   run.
+  - **Three letters per wake, and the legend above the list**
+    (`tasks/phase-10/reports/02.md`): `M` the uplink came up, `S` the server answered, `J` a job
+    ran, `-` for one that did not and `?` for a wake that wrote nothing down. They are three bits
+    of each entry of the duty cycle's retained record (`core/cycle/wake_reason.h`, `kDidModem`,
+    `kDidAnswered`, `kDidJobs`, `kDidSaid`), written the moment each becomes true — at step 6 and
+    at step 8 — so a wake that is reset or crashes still leaves what it had managed. **The record's
+    size did not change for them**: the two bytes came from the top half of a `lasted_s` no wake
+    ever filled. `host_test/core/cycle/test_what_a_wake_did.cpp` holds each of the four readings,
+    and the list still fits a 100-column terminal.
+  - And the half of the item it did not name: *the backend reached* was the wrong word for it.
+    The journal said *the backend was reached* for every exchange that did not fail, so the wakes
+    of 8 November that sent nothing claimed it. The same task made that flag an answered heartbeat
+    and nothing else (`interfaces::Reached`).
 
 ## Found while doing 02 (7 November)
 

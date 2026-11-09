@@ -254,10 +254,26 @@ void WakeReason::clearAgentAttention() {
   if (begun_) save();
 }
 
+// What this wake did, as it becomes true (task p10-02). Additive and stored at once, for the
+// reason the attention above is: a wake may not come back from the thing it is doing, and these
+// bits are what the next boot's `wake` has to say about it.
+void WakeReason::didThisWake(std::uint8_t bits) {
+  if (bits == 0 || count_ == 0) return;
+  WakeEntry& e = record_.items[0];
+  const std::uint8_t want = static_cast<std::uint8_t>(bits | kDidSaid);
+  if ((e.did & want) == want) return;  // nothing new: no write
+  e.did = static_cast<std::uint8_t>(e.did | want);
+  if (begun_) save();
+}
+
 void WakeReason::endingInSleep(std::uint32_t lasted_s, std::uint32_t asked_s) {
   // 0 is reserved for "it never reached sleep", so a wake shorter than a second is recorded as
-  // one second: it did reach sleep, and that is the thing the entry is asked about.
-  record_.items[0].lasted_s = lasted_s == 0 ? 1 : lasted_s;
+  // one second: it did reach sleep, and that is the thing the entry is asked about. And the
+  // ceiling is the field's: a wake longer than 18 hours is recorded as 18 hours rather than
+  // wrapping to a small number, which is the one way sixteen bits could lie (task p10-02).
+  const std::uint32_t kept = lasted_s == 0 ? 1 : lasted_s;
+  record_.items[0].lasted_s =
+      static_cast<std::uint16_t>(kept > kLastedAtMostS ? kLastedAtMostS : kept);
   // And what this sleep asks its timer for, for the boot on the other side of it to read. 0 is
   // honest here: a sleep with no timer at all (the radio's line alone) is a sleep whose length
   // nothing can know, and `timeAwayMs()` answers 0 for it.

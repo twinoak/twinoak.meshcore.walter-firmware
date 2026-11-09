@@ -300,6 +300,56 @@ inline const char* describe(Refusal refusal) {
   return "?";
 }
 
+// -- was anybody there? (task p10-02) -----------------------------------------------------------
+//
+// `Exchanged` has three values and they answer two questions at once, which is how the journal
+// came to say *the backend was reached* about wakes that sent nothing. `kNothing` is both "it
+// talked and there was nothing to do" and "it never opened its mouth", and those are not the
+// same fact: the first means a server heard from this unit, the second means it did not.
+//
+// So this is the second half of the answer, and the three the firmware's words have to tell
+// apart are **answered**, **sent nothing (and why)** and **failed**:
+//
+//   answered       kAsked or kNothing, with `reached` == kAnswered
+//   sent nothing   kNothing, with `reached` saying which of the reasons it was
+//   failed         kFailed
+//
+// **A reason beside `kNothing`, and not a fourth `Exchanged`**, for two reasons. One value more
+// could not carry *why* - and the why is the whole point: a hold, no uplink, nothing configured
+// and a halt on a 401 are four different things to do about it. And `Exchanged`'s three values
+// are what the wake cycle's rails are written against (S-7's one update step, the budget, the
+// sleep a wait lengthens: all of them turn on kFailed and nothing else), so widening the enum
+// would move code that has nothing to do with this.
+//
+// **kUnsaid is the zero and it is not a yes.** `out` is zeroed by the caller, so an
+// implementation that says nothing is never credited with having reached anybody - which is the
+// rail: the journal's *reached* is a claim about a server, and a claim nobody made is false.
+enum class Reached : std::uint8_t {
+  kUnsaid = 0,          // the implementation did not say: nothing may be claimed
+  kAnswered = 1,        // a heartbeat went out and the backend answered it
+  kWait = 2,            // nothing was sent: a wait is still owed (`sleep_at_least_s` is what is left)
+  kNoUplink = 3,        // nothing was sent: there was no uplink to send it over
+  kNotConfigured = 4,   // nothing was sent: this unit has no server to send it to
+  kHalted = 5,          // nothing was sent: a 401, and a person has to act
+  kElse = 6,            // nothing was sent, for a reason this seam has no word for
+  kCount,
+};
+
+// One phrase, for the journal, the wake record and the console.
+inline const char* describe(Reached reached) {
+  switch (reached) {
+    case Reached::kUnsaid: return "it did not say";
+    case Reached::kAnswered: return "the backend answered";
+    case Reached::kWait: return "a wait still owed";
+    case Reached::kNoUplink: return "no uplink";
+    case Reached::kNotConfigured: return "not configured";
+    case Reached::kHalted: return "halted on a 401";
+    case Reached::kElse: return "nothing to send";
+    case Reached::kCount: break;
+  }
+  return "?";
+}
+
 // One setting an answer asks for. The key is the name a person would type at the console
 // (`core/settings/keys.h`), because that table is the only list of settings there is.
 struct BackendSetting {
@@ -346,6 +396,18 @@ struct BackendAnswer {
   // interval the server accepted that is *longer* than this firmware's own. Never shorter: the
   // interval is the battery's (core/power/interval_policy.h) and this can only lengthen it.
   std::uint32_t sleep_at_least_s = 0;
+
+  // -- what the wake did (task p10-02) ----------------------------------------------------------
+  //
+  // Whether anybody was reached, and when nobody was, why nothing was sent. **Written whatever
+  // the exchange answers**, kFailed apart: a wake that sent nothing is not a failure and the
+  // reason it sent nothing is the one thing a reader cannot work out from the rest of the record.
+  Reached reached = Reached::kUnsaid;
+  // How much work of its own the exchange did this wake, saturating at 255 - the agent's jobs,
+  // for an implementation that has jobs; 0 for one that has none, as this repository's has. One
+  // letter of `wake`'s list is this (core/cycle/wake_reason.h, kDidJobs) and nothing else reads
+  // it: it is a count for a person, not a figure anything decides on.
+  std::uint8_t jobs_ran = 0;
 };
 
 // How an exchange went.
@@ -364,13 +426,23 @@ inline const char* describe(Exchanged outcome) {
   return "?";
 }
 
+// **The one reading of the seam's answer** (task p10-02), so that the journal, the wake record,
+// the console and a test cannot each have their own. Was a backend reached and did it answer?
+// Nothing else is *reached*: not an exchange that failed, not one that sent nothing, and not one
+// that did not say.
+inline bool wasAnswered(Exchanged how, const BackendAnswer& answer) {
+  return how != Exchanged::kFailed && answer.reached == Reached::kAnswered;
+}
+
 class Backend {
  public:
   virtual ~Backend() = default;
 
   // One exchange, which must return by `deadline_ms` on the same monotonic millisecond clock
-  // core/ uses (interfaces/clock.h). `out` is zeroed by the caller and is written only when the
-  // answer is kAsked.
+  // core/ uses (interfaces/clock.h). `out` is zeroed by the caller; the asks are written only
+  // when the answer is kAsked, and **`reached`, `did`, `carried`, `outside_ms`,
+  // `sleep_at_least_s` and `jobs_ran` are written whenever the exchange did not fail** - they
+  // say what happened rather than what is wanted, and a wake that sent nothing has those to say.
   //
   // An implementation may do nothing at all, which is what this repository's does. It must not
   // block past the deadline: the wake's budget is what the battery can pay for, and a backend
