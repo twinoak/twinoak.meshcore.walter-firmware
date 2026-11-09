@@ -24,29 +24,33 @@ interval, runs the jobs the server has for it and sleeps again
 
 ## The state of things
 
-> **The first unit works, and the weekend it worked found five more things.** On 23 October 2026 a
-> Walter on `0.0.0-dev` checked in with the real meshmaster.dk — it is *LTE test node* there: the
-> SIM attached, the chain verified and the server took it. On 6 November `v0.1.0` went onto the
-> first unit's Walter from the published files and could not give its radio a first image; `v0.1.1`
-> went on by cable on 7 November and could. **What a board has shown since:** the SWD flasher wrote
-> a whole repeater application — 102 pages, read back whole, the radio reset, proved and committed
-> as the **golden image**, with no watchdog reset in the middle; a whole repeater release pushed
-> into the store over USB in seconds rather than hours; four HTTPS connections of one wake in a row;
-> and a telemetry job of the unit's own repeater answered **through the local door**, with nothing
-> on the air. **And what it found:** a `config.read` of that repeater reset the Walter (a wait that
-> spun instead of yielding); the sixth connection of a wake stalled for thirty seconds; a radio
-> recovered by hand on 6 November came back as a **new node**, so its repeater had to be registered
-> again; and that repeater stayed *stale* on meshmaster.dk, because the box link had no request that
-> yields a status or a neighbour list.
-> [`v0.1.2`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest) is those
-> ([`tasks/phase-9/`](tasks/phase-9/README.md)), and it is the first release a unit in the field can
-> be given **over LTE** instead of over a cable. **Everything else is still simulators**: a
-> simulated nRF52 down to its flash controller, a flash that loses power at any operation, a
-> scripted repeater, a fake modem that fails in every way a real one does, a scripted HTTPS server,
-> a scripted meshmaster.dk and the agent library's own simulated stock repeater.
-> [`docs/bench.md`](docs/bench.md) is the walk that turns that over one step at a time, `v0.1.2` is
-> the release it is walked with ([`docs/flashing.md`](docs/flashing.md)), and this line stays here
-> until a unit has walked it.
+> **The first unit works, it ran a night on its own battery, and the night was quiet.** On
+> 23 October 2026 a Walter on `0.0.0-dev` checked in with the real meshmaster.dk — it is *LTE test
+> node* there: the SIM attached, the chain verified and the server took it. On 6 November `v0.1.0`
+> went onto the first unit's Walter from the published files and could not give its radio a first
+> image; `v0.1.1` went on by cable on 7 November and could, and `v0.1.2` by cable on 8 November.
+> **What a board has shown since:** the SWD flasher wrote a whole repeater application — 102 pages,
+> read back whole, the radio reset, proved and committed as the **golden image**, with no watchdog
+> reset in the middle; a whole repeater release pushed into the store over USB in seconds rather
+> than hours; four HTTPS connections of one wake in a row; a telemetry job of the unit's own
+> repeater answered **through the local door**, with nothing on the air; and 56 wakes of a night on
+> a battery, a quarter of an hour apart. **And what it found:** meshmaster.dk heard that unit on about **every sixth wake** — a hold from one failed call
+> was put back whole at every wake, because the sleep in between counted for nothing — while its
+> journal said the backend had been *reached* on wakes that sent nothing at all; the **first update
+> over LTE failed in two seconds**, because no download of either box has ever told the server which
+> build was asking; a radio recovered by hand on 6 November came back as a **new node**, which this
+> firmware read as a radio awaiting its first install; a download message promised a resume the
+> Walter's own slot cannot keep; and a thirty-second stall on an observations POST turned out to be
+> **reproducible**, with no way to trace it but a build of its own.
+> [`v0.1.3`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest) is those
+> six ([`tasks/phase-10/`](tasks/phase-10/README.md)), and it is the first release that can really
+> be given to a unit in the field **over LTE** — the path has existed since `v0.1.2` and had never
+> once worked. **Everything else is still simulators**: a simulated nRF52 down to its flash
+> controller, a flash that loses power at any operation, a scripted repeater, a fake modem that
+> fails in every way a real one does, a scripted HTTPS server, a scripted meshmaster.dk and the
+> agent library's own simulated stock repeater. [`docs/bench.md`](docs/bench.md) is the walk that
+> turns that over one step at a time, `v0.1.3` is the release it is walked with
+> ([`docs/flashing.md`](docs/flashing.md)), and this line stays here until a unit has walked it.
 
 **Still unverified on a board** ([`docs/bench.md`](docs/bench.md), the six it marks ★): §5 the
 first whole flash, with the power pulled half-way through; §9 a deliberately broken candidate that
@@ -68,16 +72,18 @@ properly, run twenty pairs of HTTPS requests, taken **its own** release over LTE
 | 7 | **the first release**: a flashing guide, release notes a person reads, and `v0.1.0` published | released |
 | 8 | **what the first unit showed** (6 November): the flasher's watchdog, the transfer in bytes, one connection one socket, the radio known before a job, link 1.1 and the band — published as `v0.1.1` | released |
 | 9 | **the first unit's weekend** (7 November): a delay that yields, the socket ids' close accounting, a silent radio told from a scanner, the local door with no password and link 1.2's `LOCAL_REQUEST` — published as `v0.1.2` | released |
+| 10 | **a unit that is heard** (8 November): a wait that counts the sleep, what a wake really did, a radio without its identity, the download that does not resume, a fetch that says who it is and the modem's trace from the console — published as `v0.1.3` | released |
 | 6, later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
 
-**The release is [`v0.1.2`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)**
+**The release is [`v0.1.3`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)**
 (`v0.1.0` was the first, on 5 November), signed with the release key Thomas made on 20 October
 2026 — key id `73efdd383a957596`, its public half in [`keys/release-keys.txt`](keys/README.md) and
 its private half a secret of the release workflow. So a build of this firmware trusts one key
 (`trust` on the console says which), and a Walter flashed by cable with a release can take every
-later one over LTE. **A unit at `v0.1.1` takes this one that way** — *Offer a release* on its page
-with the Walter's product, then an apply, and no cable at all; one still at `v0.1.0` takes it by
-cable. [`docs/flashing.md`](docs/flashing.md) has both.
+later one over LTE. **A unit at `v0.1.2` or `v0.1.1` takes this one that way** — *Offer a release*
+on its page with the Walter's product, then an apply, and no cable at all; one still at `v0.1.0`
+takes it by cable, because its second HTTPS connection of a wake was the one that failed.
+[`docs/flashing.md`](docs/flashing.md) has both.
 
 ## What it does
 

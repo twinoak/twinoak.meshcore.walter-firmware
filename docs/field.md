@@ -9,12 +9,13 @@ the firmware's own map is
 the first bring-up of a unit is [`bench.md`](bench.md).
 
 > **No unit has run this on a mast yet.** One Walter on a development build checked in with the
-> real meshmaster.dk on 23 October 2026; the first unit ran `v0.1.0` on a desk on 6 November, and
-> `v0.1.1` on 7 November — which is where the faults `v0.1.2` fixes come from (README, *The state
-> of things*). Everything else below is built and tested on a host against simulators, and none of
-> it has been on a mast. [`bench.md`](bench.md) is the walk that proves each of these sentences one
-> at a time, with `v0.1.2` ([`flashing.md`](flashing.md)) — which is also the first release a unit
-> in the field can be given **over LTE** rather than over a cable.
+> real meshmaster.dk on 23 October 2026; the first unit ran `v0.1.0` on a desk on 6 November,
+> `v0.1.1` on 7 November and `v0.1.2` on 8 November — a night on its own battery, which is where
+> the faults `v0.1.3` fixes come from (README, *The state of things*). Everything else below is
+> built and tested on a host against simulators, and none of it has been on a mast.
+> [`bench.md`](bench.md) is the walk that proves each of these sentences one at a time, with
+> `v0.1.3` ([`flashing.md`](flashing.md)) — the first release a unit in the field can really be
+> given **over LTE** rather than over a cable, now that both halves of that path exist.
 
 ## The two boxes
 
@@ -371,8 +372,10 @@ The honest list. Each of these needs a person with the unit in their hands.
 For balance, because the list above is the short one:
 
 - the radio's firmware, as often as a release says so, with a known-good image behind it;
-- the LTE box's own firmware, with one boot's trial and automatic rollback — from `v0.1.1` onwards,
-  and `v0.1.2` is the first release meant to arrive that way ([`flashing.md`](flashing.md));
+- the LTE box's own firmware, with one boot's trial and automatic rollback — from `v0.1.1` onwards;
+  `v0.1.2` was the first release meant to arrive that way and could not, because its download told
+  the server nothing about who was asking, and **`v0.1.3` is the first that can**
+  ([`flashing.md`](flashing.md));
 - a radio that is hung, confused, or has had its application corrupted — the ladder;
 - a radio whose clock has drifted, every wake;
 - a non-secret setting of the repeater's, over the server, as a job;
