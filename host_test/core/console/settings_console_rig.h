@@ -3,10 +3,10 @@
 // over a map, a fake modem with the uplink policy over it, an image store over a simulated
 // flash, a journal over another, a supervisor, and the seam a self-update's trial reaches for.
 //
-// It is the rig for four tests: the settings commands themselves (test_console_settings.cpp),
+// It is the rig for five tests: the settings commands themselves (test_console_settings.cpp),
 // the secrets (test_console_secrets.cpp), the grammar held to the table and the document
-// (test_console_grammar.cpp) and the provisioning session of docs/provisioning.md
-// (test_provisioning_doc.cpp). Everything the console has ever printed through it is kept in
+// (test_console_grammar.cpp), the provisioning session of docs/provisioning.md
+// (test_provisioning_doc.cpp) and the heap's four figures (test_console_heap.cpp). Everything the console has ever printed through it is kept in
 // `everything`, which is what the secret test greps.
 #pragma once
 
@@ -34,6 +34,7 @@
 #include "core/uplink/policy.h"
 #include "fakes/capture.h"
 #include "fakes/fake_clock.h"
+#include "fakes/fake_heap_report.h"
 #include "fakes/fake_modem_trace.h"
 #include "fakes/fake_pins.h"
 #include "fakes/fake_retained.h"
@@ -91,6 +92,9 @@ struct SettingsConsole {
   // as well - and so that the secrets test can switch the trace on with both secrets set and
   // grep the transcript for them.
   fakes::FakeModemTrace trace;
+  // The heap behind its seam (task p11-02): `heap` reaches four numbers here, so that the test
+  // which runs every command of the table runs it as well.
+  fakes::FakeHeapReport heap_report;
   // The duty cycle (task p3-04), so that `wake`, `power`, `sleep` and `stay` reach something and
   // so that `status`'s last two lines are the ones a real unit prints - docs/provisioning.md is
   // replayed against this console, and a document that showed a line no unit prints would be
@@ -132,6 +136,18 @@ struct SettingsConsole {
                                              &settings, &server, duty.get(),
                                              // cycle, battery, mesh, agent, identity, loop,
                                              // sockets, wall: none of them here.
+                                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                             nullptr, nullptr, &trace, &heap_report));
+  }
+
+  // A console that was handed no heap seam, as a build whose main/ gave it none has (task
+  // p11-02): everything else is as `build()` leaves it, so what the test sees is the one line
+  // `heap` says instead of four figures.
+  void withoutHeap() {
+    console.reset(new core::console::Console(out, radio, health, clock, restart, link, slots,
+                                             &store, &receiver, nullptr, &journal, nullptr,
+                                             supervisor.get(), &uplink, nullptr, nullptr, nullptr,
+                                             &settings, &server, duty.get(),
                                              nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                                              nullptr, nullptr, &trace));
   }

@@ -38,6 +38,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kHelp:
     case Verb::kStatus:
     case Verb::kReboots:
+    case Verb::kHeap:
     case Verb::kPins:
     case Verb::kReboot:
     case Verb::kTrust:
@@ -141,13 +142,13 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
                  AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets,
-                 cycle::NetworkClock* wall, ModemTrace* trace)
+                 cycle::NetworkClock* wall, ModemTrace* trace, HeapReport* heap)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
       mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets), wall_(wall),
-      trace_(trace), flasher_(pins, clock, slots),
+      trace_(trace), heap_(heap), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -449,6 +450,7 @@ void Console::runLine(const char* line) {
     case Verb::kHelp: help(); return;
     case Verb::kStatus: status(); return;
     case Verb::kReboots: reboots(); return;
+    case Verb::kHeap: heap(); return;
     case Verb::kPins: pins(); return;
     case Verb::kRakReset: rakReset(); return;
     case Verb::kRakKill: rakKill(p.command.seconds); return;
@@ -793,6 +795,29 @@ void Console::reboots() {
     }
     print("\n");
   }
+}
+
+// The heap as the chip keeps it (task p11-02; docs/ARCHITECTURE.md §14). Four figures and a
+// sentence, because the figure that matters here is not the one a person expects: **free** says
+// almost nothing, since the heap is four regions and a 20 kB object can only come out of a block
+// that holds it. At the moment v0.1.3 could not start, 35 636 bytes were free across the three
+// heaps that had been registered and the largest block any of them had was 16 308 - 76 bytes
+// short of the main task's stack.
+void Console::heap() {
+  if (heap_ == nullptr) {
+    print("error: this build has no heap figures: nothing was given to the console "
+          "(main/main.cpp)\n");
+    return;
+  }
+  const HeapReport::Figures f = heap_->read();
+  printf("heap: %lu bytes free, largest free block %lu, least free since this boot %lu "
+         "(internal, 8-bit)\n", static_cast<unsigned long>(f.free),
+         static_cast<unsigned long>(f.largest_block), static_cast<unsigned long>(f.min_free));
+  printf("main task stack: %lu bytes, %lu never used (the high-water mark)\n",
+         static_cast<unsigned long>(f.stack_bytes), static_cast<unsigned long>(f.stack_unused));
+  print("the block is what decides whether an image starts: the main task's stack has to come "
+        "out of one, and tools/heap_at_start.py says so before the image is built "
+        "(docs/ARCHITECTURE.md section 14)\n");
 }
 
 void Console::pins() {

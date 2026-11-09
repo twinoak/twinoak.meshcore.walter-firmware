@@ -26,6 +26,7 @@ const CommandLine kCommandLines[] = {
     {"erase", "erase"},  // the refusal; `erase confirm` is a case of its own in each test
     {"reboot", "reboot"},
     {"reboots", "reboots"},
+    {"heap", "heap"},
     {"dump", "dump"},
     {"pins", "pins"},
     {"rak reset", "rak reset"},

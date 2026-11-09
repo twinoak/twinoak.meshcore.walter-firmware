@@ -36,6 +36,10 @@ const CommandDef kCommands[kCommandCount] = {
      "asked for on the console"},
     {"reboots", "reboots", Group::kUnit,
      "why this board last restarted, and the four before that, with how long each run lasted"},
+    {"heap", "heap", Group::kUnit,
+     "the internal heap now: free, the largest free block, the least free since this boot, and "
+     "how much of the main task's 16 KB stack has never been used. The block is the figure that "
+     "decides whether an image starts at all"},
     {"dump", "dump", Group::kUnit,
      "the last few kilobytes this port printed, oldest first, whole lines only. Nothing the "
      "radio sent as text is in it, and nothing the mesh said (S-12)"},

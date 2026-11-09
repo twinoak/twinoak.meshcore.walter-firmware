@@ -704,6 +704,12 @@ Parsed parseLine(const char* line) {
     if (hasRest) return refuse("reboots takes no argument");
     return accept(Verb::kReboots);
   }
+  // The heap at this moment (task p11-02). No argument: it reads four figures and decides
+  // nothing - what decides is tools/heap_at_start.py, before the image is ever flashed.
+  if (std::strcmp(verb, "heap") == 0) {
+    if (hasRest) return refuse("heap takes no argument");
+    return accept(Verb::kHeap);
+  }
   if (std::strcmp(verb, "pins") == 0) {
     if (hasRest) return refuse("pins takes no argument");
     return accept(Verb::kPins);
