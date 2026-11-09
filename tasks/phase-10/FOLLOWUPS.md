@@ -36,3 +36,24 @@ is written.
     **877 or 878**. The Heltec exit nodes receive 877-byte answers of the same route without
     trouble, over WiFi. It may be chance, but it is the first thing to look for in the trace: the
     `+SQNSRING`/`+SQNSRECV` lengths of an 876-byte answer against an 878-byte one.
+
+## From the reports of 01–07 (placed by the reviewer, 9 November)
+
+Each is written out in full in the report it names, under *For `FOLLOWUPS.md`*.
+
+- [ ] **[Thomas, both sides] A fifth apply outcome for a node fault** (report 03). An apply onto a
+  radio that refuses its identity reports `stuck`, with `node-fault` in the journal. The server has
+  four outcome words and none fits; a word of its own would let the page say *a person is needed at
+  the radio*. Also in meshmaster.dk's `tasks/phase-4.28/FOLLOWUPS.md`.
+- [ ] **[later] `rak status` could say the attention too** (report 03): nothing fills
+  `IdentityReading::attention_identity_lost` yet.
+- [ ] **[later] `spec/proposals/02`'s *downloads must resume* is half true** (report 04): true of a
+  radio image, not of the Walter's own. Decide with the bench's download figure.
+- [ ] **[later] A budget-stopped offer's `reason` is written and never sent** (report 04): the result
+  gate withholds it on purpose, so the corrected sentence reaches the job log and not the server's
+  page.
+- [ ] **[later] An agent call sends two `Accept` headers** (report 05).
+- [ ] **[later] The library's escape buffer is 3 080 bytes of `.bss` in every build now** (report 06).
+- [ ] **[later] Once the trace has been on, every log line of that boot goes through the hook**
+  (report 06).
+- [ ] **[later] A `+SQNSRECV` payload longer than 4 096 bytes would be cut in the trace** (report 06).
