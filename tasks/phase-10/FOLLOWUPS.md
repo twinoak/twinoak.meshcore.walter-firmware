@@ -53,7 +53,11 @@ Each is written out in full in the report it names, under *For `FOLLOWUPS.md`*.
   gate withholds it on purpose, so the corrected sentence reaches the job log and not the server's
   page.
 - [ ] **[later] An agent call sends two `Accept` headers** (report 05).
-- [ ] **[later] The library's escape buffer is 3 080 bytes of `.bss` in every build now** (report 06).
+- [x] **[later] The library's escape buffer is 3 080 bytes of `.bss` in every build now** (report 06).
+  Settled by task p11-01 (`tasks/phase-11/reports/01.md`): the buffer is in *every* build and
+  always was - it is not guarded by `CONFIG_LOG_MAXIMUM_LEVEL`, and v0.1.2's map has the same
+  `0xc08`. What the option really cost in static DRAM was 680 bytes, and that was enough to stop
+  v0.1.3 starting; it is out of `sdkconfig.defaults` again and the trace is a build of its own.
 - [ ] **[later] Once the trace has been on, every log line of that boot goes through the hook**
   (report 06).
 - [ ] **[later] A `+SQNSRECV` payload longer than 4 096 bytes would be cut in the trace** (report 06).

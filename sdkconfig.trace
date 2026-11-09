@@ -1,0 +1,25 @@
+# The trace build (task p11-01; docs/bench.md section 13, *The trace, from the console*).
+#
+# An overlay on sdkconfig.defaults, never a unit in service. It is flashed by cable to a board
+# somebody is sitting at, to read the modem library's own account of what it sent and what the
+# modem answered - the only thing that reads a stall.
+#
+#   .\tools\verify.ps1 -Shell          # the pinned image, this repository at /project
+#   idf.py -B /build/trace -DSDKCONFIG=/build/trace/sdkconfig \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.trace" build
+#   python tools/heap_at_start.py --build-dir /build/trace     # must say "fits"
+#   idf.py -B /build/trace -p <port> flash monitor
+#
+# **The third line is not optional, and the second option below is why there is one.** The debug
+# level brings the debug strings of every component into the image and the modem library's
+# 3 080-byte `_logEscapeBuffer` into `.bss`, and `.bss` is taken out of the room ESP-IDF needs for
+# the main task's 16 KB stack: that is exactly how v0.1.3 came to be an image that could not start
+# (docs/ARCHITECTURE.md section 14). This overlay with only the first option below is such an
+# image - the model says *does not fit*, short by 164 bytes - so the second gives the room back by
+# leaving the core dump out: 2 288 bytes of `.bss`, and a board on a cable prints its panic on the
+# cable rather than keeping it for the next check-in. With both, the model says *fits* with about
+# 13 kB to spare, and the main task's stack stays at 16 KB, which is the one thing a trace build
+# must not shrink: it is the build that prints the most.
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+# CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH is not set
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y

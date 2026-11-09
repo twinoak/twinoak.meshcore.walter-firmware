@@ -139,8 +139,8 @@ supervisor's stop is printed at every level.
 | `lte id` | the modem's IMEI and the SIM's ICCID and IMSI, for the label on the box. **The only place this firmware prints them**, and they are in no log line, no journal entry and no `status` |
 | `http get <url>` | (task p3-02) one GET over TLS whose chain is verified against this build's roots: the status, the headers worth naming (`Content-Type`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Length` or chunked), the first 32 bytes as hex, the size, the time, and (task p9-02) the socket id each of this request's connections took and what the close accounting did. The response is read to 1 KB and cut there. `https://` only; the uplink must be up (`lte up` first). See *HTTPS* |
 | `fetch [base-url] [candidate\|scanner]` | a release from `<base-url>/manifest.json` and `manifest.json.sig` into the store's candidate (default) or scanner image: the three steps, each of the six checks printed as it passes, the image in ranges with every range's line; resumable across wakes. **Minutes.** Never the golden image. With no base URL on the line the `fetch.url` setting is used, and `fetch` says so |
-| `trace` | (task p10-06) whether the modem library's own TX and RX lines are going to this port, how many it has printed in this boot and how many had a secret taken out, and the three things to know before using it: it is for the bench, it is not a setting, and it is kept in no `dump`. It reads |
-| `trace modem on\|off` | (task p10-06) switch the library's account of **every AT command and everything the modem answers** on, or off again. It is what a stall is read with (`docs/bench.md`, *HTTPS*), it ends at the next boot, and it needs no special build since v0.1.3. The SIM PIN and the server token are taken out of every line before it is printed. `status` says so while it is on |
+| `trace` | (task p10-06) whether the modem library's own TX and RX lines are going to this port, how many it has printed in this boot and how many had a secret taken out, and the three things to know before using it: it is for the bench, it is not a setting, and it is kept in no `dump`. In the release build it also says the lines are not in this build at all (task p11-01). It reads |
+| `trace modem on\|off` | (task p10-06) switch the library's account of **every AT command and everything the modem answers** on, or off again. It is what a stall is read with (`docs/bench.md`, *HTTPS*) and it ends at the next boot. **It needs a build of its own** (`docs/bench.md` §13): the release build compiles no debug log line, and there the command says so in one line and switches nothing on (task p11-01). The SIM PIN and the server token are taken out of every line before it is printed. `status` says so while it is on |
 | `agent url` | (task p4-03) the server the agent's uplink is configured for (`server.url` as it is used, a trailing slash off), whether `server.token` is set, and the `X-Agent-Version` header every call to it carries - this firmware's own version. It reads; it does not call |
 | `agent probe` | (task p4-03) one `GET /agent/v1/config` now, with the token: the status, `Retry-After` and `X-RateLimit-Remaining` when the answer carried them, and the config the server answered (the agent's id and label, its transport, the budget, the poll interval, the server's time). The bench's first look at a server; the uplink must be up (`lte up` first). See *The agent's uplink* |
 | `agent id` | (task p4-04) who this exit node says it is: the repeater's key and advert name from `IDENTITY`, its firmware and board from `HELLO`, the radio block from `get radio` over the link's `CLI`, the job types the heartbeat advertises, the local door's four counters (task p9-04) and which of §5.9's four requests it answers (task p9-06), what this wake promises the server, the clock and the heap. **Nothing of it is typed by a person**, and the token is *set* or *unset* as everywhere else. One `IDENTITY` and one `CLI` request at most, and none when nothing has changed. See *The agent's identity* |
@@ -231,9 +231,9 @@ reaches:
   every other key gets;
 * no log line, no journal entry, no `status`, no `dump` and no refusal contains one. A refusal
   about a PIN says *digits only*, not which digits;
-* and since v0.1.3, **no line of the modem's trace either** (`trace modem on`), which is the one
-  place in this firmware where both values really do go out on a wire: see *The modem's own
-  trace*.
+* and **no line of the modem's trace either** (`trace modem on`, in a build that has one), which
+  is the one place in this firmware where both values really do go out on a wire: see *The modem's
+  own trace*.
 
 A host test (`host_test/core/console/test_console_secrets.cpp`) sets both and then runs **every
 command of the table**, greps everything the port printed — replies, refusals, boot lines, the
@@ -798,12 +798,18 @@ loud on purpose.
 
 The modem library prints what it sends and what it receives - `TX:` for every AT command and for
 every payload it hands the modem, `RX:` for every buffer the modem sends back - at ESP-IDF's
-*debug* level. **Until v0.1.3 those lines existed only in a build of their own**, made and flashed
-by cable; the release build stripped them at compile time. They are the only account of what the
-modem was told and what it answered, and the 30-second stall that silences this unit
-(`tasks/phase-10/FOLLOWUPS.md`) cannot be read without them. Since v0.1.3 they are compiled in -
-12 432 bytes of the image - and off, and `trace modem on` raises the library's own log level until
-the next boot.
+*debug* level. They are the only account of what the modem was told and what it answered, and the
+30-second stall that silences this unit (`tasks/phase-10/FOLLOWUPS.md`) cannot be read without
+them.
+
+**They are in a build of their own, and the release build is not that build.** v0.1.3 compiled
+them into the release image (`CONFIG_LOG_MAXIMUM_LEVEL_DEBUG`, 12 432 bytes of flash) and could
+not start at all: the same option brought the library's 3 080-byte `_logEscapeBuffer` into `.bss`,
+and `.bss` is taken out of the room ESP-IDF needs for the main task's 16 KB stack
+(`ARCHITECTURE.md` §14). Task p11-01 took the option out again. So the release build has no debug
+log line in it, `trace` says so, `trace modem on` says so and switches nothing on, and
+`bench.md` §13 says how to make a build that has them - which is what a stall is read with, by
+cable, at the bench.
 
 ```
 > trace
@@ -811,7 +817,15 @@ trace: the modem library's TX and RX lines are off
   0 line(s) printed in this boot, 0 with a secret taken out
   the trace is for the bench: every AT command and every answer, which is how a stall is read (docs/bench.md, HTTPS)
   it is not a setting - it ends at the next boot - and it is kept in no 'dump': the terminal's own paste is the capture
-  'trace modem on' switches it on
+  the lines are not in this build: no debug log line is compiled into a release image, because their strings cost the room the main task's stack needs (docs/bench.md section 13 makes a build that has them)
+> trace modem on
+error: trace modem on: the modem library's TX and RX lines are not in this build; docs/bench.md section 13 makes one that has them
+```
+
+In a trace build the last line of `trace` is `'trace modem on' switches it on` instead, and the
+command works:
+
+```
 > trace modem on
 trace modem on: every AT command this firmware sends and everything the modem answers goes to this port, until the next boot
   the SIM PIN and the server token are taken out of every line before it is printed; nothing of the trace is kept in 'dump'

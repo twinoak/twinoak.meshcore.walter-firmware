@@ -16,6 +16,12 @@ namespace modem {
 
 namespace {
 
+// Whether the library's `ESP_LOGD` lines are bytes of this image at all (task p11-01): the guard
+// in the library's own sources is `CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG`, and this is the
+// same test, read from the same Kconfig macro. The release build is false here; a trace build
+// (`docs/bench.md` section 13) is true.
+constexpr bool kCompiledIn = CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG;
+
 // The one set (see the header): the hook is `esp_log_set_vprintf`'s, which is the image's.
 char* g_line = nullptr;
 SemaphoreHandle_t g_lock = nullptr;
@@ -80,6 +86,8 @@ bool install(char* why, std::size_t cap) {
 
 bool WalterModemTrace::on() const { return g_on; }
 
+bool WalterModemTrace::compiledIn() const { return kCompiledIn; }
+
 std::uint32_t WalterModemTrace::lines() const { return g_lines; }
 
 std::uint32_t WalterModemTrace::redacted() const { return g_redacted; }
@@ -91,6 +99,14 @@ bool WalterModemTrace::turn(bool on, const char* token, const char* pin, char* w
   if (!on && !g_hooked) {
     g_on = false;
     return true;
+  }
+  // The console asks `compiledIn()` first and says so itself; this is the same refusal for any
+  // other caller, so that a build with no debug line can never take the buffer or the hook.
+  if (!kCompiledIn) {
+    if (why != nullptr && cap > 0) {
+      std::snprintf(why, cap, "this build compiles no debug log line, so there is no trace in it");
+    }
+    return false;
   }
   if (!install(why, cap)) return false;
   // The secrets before the level: a line must not be able to go out between the two.

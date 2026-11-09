@@ -108,6 +108,23 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   `--flash-mode dio` is esptool's way in; the image's header says QIO and the bootloader
   switches to it (`sdkconfig.defaults`).
 
+- [ ] ★ **The image starts at all, and the model said it would** (task p11-01). This is the first
+  item of the walk since v0.1.3, because v0.1.3 is the image that never got this far: it was
+  signed, verified and correctly flashed, and every boot of it ended in `assert failed:
+  esp_startup_start_app app_startup.c:86 (res == pdTRUE)` - ESP-IDF could not create the main
+  task. Before flashing a build, ask the model:
+
+  ```bash
+  python tools/heap_at_start.py --build-dir /build/fw     # in the container; ends "verdict: FITS"
+  ```
+
+  Then flash it and look for **the banner**. A banner means the main task exists and `app_main`
+  ran; no banner, with the ROM's `rst:0xc (RTC_SW_CPU_RST)` lines repeating, means the image could
+  not start and the model was wrong - which is a finding about `tools/heap_at_start.py` and
+  `docs/ARCHITECTURE.md` §14, not about the board. Write down the first boot's lines either way.
+  (An image flashed by cable has no rollback: a unit flashed with one that cannot start restarts
+  until another image is flashed over it.)
+
 - [ ] **A reset runs the same image** (task p0-01; S-6). Press reset, or unplug and replug, three
   times. Every time the same banner and `running from ota_0`, and the ota state is `valid` from
   the first boot on: the factory image's OTA data is blank, and the bootloader's first boot writes
@@ -1169,12 +1186,36 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
   connection was on** (count forward from `the last few`), **whether that id owed a close** and
   **whether anything had been written off**. If `agent wake` goes through twice, say so: five
   connections in a wake with the new rule and no stall is the result.
-- [ ] ★ **The trace, from the console** (task p10-06). **The stall is read here, and it needs no
-  build of its own any more.** Until v0.1.3 the modem library's `TX:` and `RX:` lines were stripped
-  from the release build at compile time and the only way to them was a debug build flashed by
-  cable; they are now compiled in and off, and one command raises them (`docs/console.md`, *The
-  modem's own trace*). The stall of 8 November is reproducible in minutes: with a backlog of
-  adverts waiting, the answer to an `/agent/v1/observations` POST is lost almost every time, and
+- [ ] ★ **The trace, from the console, on a build of its own** (tasks p10-06 and p11-01). **The
+  stall is read here, and it needs a build of its own: the trace build.** v0.1.3 compiled the
+  modem library's `TX:` and `RX:` lines into the release image and could not start at all - the
+  option that brings those lines brings 3 080 bytes of `.bss` with them, and `.bss` is the room
+  the main task's stack comes out of (`docs/ARCHITECTURE.md` §14). So the release build has no
+  debug log line in it: `trace` says so and `trace modem on` answers *the modem library's TX and
+  RX lines are not in this build* and switches nothing on.
+
+  **Making one** (`sdkconfig.trace` carries the two options and says why there are two):
+
+  ```powershell
+  .\tools\verify.ps1 -Shell
+  ```
+  ```bash
+  # in the container, with the repository at /project:
+  idf.py -B /build/trace -DSDKCONFIG=/build/trace/sdkconfig \
+         -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.trace" build
+  python tools/heap_at_start.py --build-dir /build/trace    # must end "verdict: FITS"
+  ```
+
+  The model's line is not a formality: a trace build with the debug level and nothing else does
+  **not** fit (it is v0.1.3's arrangement, short by 164 bytes), which is why `sdkconfig.trace` also
+  leaves the core dump out - 2 288 bytes of `.bss`, and a board on a cable prints its panic on the
+  cable. With both options the model says *fits* with about 13 kB to spare and the main task's
+  stack stays at 16 KB. Then flash it by cable (`idf.py -B /build/trace -p <port> flash monitor`),
+  and **put a release image back on the board when the trace is over** - a trace build keeps no
+  core dump, so a crash on it is lost, and it is not what a unit in service runs.
+
+  With that build on the board, the stall of 8 November is reproducible in minutes: with a backlog
+  of adverts waiting, the answer to an `/agent/v1/observations` POST is lost almost every time, and
   meshmaster.dk's log says that answer was sent - a `200` in under a second, every time
   (`tasks/phase-10/FOLLOWUPS.md`).
 

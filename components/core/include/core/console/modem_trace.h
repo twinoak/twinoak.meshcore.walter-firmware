@@ -31,6 +31,14 @@ class ModemTrace {
   // Whether the library's TX and RX lines are going to the port now. False at every boot.
   virtual bool on() const = 0;
 
+  // Whether those lines are in this image at all (task p11-01). They are `ESP_LOGD` calls, and a
+  // build whose CONFIG_LOG_MAXIMUM_LEVEL stops at info has none of them in its bytes - the
+  // release build is such a build, because the debug strings cost 3 080 bytes of `.bss` that the
+  // main task's stack needs (`docs/ARCHITECTURE.md` §14). Nothing can switch on what was not
+  // compiled, so the console says so in one sentence rather than reporting a trace that prints
+  // nothing; `docs/bench.md` §13 says how to make a build that has them.
+  virtual bool compiledIn() const = 0;
+
   // Switch it on or off. `token` and `pin` are the two values no trace line may carry - the
   // `server.token` and `lte.pin` settings as they stand, either of them "" when unset - and are
   // copied before a single line can be printed. Returns false, with one sentence in `why`, when

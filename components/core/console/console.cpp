@@ -3393,11 +3393,28 @@ void Console::trace() {
         "read (docs/bench.md, HTTPS)\n");
   print("  it is not a setting - it ends at the next boot - and it is kept in no 'dump': the "
         "terminal's own paste is the capture\n");
-  if (!trace_->on()) print("  'trace modem on' switches it on\n");
+  // Whether this image has the lines at all (task p11-01): they are `ESP_LOGD` calls, and the
+  // release build compiles none, because their strings cost the `.bss` the main task's stack
+  // needs (docs/ARCHITECTURE.md section 14).
+  if (!trace_->compiledIn()) {
+    print("  the lines are not in this build: no debug log line is compiled into a release "
+          "image, because their strings cost the room the main task's stack needs (docs/bench.md "
+          "section 13 makes a build that has them)\n");
+  } else if (!trace_->on()) {
+    print("  'trace modem on' switches it on\n");
+  }
 }
 
 void Console::traceModem(bool on) {
   if (!traceOk()) return;
+  // Nothing to switch, either way (task p11-01). Said before the secrets are read and without
+  // touching the seam at all: a trace that cannot print a line must not install a hook or take a
+  // line buffer for one.
+  if (!trace_->compiledIn()) {
+    printf("error: trace modem %s: the modem library's TX and RX lines are not in this build; "
+           "docs/bench.md section 13 makes one that has them\n", on ? "on" : "off");
+    return;
+  }
   // The two values no trace line may carry out, read from the store where they already are. An
   // unset key is "" and holds nothing; a build with no store hands over nothing, and then the
   // positional rails are what hold (core/trace/redact.h).
