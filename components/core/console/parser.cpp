@@ -710,6 +710,19 @@ Parsed parseLine(const char* line) {
     if (hasRest) return refuse("heap takes no argument");
     return accept(Verb::kHeap);
   }
+  // The core dump the panic handler left behind (task p11-03). `coredump` reads; `coredump erase
+  // confirm` is the **only** way a dump is ever lost - the one of 9 November was read because
+  // nothing had erased it - so it asks for the same word every command that could cost something
+  // asks for.
+  if (std::strcmp(verb, "coredump") == 0) {
+    if (!hasRest) return accept(Verb::kCoreDump);
+    if (std::strcmp(rest, "erase") == 0) {
+      return refuse3("coredump erase forgets the dump; to do it, type: coredump erase ",
+                     kConfirmWord, "");
+    }
+    if (std::strcmp(rest, "erase confirm") == 0) return accept(Verb::kCoreDumpErase);
+    return refuse2("coredump takes no argument, or 'erase confirm': ", rest);
+  }
   if (std::strcmp(verb, "pins") == 0) {
     if (hasRest) return refuse("pins takes no argument");
     return accept(Verb::kPins);

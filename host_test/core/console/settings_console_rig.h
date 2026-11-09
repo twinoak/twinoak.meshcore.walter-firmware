@@ -19,6 +19,7 @@
 #include "core/board/slot.h"
 #include "core/console/console.h"
 #include "core/cycle/duty_cycle.h"
+#include "core/health/coredump.h"
 #include "core/health/health.h"
 #include "core/image/receive.h"
 #include "core/image/store.h"
@@ -95,6 +96,11 @@ struct SettingsConsole {
   // The heap behind its seam (task p11-02): `heap` reaches four numbers here, so that the test
   // which runs every command of the table runs it as well.
   fakes::FakeHeapReport heap_report;
+  // The `coredump` partition behind its reader (task p11-03): an erased 64 KB region, so that
+  // `coredump` reaches something here and the test which runs every command of the table runs it
+  // as well. A test that wants a dump in it writes one (fixtures/coredump_fixture.h).
+  sim::SimFlash coredump_flash{0x10000};
+  core::health::CoreDump dumps{coredump_flash};
   // The duty cycle (task p3-04), so that `wake`, `power`, `sleep` and `stay` reach something and
   // so that `status`'s last two lines are the ones a real unit prints - docs/provisioning.md is
   // replayed against this console, and a document that showed a line no unit prints would be
@@ -136,6 +142,17 @@ struct SettingsConsole {
                                              &settings, &server, duty.get(),
                                              // cycle, battery, mesh, agent, identity, loop,
                                              // sockets, wall: none of them here.
+                                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                             nullptr, nullptr, &trace, &heap_report, &dumps));
+  }
+
+  // A console that was handed no coredump partition, as a build whose table has none has (task
+  // p11-03): everything else is as `build()` leaves it.
+  void withoutCoreDump() {
+    console.reset(new core::console::Console(out, radio, health, clock, restart, link, slots,
+                                             &store, &receiver, nullptr, &journal, nullptr,
+                                             supervisor.get(), &uplink, nullptr, nullptr, nullptr,
+                                             &settings, &server, duty.get(),
                                              nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                                              nullptr, nullptr, &trace, &heap_report));
   }

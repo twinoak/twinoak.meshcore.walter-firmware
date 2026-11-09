@@ -21,6 +21,13 @@ constexpr esp_partition_subtype_t kImagePartitionSubtype = static_cast<esp_parti
 // p2-03) - its own partition, not a namespace in nvs (docs/ARCHITECTURE.md §11).
 constexpr const char* kJournalPartitionName = "journal";
 constexpr esp_partition_subtype_t kJournalPartitionSubtype = static_cast<esp_partition_subtype_t>(0x41);
+// And `coredump, data, coredump, 0xFF0000, 0x10000`: what the panic handler writes
+// (CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH), read by core/health/coredump.h (task p11-03) so that a
+// rolled-back trial can say what killed it. The subtype is ESP-IDF's own
+// (ESP_PARTITION_SUBTYPE_DATA_COREDUMP, 0x03); the region is read and, on a typed `coredump erase
+// confirm` and nowhere else, erased.
+constexpr const char* kCoreDumpPartitionName = "coredump";
+constexpr esp_partition_subtype_t kCoreDumpPartitionSubtype = ESP_PARTITION_SUBTYPE_DATA_COREDUMP;
 
 class FlashPartition final : public interfaces::FlashRegion {
  public:

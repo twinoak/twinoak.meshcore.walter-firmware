@@ -50,6 +50,13 @@ class FakeOwnUpdate final : public interfaces::OwnUpdate {
     interfaces::OwnImageState state = interfaces::OwnImageState::kUndefined;
     std::string version;
     bool has_image = false;  // something endWrite() or flashOverUsb() put there
+    // The ELF SHA-256 the image's own application description carries
+    // (esp_app_desc_t.app_elf_sha256, 32 raw bytes), which is what a core dump names its image by
+    // (task p11-03). The real platform reads it out of the image; here a test sets it, because
+    // the fixture images have no application description at all. Every byte zero is "the slot has
+    // none", as a slot with no readable image has.
+    std::uint8_t elf_sha256[32] = {};
+    bool has_elf_sha256 = false;
   };
 
   // Two slots of `slot_size` bytes at the addresses partitions.csv gives ota_0 and ota_1
@@ -75,6 +82,23 @@ class FakeOwnUpdate final : public interfaces::OwnUpdate {
     for (std::size_t i = 0; i < bytes.size() && i < s.bytes.size(); ++i) s.bytes[i] = bytes[i];
     s.version = version;
     s.has_image = true;
+  }
+
+  // The ELF SHA-256 of the image in a slot, as its application description would carry it (task
+  // p11-03): the 32 bytes a core dump's `app_elf_sha256` is the first hex characters of. Given as
+  // hex, as a build's own figure is read; an empty string takes it away again.
+  void setElfSha(std::uint8_t index, const std::string& hex) {
+    Slot& s = slots_[index];
+    for (std::uint8_t& byte : s.elf_sha256) byte = 0;
+    s.has_elf_sha256 = !hex.empty();
+    for (std::size_t i = 0; i < hex.size() && i < 64; ++i) {
+      const char c = hex[i];
+      const int nibble = c >= '0' && c <= '9'   ? c - '0'
+                         : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                         : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                : 0;
+      s.elf_sha256[i / 2] |= static_cast<std::uint8_t>(nibble << ((i % 2) == 0 ? 4 : 0));
+    }
   }
 
   // The bootloader, at a reset: the rules above. Which slot runs afterwards is `running()`.
@@ -233,6 +257,8 @@ class FakeOwnUpdate final : public interfaces::OwnUpdate {
     out->size = slot_size_;
     out->state = s.state;
     std::strncpy(out->version, s.version.c_str(), sizeof out->version - 1);
+    out->has_elf_sha256 = s.has_elf_sha256;
+    std::memcpy(out->elf_sha256, s.elf_sha256, sizeof out->elf_sha256);
     return true;
   }
 

@@ -46,10 +46,17 @@ bool EspOwnUpdate::describe(const esp_partition_t* partition, interfaces::OwnSlo
   out->state = esp_ota_get_state_partition(partition, &state) == ESP_OK ? stateOf(state)
                                                                         : interfaces::OwnImageState::kUnknown;
   // esp_app_desc_t.version: PROJECT_VER, the string core::version() and the descriptor carry.
+  // And app_elf_sha256, which is what a core dump names its image by (task p11-03,
+  // core/health/coredump.h): 32 raw bytes, the same field esp_app_get_elf_sha256() prints the
+  // first CONFIG_APP_RETRIEVE_LEN_ELF_SHA hex characters of (esp_app_desc.h, v5.5.5).
   esp_app_desc_t desc;
   if (esp_ota_get_partition_description(partition, &desc) == ESP_OK) {
     std::memcpy(out->version, desc.version, sizeof out->version);
     out->version[sizeof out->version - 1] = 0;
+    static_assert(sizeof desc.app_elf_sha256 == sizeof out->elf_sha256,
+                  "esp_app_desc_t.app_elf_sha256 is not 32 bytes any more");
+    std::memcpy(out->elf_sha256, desc.app_elf_sha256, sizeof out->elf_sha256);
+    out->has_elf_sha256 = true;
   }
   return true;
 }

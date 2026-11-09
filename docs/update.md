@@ -431,6 +431,37 @@ the radio's update also reads for S-7:
 | **on trial**, the other slot | the old image: the trial was cut short | *rolled back: restarted during its trial*; the hash on the bad list |
 | **confirmed**, **rolled back** | as the word says | nothing |
 
+### What killed it (task p11-03)
+
+A *rolled back* entry the old image wrote at boot says **that** the bootloader gave up on the new
+image. Beside it goes a second entry - `kind::kTrialEvidence`, 48 bytes like every entry - that
+says **why**, and it can only be written at that boot:
+
+| | |
+|---|---|
+| the reset reason | `esp_reset_reason()` of this boot, which *is* the reset that ended the trial. On 9 November 2026 it was `panic`. The next wake's reset reason says nothing about the trial, which is why this is recorded once and read back from the journal afterwards |
+| the core dump | the `coredump` partition (`0xFF0000`, 64 KB; `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`), read by `core/health/coredump.h`: its state, and - **only when its checksum holds and its application ELF SHA-256 is the trial image's own**, as the other slot's `esp_app_desc_t` carries it - its panic line and the name of the task that crashed. A dump from any other image is never attributed to the trial, and a switch that was never taken records nothing at all: that image was never started |
+
+The entry's copy of the panic line is **cut to 31 characters** and a flag says so - 48 bytes do not
+hold a 69-character line beside a reset reason and a task name - so the whole line is read back out
+of the dump whenever it is still there and still that image's. **Nothing erases a dump by itself**;
+`coredump erase confirm` on the console is the only thing that does, because the dump of 9 November
+was readable only because nothing had.
+
+It goes three places: `self status` and the rollback's boot line (`docs/console.md`), the apply's
+result the server is sent (`reason` and `lastTrial`), and `twinoak.fw.state`'s `lastTrial`. The
+reason the server shows reads, for that trial:
+
+```
+rolled back: the image never reached its main loop (the bootloader gave up on it)
+ - the reset that ended it: panic
+ - panic: assert failed: esp_startup_start_app app_startup.c:86 (res == pdTRUE)
+ - in task ipc0
+```
+
+(one line; broken here to fit). `coredump` on the console says the same about the partition itself,
+and names which of the two slots holds the image that wrote it.
+
 ## The console
 
 ```

@@ -17,6 +17,7 @@
 #include "core/cycle/null_backend.h"
 #include "core/cycle/telemetry_ring.h"
 #include "core/cycle/wake_cycle.h"
+#include "core/health/coredump.h"
 #include "core/health/health.h"
 #include "core/image/choose.h"
 #include "core/image/receive.h"
@@ -120,6 +121,12 @@ platform::EspHeap g_heap;
 platform::EspHeapReport g_heap_report;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
+// The `coredump` partition (task p11-03): what the panic handler wrote the last time this board
+// died, read by core/health/coredump.h so that a rolled-back trial can say what killed it and so
+// that `coredump` on the console says it too. Read at the boot that makes a rollback's finding
+// and when a command asks; **erased by nothing but a typed `coredump erase confirm`**.
+platform::FlashPartition g_coredump_partition;
+core::health::CoreDump* g_coredump = nullptr;
 // The settings (task p3-03): NVS behind interfaces::KeyValue, and the table over it. The store
 // is above the application slots in partitions.csv, so a factory image cannot reach it
 // (docs/ARCHITECTURE.md §11).
@@ -427,6 +434,19 @@ extern "C" void app_main() {
     }
   }
 
+  // The `coredump` partition (task p11-03): read only, except for a typed `coredump erase
+  // confirm`. It is opened before the self-update is built, because the finding at boot is what
+  // needs it: the boot that comes back after a trial the bootloader gave up on is the one boot
+  // whose reset reason is the reset that ended the trial.
+  if (g_coredump_partition.begin(platform::kCoreDumpPartitionName,
+                                 platform::kCoreDumpPartitionSubtype)) {
+    static core::health::CoreDump dumps(g_coredump_partition);
+    g_coredump = &dumps;
+    std::printf("coredump: at 0x%06" PRIx32 " (%" PRIu32 " KB); 'coredump' says whether there is "
+                "one and what it says\n",
+                g_coredump_partition.address(), g_coredump_partition.size() / 1024);
+  }
+
   // The verdict's anchor (task p2-01, core/image/verdict.h). `image receive` now calls
   // judgeManifest() and judgeFile(), so the six checks have a caller at last and --gc-sections
   // would keep them anyway; the anchor stays because it costs one volatile read and because
@@ -483,7 +503,7 @@ extern "C" void app_main() {
     // the link client, the uplink seam, the battery as the radio reports it, and health for the
     // restart's reason.
     static core::update::SelfUpdate self_update(g_own, *g_store, *g_journal, radio, g_uplink, g_clock,
-                                                g_restart, battery, health);
+                                                g_restart, battery, health, g_coredump);
     self_update_ptr = &self_update;
   }
 
@@ -627,7 +647,7 @@ extern "C" void app_main() {
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, &mesh_probe, &agent_probe, &identity_probe,
                                         &backend, &tls_socket.rotation(), &g_wall,
-                                        &g_modem_trace, &g_heap_report);
+                                        &g_modem_trace, &g_heap_report, g_coredump);
   // The library's log goes where every other line of this port goes: the console's print(), and
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
@@ -667,7 +687,7 @@ extern "C" void app_main() {
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, nullptr, nullptr, nullptr, nullptr,
                                         &tls_socket.rotation(), &g_wall, &g_modem_trace,
-                                        &g_heap_report);
+                                        &g_heap_report, g_coredump);
 #endif
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop

@@ -49,6 +49,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/health/coredump.h"
 #include "core/health/health.h"
 #include "core/image/crypto/sha256.h"
 #include "core/image/descriptor.h"
@@ -190,6 +191,46 @@ bool decode(const Entry& entry, SelfPayload* out);  // false unless the entry is
 // `X.Y.Z` of a version, into `out` of kShortVersion bytes.
 void shortVersion(const char* version, char out[kShortVersion]);
 
+// -- what ended the last trial: a kind::kTrialEvidence entry's payload, 48 bytes ----------------
+//
+// The *rolled back* entry says **that** the bootloader gave up on the image. This says **why**,
+// and it can only be written at the boot that makes the finding: the reset that ended the trial
+// is the reset that started this boot, and the next wake's reset reason says nothing about it
+// (task p11-03; tasks/phase-11/evidence/README.md is the trial this was written for).
+//
+//     0  reason   the reset reason of this boot, as health::ResetReason (kPanic, 0.1.3's)
+//     1  dump     what the `coredump` partition held, as health::DumpState
+//     2  flags    kEvidence*
+//     3  task     13 bytes: the crashed task's name, 12 characters and a terminator
+//    16  panic    32 bytes: the panic line, 31 characters and a terminator
+//
+// **The panic line is cut here, and that is what 48 bytes leave.** The line of 9 November is 53
+// characters and the entry would have to carry nothing else to hold it, so the journal keeps as
+// much as fits (with kEvidencePanicCut set) and the whole line is read back out of the dump,
+// which nothing erases - SelfUpdate::lastTrial() is where the two are put together, and it is
+// what the console, the apply's result and `twinoak.fw.state` all print.
+constexpr std::size_t kEvidencePayloadBytes = 48;
+constexpr std::size_t kEvidenceTask = 13;   // 12 characters and a terminator
+constexpr std::size_t kEvidencePanic = 32;  // 31 characters and a terminator
+
+constexpr std::uint8_t kEvidenceAttributed = 0x01;  // the dump is the trial image's own
+constexpr std::uint8_t kEvidencePanicCut = 0x02;    // the panic line did not fit this entry
+constexpr std::uint8_t kEvidenceTaskKnown = 0x04;   // the crashed task's name was read
+
+struct TrialEvidence {
+  health::ResetReason reason = health::ResetReason::kUnknown;
+  health::DumpState dump = health::DumpState::kNoRegion;
+  std::uint8_t flags = 0;
+  char task[kEvidenceTask] = {};
+  char panic[kEvidencePanic] = {};
+
+  bool attributed() const { return (flags & kEvidenceAttributed) != 0; }
+  bool panicCut() const { return (flags & kEvidencePanicCut) != 0; }
+};
+
+void encode(const TrialEvidence& evidence, std::uint8_t out[kEvidencePayloadBytes]);
+bool decode(const Entry& entry, TrialEvidence* out);  // false unless the entry is an evidence entry
+
 // -- the machine's answers --------------------------------------------------------------------
 
 // What begin() found this boot to be.
@@ -231,9 +272,13 @@ struct SwitchRequest {
 
 class SelfUpdate final : public image::TransferTarget {
  public:
+  // `dumps` is the `coredump` partition, read (task p11-03): a pointer, because a build whose
+  // partition table has no `coredump` - or a host test that is not about one - has none, and the
+  // finding at boot then records the reset reason alone. It is never written to from here.
   SelfUpdate(interfaces::OwnUpdate& slots, image::Store& store, Journal& journal,
              link::client::Client& radio, UplinkCheck& uplink, interfaces::Clock& clock,
-             interfaces::Restart& restart, BatterySource& battery, health::Health& health);
+             interfaces::Restart& restart, BatterySource& battery, health::Health& health,
+             health::CoreDump* dumps = nullptr);
 
   // At boot, after the pins are safe and the journal is read: is this boot a trial, or does the
   // journal say one was in the air and did not end? Journals what it finds.
@@ -267,6 +312,27 @@ class SelfUpdate final : public image::TransferTarget {
   // The entry begin() wrote this boot (on trial, or the rollback), for the boot line.
   const SelfPayload& bootEntry() const { return boot_; }
   SelfReason bootReason() const { return boot_.reason; }
+
+  // -- what ended the last trial (task p11-03) -----------------------------------------------
+  //
+  // The journal's evidence entry, with the **whole** panic line when the dump it was attributed
+  // to is still in the partition and is still the other slot's image. Nothing is attributed
+  // here: the finding was made at the boot that could make it, and this reads the line again
+  // rather than deciding again whose it is. False when the story has no evidence entry, or when
+  // a self-update entry is newer than it - the evidence is the last trial's, not an old one's.
+  struct LastTrial {
+    health::ResetReason reason = health::ResetReason::kUnknown;
+    health::DumpState dump = health::DumpState::kNoRegion;  // as the finding boot found it
+    bool attributed = false;  // the dump was the trial image's own
+    bool dump_now = false;    // and the partition still holds it
+    bool panic_cut = false;   // the line printed below is cut (the entry's copy, 31 characters)
+    char task[kEvidenceTask] = {};
+    char panic[health::kPanicMax + 1] = {};
+  };
+  bool lastTrial(LastTrial* out);
+  // The `coredump` partition itself, for `coredump` on the console: nullptr in a build without
+  // one. The console reads and erases through it; nothing else erases it, ever.
+  health::CoreDump* dumps() { return dumps_; }
   // This firmware's own descriptor fields: what an offered image must be.
   const image::Fields& self() const { return self_; }
 
@@ -304,6 +370,8 @@ class SelfUpdate final : public image::TransferTarget {
 
   bool journal(SelfState state, SelfReason reason, std::uint8_t flags, const SelfPayload& about);
   bool lastEntry(SelfPayload* out) const;
+  // Written straight after the *rolled back* entry begin() just made, and only there.
+  void recordEvidence(const SelfPayload& about, const interfaces::OwnSlot* trial_slot);
   SelfReason preconditions(bool with_battery);
   // The SHA-256 of a slot's first `size` bytes; false when the slot cannot be read.
   bool hashSlot(std::uint8_t index, std::uint32_t size, std::uint8_t out[image::kSha256Size]);
@@ -323,6 +391,7 @@ class SelfUpdate final : public image::TransferTarget {
   interfaces::Restart& restart_;
   BatterySource& battery_;
   health::Health& health_;
+  health::CoreDump* dumps_ = nullptr;
 
   image::Fields self_;
   image::SlotNeeds needs_;

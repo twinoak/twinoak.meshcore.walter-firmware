@@ -235,6 +235,9 @@ struct WakeWorld {
   fakes::FakeClock& clock = images.clock;
   fakes::FakeRetained retained;  // RTC memory: a sleep keeps it, a power cut does not
   sim::SimFlash journal_flash{core::update::kJournalPartitionBytes};
+  // The `coredump` partition (task p11-03): in the world, because a dump outlives the boot that
+  // wrote it and the boot that reads it is the one after the trial.
+  sim::SimFlash coredump_flash{0x10000};
   fakes::FakeOwnUpdate own{64 * 1024};
   sim::ScriptedRadio rak{clock};
   sim::FakeModem modem{clock};
@@ -361,7 +364,9 @@ struct WakeWalter {
   core::update::Fetch fetch{http_client, download, w.images.store, w.images.verdict, clock,
                             nullptr};
   core::update::RadioUpdate update{w.images.store, flasher, link, journal, clock, battery};
-  core::update::SelfUpdate self{w.own, w.images.store, journal, link, trialCheck(), clock, restart, battery, health};
+  core::health::CoreDump dumps{w.coredump_flash};
+  core::update::SelfUpdate self{w.own,  w.images.store, journal, link,   trialCheck(),
+                                clock, restart,        battery, health, &dumps};
   cyc::TelemetryRing readings{w.retained};
   std::unique_ptr<core::supervisor::Supervisor> supervisor;
   std::unique_ptr<cyc::DutyCycle> duty;
@@ -386,6 +391,7 @@ struct WakeWalter {
     w.restart_asked = false;
     pins.record_log = false;
     w.journal_flash.powerOn();
+    w.coredump_flash.powerOn();
     w.images.flash.powerOn();
     w.own.powerOn();
     if (w.chip) {
@@ -467,7 +473,8 @@ struct WakeWalter {
                                                nullptr, &settings, &trial, duty.get(),
                                                cycle.get(), nullptr, &agent->mesh_probe,
                                                &agent->uplink_probe, &agent->identity_probe,
-                                               &agent->backend, nullptr, &wall));
+                                               &agent->backend, nullptr, &wall, nullptr,
+                                               nullptr, &dumps));
       // main.cpp's own last two lines of wiring (task p4-06): the library's log goes where every
       // other line of this port goes, at the `log.level` setting. The cast is main.cpp's
       // `agentLogLevel`, whose static_assert holds the two enumerations' four values together.
@@ -482,7 +489,7 @@ struct WakeWalter {
                                              supervisor.get(), &uplink, &http_client, &fetch,
                                              nullptr, &settings, &server, duty.get(),
                                              cycle.get(), nullptr, nullptr, nullptr, nullptr,
-                                             nullptr, nullptr, &wall));
+                                             nullptr, nullptr, &wall, nullptr, nullptr, &dumps));
   }
   ~WakeWalter() {
     CHECK(pins.violations.empty());

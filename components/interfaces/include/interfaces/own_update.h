@@ -70,6 +70,14 @@ struct OwnSlot {
   std::uint32_t size = 0;
   OwnImageState state = OwnImageState::kUnknown;
   char version[32] = {};
+  // The same application description also carries the SHA-256 of the ELF the image was linked
+  // from (esp_app_desc_t.app_elf_sha256, 32 raw bytes, filled by the build). It is how a **core
+  // dump** names the image that wrote it - `ESP_CORE_DUMP_INFO`'s `app_elf_sha256` is the first
+  // CONFIG_APP_RETRIEVE_LEN_ELF_SHA hex characters of it - so a dump found at the boot after a
+  // rolled-back trial can be attributed to the image that was on trial and to no other
+  // (core/health/coredump.h, task p11-03). False when the slot holds no readable image.
+  bool has_elf_sha256 = false;
+  std::uint8_t elf_sha256[32] = {};
 };
 
 class OwnUpdate {

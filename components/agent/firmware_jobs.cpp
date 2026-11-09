@@ -26,6 +26,19 @@ void zeroBytes(void* at, std::size_t size) {
   for (std::size_t i = 0; i < size; ++i) p[i] = 0;
 }
 
+// `out` = a + b + c + d, bounded and always terminated. By hand and not with snprintf: the build
+// treats -Wformat-truncation as an error in our own components, and what these four strings hold
+// is not known at compile time (report p11-01's note about an snprintf append).
+void joinText(char* out, std::size_t cap, const char* a, const char* b, const char* c, const char* d) {
+  if (cap == 0) return;
+  const char* const parts[4] = {a, b, c, d};
+  std::size_t at = 0;
+  for (const char* part : parts) {
+    for (std::size_t i = 0; part != nullptr && part[i] != 0 && at + 1 < cap; ++i) out[at++] = part[i];
+  }
+  out[at] = 0;
+}
+
 void copyText(char* out, std::size_t cap, const char* text) {
   if (cap == 0) return;
   out[0] = 0;
@@ -564,7 +577,37 @@ void FirmwareJobs::line(const char* step, const char* note) {
   line_chars_ += std::strlen(step) + std::strlen(l.note);
 }
 
-std::size_t FirmwareJobs::writeApplyResult(ApplyOutcome outcome, const char* from, const char* to, Refusal refusal) {
+// The `lastTrial` object: what ended the trial, in the one shape both an apply's result and
+// `twinoak.fw.state` carry (task p11-03).
+void FirmwareJobs::writeTrial(mm::JsonWriter& w, const core::update::SelfUpdate::LastTrial& trial) {
+  w.key("lastTrial");
+  w.beginObject();
+  w.key("reset");
+  w.string(core::health::name(trial.reason));
+  w.key("dump");
+  w.string(core::health::describe(trial.dump));
+  w.key("attributed");
+  w.boolean(trial.attributed);
+  if (trial.attributed) {
+    if (trial.panic[0] != 0) {
+      w.key("panic");
+      w.string(trial.panic);
+      w.key("panicCut");
+      w.boolean(trial.panic_cut);
+    }
+    if (trial.task[0] != 0) {
+      w.key("task");
+      w.string(trial.task);
+    }
+    w.key("dumpHeld");
+    w.boolean(trial.dump_now);
+  }
+  w.endObject();
+}
+
+std::size_t FirmwareJobs::writeApplyResult(ApplyOutcome outcome, const char* from, const char* to,
+                                           Refusal refusal, const char* reason,
+                                           const core::update::SelfUpdate::LastTrial* trial) {
   mm::JsonWriter w(data_, sizeof data_);
   w.beginObject();
   w.key("outcome");
@@ -601,6 +644,14 @@ std::size_t FirmwareJobs::writeApplyResult(ApplyOutcome outcome, const char* fro
     w.key("refusal");
     w.string(name(refusal));
   }
+  // After the contract's own keys (tests/fixtures/contracts/FirmwareApplyResult.json), so that
+  // every reader that knew this shape still reads it: the sentence a person sees for a rolled-back
+  // trial, and what ended it field by field (task p11-03).
+  if (reason != nullptr && reason[0] != 0) {
+    w.key("reason");
+    w.string(reason);
+  }
+  if (trial != nullptr) writeTrial(w, *trial);
   w.endObject();
   return w.overflowed() ? 0 : w.length();
 }
@@ -930,10 +981,42 @@ bool FirmwareJobs::postOwedResult() {
                                                                 : "received";
     line(step, p.reason != upd::SelfReason::kNone ? upd::describe(p.reason) : "");
   }
+  // What ended the trial, when it was rolled back (task p11-03): the reset reason of the boot
+  // that found it and, when the `coredump` partition held the trial image's own dump, the panic
+  // line that killed it. On 9 November this was all the server could be told: *the image never
+  // reached its main loop (the bootloader gave up on it)*, and the panic line sat on the board.
+  core::update::SelfUpdate::LastTrial trial;
+  bool have_trial = false;
+  char reason[256] = {};
+  if (outcome == ApplyOutcome::kRolledBack && parts_.self != nullptr) {
+    have_trial = parts_.self->lastTrial(&trial);
+  }
+  if (have_trial) {
+    joinText(reason, sizeof reason, "rolled back: ", upd::describe(last.reason),
+             " - the reset that ended it: ", core::health::name(trial.reason));
+    if (trial.attributed && trial.panic[0] != 0) {
+      char with_panic[sizeof reason];
+      joinText(with_panic, sizeof with_panic, reason, " - panic: ", trial.panic,
+               trial.panic_cut ? " [cut]" : "");
+      copyText(reason, sizeof reason, with_panic);
+      if (trial.task[0] != 0) {
+        joinText(with_panic, sizeof with_panic, reason, " - in task ", trial.task, "");
+        copyText(reason, sizeof reason, with_panic);
+      }
+    }
+    // And as journal lines, for a job page that renders the story and nothing else.
+    line("reset", core::health::name(trial.reason));
+    if (trial.attributed) {
+      if (trial.panic[0] != 0) line("panic", trial.panic);
+      if (trial.task[0] != 0) line("task", trial.task);
+    }
+  }
   // The versions as the trial's entries carry them: `from` is the image that was running, `to`
   // the one switched to when confirmed and the one that ran before when rolled back.
   const char* to = outcome == ApplyOutcome::kCommitted ? last.to : last.from;
-  const std::size_t n = writeApplyResult(outcome, last.from, to, Refusal::kNone);
+  const std::size_t n = writeApplyResult(outcome, last.from, to, Refusal::kNone,
+                                         have_trial ? reason : nullptr,
+                                         have_trial ? &trial : nullptr);
   if (n == 0) return false;
 
   char client_id[48];
@@ -1079,6 +1162,12 @@ std::size_t FirmwareJobs::writeStateResult() {
       w.string(other.version);
       w.endObject();
     }
+    // What ended the last trial, while it is the newest word in the story (task p11-03): the
+    // reset reason the boot that found the rollback recorded, and whether a core dump was
+    // attributed to the trial image, with its panic line. This is the half of the 9 November
+    // fault the server could not see.
+    core::update::SelfUpdate::LastTrial trial;
+    if (parts_.self->lastTrial(&trial)) writeTrial(w, trial);
   }
   w.endObject();
 

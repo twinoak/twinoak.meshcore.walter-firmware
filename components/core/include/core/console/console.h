@@ -33,6 +33,7 @@
 #include "core/cycle/wake_cycle.h"
 #include "core/settings/settings.h"
 #include "core/flasher/flasher.h"
+#include "core/health/coredump.h"
 #include "core/health/health.h"
 #include "core/image/receive.h"
 #include "core/image/store.h"
@@ -133,8 +134,14 @@ class Console {
           // The heap as the chip keeps it (task p11-02): what `heap` prints, and the one line
           // `app_main` prints at boot. ESP-IDF's own `heap_caps_*` calls are platform/'s, so
           // this is a seam (core/console/heap_report.h). A build without one answers in one
-          // line; it is the last of these pointers because it is the newest.
-          HeapReport* heap = nullptr);
+          // line.
+          HeapReport* heap = nullptr,
+          // The `coredump` partition, read (task p11-03): what `coredump` prints and what
+          // `coredump erase confirm` erases - the only thing in this firmware that does. It is
+          // core/'s own reader over interfaces::FlashRegion, so a pointer to the real thing and
+          // not a seam; a build whose table has no `coredump` hands over nothing and the command
+          // says so in one line. It is the last of these pointers because it is the newest.
+          health::CoreDump* dumps = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -201,6 +208,11 @@ class Console {
   // The heap now (task p11-02): the four figures of heap_report.h, and the sentence that says
   // which of them is the one a build is held to.
   void heap();
+  // The core dump the panic handler left behind (task p11-03): whether there is one, whether its
+  // checksum holds, which slot's image wrote it, its panic line and its tasks - and the one
+  // command in this firmware that erases one.
+  void coreDump();
+  void coreDumpErase();
   void pins();
   void rakReset();
   void rakKill(std::uint32_t seconds);
@@ -281,6 +293,9 @@ class Console {
   void printSelfBoot(update::SelfBoot boot);
   void printSelfStep(const update::SelfStep& s);
   void printSelfEntry(std::size_t number, const update::Entry& entry, const update::SelfPayload& p);
+  // What ended the last trial (task p11-03): the reset that ended it and, when the dump was the
+  // trial image's own, its panic line and the task that crashed.
+  void printTrialEvidence(const update::SelfUpdate::LastTrial& trial);
   void printSlot(const char* label, const interfaces::OwnSlot& slot);
 
   // The supervisor (task p2-05).
@@ -408,6 +423,7 @@ class Console {
   cycle::NetworkClock* wall_ = nullptr;
   ModemTrace* trace_ = nullptr;
   HeapReport* heap_ = nullptr;
+  health::CoreDump* dumps_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the

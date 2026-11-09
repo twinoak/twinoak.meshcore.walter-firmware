@@ -36,6 +36,7 @@ uplink: the modem on UART2 behind interfaces::Uplink; not started yet ('lte', 'l
 https: 2 TLS roots (keys/tls), the modem's slots are recorded as written
 image store: rakfw at 0x630000 (6144 KB), 6242304 bytes laid out for 2 radio slots x 3 images and a base; 'image list' says what is in it
 journal: at 0x620000 (64 KB), 0 entries, next seq 1; 'rak update status' tells the story
+coredump: at 0xff0000 (64 KB); 'coredump' says whether there is one and what it says
 link: UART1 115200 8N1 on the radio's two pins, open
 boot 1: power-on reset
 the boot record starts here (a power cut, or the first boot)
@@ -88,6 +89,8 @@ supervisor's stop is printed at every level.
 | `reboot` | restart the Walter; the pins go to the safe state first and `reboots` after it says *asked for on the console* |
 | `reboots` | why this board last restarted and the four before that, newest first, each with how long the run before it lasted. The record is in RTC memory: it survives a `reboot`, a panic, a watchdog and a deep sleep, and a power cut clears it (and the first line says so) |
 | `heap` | the internal heap (`MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT` — the capabilities a task stack asks for) as it is at this moment: what is **free**, the **largest free block**, the **least free since this boot**, and the main task's stack with how much of it has never been used. Two lines and a sentence. The block is the figure that matters: v0.1.3 died with 35 636 bytes free and no block big enough for the main task's 16 384-byte stack, and that is what `tools/heap_at_start.py` refuses before a build is ever flashed (`ARCHITECTURE.md` §14). It reads and decides nothing |
+| `coredump` | the core dump the panic handler left behind in the `coredump` partition (`0xFF0000`, 64 KB): whether there is one, whether its **checksum** holds, which image wrote it - its application ELF SHA-256 against the running slot's and the other slot's - its **panic line** and its tasks, with the one that crashed marked. Everything a unit on a mast can say about a crash without a laptop. It is what the 9 November rollback needed: `assert failed: esp_startup_start_app app_startup.c:86 (res == pdTRUE)` had been in that partition the whole time and reading it took `esptool read_flash 0xFF0000 0x10000` |
+| `coredump erase confirm` | forget the dump: every sector of the partition erased. **Nothing else in this firmware erases one** - not a boot, not an update, not a wake - because the dump of 9 November was readable only because nothing had. Without the word it refuses and says what the word is |
 | `dump` | the last 4 kB this port printed, oldest first, **whole lines only** — a board's answer to a journal, for a unit found quiet with a laptop and no history. The same bytes the port printed and no others. **Nothing the radio sent as text is in it** and nothing the mesh said (S-12): a scanner's NDJSON, a CLI reply and an advert's name are printed and not kept. A secret never reaches a printed line, so there is none in the ring either |
 
 ### The radio
@@ -595,7 +598,7 @@ board's two application slots and take no slot.
 
 | Command | What it does |
 |---|---|
-| `self status` | `running: slot 1 at 0x310000 (3072 KB): valid (confirmed), version 0.4.0+w1` and the same for the other slot; then `on trial for 42 s of 300: main loop met; radio met (1 HELLO); uplink failed, trying again (2 attempts)` while a trial runs, or `the running image is confirmed` (or the bootloader's word for its state); then `received: <version> in slot N (<bytes>), waiting for 'self switch'` when an image is; then `the last self-update's story (N entries):` with one line per journal entry — *received*, *switching to … from …*, *on trial*, *confirmed*, *rolled back: <reason>*. On a fresh unit: `self status: no self-update has been journalled on this unit` |
+| `self status` | `running: slot 1 at 0x310000 (3072 KB): valid (confirmed), version 0.4.0+w1` and the same for the other slot; then `on trial for 42 s of 300: main loop met; radio met (1 HELLO); uplink failed, trying again (2 attempts)` while a trial runs, or `the running image is confirmed` (or the bootloader's word for its state); then `received: <version> in slot N (<bytes>), waiting for 'self switch'` when an image is; then `the last self-update's story (N entries):` with one line per journal entry — *received*, *switching to … from …*, *on trial*, *confirmed*, *rolled back: <reason>*; and, when the story ends in a rollback the old image found at boot, **what ended the trial** (task p11-03): `what ended the last trial: panic`, then `the core dump is that image's own: panic: assert failed: esp_startup_start_app app_startup.c:86 (res == pdTRUE)` and `the task that crashed: ipc0` when the `coredump` partition held that image's own dump, or `no core dump was attributed to it: <why>` when it did not. On a fresh unit: `self status: no self-update has been journalled on this unit` |
 | `self receive` | `self receive: this Walter's other application slot (1); this port is now a framed binary transfer (protocol 2)` and what will be accepted (role manager, board walter, band lte-m, an ota file that fits the slot); the transfer ends with `self receive: stored` or `self receive: <refusal>`. Refused in one `error:` line when the running image is on trial, a radio update is in progress (S-7) or a transfer is open |
 | `self switch [radio-down]` | `self switch: making <version> (slot N) the next to boot, from <version>; the radio is told and the Walter restarts`, then the restart. Refused in one `error:` line for the battery, a radio update in progress, the running image unconfirmed, nothing received, the other slot changed, or the radio silent without `radio-down` |
 | `self confirm` | `self confirm: the running image is confirmed (valid); the trial is over` |
@@ -606,8 +609,17 @@ reach the main loop, HELLO the radio and reach the backend, or it is rolled back
 the main loop; its end is one line, `self-update: on trial -> confirmed: all three conditions hold:
 confirmed` or `self-update: on trial -> rolled back: <reason>`. The old image, back after a trial
 that a reset cut short, says `self-update: rolled back: <reason>` and that the image is on the bad
-list. `reboots` names both restarts: *the Walter's own update, switching to the other slot* and
+list, and then **why it ended** - the reset reason of this boot, which is the reset that ended the
+trial, and the panic line when the `coredump` partition holds the trial image's own dump (task
+p11-03). `reboots` names both restarts: *the Walter's own update, switching to the other slot* and
 *the Walter's own update, the trial image rejected itself*.
+
+The reset reason is recorded **at that boot and no other**: the next wake's reset reason says
+nothing about the trial. It goes into a journal entry of its own (`kind::kTrialEvidence`, written
+straight after the *rolled back* entry, because 48 bytes do not hold a panic line beside the rest),
+into the apply's result the server is sent, and into `twinoak.fw.state`'s `lastTrial`. The entry's
+copy of the panic line is cut to 31 characters and says so; the whole line is read back out of the
+dump, which nothing but `coredump erase confirm` erases.
 
 ## The supervisor
 
