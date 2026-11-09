@@ -100,8 +100,9 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   ```
 
   Open the port at any baud (USB Serial/JTAG ignores it). After a reset the console prints
-  `twinoak-walter 0.0.0-dev` on its own line, then `running from ota_0 at 0x010000 (3072 KB), ota
-  state undefined (...)`, then `image descriptor at <address>: role manager, board walter, band
+  `twinoak-walter 0.0.0-dev` on its own line, then the `heap:` line (the item below), then
+  `running from ota_0 at 0x010000 (3072 KB), ota state undefined (...)`, then
+  `image descriptor at <address>: role manager, board walter, band
   lte-m, version 0.0.0-dev, link 1.2` (task p0-02), then `boot 1: power-on reset`, `the boot
   record starts here (a power cut, or the first boot)`, `type 'help' for the commands` and a `> `
   prompt (task p0-03; until it, the last line was `console on USB; nothing to do yet - idling`).
@@ -124,6 +125,33 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   `docs/ARCHITECTURE.md` §14, not about the board. Write down the first boot's lines either way.
   (An image flashed by cable has no rollback: a unit flashed with one that cannot start restarts
   until another image is flashed over it.)
+
+- [ ] ★ **The `heap:` line, against what the model said** (task p11-02). The second line of the
+  boot is the board's own account of the heap, and it is how the model is checked against a real
+  start rather than against QEMU:
+
+  ```
+  heap: 33872 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')
+  ```
+
+  **Those two figures are the expectation**, and they were measured rather than predicted: this
+  firmware, this build, booted in the QEMU the pinned image ships, read at the instruction after
+  that `printf` (task p11-02's report has the gdb script). The model's own *what the main task
+  leaves behind* line says 41 144 and 21 504, which is the same arrangement 7 kB earlier - at the
+  moment the main task is created, where its recording stops - and FreeRTOS's idle and timer
+  tasks, the task watchdog and `app_main`'s first lines (the USB console among them) are the
+  difference. So:
+
+  | the board says | what it means |
+  |---|---|
+  | within a few hundred bytes of **33 872 / 18 432** | the model is right on silicon as well; write both numbers down |
+  | a kilobyte or more either way | QEMU and the part do not agree about something. Not a reason to stop, but a finding: say what it read, and `ARCHITECTURE.md` §14 and `tools/heap_at_start.py` are what have to account for it |
+  | a largest free block **under 16 384** | stop. The image started, so a block was found - but on this part the arrangement is tighter than the model's, and the next release's margin is not what it says. The ROM revision decides `dram0_rtos_reserved_start`, which moves the DIRAM heap's top; keep ESP-IDF's own `heap_init` region table (it prints at `debug`) and hold it against §14's four regions |
+
+  Then `heap` on the prompt. The same two figures, the least free since this boot (at a fresh boot
+  it is the free), and the main task's stack - **16384 bytes, N never used**, where QEMU's N at
+  this point is 14 776. If `N` ever comes back near 0, the 16 KB stack is not generous and
+  whatever made it look spare is what to doubt.
 
 - [ ] **A reset runs the same image** (task p0-01; S-6). Press reset, or unplug and replug, three
   times. Every time the same banner and `running from ota_0`, and the ota state is `valid` from
@@ -1446,6 +1474,20 @@ been simulated into one that has actually spent a day looking after a radio.
       half out, so the modem answers and the card does not. The wake should end in a reset inside
       five minutes; `reboots` then says *the wake did not reach sleep inside its bound*, and the
       next sleep should be **longer** and not shorter.
+- [ ] **`heap` after a day on the cable** (task p11-02). Both of `heap`'s watermarks are **this
+      boot's** - a deep sleep is a boot and the heap is built again from nothing - so the day
+      alone above leaves nothing to read. This item is the other kind of day: the cable in, which
+      is what keeps the unit awake (§15), and a day of being left alone or of walking the rest of
+      this document. Then `heap`, and write all four figures down.
+      - **How much of the main task's 16 384-byte stack has never been used** is the one worth the
+        wait. 16 KB is the biggest single thing this firmware asks the heap for, and taking it
+        down is the one move that would give kilobytes back in a single step (`ARCHITECTURE.md`
+        §14) - but it was raised after an overflow, so nothing moves it without a figure from a
+        day in which the console, a whole wake, an update and the agent have all run.
+      - **The least free since this boot** is the other: what the console and the copied library's
+        reply parsers cost at their worst. A figure that keeps falling for a day, with the free
+        following it down, is a leak and a finding - this firmware's own code allocates nothing
+        (every `no_allocation` check in `host_test/`), so it would be the library's.
 - [ ] **A day's energy, against the simulated figure.** The sessions' simulated month says
       **421 seconds awake a day at 18 wakes a day** (`tasks/phase-3/reports/05.md`). With an
       integrating meter in series: zero it, leave the unit for a day, and read the milliamp-hours.

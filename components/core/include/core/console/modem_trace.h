@@ -33,8 +33,10 @@ class ModemTrace {
 
   // Whether those lines are in this image at all (task p11-01). They are `ESP_LOGD` calls, and a
   // build whose CONFIG_LOG_MAXIMUM_LEVEL stops at info has none of them in its bytes - the
-  // release build is such a build, because the debug strings cost 3 080 bytes of `.bss` that the
-  // main task's stack needs (`docs/ARCHITECTURE.md` §14). Nothing can switch on what was not
+  // release build is such a build, because the debug strings and tables cost 680 bytes of static
+  // DRAM that the main task's stack needs (`docs/ARCHITECTURE.md` §14; the 3 080 bytes report
+  // p10-06 named are a file-static of the library that every build has). Nothing can switch on
+  // what was not
   // compiled, so the console says so in one sentence rather than reporting a trace that prints
   // nothing; `docs/bench.md` §13 says how to make a build that has them.
   virtual bool compiledIn() const = 0;

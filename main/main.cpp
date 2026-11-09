@@ -113,6 +113,11 @@ platform::EspSleeper g_sleeper;
 // interfaces/heap.h): thirty-two random bits and the heap's two figures.
 platform::EspEntropy g_entropy;
 platform::EspHeap g_heap;
+// The four figures of the internal heap behind the console's seam (task p11-02,
+// core/console/heap_report.h): what `heap` prints, and the one line below. It holds no state and
+// has no initialiser that runs - a vtable pointer is constant-initialised - so nothing of it is
+// in the heap programme tools/heap_at_start.py replays.
+platform::EspHeapReport g_heap_report;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
 // The settings (task p3-03): NVS behind interfaces::KeyValue, and the table over it. The store
@@ -248,6 +253,26 @@ extern "C" void app_main() {
 
   // The banner: product and version, one line, first (host_test/core/test_version.cpp).
   std::printf("\n%s\n", core::banner());
+
+  // And then the heap, as the second line of the boot and before this task has done anything
+  // but open its port (task p11-02; docs/ARCHITECTURE.md §14). v0.1.3 never printed a line at
+  // all, because ESP-IDF could not create *this* task, and the figure that would have shown it
+  // coming is the largest free block - which nothing of this firmware used to print.
+  //
+  // It is not the arrangement `tools/heap_at_start.py` judges, and it cannot be: by now the main
+  // task's stack and TCB are taken, FreeRTOS's idle and timer tasks are made, the task watchdog
+  // is up and the 22 308-byte region the ROM's stack was in has been registered as a heap
+  // (`heap_caps_enable_nonos_stack_heaps`, at the top of `main_task`). The model's last section
+  // is an upper bound on this line, about 7 kB above it; `docs/bench.md` §1 holds a board to the
+  // figures read out of this firmware booting in the pinned image's QEMU, which is where this
+  // line's own numbers came from.
+  {
+    const core::console::HeapReport::Figures h = g_heap_report.read();
+    std::printf("heap: %lu bytes free, largest free block %lu (internal, 8-bit), the main task's "
+                "%lu-byte stack already taken ('heap')\n", static_cast<unsigned long>(h.free),
+                static_cast<unsigned long>(h.largest_block),
+                static_cast<unsigned long>(h.stack_bytes));
+  }
 
   const esp_partition_t* running = esp_ota_get_running_partition();
   esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
@@ -602,7 +627,7 @@ extern "C" void app_main() {
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, &mesh_probe, &agent_probe, &identity_probe,
                                         &backend, &tls_socket.rotation(), &g_wall,
-                                        &g_modem_trace);
+                                        &g_modem_trace, &g_heap_report);
   // The library's log goes where every other line of this port goes: the console's print(), and
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
@@ -641,7 +666,8 @@ extern "C" void app_main() {
                                         self_update_ptr, &supervisor, &uplink, &http_client,
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, nullptr, nullptr, nullptr, nullptr,
-                                        &tls_socket.rotation(), &g_wall, &g_modem_trace);
+                                        &tls_socket.rotation(), &g_wall, &g_modem_trace,
+                                        &g_heap_report);
 #endif
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop

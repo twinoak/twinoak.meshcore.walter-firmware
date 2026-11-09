@@ -17,7 +17,10 @@
 #                 there); then the logic, with host_test/rails/ holding the assertions that are
 #                 about every test in the suite
 #   release-tests tools/release/test_release.py               - what the release tooling refuses
-#   build         idf.py build, merge-bin, size               - the firmware, images to out/images/
+#   build         idf.py build, merge-bin, size, heap_at_start.py
+#                 - the firmware, then **the heap at start** (task p11-02: the main task's stack
+#                 has to have a block, with HEAP_MIN_SPARE to spare, or the image cannot start and
+#                 is never copied anywhere), then images to out/images/
 #   partitions    tools/check_partitions.py --self-test, then against the build
 #   release       a dry run of the whole release over the build just made, into out/release/:
 #                 build_release.py, signed with the specification's public test key, then verified
@@ -61,6 +64,14 @@ RELEASE_TAG=v${VERSION%%+*}
 # 0 or 1, always passed to idf.py explicitly: a cmake cache variable sticks between runs.
 TESTKEY=${TWINOAK_TRUST_TEST_KEY:-0}
 case $TESTKEY in 0|1) ;; *) echo "TWINOAK_TRUST_TEST_KEY must be 0 or 1"; exit 2 ;; esac
+# The rail of task p11-02: how much must be left in the block the main task's stack comes out of,
+# after ESP-IDF's start-up and this firmware's static initialisers (tools/heap_at_start.py,
+# docs/ARCHITECTURE.md section 14). 8 KB, which is task p11-01's figure: v0.1.2 started with
+# 12 796 bytes left in that block and 0.1.4 with 11 788, and v0.1.3 - the image that could not
+# create its main task at all - had no block for it. 8 192 is under both builds that run and far
+# above the arrangement that failed, so a build that drops below it has lost a third of the room
+# two releases had and is a finding before it is an image.
+HEAP_MIN_SPARE=8192
 
 mkdir -p "$LOGS" "$IMAGES" "$BUILD" "$CACHE"
 export CCACHE_DIR=$CACHE/ccache
@@ -151,6 +162,33 @@ if bad:
 EOF
 }
 
+# Does the image start at all (task p11-02; docs/ARCHITECTURE.md section 14, rail R22)? The one
+# thing every check this repository had before p11-01 missed: v0.1.3 fitted its slot, its DIRAM
+# fitted its segment, every host test passed, and ESP-IDF could not create the main task, because
+# no heap region had a free block of CONFIG_ESP_MAIN_TASK_STACK_SIZE bytes left once the static
+# initialisers had taken theirs. tools/heap_at_start.py is the model of that moment - the regions
+# from this build's map and sdkconfig, three sizes from its DWARF, the allocator and the region
+# table from ESP-IDF's own sources, the start-up's allocations from a recording of this firmware
+# running - and it exits 1 when the stack would not fit with --min-spare to spare.
+#
+# It runs over every build this script makes, before anything is copied to out/images/ or
+# released, so an image that cannot start is never published. Its whole output goes to the log:
+# the regions, every allocation in order, the heap block by block, the block the main task got,
+# the tightest of the big allocations, and an upper bound on what the board's own `heap:` boot
+# line will then say (docs/bench.md section 1 is where that one is held to a board).
+check_heap_at_start() {
+  local dir=$1
+  echo "== the heap at start: can this image create its main task? (min spare $HEAP_MIN_SPARE)"
+  if ! python tools/heap_at_start.py --build-dir "$dir" --min-spare "$HEAP_MIN_SPARE"; then
+    echo "the main task's stack would not fit, or not with $HEAP_MIN_SPARE bytes to spare:"
+    echo "this image would end every boot in 'assert failed: esp_startup_start_app"
+    echo "app_startup.c:86 (res == pdTRUE)', or is a few hundred bytes of .data or .bss from it."
+    echo "docs/ARCHITECTURE.md section 14 says what to do about it; it is static storage that"
+    echo "has to come down, and the model's 'the tightest is N bytes' line is where to look."
+    return 1
+  fi
+}
+
 # Every idf.py of this script, with the one build directory and the three cache variables that
 # must be passed every time. -DPROJECT_VER is always given, even when it is the default: it is a
 # cmake cache variable, and a build that inherited one from an earlier run would say a version
@@ -198,6 +236,9 @@ step_build() {
   # board out of the box is flashed with; the release publishes it as -factory.bin).
   idf_run merge-bin -o "$PROJECT_NAME-factory.bin" || return 1
   idf_run size || return 1
+  # The rail before the images: an image that cannot start is not copied anywhere and is not
+  # released (task p11-02).
+  check_heap_at_start "$dir" || return 1
   # Evidence to out/images/: what a bench flashes, and what task 02 releases.
   cp "$dir/$PROJECT_NAME.bin" "$dir/$PROJECT_NAME.elf" "$dir/$PROJECT_NAME.map" \
      "$dir/$PROJECT_NAME-factory.bin" "$dir/bootloader/bootloader.bin" \

@@ -56,7 +56,16 @@ block map is byte for byte the one read out of the running image in QEMU, and it
 for v0.1.2, NULL for v0.1.3. See tasks/phase-11/reports/01.md.
 
 Exit code: 0 when the main task fits with at least --min-spare bytes left in the block it gets,
-1 when it does not. Task p11-02 makes that a rail of tools/verify.sh.
+1 when it does not. Since task p11-02 that is **rail R22**: tools/verify.sh's build step runs this
+over every build it makes, at --min-spare $HEAP_MIN_SPARE (8 192), before a byte of it is copied
+to out/images/ or released, so an image that cannot start is never published.
+
+The last section is for the board rather than for the build. *What the main task leaves behind* is
+the arrangement this firmware's own `heap:` boot line reports - a different one, because by then
+the stack is taken and the region the ROM's stack was in has been registered as a heap - and it is
+an **upper bound** on it: the recording stops where the main task is created, and FreeRTOS's idle
+and timer tasks, the task watchdog and app_main's first lines take about 7 kB more after it.
+docs/bench.md §1 holds a board to figures measured in QEMU, not to this one.
 """
 
 from __future__ import annotations
@@ -270,6 +279,25 @@ class Tlsf:
 
     def largest_free(self) -> int:
         return max([b.size for b in self.blocks if b.free] or [0])
+
+    def fit_size(self, size: int) -> int:
+        """tlsf_fit_size: the largest *request* a free block of `size` bytes is certain to serve.
+
+        It is not the block's size. mapping_search rounds a request up to the next second-level
+        class before it looks for a block, so a request between two classes can fail against a
+        block that would have held it; tlsf_fit_size rounds down to the class below, and that is
+        what heap_caps_get_largest_free_block() returns - "the largest value of s for which
+        heap_caps_malloc(s, caps) will succeed" (esp_heap_caps.h; multi_heap_get_info ->
+        tlsf_fit_size in tlsf.c). A 28 532-byte block answers 27 648. The two figures have to be
+        told apart when this model is held against a board, which is what the last section does.
+        """
+        if size > self.small_block_size:
+            interval = 1 << (fls(size) - self.sl_log2)
+            return size & ~(interval - 1)
+        return size
+
+    def largest_free_request(self) -> int:
+        return self.fit_size(self.largest_free())
 
     def would_fit(self, size: int) -> bool:
         adjust = max(align_up(size, ALIGN_SIZE), BLOCK_SIZE_MIN)
@@ -697,6 +725,7 @@ def main() -> int:
 
     big = [(i, b) for i, item in enumerate(allocs, 1) if item is not None
            for h, b in [item] if b.size >= 4096]
+    tight = None
     if big:
         print("\nthe big ones, and the room each had in the heap it landed in"
               " (the free block it was carved out of, less its own block):")
@@ -746,8 +775,52 @@ def main() -> int:
     spare = stack_heap.tlsf.largest_free()
     print("  left in that heap afterwards: %d bytes, largest free block %d"
           % (stack_heap.tlsf.free_bytes, spare))
+
+    # And what the board itself prints, so that the model can be held to a real start (task
+    # p11-02). `app_main`'s first lines print one `heap:` line, and by then `main_task` has
+    # registered the region the ROM's stack was in - heap_caps_enable_nonos_stack_heaps(), which
+    # runs after the main task exists - so that region's 21 564 bytes are part of the figure and
+    # were part of no heap above. The capabilities are the stack's, which is what the firmware
+    # asks heap_caps_get_free_size() and heap_caps_get_largest_free_block() for.
+    #
+    # It is an **upper bound**: the recording ends at esp_startup_start_app (tools/
+    # heap_programme.gdb), so whatever main_task and ESP-IDF take between there and app_main's
+    # first line is not in it. A board a few hundred bytes below these two is the difference
+    # between the breakpoint and the line; a board thousands below, or with a smaller largest
+    # block than the stack's own heap had, is a finding about this model.
+    for h in caps_order.heaps:
+        if h.tlsf is None:
+            h.tlsf = Tlsf(h.start, h.size)
+    at_app_main = [h for h in caps_order.heaps
+                   if (h.all_caps() & FREERTOS_CAPS) == FREERTOS_CAPS]
+    print("\nwhat the main task leaves behind, which is where app_main's `heap:` line starts"
+          " (docs/bench.md section 1):")
+    print("  free %d bytes, largest free block %d, as a request %d (8BIT|INTERNAL, every"
+          % (sum(h.tlsf.free_bytes for h in at_app_main),
+             max(h.tlsf.largest_free() for h in at_app_main),
+             max(h.tlsf.largest_free_request() for h in at_app_main)))
+    print("  registered heap - the %d-byte region the ROM's stack was in is one of them by now,"
+          " and was not one above)" % next(h.size for h in caps_order.heaps if h.startup_stack))
+    print("  **an upper bound, and not by a little**: this is the moment the main task is"
+          " created, which is where the recording stops. FreeRTOS's own idle and timer tasks,")
+    print("  the task watchdog and app_main's first lines - the USB console among them - take"
+          " their share after it, and the board's `heap:` line is that much lower.")
+    print("  docs/bench.md section 1 has the figures a board is held to, measured in this"
+          " image's QEMU.")
+
     print("\nverdict: FITS, with %d bytes to spare in the heap the stack came from"
           " (asked for at least %d)" % (spare, args.min_spare))
+    # The margin above is the one the rail enforces; this is the one that moves first, and task
+    # p11-01's own follow-up asked for it here rather than only in the table above. A build can
+    # have 11 kB to spare in the stack's block and still be 357 bytes from a different
+    # arrangement - which is what v0.1.2 was, and v0.1.3 is what happened next. A flip is not by
+    # itself a boot that fails (the stack would land in the other heap, and this verdict would
+    # say so with a much smaller margin), but it is the figure to watch and it is cheap to print.
+    if tight is not None:
+        print("         the tightest big allocation had %d bytes to spare in the heap it landed"
+              " in: that is the figure" % tight)
+        print("         that moves first, and one byte less of it rearranges everything after"
+              " it (the table above says which)")
     if spare < args.min_spare:
         print("         TOO LITTLE: %d < %d" % (spare, args.min_spare))
         return 1

@@ -15,6 +15,8 @@
 //   status                one screen: this firmware, the radio, the battery, the images, the
 //                         uplink, the next wake
 //   reboots               why this board last restarted, and the four before that
+//   heap                  what the internal heap has free and in one block, the least it has been
+//                         since this boot, and the main task's stack (task p11-02)
 //   pins                  the seven pins: net, D-sub, GPIO, mode, level
 //   rak reset             one reset pulse on nRESET (waits out the spacing)
 //   rak kill <seconds> [confirm]
@@ -206,6 +208,8 @@ enum class Verb : std::uint8_t {
   kHelp,
   kStatus,
   kReboots,
+  // The heap as the chip keeps it (task p11-02): the four figures of core/console/heap_report.h.
+  kHeap,
   kPins,
   kRakReset,
   kRakKill,

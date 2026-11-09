@@ -23,6 +23,7 @@
 #include "core/console/agent_loop_probe.h"
 #include "core/console/agent_probe.h"
 #include "core/console/commands.h"
+#include "core/console/heap_report.h"
 #include "core/console/log_ring.h"
 #include "core/console/mesh_probe.h"
 #include "core/console/modem_trace.h"
@@ -128,7 +129,12 @@ class Console {
           // boot. The hook is components/modem/'s - core/ may not name esp_log or the library's
           // tag (rail R12) - so this is a seam (core/console/modem_trace.h). A build without one
           // answers in one line.
-          ModemTrace* trace = nullptr);
+          ModemTrace* trace = nullptr,
+          // The heap as the chip keeps it (task p11-02): what `heap` prints, and the one line
+          // `app_main` prints at boot. ESP-IDF's own `heap_caps_*` calls are platform/'s, so
+          // this is a seam (core/console/heap_report.h). A build without one answers in one
+          // line; it is the last of these pointers because it is the newest.
+          HeapReport* heap = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -192,6 +198,9 @@ class Console {
   void helpLine(const char* usage, const char* text);
   void status();
   void reboots();
+  // The heap now (task p11-02): the four figures of heap_report.h, and the sentence that says
+  // which of them is the one a build is held to.
+  void heap();
   void pins();
   void rakReset();
   void rakKill(std::uint32_t seconds);
@@ -398,6 +407,7 @@ class Console {
   const net::SocketRotation* sockets_ = nullptr;
   cycle::NetworkClock* wall_ = nullptr;
   ModemTrace* trace_ = nullptr;
+  HeapReport* heap_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the

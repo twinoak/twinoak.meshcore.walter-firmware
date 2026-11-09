@@ -1298,7 +1298,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | the Walter's own update | ✔ fake slots with the bootloader's rules, a simulated reset | `esp_ota_*` calls | a trial confirmed, a trial failed, a reset mid-trial - on real OTA data |
 | modem | ✔ the policy against a fake modem that is silent, has no card, a locked card, never registers, drops, gives no time or gives 1970; a month of wakes with no coverage | every modem call | a SIM, a tower |
 | HTTPS | ✔ the URL rules, the HTTP/1.1 writer and parser (split headers, chunked, ten thousand random inputs), the client's redirects and statuses, the download against a scripted server that drops at every range boundary and mid-range, ignores ranges, lies in Content-Range, changes the file; the fetch of the specification's fixture release; the roots' fingerprints; the rail as a grep | the socket, the slots, the one TLS profile call | the chain of a wrong root refused on the modem; a real release fetched and resumed |
-| **the rails** | ✔ the suite's own assertions (`host_test/rails/`): the pin rules' tally over every test that drove a wire, simulated flash's over every test that flashed (and, since task p5-02, every chip erase and UICR write counted against the chips a door test armed — the tripwire fails any other test at the first), the verdict's tokens as compile-time refusals, two secrets and the subscription's three numbers searched for in a day of wakes and every console command, a month asked for both updates and read off the journal, the supervisor's caps over a simulated quarter, **the agent's own month** (task p4-06: a neighbour's admin password and a new one on the air, a neighbour's own setting read back, a stranger's name in an advert, and every one of them searched for in the console's ring, the library's log, the journal's bytes, the retained records and the kept image - with `client_tx` held to the runner's sends every wake), and **the failure-injection sweep**: four suites' power-loss loops run together, a whole update from download to commit with the power lost at every flash operation of the store, the journal and the radio's chip in turn, each ending in the old image, the new one, or a journalled state the next wake resumes | `tools/check_rails.py`'s greps (twenty-four entries, one per rail, run before anything is compiled) and `tools/verify.sh`'s search of the built image for the test key's bytes and the map for a signing symbol | `docs/bench.md`, all of it: the rails are what a session can hold, and the walk is what a person must |
+| **the rails** | ✔ the suite's own assertions (`host_test/rails/`): the pin rules' tally over every test that drove a wire, simulated flash's over every test that flashed (and, since task p5-02, every chip erase and UICR write counted against the chips a door test armed — the tripwire fails any other test at the first), the verdict's tokens as compile-time refusals, two secrets and the subscription's three numbers searched for in a day of wakes and every console command, a month asked for both updates and read off the journal, the supervisor's caps over a simulated quarter, **the agent's own month** (task p4-06: a neighbour's admin password and a new one on the air, a neighbour's own setting read back, a stranger's name in an advert, and every one of them searched for in the console's ring, the library's log, the journal's bytes, the retained records and the kept image - with `client_tx` held to the runner's sends every wake), and **the failure-injection sweep**: four suites' power-loss loops run together, a whole update from download to commit with the power lost at every flash operation of the store, the journal and the radio's chip in turn, each ending in the old image, the new one, or a journalled state the next wake resumes | `tools/check_rails.py`'s greps (twenty-five entries, one per rail, run before anything is compiled) and `tools/verify.sh`'s search of the built image for the test key's bytes and the map for a signing symbol | `docs/bench.md`, all of it: the rails are what a session can hold, and the walk is what a person must |
 | the wake cycle | ✔ the good wake; each step failing alone; the dependency table walked as data; the radio as a scanner, silent (the ladder inside its caps, the uplink still used), mid-update (resumed, nothing else touching it) and on trial (confirmed before the wake may sleep); S-7 asked for both updates; a backend asking in `critical`, for a secret key and for a threshold that is not a setting; the budget running out and the backend recorded as *no time*; the telemetry ring filled, dropped, counted, survived a restart and emptied only when taken; the record's format held to `docs/cycle.md`; and a simulated month of 2 400 wakes with a sinking battery, a radio that goes quiet and a modem that drops - every wake in sleep, none past its bound, the caps held, **no mesh request sent**, no flash that was not asked for | `main/`'s construction and the one pass it runs | a day on a mast (`docs/bench.md` §16): `journal` one line a wake, `cycle dry`, `cycle now`, the band falling under a covered panel |
 | duty cycle | ✔ the policy as a table over voltages and currents and a ±20 mV wander at each threshold, a simulated December and a simulated month of wakes over the whole bench, every wake reason against the scripted radio (an attention on the 1st, 4th and 10th repeat; noise; a scanner's lines), the spurious disarm and its re-arm, the bound on a wake, the pins checked at the moment of every sleep, the one-way-out grep | `esp_deep_sleep_start`, the ext1 arming, `rtc_gpio_*`, the USB connection monitor | the current asleep, a scope on nRESET and KILL across the transition, a wake by the radio's line, a chattering line disarmed, the energy of one wake with an attach, and the pack's own discharge curve - which is what makes every threshold real (`docs/bench.md` §15) |
 | settings and the console | ✔ every key's range and refusal, the store over a map that is empty, corrupt, read-only or missing, the effect of each change on the thing it reaches, `erase confirm` touching the settings and nothing else, every command of the table grepped for a secret, the command table held to `help` and to `docs/console.md`, the session of `docs/provisioning.md` replayed | NVS itself (`nvs_get_str`, `nvs_set_str`, the commit) | the asterisk echo on a real terminal, `status` in an 80-column window, the `nvs` partition read over USB with both secrets in it, the SWD clock on a scope, a wrong PIN against a real card |
@@ -1745,10 +1745,57 @@ not fit*, with the margin. It has no fudge factor and it is checkable: the pinne
 for the esp32s3, and against a build booted there under gdb the model's block map is byte for byte
 the chip's, for v0.1.2, for v0.1.3 and for 0.1.4. `tools/heap_programme.gdb` is how the programme
 is recorded, and it must be recorded again when ESP-IDF, `sdkconfig.defaults` or a static
-initialiser of `main/` changes. Task p11-02 makes it a rail of `tools/verify.sh`.
+initialiser of `main/` changes. Since task p11-02 it is a rail of `tools/verify.sh` (below).
 
 **What this means for a task that adds static storage.** A `static` buffer, a bigger ring, a new
 namespace-scope object: the cost is not "bytes out of 37 kB", it is bytes out of 356 before an
 image stops starting. Flash is the generous resource here (a 3 MB slot, a quarter used); internal
 RAM at boot is not. `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG` is the cautionary tale: 12 432 bytes of flash
-nobody would notice, and 3 080 bytes of `.bss` that stopped the unit dead.
+nobody would notice, and **680 bytes** of static DRAM — 256 of IRAM `.text`, 88 of `.data`, 336 of
+`.bss`, spread over the debug strings and tables of every component that has them — that stopped
+the unit dead. (The task files and report p10-06 say 3 080 bytes, the modem library's
+`_logEscapeBuffer`. That buffer is a file-static nothing guards and it is in v0.1.2's map as well;
+report p11-01 settled it. The cause is right, the number was not, and it took 680 bytes to end an
+image: that is the point of the paragraph.)
+
+### The rail, and what the board says (task p11-02)
+
+A model nobody runs is a document. So **`tools/verify.sh` runs it over every build it makes**, in
+the build step, before a byte is copied to `out/images/` or released: `check_heap_at_start`, at
+`--min-spare $HEAP_MIN_SPARE` — 8 192, written down in that script and nowhere else. Below the
+margin, or with no block at all, the step fails and the log holds the regions, every allocation in
+order, the heap block by block, the block the main task got and the model's *the tightest is N
+bytes*. CI runs `verify.ps1` and so does the release workflow's build job, so an image that would
+not start cannot be published. It is rail **R22** of [`tools/check_rails.py`](../tools/check_rails.py):
+like R6 it cannot be checked from the source — it needs the built image's map, DWARF and
+`sdkconfig` — so its entry holds `verify.sh` to doing it, and names the margin a second time so
+that lowering it quietly is a failed rail.
+
+And the board says what it actually got, because a model is worth what a real start says about it:
+
+| | what it prints |
+|---|---|
+| `app_main`'s second line: after the banner, with nothing of this task done but opening its port | `heap: 33872 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')` |
+| the `heap` command | the same two figures, the least free since this boot, and the main task's stack with how much of it has never been used |
+
+Both are of `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, the capabilities a task stack asks for, and
+both are read **after** `main_task` has registered the 22 308-byte region — so they are a
+different arrangement from the one judged above, and mistaking one for the other is how this was
+got wrong in the first place. Two things follow, and both were checked against this firmware
+booted in the pinned image's QEMU rather than reasoned about:
+
+* The model's last section, *what the main task leaves behind*, is that arrangement **7 kB
+  earlier** — at the moment the main task is created, which is where its recording stops. The
+  idle and timer tasks FreeRTOS creates in `vTaskStartScheduler`, the task watchdog, and
+  `app_main`'s own first lines (`UsbConsole::begin()` among them) take the difference: the model
+  says 41 144 free where the board's line says 33 872. It is an upper bound, and `docs/bench.md`
+  §1 holds the board to the measured figures and not to it.
+* `heap_caps_get_largest_free_block()` is **not** the largest block's size: it is "the largest
+  value of `s` for which `heap_caps_malloc(s, caps)` will succeed", which TLSF rounds down to the
+  second-level class below the block (`tlsf_fit_size`), because a request is rounded *up* before
+  a block is looked for. A 28 532-byte block answers 27 648. The model prints both figures, and
+  the rounded one is the chip's to the byte.
+
+Neither figure refuses anything at run time: the firmware reports and the build refuses. The seam
+is `core/console/heap_report.h` and the three `heap_caps_*` calls behind it are
+`components/platform/heap.cpp`, because core/ may include nothing of ESP-IDF (R12).

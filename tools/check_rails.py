@@ -20,9 +20,10 @@ Exit 0 when every rail holds, 1 when one does not, 2 when the script was used wr
 
 The four greps that used to sit in `tools/verify.sh` itself - pin ownership, the dual adapter's
 selector, core/ and the modem library, the TLS rail - are here now, unchanged in what they
-refuse; `verify.sh` calls this instead. The one rail that cannot be checked from the source
-alone is R6, which needs the built image: the build and release steps of `verify.sh` do it, and
-R6's entry here holds *them* to doing it.
+refuse; `verify.sh` calls this instead. Two rails cannot be checked from the source
+alone, because they are about a built image: R6 (the test key's bytes, the +TESTKEY stamp and the
+signing symbols) and R22 (the heap at the moment the main task is created). The build and release
+steps of `verify.sh` do those, and their entries here hold *them* to doing it.
 """
 
 import argparse
@@ -1094,6 +1095,57 @@ def rail_path_hashes(r):
     return r
 
 
+# ---- R22: an image whose main task would not fit is never built (task p11-02) ------------------
+
+# The model, the recording it replays, and the margin the rail enforces. The margin is written
+# down in one place - tools/verify.sh - and this is the only other file that names the number, so
+# that lowering it quietly is a failed rail and not a quieter build.
+HEAP_MODEL = "tools/heap_at_start.py"
+HEAP_PROGRAMME = "tools/heap_at_start.programme"
+HEAP_MIN_SPARE = "HEAP_MIN_SPARE=8192"
+
+
+def rail_main_task_fits(r):
+    """docs/ARCHITECTURE.md §14 and tasks/phase-11/reports/01.md: an image that cannot create its
+    main task is never built here. v0.1.3 passed every check this repository had - it fitted its
+    slot, its DIRAM fitted its segment, the host tests do not run ESP-IDF's start-up - and ended
+    every boot in `assert failed: esp_startup_start_app app_startup.c:86`, because no heap region
+    had a free block of CONFIG_ESP_MAIN_TASK_STACK_SIZE bytes left after the static initialisers.
+    Like R6, this one cannot be checked from the source: it needs the built image's map, DWARF and
+    sdkconfig. So tools/verify.sh's build step runs the model over every build it makes, before
+    anything is copied to out/images/ or released, and this entry holds *it* to doing that."""
+    r.problems(must_exist(HEAP_MODEL, HEAP_PROGRAMME, "tools/heap_programme.gdb"),
+               "the model of the heap at the main task's creation is gone:")
+    r.looked_at("the model is %s, replaying %s - recorded from the firmware in QEMU by "
+                "tools/heap_programme.gdb" % (HEAP_MODEL, HEAP_PROGRAMME))
+    # The call site, the margin and the message, in the one script that defines "verified".
+    r.problems(must_contain("tools/verify.sh", "check_heap_at_start", 'check_heap_at_start "$dir"',
+                            "heap_at_start.py --build-dir", "--min-spare", HEAP_MIN_SPARE,
+                            "esp_startup_start_app"),
+               "tools/verify.sh no longer runs the model over the build it just made, or no "
+               "longer runs it at the margin task p11-01 measured:")
+    r.looked_at("tools/verify.sh: the build step calls check_heap_at_start over $BUILD/fw with "
+                "--min-spare %s, and fails before the images are copied anywhere"
+                % HEAP_MIN_SPARE.split("=")[1])
+    # And the model must still be able to refuse: its exit code is the rail, so a version of it
+    # that only printed would pass the greps above and hold nothing.
+    r.problems(must_contain(HEAP_MODEL, "DOES NOT FIT", "return 1", "--min-spare"),
+               "%s no longer refuses a build whose main task would not fit:" % HEAP_MODEL)
+    r.looked_at("%s exits 1 on DOES NOT FIT and on a margin below --min-spare" % HEAP_MODEL)
+    # The board's own account of the same thing, so that the model can be held to a real start
+    # (task p11-02's `heap` and the boot line; docs/bench.md §1).
+    r.problems(must_contain("main/main.cpp", "g_heap_report", 'std::printf("heap: '),
+               "app_main no longer prints what the heap had when it got the processor:")
+    r.problems(must_exist("components/core/include/core/console/heap_report.h",
+                          "host_test/core/console/test_console_heap.cpp"),
+               "the console's heap seam or its tests are gone:")
+    r.says("held by tools/verify.sh over the built image (the map, the DWARF and the sdkconfig of "
+           "the build just made, through tools/heap_at_start.py at --min-spare 8192) - not "
+           "reachable from the source alone - and read back on the board by app_main's `heap:` "
+           "line and the `heap` command")
+    return r
+
+
 # ---- the rails, in one table -------------------------------------------------------------------
 
 RAILS = [
@@ -1119,6 +1171,7 @@ RAILS = [
     ("R19", "no job a finished wake claimed is left leased", rail_no_job_left_leased),
     ("R20", "an update starts by a claimed job, a typed command or the golden-image rung", rail_update_has_three_doors),
     ("R21", "a path hash is the claim's; this firmware chooses none (S-12)", rail_path_hashes),
+    ("R22", "an image whose main task would not fit is never built", rail_main_task_fits),
 ]
 
 
@@ -1406,7 +1459,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="the rails, in one place")
     parser.add_argument("--list", action="store_true", help="the table, nothing run")
     parser.add_argument("--verbose", "-v", action="store_true", help="what each rail looked at")
-    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R21, R3b, A, B)")
+    parser.add_argument("--only", metavar="ID", help="one entry (R1 ... R22, R3b, A, B)")
     args = parser.parse_args(argv)
 
     entries = RAILS + EXTRA

@@ -27,6 +27,7 @@ a provisioned unit, line by line, and it is replayed by a host test so that it c
 
 ```
 twinoak-walter 0.0.0-dev
+heap: 33872 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')
 running from ota_0 at 0x010000 (3072 KB), ota state valid
 image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.2
 settings: nvs namespace 'walter', 11 keys; 'get' prints them, 'set <key> <value>' changes one
@@ -52,6 +53,16 @@ task p2-04 read the code and `docs/bench.md` §1 says what to expect), `pending-
 first boot of an image an update switched to — then a `self-update: … is on trial` line follows
 the journal's — and the boot's `software reset` line names a self-update's restart.
 
+The `heap:` line is second because of what happened to v0.1.3 (task p11-02; `ARCHITECTURE.md`
+§14): it is the board's own account of the heap, printed before this task has done anything but
+open its port. It is **not** the arrangement that decides whether an image starts, and no line
+read after boot can be — by then the main task's stack and TCB are taken, FreeRTOS's idle and
+timer tasks are made, and the 22 308-byte region the ROM used for its own stack has been
+registered as a heap. That question is answered before the image exists, by
+`tools/heap_at_start.py` over the build, and `tools/verify.sh` refuses an image that would not
+start. What this line is for is holding that model to a real board: `bench.md` §1 has the figures
+to compare it with, measured from this firmware booted in the pinned image's QEMU.
+
 The `uplink:` line is printed **without touching the modem** (task p3-01): all that happens at boot
 is that the backoff's record is read out of RTC memory, and a second line follows it when there is
 something in that record to say — `uplink: last time: not-registered; 14 wakes counted, 6 attempts;
@@ -76,6 +87,7 @@ supervisor's stop is printed at every level.
 | `erase confirm` | forget every setting and **only** the settings: the images, the journal, the bad list and the supervisor's counts are in other partitions and in RTC memory and are not touched. Without the word it refuses and says what the word is. The fallbacks are in force at once, and the PIN's generation moves so that a refusal recorded against the PIN just forgotten is not applied to the next one |
 | `reboot` | restart the Walter; the pins go to the safe state first and `reboots` after it says *asked for on the console* |
 | `reboots` | why this board last restarted and the four before that, newest first, each with how long the run before it lasted. The record is in RTC memory: it survives a `reboot`, a panic, a watchdog and a deep sleep, and a power cut clears it (and the first line says so) |
+| `heap` | the internal heap (`MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT` — the capabilities a task stack asks for) as it is at this moment: what is **free**, the **largest free block**, the **least free since this boot**, and the main task's stack with how much of it has never been used. Two lines and a sentence. The block is the figure that matters: v0.1.3 died with 35 636 bytes free and no block big enough for the main task's 16 384-byte stack, and that is what `tools/heap_at_start.py` refuses before a build is ever flashed (`ARCHITECTURE.md` §14). It reads and decides nothing |
 | `dump` | the last 4 kB this port printed, oldest first, **whole lines only** — a board's answer to a journal, for a unit found quiet with a laptop and no history. The same bytes the port printed and no others. **Nothing the radio sent as text is in it** and nothing the mesh said (S-12): a scanner's NDJSON, a CLI reply and an advert's name are printed and not kept. A secret never reaches a printed line, so there is none in the ring either |
 
 ### The radio
