@@ -6,10 +6,11 @@ rig is brought up (`spec/SYSTEM.md` §7, and the hardware repository's
 first flash, **and only then the kill line** — then images, updates, the supervisor, the modem,
 HTTPS, provisioning, sleep, and a day of it. A Walter has run a development build of this firmware
 and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`); the first unit ran `v0.1.0`
-at a desk on 6 November — half an hour that found five faults — and `v0.1.1` on 7 November, which
-gave its radio a golden image and found five more. **No unit has walked this file.** It is what
-turns that sentence over, and **`v0.1.2` is the release it is walked with**
-([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item added by phases 8 and 9
+at a desk on 6 November — half an hour that found five faults — `v0.1.1` on 7 November, which
+gave its radio a golden image and found five more, and `v0.1.2` on 8 November, which ran a night on
+its battery and was heard on about every sixth wake. **No unit has walked this file.** It is what
+turns that sentence over, and **`v0.1.3` is the release it is walked with**
+([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item added by phases 8, 9 and 10
 needs that release or later, and says so.
 
 Walk it in order. A step whose *Needs* are not met is a step that will waste an evening, and a
@@ -176,8 +177,8 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
 
   (that hex is the public half in `keys/release-keys.txt`, key id `73efdd383a957596`; the same
   thing with the file rather than the hex is `python tools/release/verify_release.py <the
-  directory>`). Then flash `twinoak-walter-v0.1.2-factory.bin` with the `esptool` line in the
-  release's own body and read three lines: the banner's version is **`0.1.2+<sha7>`** with that
+  directory>`). Then flash `twinoak-walter-v0.1.3-factory.bin` with the `esptool` line in the
+  release's own body and read three lines: the banner's version is **`0.1.3+<sha7>`** with that
   commit's seven characters, `self status` says `ota_0` and **`valid`**, and `trust` says
   **`1 key … 73efdd383a957596`**. That is the whole point of the release: a board flashed by cable
   with it can take every later one over LTE.
@@ -189,13 +190,13 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   written for somebody who has not read the rest, and a session cannot tell whether it is enough.
 
 - [ ] **A release taken over an older one by cable, on a unit that is already a unit** (task
-  p8-06; the first unit, which is at `v0.1.1`). This is the item that says a factory flash is
+  p8-06; the first unit, which is at `v0.1.2`). This is the item that says a factory flash is
   **safe on a unit in service**, which every sentence about updating by cable rests on. Before:
   `get` (how many of the keys are set), `image list` (what the store holds, with the candidate's
   hash), `rak update status` (the 6 November story and its last state), `image bad`. Then the
   `esptool` line of [*Releases* → *Latest*](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)'s
   `-factory.bin` ([`flashing.md`](flashing.md), *A unit at 0.1.0*), and afterwards:
-  the banner says **`0.1.2+<sha7>`**, `self status` says `ota_0` and `valid`, and **all four
+  the banner says **`0.1.3+<sha7>`**, `self status` says `ota_0` and `valid`, and **all four
   readings above are unchanged** — the same keys set (a secret still answers `set`, never its
   value), the same images in the store with the same hashes, the same journal with the same last
   state, the same bad list. One key lost, one image gone or one journal entry missing is a finding
@@ -1651,8 +1652,8 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       ran real jobs costs more than a quiet one, and *how much more* is the number this item brings
       back.
 - [ ] **The release a unit is running, on the server's page** (task p7-01). After any wake of a
-      board flashed from `v0.1.2`, the exit node's page shows the firmware version it reported —
-      `agentVersion`, this firmware's own string, **`0.1.2+<sha7>`** — beside the heartbeat. It is
+      board flashed from `v0.1.3`, the exit node's page shows the firmware version it reported —
+      `agentVersion`, this firmware's own string, **`0.1.3+<sha7>`** — beside the heartbeat. It is
       the one place a person sees which release a unit out there is actually on, and *LTE test
       node*'s page said `0.0.0-dev` until this one was flashed. Check that the seven characters
       are the tagged commit's.
@@ -1773,21 +1774,22 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       after any run: the oldest entry of it, `check`, carries the candidate's `sha256` and not
       `0000000000000000…`. On the first unit the 6 November run's `seq 28` was all zeros and the
       journal never said which image that run was about.
-- [ ] **The Walter's own release over LTE, 0.1.1 to 0.1.2** (task p9-07). The item this release
-      exists to make possible, and **the first one that would put a new image on a unit with no
-      cable in it**.
-      **Read first (task p10-05): this cannot work from 0.1.2 or older until meshmaster.dk's pile
-      4.28 task 177 is deployed.** On 8 November job 22841 failed in two seconds because no
-      download has ever sent `X-Agent-Version`, which the server requires on every `/agent/v1`
-      request; 177 serves the three download routes without it, for the units already out there,
-      and v0.1.3 sends it. So: either the server has 177 and the unit may be at 0.1.2, or the unit
-      is at v0.1.3 or newer and the server's half does not matter. Otherwise the cable
-      (`docs/flashing.md`, the correction in the LTE walk) and this item waits.
+- [ ] **The Walter's own release over LTE, 0.1.2 to 0.1.3** (tasks p9-07 and p10-07). The item
+      this release exists to make possible, and **the first one that would put a new image on a unit
+      with no cable in it**.
+      **Both halves are in place now (task p10-05).** On 8 November job 22841 failed in two seconds
+      because no download had ever sent `X-Agent-Version`, which the server requires on every
+      `/agent/v1` request. meshmaster.dk's pile 4.28 task 177 serves the three download routes
+      without it, for the units already out there, and is **deployed since 8 November 2026 16:17
+      UTC** (its release 61); v0.1.3 sends the header itself. So a unit at **0.1.2 or 0.1.1** can
+      walk this, and a unit at v0.1.3 or newer needs nothing of the server's half. A refusal that
+      still comes back names its status and its file now, which is where to read what went wrong.
       *Offer a release* on the unit's page, product `twinoak-walter-firmware`,
-      release `v0.1.2`, with a reason; then `agent wake` (or wait for one). Expected, in this
-      order: the six checks in the console's `fetch` lines, **twelve ranges** of 64 kB for about
-      750 kB, a `progress` line on the job's page every 128 kB, and the result `stored` with the
-      manifest's hash — then `self status` saying `received: 0.1.2 … waiting for 'self switch'`.
+      release `v0.1.3`, with a reason; then `agent wake` (or wait for one). Expected, in this
+      order: the six checks in the console's `fetch` lines, **twelve ranges** of 64 kB for
+      **784 560 bytes** (the last one 19 kB), a `progress` line on the job's page every 128 kB, and
+      the result `stored` with the manifest's hash — then `self status` saying
+      `received: 0.1.3 … waiting for 'self switch'`.
       **Write down the wall-clock seconds of the download and the wake's own elapsed time**: the
       Walter's slot does **not** resume across wakes (`SelfUpdate::beginWrite` erases it), so the
       whole file has to fit one wake's twenty minutes, and this is the first measurement of whether
@@ -1798,13 +1800,13 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       it is the figure that decides whether a resume is worth building at all, and nothing but the
       bench can give it.
       Then *Apply the candidate*: the board restarts, the trial's three conditions hold inside the
-      next boot's own wake, and that same exchange posts `committed` with `0.1.2+<sha7>` — the
+      next boot's own wake, and that same exchange posts `committed` with `0.1.3+<sha7>` — the
       banner, `agentVersion` on the page and `self status` all saying it, and `self status` `valid`
       rather than `pending-verify`. **If the trial rolls back**, the previous image returns by
       itself and the page says `rolledBack` with the journal: read it before flashing anything by
       cable, because the rollback working is the better half of this item.
 - [ ] **The budget's message, for the box it is about** (task p10-04). Only reachable if the
-      download above is cut short by the wake's budget, which on a megabyte-a-wake cap and a 750 kB
+      download above is cut short by the wake's budget, which on a megabyte-a-wake cap and a 785 kB
       file it should not be — so this is the item to read **if** the release above comes back
       part-downloaded, and otherwise one to force by setting `kWakeDownloadBytes` lower in a bench
       build. The console's line and the job's `reason` must both say *starts the file again from
@@ -1814,8 +1816,8 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       `fetch` line says *resuming at N of M bytes already in flash*). A Walter offer that said
       *continues it* would be v0.1.2's wording and a finding against this task.
 - [ ] ★ **The download says who it is** (task p10-05). The item that unblocks the two above, and
-      the first thing to walk of this release. **Needs the unit at v0.1.3** (by cable, the one time)
-      **and the uplink up.** Two readings, in this order:
+      the first thing to walk of this release. **Needs the unit at v0.1.3** — over LTE from 0.1.2,
+      which the server's exemption now allows, or by cable — **and the uplink up.** Two readings, in this order:
       1. **A release fetched over LTE at all.** *Offer a release* for either product and
          `agent wake`. Expected: the console's `fetch: manifest.json, N bytes` line — which on
          0.1.2 never came, because the manifest's own request was answered 400. The job must not

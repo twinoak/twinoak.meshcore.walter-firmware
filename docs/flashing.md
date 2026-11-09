@@ -2,7 +2,7 @@
 
 From a module out of its box to a unit that checks in with meshmaster.dk. One page: the Walter,
 then the RAK, then the two ways a unit that already exists takes a newer release —
-*[from 0.1.1, over LTE](#from-011-to-012-over-lte)* with no cable at all, and
+*[from 0.1.2, over LTE](#from-012-to-013-over-lte)* with no cable at all, and
 *[a unit at 0.1.0](#a-unit-at-010)* by cable — then what
 *checking in* looks like, and the three things to look at when it does
 not. [`bench.md`](bench.md) is the long walk that proves each of these one at a time;
@@ -24,7 +24,7 @@ The module's USB-C **is** the ESP32-S3's own USB, so there is no adapter and no 
    partition table and the OTA data with it:
 
    ```
-   esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.2-factory.bin
+   esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.3-factory.bin
    ```
 
    `--flash-mode dio` is esptool's way in; the image's own header says QIO and the bootloader
@@ -47,9 +47,9 @@ After a reset the port prints a dozen lines and a `>` prompt
 ([`console.md`](console.md), *What the port prints at boot*, has them all):
 
 ```
-twinoak-walter 0.1.2+<sha7>
+twinoak-walter 0.1.3+<sha7>
 running from ota_0 at 0x010000 (3072 KB), ota state valid
-image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.2+<sha7>, link 1.2
+image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.3+<sha7>, link 1.2
 ...
 type 'help' for the commands
 >
@@ -119,30 +119,34 @@ CR LF back out of its answers*. It is slower than a 0.1.1 push and it finishes. 
 the same thing forced, for a Walter whose ready line cannot be read at all; it is never needed
 against 0.1.1 or newer, and the hello's version word refuses it there.
 
-## From 0.1.1 to 0.1.2, over LTE
+## From 0.1.2 to 0.1.3, over LTE
 
-**This is the first release a unit already in the field takes with no cable at all.** Two presses on
+**This is the walk a unit already in the field takes with no cable at all.** Two presses on
 meshmaster.dk, on the **unit's own exit-node page**, and the unit does the rest across one or two of
 its own wakes. Nothing here is typed at a console; the console is only where it can be watched.
 
-> **Correction, 8 November 2026: before v0.1.3 this walk does not finish, and the cable is the way.**
-> The first update of a unit over LTE — job 22841 — failed in two seconds with *a status this
-> firmware does not act on*. meshmaster.dk refuses every `/agent/v1` request that does not carry
+> **It has never once finished, before v0.1.3, and here is what had to change.** The first update of
+> a unit over LTE — job 22841, 8 November 2026 — failed in two seconds with *a status this firmware
+> does not act on*. meshmaster.dk refuses every `/agent/v1` request that does not carry
 > `X-Agent-Version` with a 400, and **the download never sent it**, in any release up to and
 > including v0.1.2 (`core/update/fetch.cpp` sent the token and a `Range` and nothing else; the
 > agent's own calls always sent the header). So no unit in the field could fetch an image over LTE,
-> neither its own nor its radio's. Two halves fix it, and both are needed:
-> - **meshmaster.dk's pile 4.28, task 177**, which serves the three download routes — the manifest,
->   its signature and a file — to a request that carries no header, for the units already out there;
+> neither its own nor its radio's. Two halves fix it, and **both are in place now**:
+> - **meshmaster.dk's pile 4.28, task 177** — merged 8 November 2026 15:36 UTC and **deployed the
+>   same day as its release 61, 16:17 UTC** — which serves the three download routes (the manifest,
+>   its signature and a file) to a request that carries no header, for the units already out there;
 > - **this firmware's v0.1.3** (task p10-05), in which *every* request carries it, and a refusal
 >   names its status and its file: *http 400 for manifest.json*, with the server's own sentence
->   after it.
+>   after it and no token in it.
 >
-> So: a unit at **0.1.2 or older** takes v0.1.3 over LTE only once meshmaster.dk's 177 is deployed;
-> before that, *If it is wanted by cable instead* at the end of this section. From v0.1.3 onwards
-> the walk needs neither half, because the unit says who it is.
+> So: a unit at **0.1.2 or 0.1.1** takes v0.1.3 over LTE, because the server's exemption covers its
+> headerless download; and from v0.1.3 onwards neither half is needed, because the unit says who it
+> is. The exemption is temporary — meshmaster.dk deletes it the day no unit reports a version older
+> than 0.1.3 — so **a unit left behind on 0.1.2 is a unit that will one day need the cable**: *If it
+> is wanted by cable instead*, at the end of this section. A unit still at 0.1.0 goes by cable for a
+> different reason (*A unit at 0.1.0*, below).
 
-Before pressing anything, two facts about the file:
+Before pressing anything, three facts about the file:
 
 - **The image comes from meshmaster.dk and never from github.com.** The only path to the Walter's
   own image over the air is a `twinoak.fw.offer` whose product is `twinoak-walter-firmware`, and the
@@ -155,15 +159,23 @@ Before pressing anything, two facts about the file:
 - **The Walter's own download does not resume across wakes.** A radio image does: the store keeps a
   progress record and the next wake continues the file. The Walter's own slot is erased when a write
   opens on it (`SelfUpdate::beginWrite` → `written_ = 0`), so a download the wake's budget cuts
-  short is started again from zero at the next wake and the plan pays for those bytes twice. Since
+  short is started again from zero at the next wake and the plan pays for those bytes twice. From
   v0.1.3 the messages say so: the job's result carries *this slot keeps no progress, so the next
   wake starts the file again from zero*, and the line the cable shows ends *the next wake starts the
-  file again from zero* where a radio image's ends *the next wake continues it* (task p10-04; before
-  that both promised a resume). In
+  file again from zero* where a radio image's ends *the next wake continues it* (task p10-04; up to
+  v0.1.2 both promised a resume, which was true of a radio image and false of this one). In
   practice it fits: the exchange is given **twenty minutes** (`kBackendBoundMs`) and a megabyte a
-  wake (`kWakeDownloadBytes`), and the application is about 750 kB in **twelve 64 kB ranges**, each
-  its own request with its own deadline and three attempts. A range that stalls is retried; three
-  failures in a row end the download for that wake.
+  wake (`kWakeDownloadBytes`), and the application is **784 560 bytes** in **twelve 64 kB ranges**
+  (the last one 19 kB), each its own request with its own deadline and three attempts. A range that
+  stalls is retried; three failures in a row end the download for that wake.
+- **Every request says which build made it, and a refusal says what it was.** From v0.1.3 the
+  HTTP client itself puts `X-Agent-Version` on every request this firmware makes — the manifest, its
+  signature and each range included — so no path above it can leave it out (`core/net/client.cpp`,
+  task p10-05). When a request *is* refused, the line under it names the status and the file and
+  then the server's own sentence: `http 400 for manifest.json: …`, `http 404 for manifest.json`,
+  `http 403 for f.bin: the server refused this unit`. *a status this firmware does not act on* was
+  v0.1.2's wording for all of them and is gone. No token appears in such a line, whatever the server
+  wrote in its body.
 
 ### 1. *Offer a release*, with the Walter's product
 
@@ -181,11 +193,11 @@ fetch: manifest.json, 1024 bytes
 fetch: manifest.json.sig, 108 bytes
 fetch: check 1, the signature: passed (key this build trusts)
 fetch: check 2, the manifest: passed
-fetch: check 3, the image for this slot: passed - twinoak-walter-v0.1.2.bin, 763616 bytes, version 0.1.2+<sha7>
+fetch: check 3, the image for this slot: passed - twinoak-walter-v0.1.3.bin, 784560 bytes, version 0.1.3+<sha7>
 fetch: check 6, the manifest's region against this build's: passed
   range 0-65535: ok,  (attempt 1)
   ...
-fetch: 763616 bytes in 12 range(s), 0 retries, 0 restart(s), 214000 ms
+fetch: 784560 bytes in 12 range(s), 0 retries, 0 restart(s), 219000 ms
 fetch: check 4, the file's size and hash: passed
 fetch: check 5, the descriptor inside the file: passed
 fetch: check 6, the region: passed
@@ -195,11 +207,11 @@ Checks 1, 2, 3 and the manifest's half of 6 run **before a byte of the image is 
 5 and the rest of 6 over the bytes as they lie in the other slot — the laptop, the server and the
 manifest are all untrusted at every one of them (`spec/FIRMWARE-MANIFEST.md` §5).
 
-On the unit's page while it runs: the job's **Progress** line, *512 kB of 745 kB*, posted every
+On the unit's page while it runs: the job's **Progress** line, *512 kB of 766 kB*, posted every
 128 kB between two ranges (the one moment the socket is free), and the lease extended as it goes.
 When it is done the job says *stored*, with the image id, the hash and the bytes, and the page's
 **Firmware downloads** box gains a line for what the plan was billed. At the cable, `self status`
-now says `received: 0.1.2 in slot 1 (763616 bytes), waiting for 'self switch'` — the same state a
+now says `received: 0.1.3 in slot 1 (784560 bytes), waiting for 'self switch'` — the same state a
 `self receive` over USB leaves, and the same one the apply below consumes.
 
 ### 2. *Apply the candidate*
@@ -211,7 +223,7 @@ restarts. The boot after that is the trial:
 
 ```
 boot 7: software reset, the Walter's own update, switching to the other slot
-self-update: this image (0.1.2, slot 1) is on trial: 300 s to reach the main loop, HELLO the radio
+self-update: this image (0.1.3, slot 1) is on trial: 300 s to reach the main loop, HELLO the radio
   and reach the backend, or it is rolled back ('self status' watches, 'self confirm' / 'self reject' end it)
 ...
 self-update: on trial -> confirmed: all three conditions hold: confirmed
@@ -226,7 +238,7 @@ image comes back, the new one's hash goes on the bad list, and the journal says 
 
 On the unit's page: the job reads *committed* with the version it moved to, or *rolledBack* with the
 journal line by line — which is the unit disagreeing with the server, and allowed to. Afterwards the
-heartbeat's `agentVersion` is `0.1.2+<sha7>`, and that is the one place a person sees which release
+heartbeat's `agentVersion` is `0.1.3+<sha7>`, and that is the one place a person sees which release
 a unit out there is really running.
 
 ### If it is wanted by cable instead
@@ -238,7 +250,7 @@ survive — the same promise, from the same property of the file.
 ## A unit at 0.1.0
 
 A unit still at `v0.1.0` goes by cable, and the first unit is past this: it was flashed to `v0.1.1`
-on 7 November 2026 and takes this release over LTE (above). The section stays for any other board
+on 7 November 2026, took `v0.1.2` by cable on 8 November, and takes this release over LTE (above). The section stays for any other board
 left at `0.1.0`. On 6 November that release could not finish a radio install — the flasher never let
 the idle task run, so the task watchdog reset the Walter at every attempt and the run ended
 `STUCK: no image to return to` — and four more faults came out of the same evening. Taking such a
@@ -250,7 +262,7 @@ the server.
 The same one `esptool` line as a module out of the box, with **this release's** `-factory.bin`:
 
 ```
-esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.2-factory.bin
+esptool --chip esp32s3 --baud 921600 write-flash --flash-mode dio --flash-size 16MB 0x0 twinoak-walter-v0.1.3-factory.bin
 ```
 
 **What it keeps:** `nvs` (the settings — the APN, the SIM's PIN, the server's URL and token, the
@@ -261,7 +273,7 @@ image ends where the application ends, so a provisioned unit stays provisioned a
 the same radio images and the same journal it had (*What a factory flash keeps*, above).
 
 **Not over LTE, from 0.1.0** — and not for the reason it looks like. The path exists at `0.1.0`
-already and goes nowhere near github.com: it is the `twinoak.fw.offer` of *From 0.1.1 to 0.1.2, over
+already and goes nowhere near github.com: it is the `twinoak.fw.offer` of *From 0.1.2 to 0.1.3, over
 LTE* above, from meshmaster.dk and held to ISRG Root X1. What `0.1.0` cannot be relied on is
 **carrying its own download**:
 
@@ -272,7 +284,7 @@ LTE* above, from meshmaster.dk and held to ISRG Root X1. What `0.1.0` cannot be 
   make fifteen. The fix is `v0.1.1`'s, and the firmware that would have to do the fetching is the
   firmware with the fault.
 - **the radio needs a cable in this session anyway** (below), so the Walter's own flash costs
-  nothing extra; 750 kB over LTE-M on a metered SIM is not free.
+  nothing extra; 785 kB over LTE-M on a metered SIM is not free.
 
 ### Then the radio's first install
 
@@ -414,7 +426,7 @@ On the exit node's page, after that wake:
   once a minute has passed: a repeater-v2 unit tells the server when it will be back, and the
   server judges it against that promise rather than calling it quiet between wakes;
 - **the firmware version** — `agentVersion`, which is this firmware's own version string,
-  `0.1.2+<sha7>` for this release. It is the one place a person sees which release a unit out there
+  `0.1.3+<sha7>` for this release. It is the one place a person sees which release a unit out there
   is actually running;
 - **the repeater** — the unit's heartbeat reports its radio's public key, and the first heartbeat
   carrying a key the server knows links the exit node to that repeater by itself.
