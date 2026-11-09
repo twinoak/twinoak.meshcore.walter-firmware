@@ -39,6 +39,8 @@ bool isRadioVerb(Verb verb) {
     case Verb::kStatus:
     case Verb::kReboots:
     case Verb::kHeap:
+    case Verb::kCoreDump:
+    case Verb::kCoreDumpErase:
     case Verb::kPins:
     case Verb::kReboot:
     case Verb::kTrust:
@@ -142,13 +144,14 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::UplinkCheck* server, cycle::DutyCycle* duty, cycle::WakeCycle* cycle,
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
                  AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets,
-                 cycle::NetworkClock* wall, ModemTrace* trace, HeapReport* heap)
+                 cycle::NetworkClock* wall, ModemTrace* trace, HeapReport* heap,
+                 health::CoreDump* dumps)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
       mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets), wall_(wall),
-      trace_(trace), heap_(heap), flasher_(pins, clock, slots),
+      trace_(trace), heap_(heap), dumps_(dumps), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -451,6 +454,8 @@ void Console::runLine(const char* line) {
     case Verb::kStatus: status(); return;
     case Verb::kReboots: reboots(); return;
     case Verb::kHeap: heap(); return;
+    case Verb::kCoreDump: coreDump(); return;
+    case Verb::kCoreDumpErase: coreDumpErase(); return;
     case Verb::kPins: pins(); return;
     case Verb::kRakReset: rakReset(); return;
     case Verb::kRakKill: rakKill(p.command.seconds); return;
@@ -818,6 +823,99 @@ void Console::heap() {
   print("the block is what decides whether an image starts: the main task's stack has to come "
         "out of one, and tools/heap_at_start.py says so before the image is built "
         "(docs/ARCHITECTURE.md section 14)\n");
+}
+
+// The core dump the panic handler left behind (task p11-03; core/health/coredump.h). The one of
+// 9 November was read with `esptool read_flash 0xFF0000 0x10000` and a laptop, because the unit
+// could not say any of this; now it can, and `self status` says it too when the dump belongs to a
+// trial that was rolled back.
+void Console::coreDump() {
+  if (dumps_ == nullptr) {
+    print("error: this build has no coredump partition: nothing was given to the console "
+          "(main/main.cpp)\n");
+    return;
+  }
+  health::Dump d;
+  const bool present = dumps_->read(&d);
+  printf("coredump: %s\n", health::describe(d.state));
+  if (!present) {
+    // A truncated or badly summed dump still has a length and a version worth printing: it is
+    // what tells "the panic handler was interrupted" from "there is nothing there".
+    if (d.state != health::DumpState::kErased && d.state != health::DumpState::kNoRegion) {
+      printf("  the header says %lu bytes, version 0x%08lx (chip id %u, format %u.%u); the "
+             "partition is %lu bytes\n",
+             static_cast<unsigned long>(d.bytes), static_cast<unsigned long>(d.version),
+             static_cast<unsigned>(d.chip), static_cast<unsigned>(d.format),
+             static_cast<unsigned>(d.minor), static_cast<unsigned long>(dumps_->regionBytes()));
+    }
+    return;
+  }
+  printf("  %lu bytes of %lu, format %u.%u (ELF, CRC-32), chip id %u revision %lu; the checksum holds\n",
+         static_cast<unsigned long>(d.bytes), static_cast<unsigned long>(dumps_->regionBytes()),
+         static_cast<unsigned>(d.format), static_cast<unsigned>(d.minor),
+         static_cast<unsigned>(d.chip), static_cast<unsigned long>(d.revision));
+  // Which image wrote it: the dump's app_elf_sha256 against the two slots' own application
+  // descriptions. A dump whose image is in neither slot is a dump of something that has since
+  // been replaced, and saying so is the point.
+  printf("  written by the image whose ELF sha256 begins %s\n",
+         d.elf_sha256[0] != 0 ? d.elf_sha256 : "(the dump does not say)");
+  if (self_ == nullptr) {
+    print("  which slot that is cannot be said: this build has no self-update to ask\n");
+  } else {
+    interfaces::OwnSlot running;
+    interfaces::OwnSlot other;
+    const bool have_running = self_->runningSlot(&running);
+    const bool have_other = self_->otherSlot(&other);
+    const bool is_running = have_running && running.has_elf_sha256 &&
+                            health::elfShaMatches(running.elf_sha256, d.elf_sha256);
+    const bool is_other = have_other && other.has_elf_sha256 &&
+                          health::elfShaMatches(other.elf_sha256, d.elf_sha256);
+    if (is_running) {
+      printf("  that is the running image: slot %u, version %s\n",
+             static_cast<unsigned>(running.index), running.version[0] != 0 ? running.version : "?");
+    } else if (is_other) {
+      printf("  that is the other slot's image: slot %u, version %s\n",
+             static_cast<unsigned>(other.index), other.version[0] != 0 ? other.version : "?");
+    } else {
+      print("  that is neither slot's image now: whatever wrote it has been replaced\n");
+    }
+  }
+  printf("  panic: %s%s\n", d.panic[0] != 0 ? d.panic : "(the dump carries no panic line)",
+         d.panic_cut ? " [cut]" : "");
+  printf("  %u task%s", static_cast<unsigned>(d.tasks), d.tasks == 1 ? "" : "s");
+  for (std::size_t i = 0; i < d.named; ++i) {
+    printf("%s%s%s", i == 0 ? ": " : ", ", d.names[i][0] != 0 ? d.names[i] : "?",
+           d.crashed >= 0 && static_cast<std::size_t>(d.crashed) == i ? " (crashed)" : "");
+  }
+  print("\n");
+  print("  nothing erases it by itself: 'coredump erase confirm' is the only thing that does\n");
+}
+
+void Console::coreDumpErase() {
+  if (dumps_ == nullptr) {
+    print("error: this build has no coredump partition: nothing was given to the console "
+          "(main/main.cpp)\n");
+    return;
+  }
+  if (!dumps_->erase()) {
+    print("error: coredump erase: the partition could not be erased\n");
+    return;
+  }
+  print("coredump erase: erased; the next panic writes a new one\n");
+}
+
+void Console::printTrialEvidence(const update::SelfUpdate::LastTrial& trial) {
+  printf("what ended the last trial: %s\n", health::name(trial.reason));
+  if (trial.attributed) {
+    printf("  the core dump is that image's own: panic: %s%s\n", trial.panic,
+           trial.panic_cut ? " [cut]" : "");
+    if (trial.task[0] != 0) printf("  the task that crashed: %s\n", trial.task);
+    if (!trial.dump_now) {
+      print("  the dump itself is gone from the partition; this is what was written down\n");
+    }
+  } else {
+    printf("  no core dump was attributed to it: %s\n", health::describe(trial.dump));
+  }
 }
 
 void Console::pins() {
@@ -2290,13 +2388,18 @@ void Console::printSelfBoot(update::SelfBoot boot) {
       if ((p.flags & update::kFlagRadioKnownDown) != 0) print("  (the radio was known down before the switch: HELLO is not asked of it)\n");
       if ((p.flags & update::kFlagUnjournalled) != 0) print("  (no switch was journalled for it: nothing is known of the image but its slot)\n");
       return;
-    case update::SelfBoot::kRollbackRecorded:
+    case update::SelfBoot::kRollbackRecorded: {
       printf("self-update: rolled back: %s\n", update::describe(p.reason));
       printf("  the image %s in slot %u is %s; this is %s again\n", p.to[0] != 0 ? p.to : "?",
              static_cast<unsigned>(p.slot),
              (p.flags & update::kFlagNotOnBadList) != 0 ? "not on the bad list (its hash is not known)" : "on the bad list",
              p.from[0] != 0 ? p.from : core::version());
+      // What killed it, at the one boot that can say (task p11-03): this is the line a bench
+      // reads instead of reaching for esptool, and the same words go to the server.
+      update::SelfUpdate::LastTrial trial;
+      if (self_->lastTrial(&trial)) printTrialEvidence(trial);
       return;
+    }
     case update::SelfBoot::kNoSlots:
       print("self-update: the platform cannot say which application slot is running; no self-update\n");
       return;
@@ -2414,6 +2517,10 @@ void Console::selfStatus() {
   }
   printf("the last self-update's story (%lu entries):\n", static_cast<unsigned long>(count));
   for (std::size_t i = count; i > 0; --i) printSelfEntry(count - i + 1, entries[i - 1], payloads[i - 1]);
+  // And why it ended, when the story ends in a rollback the old image found at boot (task
+  // p11-03): the reset that ended the trial, and the panic line when the dump was that image's.
+  update::SelfUpdate::LastTrial trial;
+  if (self_->lastTrial(&trial)) printTrialEvidence(trial);
 }
 
 void Console::selfReceive() {

@@ -594,7 +594,9 @@ TEST_CASE("only the store reads and writes the image partition") {
   // the image partition and never names an image's bytes. The agent's RegionStore (task p4-05)
   // holds a third: a window of its own for the loop's retained state and the one kept image a wake
   // may leave behind - again not the image partition, and given its region by main/ as the store
-  // is given the image partition's.
+  // is given the image partition's. The core dump reader (task p11-03) holds a fourth: the
+  // `coredump` partition, which it reads, and which it erases only when a person has typed
+  // `coredump erase confirm` - no image's bytes are anywhere near it.
   const std::vector<std::string> allowed = {
       "components/interfaces/include/interfaces/flash_region.h",
       "components/core/include/core/image/store.h",
@@ -605,6 +607,8 @@ TEST_CASE("only the store reads and writes the image partition") {
       "components/platform/flash_partition.cpp",
       "components/agent/include/walter_agent/region_store.h",
       "components/agent/region_store.cpp",
+      "components/core/include/core/health/coredump.h",
+      "components/core/health/coredump.cpp",
   };
   std::vector<std::string> offenders;
   const std::filesystem::path root(TWINOAK_REPO_ROOT);

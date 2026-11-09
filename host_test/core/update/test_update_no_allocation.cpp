@@ -43,8 +43,10 @@ const char* const kUpdateIncludes[] = {
     "interfaces/clock.h",
     "interfaces/flash_region.h",
     // The Walter's own update (task p2-04): this image's descriptor and the build's version
-    // (what an offered image must be), health for the restart's reason, the verdict's token and
-    // the transfer target, the slots, a restart.
+    // (what an offered image must be), health for the restart's reason and - from task p11-03 -
+    // for the reset reason and the core dump a rolled-back trial is explained by, the verdict's
+    // token and the transfer target, the slots, a restart.
+    "core/health/coredump.h",
     "core/health/health.h",
     "core/image/receive.h",
     "core/image/this_image.h",

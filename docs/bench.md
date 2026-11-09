@@ -939,6 +939,32 @@ bootloader's rules; only a board shows that ESP-IDF's otadata and `esp_ota_*` be
   other slot `invalid (rejected by the image itself)` and the story ending `rolled back: …`;
   `image bad` lists the broken image's hash. **Pushing the same broken release again is refused**
   at the door: *this image failed its trial once and is never tried again*, with nothing erased.
+  Since task p11-03 the old image also says **what ended the trial**: after the rollback's two
+  lines, `what ended the last trial: software reset` (that is what a rejection's own restart is)
+  and then `no core dump was attributed to it: the partition is erased…` - because a trial that
+  rejected itself did not crash, and there is nothing in the `coredump` partition to find. The
+  same two lines are at the end of `self status`.
+- [ ] **A version that cannot start at all: the rollback carries the panic line.** This is the
+  9 November fault (`ARCHITECTURE.md` §14, `tasks/phase-11/evidence/`) and the one case the panic
+  line was built for. Make a test-key release whose `app_main` panics before the trial can begin -
+  the simplest is one line at the top of `app_main`, `assert(false)`, in a build you never release
+  - push it `--as self`, `self switch`, and let the board come back by itself. The old image boots
+  with `boot N: panic` among its lines and then:
+  ```
+  self-update: rolled back: the image never reached its main loop (the bootloader gave up on it)
+    the image 0.0.1 in slot 1 is on the bad list; this is 0.0.0-dev again
+  what ended the last trial: panic
+    the core dump is that image's own: panic: assert failed: false ...
+    the task that crashed: main
+  ```
+  Then `coredump`: `a core dump whose checksum holds`, its size and format, `written by the image
+  whose ELF sha256 begins …`, `that is the other slot's image: slot 1`, the panic line again, and
+  its tasks with the crashed one marked. **Bring back all of it**, and `self status` as well: it is
+  the first time a Walter has said why a trial died without a laptop and `esptool`. Then `coredump
+  erase confirm` and `coredump` again - *the partition is erased* - and check that `self status`
+  still has the reset reason and a **cut** panic line (the journal's copy, 31 characters, which is
+  what an erase leaves). **Nothing else must erase it**: reset the board a few times, let a wake
+  run, and `coredump` must still have the dump.
 - [ ] **Reset the Walter during a trial.** Push the good release, `self switch`, and press the
   module's reset while `self status` says *on trial* (use the broken build, or hold the radio in
   reset so the trial waits on `HELLO`). The board comes up in the **old** image: `running from

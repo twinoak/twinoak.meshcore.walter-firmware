@@ -27,6 +27,15 @@ bool prefixMatches(const std::uint8_t full[image::kSha256Size], const std::uint8
   return true;
 }
 
+// `text` into `out` of `size` bytes, terminated; true when something had to be left out.
+bool copyCut(char* out, std::size_t size, const char* text) {
+  std::size_t i = 0;
+  for (; text != nullptr && text[i] != 0 && i + 1 < size; ++i) out[i] = text[i];
+  const bool cut = text != nullptr && text[i] != 0;
+  for (std::size_t j = i; j < size; ++j) out[j] = 0;
+  return cut;
+}
+
 bool knownState(std::uint8_t byte) {
   return byte == self_update::kReceived || byte == self_update::kSwitching ||
          byte == self_update::kOnTrial || byte == self_update::kConfirmed ||
@@ -142,13 +151,48 @@ bool decode(const Entry& e, SelfPayload* out) {
   return true;
 }
 
+// ---------------------------------------------------------------------- the evidence payload
+
+void encode(const TrialEvidence& e, std::uint8_t out[kEvidencePayloadBytes]) {
+  for (std::size_t i = 0; i < kEvidencePayloadBytes; ++i) out[i] = 0;
+  out[0] = static_cast<std::uint8_t>(e.reason);
+  out[1] = static_cast<std::uint8_t>(e.dump);
+  out[2] = e.flags;
+  for (std::size_t i = 0; i < kEvidenceTask; ++i) out[3 + i] = static_cast<std::uint8_t>(e.task[i]);
+  for (std::size_t i = 0; i < kEvidencePanic; ++i) out[16 + i] = static_cast<std::uint8_t>(e.panic[i]);
+}
+
+bool decode(const Entry& entry, TrialEvidence* out) {
+  if (entry.kind != kind::kTrialEvidence || entry.size < kEvidencePayloadBytes || out == nullptr) {
+    return false;
+  }
+  *out = TrialEvidence{};
+  // Both enumerators are stored numbers; a value this build does not know becomes its own
+  // "unknown" rather than a cast into nothing (health::name and health::describe print it).
+  const std::uint8_t reason = entry.payload[0];
+  const std::uint8_t dump = entry.payload[1];
+  out->reason = reason <= static_cast<std::uint8_t>(health::ResetReason::kOther)
+                    ? static_cast<health::ResetReason>(reason)
+                    : health::ResetReason::kUnknown;
+  out->dump = dump <= static_cast<std::uint8_t>(health::DumpState::kPresent)
+                  ? static_cast<health::DumpState>(dump)
+                  : health::DumpState::kNoRegion;
+  out->flags = entry.payload[2];
+  for (std::size_t i = 0; i < kEvidenceTask; ++i) out->task[i] = static_cast<char>(entry.payload[3 + i]);
+  for (std::size_t i = 0; i < kEvidencePanic; ++i) out->panic[i] = static_cast<char>(entry.payload[16 + i]);
+  out->task[kEvidenceTask - 1] = 0;
+  out->panic[kEvidencePanic - 1] = 0;
+  return true;
+}
+
 // ------------------------------------------------------------------------------- the machine
 
 SelfUpdate::SelfUpdate(interfaces::OwnUpdate& slots, image::Store& store, Journal& journal,
                        link::client::Client& radio, UplinkCheck& uplink, interfaces::Clock& clock,
-                       interfaces::Restart& restart, BatterySource& battery, health::Health& health)
+                       interfaces::Restart& restart, BatterySource& battery, health::Health& health,
+                       health::CoreDump* dumps)
     : slots_(slots), store_(store), journal_(journal), radio_(radio), uplink_(uplink), clock_(clock),
-      restart_(restart), battery_(battery), health_(health) {
+      restart_(restart), battery_(battery), health_(health), dumps_(dumps) {
   // What an offered image must be: this image's own three words (spec/FIRMWARE-MANIFEST.md §2
   // and §5 check 3), read out of the descriptor in this very image rather than written a second
   // time. Slot 0: the Walter is not a radio position, and §4's `slot` byte of its descriptor is
@@ -251,6 +295,18 @@ SelfBoot SelfUpdate::begin() {
     const bool wrote = journal(SelfState::kRolledBack, why, flags, last);
     status_.state = SelfState::kRolledBack;
     status_.reason = why;
+    // Why it ended, written down beside the rollback and only here: this boot's reset reason is
+    // the reset that ended the trial, and the core dump - if the partition holds one that is the
+    // trial image's own - says what the panic was (task p11-03). The entry goes after the
+    // rollback's, so that the evidence is the last trial's and not an older one's.
+    //
+    // Not for kSwitchNotTaken: the restart came before the boot pointer moved, so that image was
+    // never started and nothing of this boot's reset is about it. A dump carrying its ELF's hash
+    // would be from some earlier life of the same build, and attributing it here would be the one
+    // thing this task is against.
+    if (wrote && why != SelfReason::kSwitchNotTaken) {
+      recordEvidence(last, other_known ? &other : nullptr);
+    }
     return wrote ? SelfBoot::kRollbackRecorded : SelfBoot::kJournalFailed;
   }
 
@@ -259,6 +315,71 @@ SelfBoot SelfUpdate::begin() {
   status_.reason = have ? last.reason : SelfReason::kNone;
   boot_ = have ? last : SelfPayload{};
   return SelfBoot::kNothing;
+}
+
+void SelfUpdate::recordEvidence(const SelfPayload& about, const interfaces::OwnSlot* trial_slot) {
+  TrialEvidence e;
+  e.reason = health_.thisBoot().reason;
+  if (dumps_ != nullptr) {
+    health::Dump dump;
+    (void)dumps_->read(&dump);
+    e.dump = dump.state;
+    // **A dump from another image is never attributed to this trial.** The slot the rollback
+    // names must be the other slot, that slot's own application description must carry an ELF
+    // SHA-256, and the dump's `app_elf_sha256` must be a prefix of it. An image flashed by cable,
+    // a dump this image wrote weeks ago, a switch that was never taken (nothing booted, so
+    // nothing of that image can have panicked): each fails one of the three.
+    const bool same_slot = trial_slot != nullptr && trial_slot->known && trial_slot->index == about.slot;
+    const bool mine = dump.present() && same_slot && trial_slot->has_elf_sha256 &&
+                      health::elfShaMatches(trial_slot->elf_sha256, dump.elf_sha256);
+    if (mine) {
+      e.flags |= kEvidenceAttributed;
+      if (copyCut(e.panic, kEvidencePanic, dump.panic) || dump.panic_cut) {
+        e.flags |= kEvidencePanicCut;
+      }
+      const char* name = dump.crashedName();
+      if (name[0] != 0) {
+        (void)copyCut(e.task, kEvidenceTask, name);
+        e.flags |= kEvidenceTaskKnown;
+      }
+    }
+  }
+  std::uint8_t bytes[kEvidencePayloadBytes];
+  encode(e, bytes);
+  // A journal that would not take it leaves the rollback entry alone: the story then says what
+  // happened without saying why, which is where this task started.
+  (void)journal_.append(kind::kTrialEvidence, bytes, sizeof bytes);
+}
+
+bool SelfUpdate::lastTrial(LastTrial* out) {
+  if (out == nullptr) return false;
+  *out = LastTrial{};
+  Entry entry;
+  TrialEvidence e;
+  if (!journal_.lastOf(kind::kTrialEvidence, &entry) || !decode(entry, &e)) return false;
+  Entry newest;
+  // The evidence belongs to the newest self-update entry it follows. A *received* or *switching*
+  // entry written since then means the story has moved on and this is an older trial's.
+  if (journal_.lastOf(kind::kSelfUpdate, &newest) && newest.seq > entry.seq) return false;
+  out->reason = e.reason;
+  out->dump = e.dump;
+  out->attributed = e.attributed();
+  (void)copyCut(out->task, kEvidenceTask, e.task);
+  (void)copyCut(out->panic, sizeof out->panic, e.panic);
+  out->panic_cut = e.panicCut();
+  // The whole line, out of the dump, when it is still there and still that image's: the entry's
+  // copy is 31 characters and the line of 9 November is 53.
+  if (out->attributed && dumps_ != nullptr) {
+    health::Dump dump;
+    interfaces::OwnSlot other;
+    if (dumps_->read(&dump) && slots_.other(&other) && other.known && other.has_elf_sha256 &&
+        health::elfShaMatches(other.elf_sha256, dump.elf_sha256)) {
+      out->dump_now = true;
+      (void)copyCut(out->panic, sizeof out->panic, dump.panic);
+      out->panic_cut = dump.panic_cut;
+    }
+  }
+  return true;
 }
 
 void SelfUpdate::mainLoopReached() {

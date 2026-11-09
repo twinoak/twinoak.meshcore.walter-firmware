@@ -58,6 +58,9 @@
 
 #include <agent/IJobExtension.h>
 #include <agent/JobEnvelopes.h>
+// The library's bounded, heap-free JSON writer: one private method below takes one, so that the
+// `lastTrial` object of an apply's result and of `twinoak.fw.state` is written once (task p11-03).
+#include <agent/JsonWriter.h>
 
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
@@ -303,7 +306,14 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   // The result shapes, into data_; the length, or 0 when it did not fit.
   std::size_t writeOfferResult(bool stored, const char* image_id, const char* sha256_hex, std::uint64_t bytes,
                                int check, const char* reason, bool resumed);
-  std::size_t writeApplyResult(ApplyOutcome outcome, const char* from, const char* to, Refusal refusal);
+  // `reason` and `trial` are the rolled-back case's (task p11-03): the sentence a person reads on
+  // the job page, and what ended the trial - the reset reason, whether a core dump was attributed
+  // to the trial image, its panic line and the task that crashed. Both null everywhere else.
+  std::size_t writeApplyResult(ApplyOutcome outcome, const char* from, const char* to, Refusal refusal,
+                               const char* reason = nullptr,
+                               const core::update::SelfUpdate::LastTrial* trial = nullptr);
+  // The `lastTrial` object of an apply's result and of `twinoak.fw.state`: one shape, written once.
+  void writeTrial(mm::JsonWriter& w, const core::update::SelfUpdate::LastTrial& trial);
   std::size_t writePowerCycleResult(std::uint32_t off_ms, bool radio_back, bool has_boot_id, std::uint32_t boot_id);
   std::size_t writeStateResult();
   // One line of the apply's journal, bounded to the shape.

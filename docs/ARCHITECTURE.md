@@ -1279,7 +1279,7 @@ behind it when the server side is built (`spec/SYSTEM.md` §8, `spec/proposals/0
 | `journal` | data/`0x41` | `0x620000` | 64 KB | ours |
 | `rakfw` | data/`0x40` | `0x630000` | 6 MB | ours: 2 radios × 3 images; the store uses 4.7 MB of it (§6) |
 | — | | `0xC30000` | 3.75 MB | unallocated |
-| `coredump` | data/coredump | `0xFF0000` | 64 KB | |
+| `coredump` | data/coredump | `0xFF0000` | 64 KB | read by `core/health/coredump.h` (task p11-03); erased only by a typed `coredump erase confirm` |
 
 ## 12. What is tested where
 
@@ -1678,6 +1678,14 @@ assert failed: esp_startup_start_app app_startup.c:86 (res == pdTRUE)
 ESP-IDF could not create the main task. Nothing of this firmware had run — the core dump the
 rollback left behind holds two tasks, `ipc0` and `ipc1`, and neither is ours. The linker had said
 37 021 bytes of DIRAM were free.
+
+That core dump took a person at the bench with `esptool read_flash 0xFF0000 0x10000`, which is why
+task p11-03 made the unit report it: the boot that finds a rolled-back trial records its own reset
+reason and, when the `coredump` partition holds a dump whose checksum holds **and whose application
+ELF SHA-256 is the trial image's**, its panic line and the task that crashed - into the journal, the
+apply's result and `twinoak.fw.state` (`docs/update.md`, *What killed it*). `core/health/coredump.h`
+is the reader, host-tested over that very dump; `coredump` on the console prints it, and nothing in
+this firmware erases a dump by itself.
 
 **The linker's figure is about the segment, not about the start.** `.data`, `.bss` and the parts of
 `.text` that live in DIRAM are what it measures, and 37 573 bytes "remain" in this build too. What

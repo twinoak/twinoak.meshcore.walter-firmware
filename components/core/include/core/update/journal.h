@@ -84,6 +84,12 @@ constexpr std::uint16_t kAgentAttention = 0x0006;
 // trial from what this entry and the self-update's say; and the end of any apply, which is what
 // `twinoak.fw.state` reports as the slot's last update.
 constexpr std::uint16_t kAgentJob = 0x0007;
+// What ended a trial of the Walter's own image (task p11-03, core/update/self_update.h): the
+// reset reason of the boot that found the rollback, and the panic line and crashed task of the
+// core dump when the partition held the trial image's own. Its own kind rather than more bytes in
+// the *rolled back* entry, whose 48 are full, and written immediately after it - so an evidence
+// entry is the last trial's when no self-update entry is newer than it.
+constexpr std::uint16_t kTrialEvidence = 0x0008;
 }  // namespace kind
 
 struct Entry {

@@ -20,6 +20,7 @@
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
 #include "core/console/console.h"
+#include "core/health/coredump.h"
 #include "core/health/health.h"
 #include "core/image/receive.h"
 #include "core/image/store.h"
@@ -74,6 +75,10 @@ struct SelfWorld {
   StoreBench store;  // the image store over a simulated flash, its clock, its wall clock, the test key
   fakes::FakeClock& clock = store.clock;
   sim::SimFlash journal_flash{upd::kJournalPartitionBytes};
+  // The `coredump` partition (task p11-03): in the world and not in the Walter, because a dump
+  // outlives the boot that wrote it - that is the whole point of it - and because the boot that
+  // reads it is the one after the trial.
+  sim::SimFlash coredump_flash{0x10000};
   fakes::FakeOwnUpdate own{64 * 1024};
   fakes::FakeRetained retained;
   sim::ScriptedRadio radio{clock};
@@ -103,16 +108,27 @@ struct SelfWalter {
   fakes::CaptureOut out;
   fakes::FakeRestart restart;
   core::health::Health health{w.retained, w.clock};
+  core::health::CoreDump dumps{w.coredump_flash};
   core::image::Receiver receiver{w.store.store, w.store.verdict, out, w.clock};
-  upd::SelfUpdate self{w.own, w.store.store, journal, client, uplink, w.clock, restart, battery, health};
+  upd::SelfUpdate self{w.own,   w.store.store, journal, client, uplink,
+                       w.clock, restart,       battery, health, &dumps};
+  // The console over this Walter. The eighteen nullptrs are every seam this bench has no use for
+  // (the supervisor, the uplink, the settings, the duty cycle, the agent's four, ...); the last
+  // argument is the `coredump` partition (task p11-03), so that `coredump` and `self status`'s
+  // evidence lines are tested here, where the trial they are about happens.
   core::console::Console console{out, board, health, w.clock, restart, client, slots,
-                                 &w.store.store, &receiver, nullptr, &journal, &self};
+                                 &w.store.store, &receiver, nullptr, &journal, &self,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 &dumps};
   core::link::FrameReceiver rx;
 
   explicit SelfWalter(SelfWorld& world, core::health::ResetReason why = core::health::ResetReason::kSoftware)
       : w(world) {
     w.restart_asked = false;
     w.journal_flash.powerOn();
+    w.coredump_flash.powerOn();
     w.store.flash.powerOn();
     w.own.powerOn();
     REQUIRE(w.store.store.begin() == StoreError::kNone);
@@ -230,10 +246,13 @@ struct SelfUnit {
 
   SelfUnit() : walter(std::make_unique<SelfWalter>(world, core::health::ResetReason::kPowerOn)) {}
 
-  void reboot() {
+  // `why` is the reset the next boot reports (task p11-03): the default is the software reset a
+  // switch or a rejection asks for, and a trial that was killed by a panic boots with
+  // ResetReason::kPanic, which is what 0.1.3's rollback found.
+  void reboot(core::health::ResetReason why = core::health::ResetReason::kSoftware) {
     walter.reset();
     world.own.reboot();
-    walter = std::make_unique<SelfWalter>(world);
+    walter = std::make_unique<SelfWalter>(world, why);
   }
 
   // Receives an image into the other slot and switches to it: the two console commands, as a

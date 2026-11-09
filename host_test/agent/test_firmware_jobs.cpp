@@ -14,6 +14,7 @@
 
 #include "agent/agent_bench.h"
 #include "core/version.h"
+#include "fixtures/coredump_fixture.h"
 #include "fixtures/manifest_files.h"
 
 using bench::AgentBench;
@@ -447,6 +448,76 @@ TEST_CASE("twinoak.fw.apply of the Walter's own image: offered into the other sl
   CHECK(bench::objectOf(data, "journal").find("\"step\":\"confirmed\"") != std::string::npos);
   CHECK_FALSE(bench.half().firmware.resultOwed());
   CHECK(bench.half().firmware.counters().owed_posted == 1);
+}
+
+TEST_CASE("twinoak.fw.apply of the Walter's own image, rolled back: the result says what killed it") {
+  // The 9 November trial, as the server would have seen it had this existed: the apply switches,
+  // the image never reaches its main loop, the old image comes back with a panic reset and the
+  // real core dump in the partition, and *that* boot's wake posts the owed result.
+  AgentBench bench;
+  const Candidate golden("update-golden");
+  const Candidate self("self-a");
+  readyUnit(bench, golden);
+  bench::serveRelease(bench.world.http.server, self, bench::kBase, nullptr, nullptr, nullptr, true);
+  bench.server().queue(bench::ownJob(21, agent::kOfferType, bench::offerPayload(self, agent::kProductWalter)).json());
+  (void)bench.oneWake();
+  REQUIRE(bench::member(bench::objectOf(bench.lastResult(21), "data"), "stored") == "true");
+  bench.server().queue(bench::ownJob(22, agent::kApplyType, bench::applyPayload(bench::sha256Hex(self.file), agent::kProductWalter)).json());
+  (void)bench.oneWake();
+  REQUIRE(bench.half().firmware.resultOwed());
+
+  // The dump the trial image left, and slot 1's own application description naming the same ELF.
+  bench.world.own.setElfSha(1, fixtures::kFixtureElfSha);
+  fixtures::putCoreDumpFixture(bench.world.coredump_flash);
+  // The switch's reboot starts the trial image; it panics before anything of ours runs, so the
+  // next reset aborts the slot and the old image is selected again.
+  bench.world.own.reboot();
+  bench.world.own.reboot();
+  REQUIRE(bench.world.own.runningIndex() == 0);
+  bench.boot(interfaces::WokeBy::kNotFromSleep, core::health::ResetReason::kPanic);
+  bench.v().begin();
+  REQUIRE(bench.v().self.status().state == core::update::SelfState::kRolledBack);
+  (void)bench.v().run();
+
+  const std::string result = bench.lastResult(22);
+  REQUIRE_FALSE(result.empty());
+  const std::string data = bench::objectOf(result, "data");
+  CHECK(bench::member(data, "outcome") == "rolledBack");
+  // The sentence a person reads on the job page: the rollback's reason, the reset that ended the
+  // trial, the panic line and the task. This is the half of the fault the server could not see.
+  const std::string reason = bench::member(data, "reason");
+  CHECK(reason.find("rolled back: the image never reached its main loop") != std::string::npos);
+  CHECK(reason.find("the reset that ended it: panic") != std::string::npos);
+  CHECK(reason.find("panic: assert failed: esp_startup_start_app app_startup.c:86") != std::string::npos);
+  CHECK(reason.find("in task ipc0") != std::string::npos);
+  // And the same, field by field, for anything that renders rather than reads.
+  const std::string trial = bench::objectOf(data, "lastTrial");
+  REQUIRE_FALSE(trial.empty());
+  CHECK(bench::member(trial, "reset") == "panic");
+  CHECK(bench::member(trial, "attributed") == "true");
+  CHECK(bench::member(trial, "panic") == fixtures::kFixturePanic);
+  CHECK(bench::member(trial, "panicCut") == "false");
+  CHECK(bench::member(trial, "task") == "ipc0");
+  CHECK(bench::member(trial, "dumpHeld") == "true");
+  // The journal lines the result carries end with the same three facts.
+  const std::string journal = bench::objectOf(data, "journal");
+  CHECK(journal.find("\"step\":\"rolled-back\"") != std::string::npos);
+  CHECK(journal.find("\"step\":\"reset\"") != std::string::npos);
+  CHECK(journal.find("\"step\":\"panic\"") != std::string::npos);
+  CHECK(journal.find("\"step\":\"task\"") != std::string::npos);
+  CHECK_FALSE(bench.half().firmware.resultOwed());
+
+  // twinoak.fw.state carries it too, for a unit nobody asked anything of.
+  bench.server().queue(bench::ownJob(23, agent::kStateType, "{}").json());
+  (void)bench.oneWake();
+  const std::string state = bench::objectOf(bench.lastResult(23), "data");
+  REQUIRE_FALSE(state.empty());
+  const std::string walter = bench::objectOf(state, "walter");
+  const std::string from_state = bench::objectOf(walter, "lastTrial");
+  REQUIRE_FALSE(from_state.empty());
+  CHECK(bench::member(from_state, "reset") == "panic");
+  CHECK(bench::member(from_state, "panic") == fixtures::kFixturePanic);
+  CHECK(bench::member(from_state, "task") == "ipc0");
 }
 
 TEST_CASE("twinoak.power.cycle: within the board's bounds the rail is cut and the radio comes back; refused below the floor and in critical") {

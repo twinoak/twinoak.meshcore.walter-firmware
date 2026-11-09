@@ -40,6 +40,10 @@ const CommandDef kCommands[kCommandCount] = {
      "the internal heap now: free, the largest free block, the least free since this boot, and "
      "how much of the main task's 16 KB stack has never been used. The block is the figure that "
      "decides whether an image starts at all"},
+    {"coredump [erase confirm]", "coredump", Group::kUnit,
+     "the core dump the panic handler left behind: whether there is one, whether its checksum "
+     "holds, which of the two application slots wrote it, its panic line and its tasks. "
+     "'coredump erase confirm' forgets it, and nothing else in this firmware ever does"},
     {"dump", "dump", Group::kUnit,
      "the last few kilobytes this port printed, oldest first, whole lines only. Nothing the "
      "radio sent as text is in it, and nothing the mesh said (S-12)"},

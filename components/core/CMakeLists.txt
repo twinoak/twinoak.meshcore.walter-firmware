@@ -11,6 +11,9 @@ idf_component_register(
        # constructs it (main/main.cpp builds a SingleTarget).
        "board/dual_target.cpp"
        "health/health.cpp"
+       # The `coredump` partition, read (task p11-03): the flash header, the ELF, its notes and
+       # the TCBs' names, so that a rolled-back trial can say what killed it.
+       "health/coredump.cpp"
        "console/parser.cpp"
        "console/commands.cpp"
        "console/console.cpp"
