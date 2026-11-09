@@ -17,10 +17,17 @@
 //                     `Authorization: Bearer <token>` included, because TLS is inside the modem
 //                     and the UART carries the head in plaintext.
 //
-// The last two are compiled in only at `CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG`, which is why
-// `sdkconfig.defaults` now sets it (and why it is the whole-image switch and not a per-file level:
-// that guard is a Kconfig macro no `LOG_LOCAL_LEVEL` can raise). The default level is unchanged,
-// so nothing of it prints until this class raises the tag.
+// The last two are compiled in only at `CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG`, and that
+// guard is a Kconfig macro no `LOG_LOCAL_LEVEL` can raise, so it is the whole image or nothing.
+//
+// **The release build is nothing** (task p11-01). `sdkconfig.defaults` set it for v0.1.3 and the
+// debug strings it brought included the library's 3 080-byte `_logEscapeBuffer`, which is `.bss`,
+// which is the room the main task's 16 KB stack is taken from: v0.1.3 could not create the main
+// task and no boot of it reached `app_main`. So the trace is a build of its own again
+// (`docs/bench.md` section 13), `compiledIn()` below is how the console knows which build it is
+// in, and `docs/ARCHITECTURE.md` section 14 is why a byte of `.bss` costs what it costs. In a
+// build that does have the level, the default level is still info, so nothing of it prints until
+// this class raises the tag.
 //
 // -- the rail -----------------------------------------------------------------------------------
 //
@@ -66,6 +73,7 @@ constexpr std::uint32_t kTraceLockWaitMs = 1000;
 class WalterModemTrace final : public core::console::ModemTrace {
  public:
   bool on() const override;
+  bool compiledIn() const override;
   bool turn(bool on, const char* token, const char* pin, char* why, std::size_t cap) override;
   std::uint32_t lines() const override;
   std::uint32_t redacted() const override;

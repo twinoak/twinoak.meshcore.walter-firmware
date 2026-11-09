@@ -1,0 +1,91 @@
+# What ESP-IDF's start-up and this firmware's static initialisers take from the heap
+# before the main task exists - every operation, in order (task p11-01).
+#
+# Recorded from this firmware running in the QEMU of the pinned ESP-IDF image and
+# converted by replaying it over the same build: tools/heap_programme.gdb says how, and
+# tools/heap_at_start.py --from-record is what wrote this file. Re-record it when
+# ESP-IDF, sdkconfig.defaults or a static initialiser of main/ changes.
+#
+#   alloc <bytes|runner|scratch> <caps>   one heap_caps_* allocation
+#   free <n>                              the block operation <n> allocated
+#
+# `runner` is sizeof(mm::JobRunner) and `scratch` is agent::kKeptScratchBytes, read
+# from the ELF of the build being judged: they are the two that change with the build.
+# Recorded from a build of version 0.0.0-dev.
+alloc 4       0x1800
+alloc 8       0x0804
+alloc 16      0x0804
+alloc 20      0x0800
+alloc 36      0x1000
+alloc 30      0x1000
+alloc 33      0x1000
+alloc 84      0x0804
+alloc 84      0x0804
+alloc 84      0x0804
+alloc 428     0x1800
+alloc 84      0x0804
+alloc 84      0x0804
+alloc 84      0x0804
+alloc 128     0x1800
+alloc 128     0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc 12      0x1800
+alloc 84      0x0804
+alloc 8       0x1800
+alloc 84      0x0804
+alloc runner  0x1800   # 66000 bytes in the build it was recorded from
+alloc scratch 0x1800   # 20480 bytes in the build it was recorded from
+alloc 1280    0x0804
+alloc 340     0x0804
+alloc 1280    0x0804
+alloc 340     0x0804
+alloc 8       0x0800
+alloc 4       0x0800
+alloc 44      0x0804
+alloc 44      0x0804
+alloc 44      0x0804
+alloc 52      0x1800
+alloc 52      0x1800
+alloc 52      0x1800
+alloc 52      0x1800
+alloc 52      0x1800
+alloc 52      0x1800
+alloc 52      0x1800
+free 63
+free 60
+free 59
+alloc 20      0x1800
+free 59
+alloc 20      0x1800
+free 59

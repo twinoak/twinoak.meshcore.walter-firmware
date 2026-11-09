@@ -121,6 +121,40 @@ TEST_CASE("a board that cannot trace says so in one line and changes nothing") {
   CHECK_FALSE(hasText(c.run("status"), "trace:"));
 }
 
+// Task p11-01: the release build compiles no debug log line, so there is nothing to switch on -
+// and switching nothing on must not even reach the seam, which on a board would take a 4 KB line
+// buffer and install a log hook for a trace that could never print.
+TEST_CASE("a build whose debug lines were never compiled says so and touches nothing") {
+  SettingsConsole c;
+  c.trace.compiled_in = false;
+
+  const std::string on = c.run("trace modem on");
+  CHECK(hasText(on, "error: trace modem on: "));
+  CHECK(hasText(on, "are not in this build"));
+  CHECK(hasText(on, "docs/bench.md section 13"));
+  CHECK(c.trace.turns == 0);
+  CHECK_FALSE(c.trace.on());
+  // Off says the same thing rather than pretending to have switched something off.
+  CHECK(hasText(c.run("trace modem off"), "error: trace modem off: "));
+  CHECK(c.trace.turns == 0);
+  // `trace` still reads, says where the lines are, and does not offer the command that cannot work.
+  const std::string read = c.run("trace");
+  CHECK(hasText(read, "trace: the modem library's TX and RX lines are off"));
+  CHECK(hasText(read, "the lines are not in this build"));
+  CHECK(hasText(read, "docs/bench.md section 13"));
+  CHECK_FALSE(hasText(read, "'trace modem on' switches it on"));
+  // And `status` stays quiet about a trace, because there is none.
+  CHECK_FALSE(hasText(c.run("status"), "trace:"));
+}
+
+TEST_CASE("a trace build offers the command") {
+  SettingsConsole c;
+  CHECK(c.trace.compiled_in);
+  const std::string read = c.run("trace");
+  CHECK(hasText(read, "'trace modem on' switches it on"));
+  CHECK_FALSE(hasText(read, "not in this build"));
+}
+
 TEST_CASE("a build with no trace at all answers in one line") {
   SettingsConsole c;
   c.withoutSettings();  // the console main hands the fewest things to

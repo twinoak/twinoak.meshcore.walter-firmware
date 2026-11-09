@@ -88,26 +88,26 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # Logging at info: what the bench reads. A task that needs debug output raises it locally.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
-# **The debug level compiled in, and nothing printed at it** (task p10-06). The default level
-# above is what a unit prints; this says which levels exist in the binary at all. ESP-IDF's
-# default is "the same as the default level", which strips every ESP_LOGD at compile time -
-# including the modem library's TX and RX lines (managed_components/dptechnics__walter-modem/src:
-# the `_transmitCmd` macro's `TX: ...`, `_processModemRSP`'s `RX: ...`, and the payload line at
-# the data prompt, the last two inside `#if CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG`). Those
-# three lines are the only account of what the modem was told and what it answered, and the stall
-# that silences this unit (tasks/phase-10/FOLLOWUPS.md) cannot be read without them. Until this
-# task they needed a build of their own, made and flashed by cable; now they are in the release
-# build and `trace modem on` switches them on until the next boot.
+# **The debug level is not compiled in** (task p10-06 put it in, task p11-01 took it out again).
+# The default level above is what a unit prints; CONFIG_LOG_MAXIMUM_LEVEL says which levels exist
+# in the binary at all, and ESP-IDF's default - "the same as the default level" - is what this
+# build takes: every ESP_LOGD is stripped at compile time, the modem library's TX and RX lines
+# among them (managed_components/dptechnics__walter-modem/src: the `_transmitCmd` macro's
+# `TX: ...`, `_processModemRSP`'s `RX: ...`, and the payload line at the data prompt, the last two
+# inside `#if CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG`).
 #
-# It is the whole-image switch and not the library's files alone, because the library's two main
-# lines are guarded by `CONFIG_LOG_MAXIMUM_LEVEL` itself - a Kconfig macro from sdkconfig.h,
-# which no per-component `LOG_LOCAL_LEVEL` can raise - so a per-file level would have compiled in
-# the `TX:` of a command and left out the `RX:` of every answer, which is the half that matters.
-# What it costs is the debug strings of every component that has them: this one line took the
-# image from 766 912 to 779 344 bytes, 12 432 more in a 3 MB slot, measured on its own (report
-# p10-06). What it does not cost is a line of output: CONFIG_LOG_DEFAULT_LEVEL stays at info,
-# every tag starts there, and only `esp_log_level_set` from the console raises one.
-CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+# Why it is out. `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y` brought the debug strings of every component
+# that has them - 12 432 bytes of flash, which a 3 MB slot can spare - but it also brought the
+# library's `_logEscapeBuffer`, 3 080 bytes of `.bss`, and `.bss` is what decides whether the
+# image starts: v0.1.3 could not create its main task and every boot of it ended in
+# `assert failed: esp_startup_start_app app_startup.c:86`. The whole account, with the model that
+# explains it, is `docs/ARCHITECTURE.md` §14 and tasks/phase-11/reports/01.md; `tools/heap_at_start.py`
+# is what says a build still fits. **A line added to `.bss` here is spent out of the room the main
+# task's stack needs, not out of the 3 MB slot.**
+#
+# The trace is a build of its own again: `docs/bench.md` §13 says how to make one, and
+# `trace modem on` in a build without it says so and switches nothing on.
+# CONFIG_LOG_MAXIMUM_LEVEL_DEBUG is not set
 
 # ---- The compiler -------------------------------------------------------------------------------
 # Optimise for size, asserts kept: 3 MB slots are generous today and will not stay so, and an

@@ -1628,9 +1628,15 @@ p4-01 to p4-04, which held the code in the image through `--gc-sections` while n
 PSRAM (`sdkconfig.defaults`) and too little internal DRAM to hold both in the static `.dram0.bss`
 segment beside the update verdict and the console, task p4-05 takes them **from the heap once at
 boot** — never a stack local, never freed, so the whole-run lifetime the library asks for holds —
-and reaches them through a namespace-scope pointer. That leaves ~36 kB of headroom in the segment;
-`xtensa-esp32s3-elf-size -A` on the `.elf` is how a future task checks it still fits. Task p4-01's
-report has the flash and the heap the library adds.
+and reaches them through a namespace-scope pointer. Task p4-01's report has the flash and the heap
+the library adds.
+
+**The headroom the linker prints is not the figure that decides anything** (task p11-01). It said
+~36 kB when this paragraph was written and 37 573 bytes in the build of 0.1.4; v0.1.3 had 37 021
+and could not start at all. What decides whether an image starts is the largest *free block* of
+one heap region when ESP-IDF creates the main task, and these two allocations take 90 120 bytes of
+the 93 920 that region has. §14 is the whole account, and `tools/heap_at_start.py` is what
+answers it for a build.
 
 ### The rails the agent inherits
 
@@ -1659,3 +1665,90 @@ where the exit-node firmware's own tests cannot see:
 Entry **A** is the ninth, and it is about the copy rather than the running unit: the library's
 boundary as an allow list, no way of skipping certificate verification in either copied tree, no
 store and no file system a password could land in, and both manifests held byte for byte.
+
+## 14. The heap at start
+
+From task p11-01, which exists because v0.1.3 was a correct image that could not run: signed,
+verified, flashed, and every boot of it ended in
+
+```
+assert failed: esp_startup_start_app app_startup.c:86 (res == pdTRUE)
+```
+
+ESP-IDF could not create the main task. Nothing of this firmware had run — the core dump the
+rollback left behind holds two tasks, `ipc0` and `ipc1`, and neither is ours. The linker had said
+37 021 bytes of DIRAM were free.
+
+**The linker's figure is about the segment, not about the start.** `.data`, `.bss` and the parts of
+`.text` that live in DIRAM are what it measures, and 37 573 bytes "remain" in this build too. What
+decides whether an image starts is something else: the largest **free block** of one heap region,
+at one moment — after ESP-IDF's start-up and this firmware's static initialisers have taken what
+they take, and before `app_main` exists. Three things make that moment what it is.
+
+**1. The heap is not one pool.** ESP-IDF registers a heap per region of
+`components/heap/port/esp32s3/memory_layout.c`, with the reserved ranges trimmed out of them. On
+this board, with the configuration of `sdkconfig.defaults`, there are four:
+
+| | bytes | what it is |
+|---|---|---|
+| `_heap_start`..0x3FCE9710 | ~94 800 | the DIRAM that `.data` and `.bss` did not take. **The only one a 20 kB or 64 kB object can come from** |
+| 0x3FCE9710..0x3FCEEE34 | 22 308 | what the ROM used for its own stack. Registered in `main_task` — *after* the main task is created, so it can never hold the main task's own stack |
+| 0x3FCF0000..0x3FCF8000 | 32 768 | the half of the last 64 kB that the 32 kB data cache does not use |
+| 0x600FE060..0x600FFFE8 | 8 072 | RTC fast memory |
+
+The second one is the trap: `heap_caps_enable_nonos_stack_heaps()` registers it at the top of
+`main_task`, which runs only once the main task exists. Those 22 kB are part of the free heap
+`esp_get_free_heap_size()` reports to `agent id` and to the journal — and they were not there when
+the main task's stack was asked for. A figure read after boot cannot answer this question either.
+
+They are tried in order of **increasing size** (`heap_caps_init.c` sorts them so, and
+`heap_caps_base.c` walks the list), at each of three priority levels. A task stack asks for
+`MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT` (`freertos/heap_idf.c`): the DIRAM heap matches at
+priority 0, the 32 kB DRAM heap only at priority 1, and RTC RAM at priority 2 — so an allocation
+goes to DIRAM until DIRAM cannot hold it, and then, silently, somewhere else.
+
+**2. Two allocations take almost all of the DIRAM heap, in the initialisers.** `new mm::JobRunner`
+(§13) asks for 66 000 bytes and the kept-image scratch for 20 480. TLSF rounds an allocation up to
+the next second-level size class (`mapping_search` in `components/heap/tlsf/`), so the runner's
+block is **69 632** bytes — 3 632 of pure rounding — and the two of them are 90 120 bytes of the
+93 920 the DIRAM heap has. Before them ESP-IDF's own start-up has taken about 3.5 kB in some fifty
+small pieces: `heap_caps_init`'s own array of heap descriptors, newlib's locks and `FILE`s, the VFS
+entries, the console. After them come the two IPC tasks (a 1 280-byte stack and a 352-byte TCB
+each) and the secondary init functions.
+
+**3. What is left is what the main task gets.** `CONFIG_ESP_MAIN_TASK_STACK_SIZE` is 16 384 and the
+TCB is 340 bytes, and they are the next two allocations after the initialisers. In 0.1.4 they come
+out of the 32 kB DRAM heap and leave 11 788 bytes; in v0.1.3 there was no block for the stack
+anywhere, and `xTaskCreatePinnedToCore` returned `errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY`.
+
+### Why one kilobyte of `.bss` cost the whole image
+
+The arrangement flips. v0.1.2's DIRAM heap had 21 884 bytes free when the scratch asked for
+20 480, so the scratch stayed in DIRAM and the 32 kB DRAM heap was free for the main task's stack.
+v0.1.3 added 1 728 bytes of static data; the same free block was 20 068 — **412 bytes short** — so
+the scratch went to the DRAM heap instead, took 20 484 of its 32 032 bytes, and the stack then fit
+in neither heap: 16 220 free in DIRAM, 11 540 in DRAM, 16 384 wanted. One image booted with 12 kB
+to spare and the next could not start, and the difference between them was 1 728 bytes of `.bss`.
+
+So the figure to watch is not the segment's headroom but **how close the scratch is to not fitting
+in DIRAM**: 1 404 bytes in v0.1.2, −412 in v0.1.3, **356 bytes in 0.1.4**. That is what
+`tools/heap_at_start.py` prints as *the tightest is N bytes*, and the next 357 bytes of `.data` or
+`.bss` anywhere in this firmware will move the scratch and fail the build.
+
+### `tools/heap_at_start.py`
+
+The model. It takes a build directory and replays the whole thing — the regions from the build's
+map and `sdkconfig`, `sizeof(mm::JobRunner)`, `sizeof(TCB_t)` and `kKeptScratchBytes` from its
+DWARF, the region table and the allocator from ESP-IDF's own sources at the pinned version, and
+the start-up's allocations in order from `tools/heap_at_start.programme` — and says *fits* or *does
+not fit*, with the margin. It has no fudge factor and it is checkable: the pinned image ships QEMU
+for the esp32s3, and against a build booted there under gdb the model's block map is byte for byte
+the chip's, for v0.1.2, for v0.1.3 and for 0.1.4. `tools/heap_programme.gdb` is how the programme
+is recorded, and it must be recorded again when ESP-IDF, `sdkconfig.defaults` or a static
+initialiser of `main/` changes. Task p11-02 makes it a rail of `tools/verify.sh`.
+
+**What this means for a task that adds static storage.** A `static` buffer, a bigger ring, a new
+namespace-scope object: the cost is not "bytes out of 37 kB", it is bytes out of 356 before an
+image stops starting. Flash is the generous resource here (a 3 MB slot, a quarter used); internal
+RAM at boot is not. `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG` is the cautionary tale: 12 432 bytes of flash
+nobody would notice, and 3 080 bytes of `.bss` that stopped the unit dead.

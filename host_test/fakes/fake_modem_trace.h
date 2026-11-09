@@ -22,12 +22,18 @@ class FakeModemTrace final : public core::console::ModemTrace {
   bool refuse = false;
   const char* refusal = "the trace needs 4096 bytes for one line and the heap would not give them";
 
+  // Whether the library's debug lines are in the image at all (task p11-01). True here, as in a
+  // trace build; a test sets it false to be the release build, where nothing can be switched on.
+  bool compiled_in = true;
+
   // What it was told, for the test to read.
   std::uint32_t turns = 0;
   std::string last_token;
   std::string last_pin;
 
   bool on() const override { return on_; }
+
+  bool compiledIn() const override { return compiled_in; }
 
   bool turn(bool on, const char* token, const char* pin, char* why, std::size_t cap) override {
     ++turns;
