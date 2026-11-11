@@ -42,14 +42,26 @@ interval, runs the jobs the server has for it and sleeps again
 > firmware read as a radio awaiting its first install; a download message promised a resume the
 > Walter's own slot cannot keep; and a thirty-second stall on an observations POST turned out to be
 > **reproducible**, with no way to trace it but a build of its own.
-> [`v0.1.3`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest) is those
-> six ([`tasks/phase-10/`](tasks/phase-10/README.md)), and it is the first release that can really
-> be given to a unit in the field **over LTE** — the path has existed since `v0.1.2` and had never
-> once worked. **Everything else is still simulators**: a simulated nRF52 down to its flash
+> `v0.1.3` is those six ([`tasks/phase-10/`](tasks/phase-10/README.md)), and it is the first
+> release that could really be given to a unit in the field **over LTE** — the path had existed
+> since `v0.1.2` and had never once worked. **And then it did, and the release could not start.**
+> On 9 November the unit fetched `v0.1.3` over LTE in twelve ranges, switched to it, and was back
+> on `v0.1.2` a moment later by itself: ESP-IDF could not create the main task, because 1 728
+> bytes more static data had moved a 20 kB block into the heap its 16 kB stack needed. The
+> rollback did exactly what phase 2 built it for, on a unit nobody was at — and `v0.1.3` is an
+> image that cannot start **on any board**, by cable or over the air (*A Walter stuck on 0.1.3* in
+> [`docs/flashing.md`](docs/flashing.md)).
+> [`v0.1.4`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest) is
+> `v0.1.3` that starts: the room back, a build that **fails when the main task would not fit**, a
+> rollback that says what killed the trial, and a release that is **booted in an emulator before
+> it is published** ([`tasks/phase-11/`](tasks/phase-11/README.md),
+> [`docs/release.md`](docs/release.md)). Whether a unit has taken `v0.1.4` over LTE is **not known
+> when this was written**: the release went out by hand on 10 November and nothing in this
+> repository records the result yet. **Everything else is still simulators**: a simulated nRF52 down to its flash
 > controller, a flash that loses power at any operation, a scripted repeater, a fake modem that
 > fails in every way a real one does, a scripted HTTPS server, a scripted meshmaster.dk and the
 > agent library's own simulated stock repeater. [`docs/bench.md`](docs/bench.md) is the walk that
-> turns that over one step at a time, `v0.1.3` is the release it is walked with
+> turns that over one step at a time, `v0.1.4` is the release it is walked with
 > ([`docs/flashing.md`](docs/flashing.md)), and this line stays here until a unit has walked it.
 
 **Still unverified on a board** ([`docs/bench.md`](docs/bench.md), the six it marks ★): §5 the
@@ -58,7 +70,8 @@ must fail its health check and bring the golden image back; §15 a scope on the 
 across sleep and wake, where there must be no edge at all; and §18's three — the first heartbeat
 recognised as *this* unit, an offer that resumes after the cable is pulled, and an apply that rolls
 back when the server asked for it. Nor has a unit yet walked a whole day, timed a flash or a push
-properly, run twenty pairs of HTTPS requests, taken **its own** release over LTE, or seen
+properly, run twenty pairs of HTTPS requests, **kept** a release of its own taken over LTE (it
+fetched and switched to one on 9 November, and the trial rolled it back), or seen
 `rak provision` give a factory radio its base.
 
 | Phase | What | |
@@ -73,10 +86,13 @@ properly, run twenty pairs of HTTPS requests, taken **its own** release over LTE
 | 8 | **what the first unit showed** (6 November): the flasher's watchdog, the transfer in bytes, one connection one socket, the radio known before a job, link 1.1 and the band — published as `v0.1.1` | released |
 | 9 | **the first unit's weekend** (7 November): a delay that yields, the socket ids' close accounting, a silent radio told from a scanner, the local door with no password and link 1.2's `LOCAL_REQUEST` — published as `v0.1.2` | released |
 | 10 | **a unit that is heard** (8 November): a wait that counts the sleep, what a wake really did, a radio without its identity, the download that does not resume, a fetch that says who it is and the modem's trace from the console — published as `v0.1.3` | released |
+| 11 | **room to start** (9 November, after the first update over LTE): the room back for the main task and a model of the heap that explains both releases, a build that refuses an image that would not start, a rollback that carries the reset reason and the core dump's panic line, and **a release booted in QEMU before it is published** — published as `v0.1.4` | released |
 | 6, later | the bench pile, once the rig is on USB; the bridge role; the dual adapter | — |
 
-**The release is [`v0.1.3`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)**
-(`v0.1.0` was the first, on 5 November), signed with the release key Thomas made on 20 October
+**The release is [`v0.1.4`](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)**
+(`v0.1.0` was the first, on 5 November; **`v0.1.3`, 9 November, must not be installed** — it
+cannot start, and *A Walter stuck on 0.1.3* in [`docs/flashing.md`](docs/flashing.md) is how a
+board that has it is brought back), signed with the release key Thomas made on 20 October
 2026 — key id `73efdd383a957596`, its public half in [`keys/release-keys.txt`](keys/README.md) and
 its private half a secret of the release workflow. So a build of this firmware trusts one key
 (`trust` on the console says which), and a Walter flashed by cable with a release can take every

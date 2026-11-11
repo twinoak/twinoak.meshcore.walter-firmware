@@ -1154,6 +1154,9 @@ def rail_main_task_fits(r):
 BOOT_GATE = "tools/release/boot_gate.py"
 RELEASE_WORKFLOW = ".github/workflows/release.yml"
 BOOT_GATE_SECONDS = "BOOT_GATE_SECONDS=90"
+# The call site, not the function: a verify.sh that still defines check_boot_gate and never
+# calls it would pass a grep for the name (R22 learned the same lesson).
+GATE_CALL_SITE = 'check_boot_gate "$RELEASE/'
 GATE_CALL = "python tools/release/boot_gate.py"
 SIGN_CALL = "python tools/release/sign_manifest.py"
 
@@ -1169,7 +1172,7 @@ def rail_a_release_starts(r):
     r.problems(must_exist(BOOT_GATE, RELEASE_WORKFLOW),
                "the boot gate or the release workflow is gone:")
     # The local half (S-10: local first), in the one script that defines "verified".
-    r.problems(must_contain("tools/verify.sh", "check_boot_gate", "boot_gate.py --factory",
+    r.problems(must_contain("tools/verify.sh", GATE_CALL_SITE, "boot_gate.py --factory",
                             "-factory.bin", BOOT_GATE_SECONDS),
                "tools/verify.sh no longer boots the release's factory image before it signs it:")
     r.looked_at("tools/verify.sh: the release step runs the gate over "

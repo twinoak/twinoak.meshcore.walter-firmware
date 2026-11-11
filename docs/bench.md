@@ -9,9 +9,10 @@ and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`); the first
 at a desk on 6 November — half an hour that found five faults — `v0.1.1` on 7 November, which
 gave its radio a golden image and found five more, and `v0.1.2` on 8 November, which ran a night on
 its battery and was heard on about every sixth wake. **No unit has walked this file.** It is what
-turns that sentence over, and **`v0.1.3` is the release it is walked with**
-([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item added by phases 8, 9 and 10
-needs that release or later, and says so.
+turns that sentence over, and **`v0.1.4` is the release it is walked with**
+([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item added by phases 8 to 11
+needs that release or later, and says so. (`v0.1.3` was withdrawn in everything but name: it
+cannot start at all - [`flashing.md`](flashing.md), *A Walter stuck on 0.1.3*.)
 
 Walk it in order. A step whose *Needs* are not met is a step that will waste an evening, and a
 number written down in step 2 is one step 16 does not have to guess at.
@@ -120,7 +121,9 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   ```
 
   Then flash it and look for **the banner**. A banner means the main task exists and `app_main`
-  ran; no banner, with the ROM's `rst:0xc (RTC_SW_CPU_RST)` lines repeating, means the image could
+  ran - and since task p11-04 every release has already shown that much in the pinned image's
+  QEMU, so a board that does *not* print it is a disagreement between the part and the emulator
+  and not a surprise about the build; no banner, with the ROM's `rst:0xc (RTC_SW_CPU_RST)` lines repeating, means the image could
   not start and the model was wrong - which is a finding about `tools/heap_at_start.py` and
   `docs/ARCHITECTURE.md` §14, not about the board. Write down the first boot's lines either way.
   (An image flashed by cable has no rollback: a unit flashed with one that cannot start restarts
@@ -169,9 +172,16 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   after boot. Task 03 owns their rules; this only confirms that task 01's image drives none of them.
 
 - [ ] **A released factory image says on the console what its manifest says about it** (task
-  p0-02). Take the `release-*` artifact of a *Run workflow* dry run (or `out/release/` of a local
-  `tools/verify.ps1`), flash the `-factory.bin` with the `esptool` line in its `NOTES.md`, and
-  hold what the console prints against the files beside it:
+  p0-02). **This is no longer a gate on a release, and it is still the only thing that reads these
+  lines off silicon.** Since task p11-04 the dry run boots that very file in the pinned image's
+  QEMU before anything is signed, and refuses it unless it reaches `app_main`, prints the banner
+  with the version being released in it and prints the `heap:` line (`tools/release/boot_gate.py`,
+  [`release.md`](release.md) *The boot gate*) - so a release no longer waits for a person at a
+  desk, and what a person at a desk adds is the part an emulator cannot: the real ROM, the real
+  flash, the real USB and the figures of the two items above. Take the `release-*` artifact of a
+  *Run workflow* dry run (or `out/release/` of a local `tools/verify.ps1`), flash the
+  `-factory.bin` with the `esptool` line in its `NOTES.md`, and hold what the console prints
+  against the files beside it:
 
   ```
   python spec/tools/manifestref.py descriptor twinoak-walter-<tag>-factory.bin
@@ -222,8 +232,8 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
 
   (that hex is the public half in `keys/release-keys.txt`, key id `73efdd383a957596`; the same
   thing with the file rather than the hex is `python tools/release/verify_release.py <the
-  directory>`). Then flash `twinoak-walter-v0.1.3-factory.bin` with the `esptool` line in the
-  release's own body and read three lines: the banner's version is **`0.1.3+<sha7>`** with that
+  directory>`). Then flash `twinoak-walter-v0.1.4-factory.bin` with the `esptool` line in the
+  release's own body and read three lines: the banner's version is **`0.1.4+<sha7>`** with that
   commit's seven characters, `self status` says `ota_0` and **`valid`**, and `trust` says
   **`1 key … 73efdd383a957596`**. That is the whole point of the release: a board flashed by cable
   with it can take every later one over LTE.
@@ -241,7 +251,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   hash), `rak update status` (the 6 November story and its last state), `image bad`. Then the
   `esptool` line of [*Releases* → *Latest*](https://github.com/twinoak/twinoak.meshcore.walter-firmware/releases/latest)'s
   `-factory.bin` ([`flashing.md`](flashing.md), *A unit at 0.1.0*), and afterwards:
-  the banner says **`0.1.3+<sha7>`**, `self status` says `ota_0` and `valid`, and **all four
+  the banner says **`0.1.4+<sha7>`**, `self status` says `ota_0` and `valid`, and **all four
   readings above are unchanged** — the same keys set (a secret still answers `set`, never its
   value), the same images in the store with the same hashes, the same journal with the same last
   state, the same bad list. One key lost, one image gone or one journal entry missing is a finding
