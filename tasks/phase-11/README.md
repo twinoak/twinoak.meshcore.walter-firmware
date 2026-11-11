@@ -28,9 +28,11 @@ So this pile has four parts:
 - make the build refuse an image that would not start (02);
 - let a rollback say what killed its trial, so the next one is read from meshmaster.dk and not with
   esptool at the bench (03);
-- publish 0.1.4 only after it has started on a board and switched over from 0.1.2 there (04).
+- make a release start before it is published, in CI (04). v0.1.4 itself was published by hand on
+  10 November, so Thomas could try it over LTE while away from the workstation.
 
-**Before this pile (Thomas, now).**
+**Before this pile (Thomas, now)** - *decided against on 9 November: only Thomas's unit runs this
+firmware, so 0.1.3 stays as it is and v0.1.4 supersedes it.*
 
 - meshmaster.dk: Firmware → 0.1.3 → **Withdraw**.
 - GitHub: make **v0.1.2** *Latest* again. Put one line at the top of v0.1.3's notes: *Do not
@@ -40,8 +42,7 @@ So this pile has four parts:
 - Keep `out/images/` (0.1.3's ELF and map, built at a990bf3) until 0.1.4 is out. 01 can use them,
   but it rebuilds both tags anyway.
 
-**Not on the board.** No session opens a port. 04 stops until Thomas has put the candidate on the
-bench (its *First* says what to bring back).
+**Not on the board.** No session opens a port.
 
 ## Order and dependencies
 
@@ -50,13 +51,14 @@ bench (its *First* says what to bring back).
 | 01 | [room-for-the-main-task](01-room-for-the-main-task.md) | — | 0.1.2 and 0.1.3 measured; a model of the heap at the main task's creation that explains both; the release build starts with a stated margin |
 | 02 | [a-ceiling-on-the-heap](02-a-ceiling-on-the-heap.md) | 01 | a rail in `tools/verify.sh` that fails a build whose main task would not fit, with a margin; `heap` at boot and on the console, for the bench to check the model |
 | 03 | [a-rollback-says-what-killed-it](03-a-rollback-says-what-killed-it.md) | — | a rolled-back trial carries the reset reason and the core dump's panic line to the journal, the apply's result and `twinoak.fw.state`; `coredump` on the console |
-| 04 | [the-release-0-1-4](04-the-release-0-1-4.md) | 01–03, and Thomas's bench record | `v0.1.4` published as *Latest*; `build_release.py` refuses a release without a bench record for its code |
+| 04 | [a-release-starts-first](04-a-release-starts-first.md) | 01–03 | a release boots in the pinned image's QEMU before it is signed, on a tag, a dry run and locally; the docs for 0.1.4. Publishes nothing: v0.1.4 went out by hand on 10 November |
 
 ```powershell
 .\tasks\run-all.ps1 -Phase '11'
 ```
 
-04 stops at its *First* until the bench record exists. Then run it again.
+04 was stopped once for a bench record; that step is gone (see 04). Resume with
+`.\tasks\run-all.ps1 -Phase '11' -From 04`.
 
 ## Models
 
@@ -64,11 +66,10 @@ bench (its *First* says what to bring back).
 
 ## Afterwards (Thomas)
 
-- **The bench, before 04** (04's *First* names the file): flash the candidate's dry-run factory
-  image by cable and keep its first boot lines, `heap` among them; then put v0.1.2 back by cable and
-  walk `docs/bench.md` §10's *Push the next version and switch* with the candidate. Bring back the
-  boot lines, `self status` after the trial and `reboots`.
-- **Then over LTE**: offer 0.1.4 to LTE Exit Node 1, then apply.
+- **Over LTE, from v0.1.2** (10 November): import v0.1.4 on meshmaster.dk, canary for LTE Exit Node
+  1, *Offer a release*, *Apply the candidate*.
+- **The bench, when there is time:** the dry-run factory image by cable, for the `heap:` line on
+  silicon against `docs/bench.md` §1's figures.
 
 ## Follow-ups
 
