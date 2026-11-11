@@ -22,8 +22,9 @@ The four greps that used to sit in `tools/verify.sh` itself - pin ownership, the
 selector, core/ and the modem library, the TLS rail - are here now, unchanged in what they
 refuse; `verify.sh` calls this instead. Two rails cannot be checked from the source
 alone, because they are about a built image: R6 (the test key's bytes, the +TESTKEY stamp and the
-signing symbols) and R22 (the heap at the moment the main task is created). The build and release
-steps of `verify.sh` do those, and their entries here hold *them* to doing it.
+signing symbols), R22 (the heap at the moment the main task is created) and R23 (the release's
+factory image booted in the pinned image's QEMU before it is signed). The build and release steps
+of `verify.sh` do those, and their entries here hold *them* to doing it.
 """
 
 import argparse
@@ -1146,6 +1147,63 @@ def rail_main_task_fits(r):
     return r
 
 
+# ---- R23: nothing is signed that has not started (task p11-04) ---------------------------------
+
+# The gate, the two places it runs, and the step it must run before. The seconds are written down
+# in one place - tools/verify.sh - and this is the only other file that names the number.
+BOOT_GATE = "tools/release/boot_gate.py"
+RELEASE_WORKFLOW = ".github/workflows/release.yml"
+BOOT_GATE_SECONDS = "BOOT_GATE_SECONDS=90"
+GATE_CALL = "python tools/release/boot_gate.py"
+SIGN_CALL = "python tools/release/sign_manifest.py"
+
+
+def rail_a_release_starts(r):
+    """Task p11-04: no release is signed whose factory image has not started. v0.1.3 passed
+    build_release.py, sign_manifest.py and every check of spec/FIRMWARE-MANIFEST.md §5, and could
+    not create its main task on any board - the one thing nothing had asked it to do was start.
+    Like R6 and R22 this cannot be checked from the source: it needs the built file, booted in the
+    QEMU the pinned image ships. So tools/verify.sh's release step and release.yml's publish job
+    both run tools/release/boot_gate.py over the file that would be published, before anything is
+    signed, and this entry holds *them* to doing it."""
+    r.problems(must_exist(BOOT_GATE, RELEASE_WORKFLOW),
+               "the boot gate or the release workflow is gone:")
+    # The local half (S-10: local first), in the one script that defines "verified".
+    r.problems(must_contain("tools/verify.sh", "check_boot_gate", "boot_gate.py --factory",
+                            "-factory.bin", BOOT_GATE_SECONDS),
+               "tools/verify.sh no longer boots the release's factory image before it signs it:")
+    r.looked_at("tools/verify.sh: the release step runs the gate over "
+                "out/release/<project>-<tag>-factory.bin with the build's ELF, at most %s s"
+                % BOOT_GATE_SECONDS.split("=")[1])
+    # The workflow half, and - the part a grep for the call alone would miss - that it is before
+    # the signature. A gate after the signature is not a gate.
+    r.problems(must_contain(RELEASE_WORKFLOW, GATE_CALL, SIGN_CALL, "--factory"),
+               "%s no longer boots the release before it publishes it:" % RELEASE_WORKFLOW)
+    if os.path.exists(os.path.join(ROOT, RELEASE_WORKFLOW)):
+        # The calls themselves, not the names: both are named in that file's own prose as well.
+        workflow = read(RELEASE_WORKFLOW)
+        gate_at = workflow.find(GATE_CALL)
+        sign_at = workflow.find(SIGN_CALL)
+        if gate_at < 0 or sign_at < 0 or gate_at > sign_at:
+            r.broken("%s signs the manifest before it boots the image, or does not boot it at "
+                     "all: the gate has to come first, or it is not a gate" % RELEASE_WORKFLOW, [])
+        else:
+            r.looked_at("%s: the boot gate is run before sign_manifest.py" % RELEASE_WORKFLOW)
+    # And the gate must still be able to refuse, with its three criteria. A version of it that
+    # only printed would pass every grep above and hold nothing.
+    r.problems(must_contain(BOOT_GATE, "REFUSED", "reached app_main", "the banner",
+                            "HEAP_LINE", "return 0 if ok else 1"),
+               "%s no longer refuses an image that did not start:" % BOOT_GATE)
+    r.looked_at("%s exits 1 unless the image reached app_main, printed the banner with the "
+                "version being released in it and printed app_main's `heap:` line" % BOOT_GATE)
+    r.problems(must_contain("tools/release/test_release.py", "TheBootGateReads", "boot_gate"),
+               "the boot gate's own tests are gone:")
+    r.says("held by tools/verify.sh and by .github/workflows/release.yml, each booting the "
+           "factory image in the pinned image's QEMU before anything is signed - not reachable "
+           "from the source alone - and by the two transcripts in tools/release/test_release.py")
+    return r
+
+
 # ---- the rails, in one table -------------------------------------------------------------------
 
 RAILS = [
@@ -1172,6 +1230,7 @@ RAILS = [
     ("R20", "an update starts by a claimed job, a typed command or the golden-image rung", rail_update_has_three_doors),
     ("R21", "a path hash is the claim's; this firmware chooses none (S-12)", rail_path_hashes),
     ("R22", "an image whose main task would not fit is never built", rail_main_task_fits),
+    ("R23", "nothing is signed that has not started in QEMU", rail_a_release_starts),
 ]
 
 
