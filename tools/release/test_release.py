@@ -16,7 +16,10 @@ a field with no settings, or an image nobody can identify, or a signature that p
   * signing with no key in the environment, and with the test key *in* the environment;
   * verifying a release with an empty trust table, and with the wrong key, and after one byte of
     the manifest changed;
-  * publishing a release nobody wrote a word about: no release-notes/vX.Y.Z.md, or an empty one.
+  * publishing a release nobody wrote a word about: no release-notes/vX.Y.Z.md, or an empty one;
+  * publishing an image that does not start (task p11-04): the boot gate's reading of a boot is
+    held here to two transcripts from the pinned image's QEMU - this firmware's, and v0.1.3's,
+    which panicked before app_main on every board and in the emulator alike.
 
 The shape of the manifest is held against spec/fixtures/manifest/manifest-walter.json, which
 spec/tools/manifestref.py generated from FIRMWARE-MANIFEST.md: same keys, same order, same types.
@@ -44,6 +47,7 @@ sys.path.insert(0, HERE)
 import check_partitions
 import manifestref
 
+import boot_gate
 import build_release
 import sign_manifest
 import verify_release
@@ -725,6 +729,162 @@ class Verifying(ReleaseCase):
         with self.assertRaises(Refused) as caught:
             verify_release.verify(self.out, [verify_release.test_public_key()], "the test key")
         self.assertIn("exactly one image", str(caught.exception))
+
+
+# ------------------------------------------------------------------ the boot gate
+
+# Two transcripts, both from the pinned image's QEMU on 11 November 2026 (task p11-04's report):
+# the build of this task passing, and **v0.1.3 rebuilt at its own tag** failing - the release that
+# was published without ever having started, and whose boot ends where the core dump of
+# 9 November says it ended. What the gate reads is a pure function of these two strings, so these
+# are the tests of it; the gate's own run in QEMU is tools/verify.sh's release step and the
+# release workflow's publish job.
+PASSING_CONSOLE = (
+    "\ntwinoak-walter 0.1.4+1a2b3c4\n"
+    "heap: 33840 bytes free, largest free block 18432 (internal, 8-bit), the main task's "
+    "16384-byte stack already taken ('heap')\n")
+PASSING_GDB = """\
+Breakpoint 1 at 0x4037a08f
+Hardware assisted breakpoint 2 at 0x4200cf5f: file /project/main/main.cpp, line 224.
+
+Thread 1 hit Breakpoint 2, app_main () at /project/main/main.cpp:224
+GATE-APPMAIN
+Hardware assisted breakpoint 3 at 0x420097ab
+GATE-HEAP
+[Inferior 1 (process 1) detached]
+"""
+FAILING_GDB = """\
+Breakpoint 1 at 0x4037a0bf
+Hardware assisted breakpoint 2 at 0x4200d4db: file /project/main/main.cpp, line 222.
+GATE-PANIC assert failed: 0x42071b2a <cached disabled>:86 (<cached disabled>)
+GATE-WHERE
+#0  esp_system_abort (details="assert failed: 0x42071b2a <cached disabled>:86 (<cached disabled>)")\
+ at /opt/esp/idf/components/esp_system/port/esp_system_chip.c:87
+#1  __assert_func (file=<optimized out>, line=<optimized out>, func=<optimized out>, \
+expr=<optimized out>) at /opt/esp/idf/components/newlib/src/assert.c:81
+#2  esp_startup_start_app () at /opt/esp/idf/components/freertos/app_startup.c:86
+#3  start_cpu0_default () at /opt/esp/idf/components/esp_system/startup.c:222
+[Inferior 1 (process 1) detached]
+"""
+RELEASED_AS = "0.1.4+1a2b3c4"
+
+
+class TheBootGateReads(unittest.TestCase):
+    """tools/release/boot_gate.py's judge(): the three criteria, over transcripts."""
+
+    def judge(self, console, gdb_log, version=RELEASED_AS, expect_heap=True):
+        ok, lines = boot_gate.judge(console, gdb_log, version, expect_heap=expect_heap)
+        return ok, "\n".join(lines)
+
+    def test_a_boot_that_reached_app_main_said_its_version_and_printed_its_heap_line_passes(self):
+        ok, said = self.judge(PASSING_CONSOLE, PASSING_GDB)
+        self.assertTrue(ok, said)
+        self.assertIn("reached app_main", said)
+        self.assertIn("twinoak-walter 0.1.4+1a2b3c4", said)
+        self.assertIn("16384-byte stack taken", said)
+        self.assertIn("33840 bytes free", said)
+        self.assertNotIn("NO    ", said)
+
+    def test_the_boot_v0_1_3_had_is_refused_and_the_reason_names_the_panic_and_where_it_was(self):
+        """The whole point of the gate. v0.1.3's boot printed nothing at all, because the panic is
+        before app_main; the reason has to carry both the assert and - since QEMU redacts the
+        assert's own strings - the frame that asserted."""
+        ok, said = self.judge("", FAILING_GDB)
+        self.assertFalse(ok)
+        self.assertIn("never reached app_main: it panicked first", said)
+        self.assertIn("assert failed:", said)
+        self.assertIn("in esp_startup_start_app at app_startup.c:86", said)
+        # And the other two criteria are refused as well, each in its own words.
+        self.assertIn("the banner 'twinoak-walter <version>' was never printed", said)
+        self.assertIn("the 'heap:' line was not printed", said)
+        self.assertEqual(said.count("NO    "), 3)
+
+    def test_a_boot_that_went_nowhere_without_panicking_says_so(self):
+        ok, said = self.judge("", "Breakpoint 1 at 0x4037a08f\nGATE-TIMEOUT after 90 s\n")
+        self.assertFalse(ok)
+        self.assertIn("did not panic either", said)
+        self.assertIn("stuck before the firmware's own code", said)
+
+    def test_a_banner_naming_another_version_is_refused(self):
+        """What a release is: the version in the banner is the version being published. A build
+        whose PROJECT_VER was not the release's would pass every other check there is."""
+        ok, said = self.judge(PASSING_CONSOLE, PASSING_GDB, version="0.1.5+9999999")
+        self.assertFalse(ok)
+        self.assertIn("the banner says 'twinoak-walter 0.1.4+1a2b3c4' and the version being "
+                      "released is 0.1.5+9999999", said)
+
+    def test_an_image_that_started_but_printed_no_heap_line_is_refused(self):
+        console = "\ntwinoak-walter 0.1.4+1a2b3c4\nrunning from ota_0 at 0x010000\n"
+        ok, said = self.judge(console, PASSING_GDB)
+        self.assertFalse(ok)
+        self.assertIn("the 'heap:' line was not printed", said)
+
+    def test_a_heap_line_with_no_stack_in_it_is_refused(self):
+        console = ("\ntwinoak-walter 0.1.4+1a2b3c4\nheap: 33840 bytes free, largest free block "
+                   "18432 (internal, 8-bit), the main task's 0-byte stack already taken\n")
+        ok, said = self.judge(console, PASSING_GDB)
+        self.assertFalse(ok)
+        self.assertIn("the main task's stack is 0 bytes", said)
+
+    def test_an_older_release_is_judged_on_app_main_and_its_banner_alone(self):
+        """v0.1.2 has no `heap:` line in it - task p11-02 added one - and it starts perfectly
+        well. The gate reads that out of the image's own bytes rather than assuming it."""
+        console = "\ntwinoak-walter 0.1.2+5aa5542\nrunning from ota_0 at 0x010000\n"
+        ok, said = self.judge(console, PASSING_GDB, version="0.1.2+5aa5542", expect_heap=False)
+        self.assertTrue(ok, said)
+        self.assertIn("has no 'heap:' line in it at all", said)
+
+    def test_a_panic_after_app_main_is_refused_too(self):
+        """A boot that started and then died is not a release either, and the first criterion
+        alone would have passed it."""
+        ok, said = self.judge(PASSING_CONSOLE, PASSING_GDB + FAILING_GDB)
+        self.assertFalse(ok)
+        self.assertIn("panicked after app_main", said)
+
+    def test_the_heap_line_is_looked_for_in_the_image_and_not_assumed(self):
+        self.assertTrue(boot_gate.HEAP_FORMAT in b"....heap: %lu bytes free, largest free block..")
+        self.assertFalse(boot_gate.HEAP_FORMAT in b"twinoak-walter 0.1.2+5aa5542")
+
+
+class TheBootGateFlashImage(unittest.TestCase):
+    """What it gives QEMU: the factory image at 0x0 and an erased chip above it."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="twinoak-boot-gate-test-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def write(self, data):
+        path = os.path.join(self.dir, "factory.bin")
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def test_the_factory_image_is_padded_with_0xff_to_the_whole_flash(self):
+        factory = self.write(bytes([boot_gate.IMAGE_MAGIC]) + b"\x01\x02\x03")
+        out = os.path.join(self.dir, "flash.bin")
+        self.assertEqual(boot_gate.flash_image(factory, out), 4)
+        with open(out, "rb") as fh:
+            data = fh.read()
+        self.assertEqual(len(data), boot_gate.FLASH_BYTES)
+        self.assertEqual(data[:4], bytes([boot_gate.IMAGE_MAGIC]) + b"\x01\x02\x03")
+        self.assertEqual(set(data[4:]), {boot_gate.ERASED})
+
+    def test_a_file_that_is_not_an_esp_idf_image_is_refused(self):
+        factory = self.write(b"not an image")
+        with self.assertRaises(boot_gate.Refused) as caught:
+            boot_gate.flash_image(factory, os.path.join(self.dir, "flash.bin"))
+        self.assertIn("does not begin with 0xE9", str(caught.exception))
+
+    def test_an_image_larger_than_the_flash_is_refused(self):
+        factory = self.write(bytes([boot_gate.IMAGE_MAGIC]) * 64)
+        with self.assertRaises(boot_gate.Refused) as caught:
+            boot_gate.flash_image(factory, os.path.join(self.dir, "flash.bin"), flash_bytes=32)
+        self.assertIn("more than the 32 of this board's flash", str(caught.exception))
+
+    def test_an_empty_file_is_refused(self):
+        factory = self.write(b"")
+        with self.assertRaises(boot_gate.Refused):
+            boot_gate.flash_image(factory, os.path.join(self.dir, "flash.bin"))
 
 
 # ------------------------------------------------------------------ the descriptor, against the spec

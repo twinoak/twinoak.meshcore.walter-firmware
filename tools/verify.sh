@@ -23,10 +23,13 @@
 #                 is never copied anywhere), then images to out/images/
 #   partitions    tools/check_partitions.py --self-test, then against the build
 #   release       a dry run of the whole release over the build just made, into out/release/:
-#                 build_release.py, signed with the specification's public test key, then verified
-#                 - except at a release's own version (TWINOAK_VERSION=X.Y.Z+<sha7>, which is what
-#                 the release workflow's build job passes), where the test key may not sign and the
-#                 signature is the workflow's: see step_release
+#                 build_release.py, **the boot gate** (task p11-04: the factory image that would
+#                 be published is booted in the pinned image's QEMU and has to reach app_main,
+#                 print the banner with this version in it and print its `heap:` line - before
+#                 anything is signed), signed with the specification's public test key, then
+#                 verified - except at a release's own version (TWINOAK_VERSION=X.Y.Z+<sha7>,
+#                 which is what the release workflow's build job passes), where the test key may
+#                 not sign and the signature is the workflow's: see step_release
 #
 #   tools/verify.sh            all eight
 #   tools/verify.sh <step>     one of them (verify.ps1 -Only <step>)
@@ -72,6 +75,12 @@ case $TESTKEY in 0|1) ;; *) echo "TWINOAK_TRUST_TEST_KEY must be 0 or 1"; exit 2
 # above the arrangement that failed, so a build that drops below it has lost a third of the room
 # two releases had and is a finding before it is an image.
 HEAP_MIN_SPARE=8192
+# The bound on the boot gate of task p11-04: how long the release's factory image is given, in the
+# pinned image's QEMU, to reach app_main and print its banner and its `heap:` line
+# (tools/release/boot_gate.py). The window normally closes at the `heap:` line itself, about a
+# second in; 90 s is the wall clock a hung boot, or one whose output never comes, is given before
+# the gate refuses it.
+BOOT_GATE_SECONDS=90
 
 mkdir -p "$LOGS" "$IMAGES" "$BUILD" "$CACHE"
 export CCACHE_DIR=$CACHE/ccache
@@ -185,6 +194,32 @@ check_heap_at_start() {
     echo "app_startup.c:86 (res == pdTRUE)', or is a few hundred bytes of .data or .bss from it."
     echo "docs/ARCHITECTURE.md section 14 says what to do about it; it is static storage that"
     echo "has to come down, and the model's 'the tightest is N bytes' line is where to look."
+    return 1
+  fi
+}
+
+# Does the image *start* (task p11-04)? The other half of the rail above, and the one the model
+# cannot be: tools/release/boot_gate.py boots the file that would be published - the release's
+# -factory.bin, padded into a 16 MB flash - in the QEMU the pinned image ships, and refuses it
+# unless it reaches app_main, prints the banner with the version being released in it, and prints
+# app_main's `heap:` line with the main task's stack taken. It reads those through gdb, because
+# this QEMU has no USB Serial/JTAG peripheral and this firmware's console is that peripheral; the
+# script's own docstring says how and why.
+#
+# It runs here, in the release step, immediately after build_release.py and **before anything is
+# signed** - the same place .github/workflows/release.yml runs it in the publish job, so that the
+# tag path is not walked for the first time on a tag (S-10: local first). Rail R23 holds both to
+# doing it. v0.1.3 is the reason: published, signed, verified, and it could not create its main
+# task on any board.
+check_boot_gate() {
+  local factory=$1 elf=$2 version=$3
+  echo "== the boot gate: does this image start? (at most $BOOT_GATE_SECONDS s in QEMU)"
+  if ! python tools/release/boot_gate.py --factory "$factory" --elf "$elf" --version "$version" \
+         --work "$LOGS/boot-gate" --seconds "$BOOT_GATE_SECONDS"; then
+    echo "this image is not fit to be released: it did not start in the pinned image's QEMU."
+    echo "the transcript, the flash image and the gdb log are in out/verify/boot-gate/;"
+    echo "tools/release/boot_gate.py says what each of the three criteria is and how it is read,"
+    echo "and docs/release.md says what the gate proves and what it does not."
     return 1
   fi
 }
@@ -352,6 +387,10 @@ step_release() {
   fi
   python tools/release/build_release.py --version "$VERSION" --commit "$commit" \
          --tag "$RELEASE_TAG" --build-dir "$dir" --out "$RELEASE" --require-descriptor || return 1
+  # The file that would be published, started before anything is signed (task p11-04). The ELF is
+  # the build's, for the symbols the gate breaks on; the bytes are out/release's own.
+  check_boot_gate "$RELEASE/$PROJECT_NAME-$RELEASE_TAG-factory.bin" "$dir/$PROJECT_NAME.elf" \
+                  "$VERSION" || return 1
   # Whether this run's version is a release's own - X.Y.Z+<sha7>, which is what the release
   # workflow's build job passes (-Version) and what a person rehearsing a tag types. The shape is
   # read from the tooling, so there is one definition of it (task p7-01).
