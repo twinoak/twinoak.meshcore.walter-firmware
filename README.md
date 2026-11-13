@@ -224,7 +224,7 @@ findings go into each phase's `FOLLOWUPS.md`, tagged with the task that must pic
 | Built with | ESP-IDF v5.5.5 in Espressif's Docker image, pinned by digest (`tools/idf-image.txt`); the `walter-modem` component at 1.5.0 |
 | Verified by | `tools/verify.ps1` — the rails, the host tests, the release tooling, the firmware build and a dry-run release, in that image; CI runs the same script |
 | Flashed | at a bench: its own USB-C. In service: by itself, A/B, with rollback |
-| Released as | a GitHub Release, made by pushing a tag |
+| Released as | a GitHub Release, published by pressing *Run workflow* |
 
 ## Flashing a Walter
 
@@ -258,21 +258,25 @@ should know.
 
 ## Making a release
 
-**A release is a person pushing a tag `vX.Y.Z`** — not a merge, not a green CI run
-([`docs/release.md`](docs/release.md)). The tag's workflow builds the images, writes a
-`manifest.json` that says what each file is, signs it with Ed25519 where it was built, and
-publishes the lot as a GitHub Release. A unit **checks it where it is used**: six checks
+**A release is a person pressing *Run workflow*** on `release`, from `main`, with *dry run*
+unticked — not a merge, not a green CI run, and not a pushed tag, which starts nothing
+([`docs/release.md`](docs/release.md)). The run reads the version from [`VERSION`](VERSION),
+takes the body from the lines the tasks left in
+[`release-notes/unreleased/`](release-notes/README.md), builds the images, writes a
+`manifest.json` that says what each file is, boots the factory image in QEMU, signs the manifest
+with Ed25519 where it was built, publishes the lot as a GitHub Release with its tag — and then
+files the lines as `release-notes/vX.Y.Z.md` and moves `VERSION` on, in a small pull request of
+its own. A unit **checks it where it is used**: six checks
 (`spec/FIRMWARE-MANIFEST.md` §5) — the signature by a key compiled into that build, the manifest,
 the right image for that radio, the file's hash, the one descriptor inside it, and the region —
 over the bytes as they lie in the unit's own flash, never over what a sender said it sent. The
 server delivers; it is not trusted.
 
 `tools/verify.ps1` rehearses the whole release path on every verified commit, signed with the
-specification's *public* test key, so the tag path is never run for the first time on a tag. Two
-things a tag needs and a rehearsal does not: the release key, which exists
-([`keys/README.md`](keys/README.md)), and the hand-written top of its notes,
-[`release-notes/vX.Y.Z.md`](release-notes/README.md) — a tag without either is refused before
-anything is published.
+specification's *public* test key, so the path is never run for the first time when the button is
+pressed. Three things a release needs and a rehearsal does not: the release key, which exists
+([`keys/README.md`](keys/README.md)); a version in `VERSION` whose tag is not already there; and
+at least one line waiting — a release with none of them is refused before anything is built.
 
 ## The rails
 

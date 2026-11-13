@@ -1,31 +1,46 @@
 # The release: a GitHub Release with the two images, the manifest that says what they are, the
 # signature over it and SHA256SUMS.
 #
-#   push a tag vX.Y.Z   -> ci must be green on that commit, and the commit must be one of main's
-#                          -> build it in the pinned image with the version baked in -> make the
-#                          release files -> **boot the factory image in the pinned image's QEMU**
+#   Run workflow        -> **this publishes** (task p12-02). From main's head and no other commit:
+#                          the version is VERSION, the body is the lines the tasks left in
+#                          release-notes/unreleased/, and the three refusals below are asked
+#                          before anything is built -> ci must be green for that commit -> build
+#                          it in the pinned image with the version baked in -> make the release
+#                          files -> **boot the factory image in the pinned image's QEMU**
 #                          (task p11-04: it must start, say its version and print its heap line)
 #                          -> sign with the RELEASE_SIGNING_KEY secret -> verify the signature
-#                          against keys/release-keys.txt -> publish
-#   Run workflow        -> the same jobs, signed with the specification's public test key and
+#                          against keys/release-keys.txt -> publish -> file the lines and move
+#                          VERSION on, in one pull request of the workflow's own.
+#   Run workflow, "dry
+#   run" ticked         -> the same jobs, signed with the specification's public test key and
 #                          published nowhere: the files are the run's artifact. Input "ref" is the
-#                          commit to rehearse on. This is the proof that the tag path works, and it
-#                          is also run on every verified commit by tools/verify.ps1's `release`
-#                          step, locally (S-10: local first).
+#                          commit to rehearse on and only a dry run may give one. This is the
+#                          proof that the release path works, and it is also run on every verified
+#                          commit by tools/verify.ps1's `release` step, locally (S-10: local
+#                          first).
 #
-# Merging never releases. Pushing the tag IS the approval; an older commit re-tagged is a
-# rollback. Nothing is published whose ci is red or unknown, and nothing is published that
-# tools/release/verify_release.py has not taken through spec/FIRMWARE-MANIFEST.md §5.
+# **There is no tag trigger.** A tag pushed by hand starts nothing; the tag is made by the publish
+# step below, on the commit it published. Until 13 November 2026 a release here was a pushed tag
+# with its notes written by hand first, and on that day the button was pressed on another firmware
+# repository and nothing happened - so the firmware repositories now release the way meshmaster.dk
+# does: the button publishes, the notes write themselves out of the tasks' own lines, and the
+# version is in the repository.
 #
-# **What a tag needs, and what stops one.** The release key exists (made 2026-10-20, key id
-# 73efdd383a957596: the public half in keys/release-keys.txt, the private half the
-# RELEASE_SIGNING_KEY secret here and in twinoak.meshcore.repeater-firmware). Were either gone,
-# sign_manifest.py and verify_release.py would stop with the instructions for making it, before
-# `gh release create`, so that a tag cannot publish something nobody can check. A tag also needs
-# release-notes/vX.Y.Z.md, the hand-written top of its body: build_release.py refuses a release
-# without one (task p7-01, release-notes/README.md). A dry run needs neither.
+# Merging never releases. **Pressing the button IS the approval.** Nothing is published whose ci
+# is red or unknown, and nothing is published that tools/release/verify_release.py has not taken
+# through spec/FIRMWARE-MANIFEST.md §5.
 #
-# The version a release reports is the tag with the commit after it: `X.Y.Z+<sha7>`, passed into
+# **What a release needs, and what stops one.** Three refusals, each one sentence, each before a
+# byte is built (tools/release/release_notes.py, with its tests in test_release_notes.py):
+# nothing waiting in release-notes/unreleased/ (there is nothing to release); the tag of VERSION
+# already exists (the version was not moved on after the last release); a release asked for from
+# anything but main. Then the release key (made 2026-10-20, key id 73efdd383a957596: the public
+# half in keys/release-keys.txt, the private half the RELEASE_SIGNING_KEY secret here and in
+# twinoak.meshcore.repeater-firmware) - were it gone, sign_manifest.py and verify_release.py would
+# stop with the instructions for making it, before `gh release create`, so that a release cannot
+# publish something nobody can check. A dry run needs none of them.
+#
+# The version a release reports is VERSION with the commit after it: `X.Y.Z+<sha7>`, passed into
 # the build as PROJECT_VER, which is what core/version.cpp prints, what the 96-byte descriptor
 # inside the image carries (spec/FIRMWARE-MANIFEST.md §4) and what the manifest's `version` says -
 # one string, held to the other two by build_release.py. A dry run is `0.0.0-dryrun+<sha7>`, so an
@@ -34,12 +49,14 @@
 name: release
 
 on:
-  push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: "Dry run: build, boot and sign with the test key, publish nothing."
+        type: boolean
+        default: false
       ref:
-        description: "Commit or branch to rehearse the release on. Empty: this workflow's ref."
+        description: "Dry run only: the commit or branch to rehearse on. Empty: this workflow's ref."
         type: string
         default: ""
 
@@ -55,7 +72,7 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
-  # What is being released, and whether it may be.
+  # What is being released, whether it may be, and the three refusals - before a byte is built.
   ci-green:
     name: ci is green for this commit
     runs-on: ubuntu-latest
@@ -68,10 +85,14 @@ jobs:
       tag: ${{ steps.commit.outputs.tag }}
       release: ${{ steps.commit.outputs.release }}
     steps:
+      # A release is main's head and nothing else, whatever branch the button was pressed from -
+      # and the step after this one refuses the run outright if that branch was not main. Only a
+      # dry run may name another ref.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.dry_run && (inputs.ref || github.ref) || 'main' }}
           fetch-depth: 0
+          fetch-tags: true
 
       - name: The commit, and the version it is released as
         id: commit
@@ -79,59 +100,83 @@ jobs:
           set -euo pipefail
           sha=$(git rev-parse HEAD)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            version="${GITHUB_REF_NAME#v}+${sha:0:7}"
-            tag="$GITHUB_REF_NAME"
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          else
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
             version="0.0.0-dryrun+${sha:0:7}"
             tag="v0.0.0-dryrun"
             echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "A dry run on $sha -> $version. Nothing will be published." >> "$GITHUB_STEP_SUMMARY"
+          else
+            # VERSION, and nowhere else: the one place this repository says what it releases next.
+            base=$(python3 tools/release/release_notes.py version)
+            version="$base+${sha:0:7}"
+            tag="v$base"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Releasing **$version** as \`$tag\`, from main's head $sha." >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "$GITHUB_REF_NAME -> $version (files named $tag)" >> "$GITHUB_STEP_SUMMARY"
 
-      # The commit a tag names must be one of main's: a tag on a side branch is not a release.
-      - name: And that it is a commit of main
-        if: github.ref_type == 'tag'
+      # The three refusals, with nothing built and nothing pulled: there is nothing to release;
+      # the version was already released and was not moved on; this is not main. Each is one
+      # sentence from tools/release/release_notes.py, and each is also the thing that would
+      # otherwise be found out after half an hour of building.
+      - name: What would stop this release
+        if: ${{ !inputs.dry_run }}
         run: |
-          set -euo pipefail
-          git fetch --quiet origin main
-          git merge-base --is-ancestor "$(git rev-parse HEAD)" origin/main \
-            || { echo "::error::$(git rev-parse HEAD) is not a commit of main"; exit 1; }
+          set -uo pipefail
+          if [ -n "${{ inputs.ref }}" ]; then
+            echo "::error::only a dry run may name a ref: a release is made from main's head."
+            exit 1
+          fi
+          out=$(python3 tools/release/release_notes.py preflight --ref "$GITHUB_REF" 2>&1) || {
+            echo "$out"
+            { echo '### This release was refused'; echo '```'; echo "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$(echo "$out" | head -1)"
+            exit 1
+          }
+          echo "$out"
+          { echo '### The lines this release will be published with'; echo '```'; echo "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       # Nothing is released whose verification is red or unknown. ci.yml runs `tools/verify.ps1`
-      # on every push to main, so a commit of main has a run of its own to wait for. The wait is
-      # 80 minutes because that run is 25 to 45 (task p7-01 measured 1525 s and 2528 s on two cold
-      # runners): a tag pushed the moment a pull request merged used to be refused for being early.
+      # on every push to main, so a commit of main has a run of its own to wait for - except the
+      # one a release leaves behind, which changes VERSION and release-notes/ alone and which
+      # GitHub starts no workflow for, because the workflow's own token merged it. The gate then
+      # waits for the run of the commit below it; release_notes.ci_commit says why that is sound
+      # and its tests hold it. The wait is 80 minutes because that run is 25 to 45 (task p7-01
+      # measured 1525 s and 2528 s on two cold runners).
       - name: Wait for the ci workflow of that commit
-        if: github.ref_type == 'tag'
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
+          ci_sha=$(python3 tools/release/release_notes.py ci-commit --sha "$SHA")
+          if [ "$ci_sha" != "$SHA" ]; then
+            echo "$SHA changes only VERSION and release-notes/ above $ci_sha, and has no ci run of"
+            echo "its own: the run of $ci_sha is what is waited for."
+            echo "The ci run waited for is ${ci_sha:0:7}, the commit below the release notes of the last release." >> "$GITHUB_STEP_SUMMARY"
+          fi
           for _ in $(seq 1 240); do
-            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push --limit 1 --json status,conclusion,url --jq '.[0] // empty')
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$ci_sha" --event push --limit 1 --json status,conclusion,url --jq '.[0] // empty')
             status=$(echo "$run" | jq -r '.status // "none"')
             conclusion=$(echo "$run" | jq -r '.conclusion // ""')
-            echo "ci for $SHA: $status $conclusion"
+            echo "ci for $ci_sha: $status $conclusion"
             if [ "$status" = "completed" ]; then
               if [ "$conclusion" = "success" ]; then exit 0; fi
-              echo "::error::ci ended as '$conclusion' for $SHA: $(echo "$run" | jq -r '.url'). Nothing is released."
+              echo "::error::ci ended as '$conclusion' for $ci_sha: $(echo "$run" | jq -r '.url'). Nothing is released."
               exit 1
             fi
             sleep 20
           done
-          echo "::error::ci has not completed for $SHA (no green push run within 80 minutes). A tag on a commit ci has not passed is refused."
+          echo "::error::ci has not completed for $ci_sha (no green push run within 80 minutes). A release of a commit ci has not passed is refused."
           exit 1
 
       # A rehearsal may be run on a branch, where ci ran for the pull request and not for a push.
       # It is reported and not waited for: a dry run publishes nothing, so it cannot release
-      # something red. The tag path above is where the gate is.
+      # something red. The path above is where the gate is.
       - name: What ci says about that commit (a dry run does not wait)
-        if: github.ref_type != 'tag'
+        if: ${{ inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.commit.outputs.sha }}
@@ -155,7 +200,7 @@ jobs:
 
       # The whole verification, not only the build: the thing being published is then verified at
       # its own version, which is not the version ci verified. Its `release` step makes the release
-      # files over that build and runs every refusal over them - the hand-written notes among them;
+      # files over that build and runs every refusal over them - the tasks' lines among them;
       # at a release's own version it does not sign, because the test key may not and the secret is
       # the next job's. The files that are published are made in that job, from out/images/.
       - name: tools/verify.ps1 -Version ${{ needs.ci-green.outputs.version }}
@@ -183,18 +228,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The release files, the boot gate, the signature, the gate of §5, and then - only on a
-  # tag - the publish.
+  # The release files, the boot gate, the signature, the gate of §5, the publish - and then the
+  # pull request that files what was published and moves the version on.
   publish:
     name: ${{ needs.ci-green.outputs.release == 'true' && 'publish the release' || 'dry run (nothing published)' }}
     needs: [ci-green, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
+      # The whole history: the step at the end of this job makes a commit and pushes a branch.
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.ci-green.outputs.sha }}
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -210,7 +258,9 @@ jobs:
         run: pip install --disable-pip-version-check --quiet -r tools/requirements-verify.txt
 
       # out/images/ is what the build produced, project_description.json included, so this is the
-      # application and the factory image of that very build and nothing else.
+      # application and the factory image of that very build and nothing else. NOTES.md is made
+      # here too: the lines the tasks left, in the order they merged, then the standing part, then
+      # the generated part (tools/release/release_notes.py, release-notes/README.md).
       - name: The release files
         env:
           VERSION: ${{ needs.ci-green.outputs.version }}
@@ -268,9 +318,9 @@ jobs:
           fi
           exit "$status"
 
-      # A tag signs with the secret and nothing else; a dry run with the specification's public
-      # test key, which sign_manifest.py refuses for a release version. A tag with no secret stops
-      # here, with the instructions for making the key.
+      # A release signs with the secret and nothing else; a dry run with the specification's public
+      # test key, which sign_manifest.py refuses for a release version. A release with no secret
+      # stops here, with the instructions for making the key.
       - name: Sign the manifest
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -309,17 +359,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # --latest and no --prerelease, said out loud rather than left to GitHub's own ordering:
-      # Thomas's rule is that a release of his firmware is the one to flash (task p7-01). The body
-      # is NOTES.md, which begins with the hand-written release-notes/<tag>.md.
+      # Thomas's rule is that a release of his firmware is the one to flash (task p7-01). The tag
+      # is made here, on the commit that was built, and it is the only tag this repository makes.
+      # The body is NOTES.md, which begins with the lines the tasks wrote.
       - name: Publish
         if: needs.ci-green.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.ci-green.outputs.tag }}
+          SHA: ${{ needs.ci-green.outputs.sha }}
         run: |
           set -euo pipefail
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
             --title "TwinOak Walter firmware $TAG" \
             --latest \
             --notes-file out/release/NOTES.md \
@@ -327,8 +380,87 @@ jobs:
             out/release/manifest.json \
             out/release/manifest.json.sig \
             out/release/SHA256SUMS
+          echo "Published $TAG on $SHA." >> "$GITHUB_STEP_SUMMARY"
 
-      # The files themselves, for the record on a tag and as the whole point on a dry run.
+      # AFTER the release is out: the lines move from release-notes/unreleased/ into
+      # release-notes/<tag>.md as published, and VERSION moves to the next patch - one commit,
+      # touching the release's own files and nothing else.
+      #
+      # BY A PULL REQUEST, not a push. main has "Require a pull request before merging", and there
+      # is nothing an operator can add to let a push through: GitHub's bypass lists take people,
+      # teams, roles and GitHub Apps, never the Actions token. So the job opens one and asks for
+      # it to be merged - and here, unlike meshmaster.dk's master, main also requires the `verify`
+      # check, which this pull request will never have: GitHub starts no workflow from an event
+      # raised with the job's own token. **So the merge is expected to be refused**, and that is
+      # not a failure of the release: the release is out, the summary says the pull request is
+      # waiting, and Thomas merges it (docs/release.md, "After a release"). The next release
+      # refuses until the version has moved, which is the backstop that makes leaving it open
+      # safe.
+      - name: File the lines and move the version on (one pull request)
+        if: needs.ci-green.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.ci-green.outputs.tag }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -uo pipefail
+          python tools/release/release_notes.py publish || exit 1
+          next=$(python tools/release/release_notes.py version)
+          branch="release-notes/$TAG-run-$RUN_NUMBER"
+          title="Release notes: $TAG, and VERSION $next"
+          waiting() {
+            {
+              echo '### The release notes are still waiting for main'
+              echo
+              echo "$TAG is published; only the pull request that files its lines and moves"
+              echo "VERSION on to $next did not land: $1."
+              echo
+              echo "Nothing is lost and nothing needs undoing - the release carries the lines it"
+              echo "was published with. Merge the pull request (or the branch \`$branch\`, if it"
+              echo "reached origin, by hand). **The next release is refused until VERSION has"
+              echo "moved**, which is how this cannot be forgotten."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::$1; $TAG is published and its notes are waiting for main"
+            exit 0
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- VERSION release-notes
+          git commit -m "$title" || waiting "there was nothing to commit"
+          # The commit sits on the detached HEAD this job checked out, and the push is what makes
+          # the branch.
+          git push origin "HEAD:refs/heads/$branch" || waiting "the branch $branch could not be pushed"
+          cat > out/notes-pr.md <<EOF
+          The lines $TAG was published with, moved out of \`release-notes/unreleased/\` into
+          \`release-notes/$TAG.md\`, and \`VERSION\` moved on to $next.
+
+          Opened by the publish job of \`.github/workflows/release.yml\` after the release was
+          out: main requires a pull request before merging, and GitHub cannot give the Actions
+          token a bypass. No check runs on this pull request - GitHub starts no workflow from an
+          event raised with the job's own token - so main's required \`verify\` check will not
+          report and this has to be merged by hand.
+
+          The commit touches \`VERSION\` and \`release-notes/\` and nothing else, which is what
+          lets the release after it wait for the ci run of the commit below it
+          (\`tools/release/release_notes.py\`, \`docs/release.md\`).
+          EOF
+          url=$(gh pr create --base main --head "$branch" --title "$title" --body-file out/notes-pr.md) \
+            || waiting "the pull request for $branch could not be opened"
+          echo "$url"
+          number="${url##*/}"
+          merged=0
+          for attempt in 1 2 3; do
+            if gh pr merge "$number" --merge --delete-branch --subject "$title"; then merged=1; break; fi
+            if [ "$(gh pr view "$number" --json state --jq '.state')" = "MERGED" ]; then merged=1; break; fi
+            echo "attempt $attempt to merge pull request $number did not succeed"
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          if [ "$merged" != 1 ]; then
+            waiting "pull request $number, from $branch, could not be merged"
+          fi
+          echo "Release notes: $TAG went to main as pull request $number, and VERSION is $next." >> "$GITHUB_STEP_SUMMARY"
+
+      # The files themselves, for the record on a release and as the whole point on a dry run.
       - uses: actions/upload-artifact@v4
         if: always()
         with:

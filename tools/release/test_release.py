@@ -16,7 +16,8 @@ a field with no settings, or an image nobody can identify, or a signature that p
   * signing with no key in the environment, and with the test key *in* the environment;
   * verifying a release with an empty trust table, and with the wrong key, and after one byte of
     the manifest changed;
-  * publishing a release nobody wrote a word about: no release-notes/vX.Y.Z.md, or an empty one;
+  * publishing a release nobody wrote a word about: nothing waiting in release-notes/unreleased/,
+    or a file there with nothing in it (the compiler itself is tested in test_release_notes.py);
   * publishing an image that does not start (task p11-04): the boot gate's reading of a boot is
     held here to two transcripts from the pinned image's QEMU - this firmware's, and v0.1.3's,
     which panicked before app_main on every board and in the emulator alike.
@@ -49,6 +50,7 @@ import manifestref
 
 import boot_gate
 import build_release
+import release_notes
 import sign_manifest
 import verify_release
 from build_release import Refused
@@ -58,9 +60,9 @@ COMMIT = "1a2b3c4" + "d" * 33
 DRYRUN = "0.0.0-dryrun+1a2b3c4"
 RELEASE = "0.3.1+1a2b3c4"
 BUILT_AT = "2026-10-11T12:00:00Z"
-# The hand-written top of a release's body (task p7-01), as every test that is not about it gets
-# one: release-notes/<tag>.md is required for a release version and refused if it is missing.
-HANDWRITTEN = "**What this release is**, in the words of whoever tagged it.\n"
+# The line a task left (tasks p7-01, p12-02), as every test that is not about the notes gets one:
+# a release version needs at least one waiting line and is refused when there is none.
+HANDWRITTEN = "What a person with a unit will notice. It has not been on a board.\n"
 
 
 def partitions():
@@ -119,10 +121,10 @@ class ReleaseCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.out = os.path.join(self.dir, "release")
         # A release-notes/ of this test's own, so that what the repository's own directory holds
-        # changes nothing here (task p7-01). `build(notes=None)` leaves it empty, which is the
-        # state a tag is refused in.
+        # changes nothing here (tasks p7-01, p12-02). `build(notes=None)` leaves unreleased/
+        # empty, which is the state a release is refused in.
         self.notes_dir = os.path.join(self.dir, "release-notes")
-        os.makedirs(self.notes_dir)
+        os.makedirs(os.path.join(self.notes_dir, release_notes.UNRELEASED))
 
     def write(self, name, data):
         path = os.path.join(self.dir, name)
@@ -134,17 +136,19 @@ class ReleaseCase(unittest.TestCase):
               notes=HANDWRITTEN, **kwargs):
         """One build's two files: the factory image carries the application image, as it does in
         the real thing (idf.py merge-bin), unless a test deliberately gives another. `notes` is
-        the hand-written top of the release's body, written into this test's release-notes/ under
-        the tag being built; None writes no such file."""
+        the line a task left, written into this test's release-notes/unreleased/; None leaves that
+        directory empty, which is what a release is refused for."""
         blob = app if app is not None else app_image(version=version)
         app_path = self.write("app.bin", blob)
         fac_path = self.write("factory.bin", factory if factory is not None
                               else factory_image(app=blob, size=factory_size))
         tag = tag or "v" + version.split("+")[0]
         if notes is not None:
-            with open(os.path.join(self.notes_dir, tag + ".md"), "w", encoding="utf-8") as fh:
+            with open(os.path.join(self.notes_dir, release_notes.UNRELEASED, "p0-00-a-task.md"),
+                      "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(notes)
         kwargs.setdefault("notes_dir", self.notes_dir)
+        kwargs.setdefault("notes_repo", self.dir)
         return build_release.build(version, COMMIT, tag, app_path,
                                    fac_path, self.out, os.path.join(REPO, "partitions.csv"),
                                    BUILT_AT, **kwargs)
@@ -244,33 +248,33 @@ class TheManifest(ReleaseCase):
             self.assertIn("40", str(caught.exception))
 
 
-# ------------------------------------------------------------------ the hand-written notes
+# ------------------------------------------------------------------ the notes it publishes
 
 
-class TheHandwrittenNotes(ReleaseCase):
-    """Task p7-01: a release's body is a part a person wrote, then the generated part. The file is
-    release-notes/<tag>.md, it is required for a release and refused when it is missing - a tag
-    with no notes is refused the way a tag with no key is."""
+class TheNotesTop(ReleaseCase):
+    """Tasks p7-01 and p12-02: a release's body is the lines the tasks wrote, then the generated
+    part. The lines are release-notes/unreleased/*.md; a release with none is refused the way one
+    with no key is. tools/release/test_release_notes.py holds the compiler itself."""
 
-    def test_a_release_with_no_handwritten_notes_is_refused(self):
+    def test_a_release_with_no_line_waiting_is_refused(self):
         with self.assertRaises(Refused) as caught:
             self.build(version=RELEASE, notes=None)
         message = str(caught.exception)
-        self.assertIn("release-notes%sv0.3.1.md" % os.sep, message)
-        self.assertIn("is not there", message)
+        self.assertIn("there is nothing to release", message)
+        self.assertIn("release-notes/unreleased/", message)
         self.assertFalse(os.path.exists(os.path.join(self.out, "NOTES.md")))
 
-    def test_a_file_with_only_whitespace_is_no_notes_at_all(self):
+    def test_a_file_with_only_whitespace_is_no_line_at_all(self):
         with self.assertRaises(Refused) as caught:
-            self.build(version=RELEASE, notes="   \n\n")
-        self.assertIn("v0.3.1.md", str(caught.exception))
+            self.build(version=RELEASE, notes="   \n")
+        self.assertIn("is empty", str(caught.exception))
 
-    def test_the_handwritten_part_comes_first_and_the_generated_part_after_it(self):
-        self.build(version=RELEASE, notes="**The first release.** A sentence a person wrote.\n")
+    def test_the_lines_come_first_and_the_generated_part_after_them(self):
+        self.build(version=RELEASE, notes="The first release. It has not been on a board.\n")
         with open(os.path.join(self.out, "NOTES.md"), encoding="utf-8") as fh:
             text = fh.read()
-        self.assertTrue(text.startswith("**The first release.** A sentence a person wrote.\n"),
-                        text[:120])
+        self.assertTrue(text.startswith("## What is new\n\n- The first release. It has not been "
+                                        "on a board.\n"), text[:160])
         top, rule, generated = text.partition("\n---\n")
         self.assertEqual(rule, "\n---\n")
         self.assertNotIn("esptool", top)
@@ -278,7 +282,16 @@ class TheHandwrittenNotes(ReleaseCase):
         self.assertIn("TwinOak Walter firmware v0.3.1", generated)
         self.assertIn("keeps a unit's settings", generated)
 
-    def test_a_dry_run_needs_none_and_gets_the_generated_part_alone(self):
+    def test_the_generated_part_links_the_flashing_guide_at_the_commit(self):
+        """What the four things release-notes/README.md asks for can be generated is generated
+        (task p12-02): the guide is linked rather than copied, at the commit being released, so
+        that the link cannot rot into a page describing another release."""
+        self.build(version=RELEASE)
+        with open(os.path.join(self.out, "NOTES.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("%s/blob/%s/docs/flashing.md" % (build_release.REPO_URL, COMMIT), text)
+
+    def test_a_dry_run_needs_no_line_and_gets_the_generated_part_alone(self):
         result = self.build(version=DRYRUN, notes=None)
         self.assertIsNone(result["handwritten"])
         with open(os.path.join(self.out, "NOTES.md"), encoding="utf-8") as fh:
@@ -286,20 +299,28 @@ class TheHandwrittenNotes(ReleaseCase):
         self.assertTrue(text.startswith("TwinOak Walter firmware v0.0.0-dryrun"), text[:120])
         self.assertIn("This is a dry run.", text)
 
-    def test_the_repositorys_own_release_notes_are_named_for_a_tag_and_are_not_empty(self):
+    def test_a_dry_run_rehearses_the_body_when_lines_are_waiting(self):
+        """A rehearsal is of the body as much as of the files: the lines that would be published
+        are in a dry run's NOTES.md, which is how a line is read before it is released."""
+        self.build(version=DRYRUN, notes="Something a person will notice. Not on a board.\n")
+        with open(os.path.join(self.out, "NOTES.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("## What is new"), text[:80])
+        self.assertIn("Something a person will notice.", text)
+        self.assertIn("This is a dry run.", text)
+
+    def test_the_repositorys_own_published_notes_are_named_for_a_tag_and_are_not_empty(self):
         """The real directory. A file named for a version that is not vX.Y.Z would be invisible
-        until a tag was pushed and refused, which is the one moment it must not be found."""
+        until a release asked for it, which is the one moment it must not be found."""
         for name in sorted(os.listdir(build_release.NOTES_DIR)):
             path = os.path.join(build_release.NOTES_DIR, name)
-            if name == "README.md":
+            if name in ("README.md", release_notes.STANDING, release_notes.UNRELEASED):
                 continue
             self.assertRegex(name, r"^v\d+\.\d+\.\d+\.md$")
             with open(path, encoding="utf-8") as fh:
                 body = fh.read()
             self.assertTrue(body.strip(), path)
-            self.assertNotIn("\r", body)
-            tag = name[:-3]
-            self.assertEqual(build_release.handwritten_notes(tag, True), body.strip("\n"))
+            self.assertNotIn(chr(13), body)
 
 
 # ------------------------------------------------------------------ the four refusals
