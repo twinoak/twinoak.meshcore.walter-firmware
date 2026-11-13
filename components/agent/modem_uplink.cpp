@@ -181,8 +181,20 @@ void ModemUplink::offerServerTime(std::uint32_t epoch) {
 
 // ---------------------------------------------------------------------------- one call
 
-bool ModemUplink::call(const char* endpoint, const std::uint8_t* body, std::size_t body_len, std::size_t bound,
-                       std::size_t& reply_len, Call& out) {
+// One failed call into the list, when there is one to keep it in (task p13-02). A call that never
+// reached the client - not configured, a URL that did not fit, the 120-a-minute ceiling, too
+// little of the wake's deadline left - is **not** in it: nothing came back because nothing went
+// out, and `agent probe` and the uplink's own counters are where those four are read. What this
+// list is for is what the other end did.
+void ModemUplink::noteFailedCall(CallKind what, std::uint16_t status,
+                                 interfaces::HttpOutcome outcome, std::uint32_t at_epoch) {
+  if (calls_ == nullptr) return;
+  calls_->record(what, status, outcome, at_epoch);
+}
+
+
+bool ModemUplink::call(CallKind what, const char* endpoint, const std::uint8_t* body,
+                       std::size_t body_len, std::size_t bound, std::size_t& reply_len, Call& out) {
   reply_len = 0;
   // The reply buffer alone: the heartbeat's body is in request_ and goes out from there.
   zeroBytes(reply_, sizeof reply_);
@@ -285,6 +297,10 @@ bool ModemUplink::call(const char* endpoint, const std::uint8_t* body, std::size
     std::snprintf(out.error, sizeof out.error, "no reply: %.90s%s", interfaces::describe(r.outcome),
                   r.outcome == interfaces::HttpOutcome::kTimeout && total_ms != 0 ? " (the wake's budget)" : "");
     LOG_W("server: %s -> %s after %lu ms", endpoint_, out.error, static_cast<unsigned long>(r.elapsed_ms));
+    // ... and into the list a sleep does not forget (task p13-02): which call, that nothing
+    // answered, and how far the uplink had got. The `LOG_W` above is what a person had before
+    // this, and a deep sleep took it.
+    noteFailedCall(what, 0, r.outcome, out.atEpoch);
     last_call_ = out;
     return false;
   }
@@ -341,16 +357,21 @@ bool ModemUplink::call(const char* endpoint, const std::uint8_t* body, std::size
           static_cast<unsigned long>(reply_len), static_cast<unsigned long>(r.elapsed_ms));
   } else {
     LOG_W("server: %s -> %s (%lu ms)", endpoint_, out.error, static_cast<unsigned long>(r.elapsed_ms));
+    // **Every call that did not come back 2xx**, 401 and 429 included - the library's own
+    // `httpFailures` leaves those two out, and *what came back* is the question this list answers
+    // (task p13-02). A 2xx whose body was cut or did not arrive whole is in it too: it is a call
+    // that failed, and a 200 in the list with nothing else wrong is itself the finding.
+    noteFailedCall(what, r.status, r.outcome, out.atEpoch);
   }
   last_call_ = out;
   return true;
 }
 
-bool ModemUplink::callJob(long long jobId, const char* action, const std::uint8_t* body, std::size_t body_len,
-                          std::size_t& reply_len, Call& out) {
+bool ModemUplink::callJob(CallKind what, long long jobId, const char* action, const std::uint8_t* body,
+                          std::size_t body_len, std::size_t& reply_len, Call& out) {
   char endpoint[kMaxEndpointLen];
   std::snprintf(endpoint, sizeof endpoint, "/jobs/%lld/%s", jobId, action);
-  return call(endpoint, body, body_len, kSmallReplyBytes, reply_len, out);
+  return call(what, endpoint, body, body_len, kSmallReplyBytes, reply_len, out);
 }
 
 // ---------------------------------------------------------------------------- the seven calls
@@ -358,7 +379,7 @@ bool ModemUplink::callJob(long long jobId, const char* action, const std::uint8_
 bool ModemUplink::fetchConfig() {
   std::size_t len = 0;
   Call c;
-  const bool reachable = call("/config", nullptr, 0, kSmallReplyBytes, len, c);
+  const bool reachable = call(CallKind::kConfig, "/config", nullptr, 0, kSmallReplyBytes, len, c);
 
   Outcome o;
   o.attempted = true;
@@ -406,12 +427,19 @@ bool ModemUplink::postHeartbeat(const mm::Heartbeat& hb, mm::HeartbeatReply& rep
   // `agent heartbeat`, so the printed body and the posted one carry the same key.
   mm::Heartbeat sending = hb;
   mm::ErrorCounter errors[kHeartbeatErrorsMax];
-  if (radio_identity_lost_ && hb.errors != nullptr && hb.errorCount >= 0 &&
+  // ... and the four of task p13-02 behind it, at **every** heartbeat: what woke this unit, which
+  // the server cannot see for itself. The copy is made whenever either has something to add.
+  const bool add_wakes = wakes_ != nullptr;
+  if ((radio_identity_lost_ || add_wakes) && hb.errors != nullptr && hb.errorCount >= 0 &&
       hb.errorCount < static_cast<int>(kHeartbeatErrorsMax)) {
     for (int i = 0; i < hb.errorCount; ++i) errors[i] = hb.errors[i];
     sending.errors = errors;
-    sending.errorCount = addRadioIdentityLost(errors, hb.errorCount,
-                                              static_cast<int>(kHeartbeatErrorsMax), true);
+    int written = addRadioIdentityLost(errors, hb.errorCount,
+                                       static_cast<int>(kHeartbeatErrorsMax), radio_identity_lost_);
+    if (add_wakes) {
+      written = addWakeCounters(errors, written, static_cast<int>(kHeartbeatErrorsMax), *wakes_);
+    }
+    sending.errorCount = written;
   }
   const std::size_t body_len = mm::writeHeartbeat(sending, request_, sizeof request_);
   if (body_len == 0) {
@@ -424,7 +452,7 @@ bool ModemUplink::postHeartbeat(const mm::Heartbeat& hb, mm::HeartbeatReply& rep
   }
   std::size_t len = 0;
   Call c;
-  if (!call("/heartbeat", reinterpret_cast<const std::uint8_t*>(request_), body_len, kSmallReplyBytes, len, c) ||
+  if (!call(CallKind::kHeartbeat, "/heartbeat", reinterpret_cast<const std::uint8_t*>(request_), body_len, kSmallReplyBytes, len, c) ||
       !c.ok) {
     wipeReply();
     return false;
@@ -448,7 +476,7 @@ bool ModemUplink::postObservations(const char* body, std::size_t len, int& accep
   duplicate = false;
   std::size_t reply_len = 0;
   Call c;
-  if (!call("/observations", reinterpret_cast<const std::uint8_t*>(body), len, kSmallReplyBytes, reply_len, c) ||
+  if (!call(CallKind::kObservations, "/observations", reinterpret_cast<const std::uint8_t*>(body), len, kSmallReplyBytes, reply_len, c) ||
       !c.ok) {
     wipeReply();
     return false;
@@ -476,7 +504,7 @@ bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count) {
   const std::size_t request_len = mm::writeClaimRequest(max, request, sizeof request);
   std::size_t len = 0;
   Call c;
-  if (!call("/jobs/claim", reinterpret_cast<const std::uint8_t*>(request), request_len, kClaimReplyBytes, len, c) ||
+  if (!call(CallKind::kClaim, "/jobs/claim", reinterpret_cast<const std::uint8_t*>(request), request_len, kClaimReplyBytes, len, c) ||
       !c.ok) {
     wipeReply();
     return false;
@@ -515,7 +543,7 @@ bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t l
   }
   std::size_t reply_len = 0;
   Call c;
-  const bool ok = callJob(jobId, "result", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) && c.ok;
+  const bool ok = callJob(CallKind::kResult, jobId, "result", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) && c.ok;
   wipeReply();
   return ok;
 }
@@ -526,7 +554,7 @@ bool ModemUplink::extendLease(long long jobId, int seconds, std::uint32_t& lease
   const std::size_t request_len = mm::writeExtendRequest(seconds, request, sizeof request);
   std::size_t len = 0;
   Call c;
-  if (!callJob(jobId, "extend", reinterpret_cast<const std::uint8_t*>(request), request_len, len, c) || !c.ok) {
+  if (!callJob(CallKind::kLease, jobId, "extend", reinterpret_cast<const std::uint8_t*>(request), request_len, len, c) || !c.ok) {
     wipeReply();
     return false;
   }
@@ -549,7 +577,7 @@ bool ModemUplink::extendLease(long long jobId, int seconds, std::uint32_t& lease
 bool ModemUplink::postProgress(long long jobId, const char* body, std::size_t len) {
   std::size_t reply_len = 0;
   Call c;
-  if (!callJob(jobId, "progress", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) || !c.ok) {
+  if (!callJob(CallKind::kProgress, jobId, "progress", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) || !c.ok) {
     wipeReply();
     return false;
   }

@@ -124,7 +124,7 @@ TEST_CASE("the parser takes the two agent lines and refuses the rest") {
   CHECK_FALSE(parseLine("agent token").ok);
   // Tasks p4-04 and p4-05 added words to the same verb, so the refusal names all of them.
   CHECK(has(parseLine("agent token").error,
-            "unknown agent subcommand (url, probe, id, heartbeat, obs, obs pull, wake, jobs, state): token"));
+            "unknown agent subcommand (url, probe, id, heartbeat, obs, obs pull, wake, jobs, state, calls): token"));
   CHECK_FALSE(parseLine("agent probe now").ok);
 }
 

@@ -64,6 +64,7 @@
 #include "interfaces/key_value.h"
 #include "interfaces/text_out.h"
 #include "walter_agent/agent_uplink_check.h"
+#include "walter_agent/call_log.h"
 #include "walter_agent/firmware_jobs.h"
 #include "walter_agent/identity.h"
 #include "walter_agent/link_mesh.h"
@@ -141,6 +142,9 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
     FirmwareJobs* firmware = nullptr;
     AgentUplinkCheck* trial = nullptr;
     interfaces::KeyValue* state_store = nullptr;
+    // The last eight failed calls (task p13-02). Null keeps none; the uplink is given it here so
+    // that `call()` is the one place a failure is written down.
+    CallLog* calls = nullptr;
     mm::IRetained* kept = nullptr;
     std::uint8_t* kept_scratch = nullptr;
     std::size_t kept_scratch_len = 0;
@@ -164,6 +168,7 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   bool wake(interfaces::TextOut& out) override;
   void jobs(interfaces::TextOut& out) override;
   void state(interfaces::TextOut& out) override;
+  void calls(interfaces::TextOut& out) override;
 
   // ------------------------------------------------------------------ what a test and the console read
   const mm::WakeReport& lastReport() const { return report_; }

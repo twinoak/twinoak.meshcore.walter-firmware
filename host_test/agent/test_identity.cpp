@@ -279,14 +279,15 @@ TEST_CASE("the heartbeat's counters say which of the three the radio is in") {
   const agent::HeartbeatExtras extras;
   const mm::WakeIntent intent;
 
-  SUBCASE("a radio that refuses: seven counters, and the seventh says so") {
+  SUBCASE("a radio that refuses: the seventh counter says so") {
     Rig rig;
     rig.rak.loseIdentity();
     rig.hello();
     REQUIRE_FALSE(rig.identity.refresh());
     rig.identity.fillHeartbeat(&hb, nullptr, nullptr, extras, intent, errors,
                                agent::Identity::kErrorCount);
-    REQUIRE(hb.errorCount == agent::Identity::kLibraryErrorCount + 1);
+    // The library's six, this board's seventh, and the four of task p13-02 behind it.
+    REQUIRE(hb.errorCount == agent::Identity::kErrorCount);
     CHECK(std::string(hb.errors[6].name) == "radioIdentityLost");
     CHECK(std::string(hb.errors[6].name) == std::string(agent::kRadioIdentityLostKey));
     CHECK(hb.errors[6].value == 1);
@@ -296,7 +297,7 @@ TEST_CASE("the heartbeat's counters say which of the three the radio is in") {
     CHECK_FALSE(hb.companionConnected);
   }
 
-  SUBCASE("a radio awaiting its first install: the library's six and no more") {
+  SUBCASE("a radio awaiting its first install: no seventh counter") {
     Rig rig;
     bool zero_key = true;
     rig.rak.on_request = [&zero_key](const link::Packet& packet,
@@ -311,16 +312,16 @@ TEST_CASE("the heartbeat's counters say which of the three the radio is in") {
     REQUIRE(rig.identity.identityState() == link::IdentityState::kNotMadeYet);
     rig.identity.fillHeartbeat(&hb, nullptr, nullptr, extras, intent, errors,
                                agent::Identity::kErrorCount);
-    CHECK(hb.errorCount == agent::Identity::kLibraryErrorCount);
+    CHECK(hb.errorCount == agent::Identity::kLibraryErrorCount + core::cycle::kWakeCounterCount);
   }
 
-  SUBCASE("a radio with its key: the library's six, byte for byte as before") {
+  SUBCASE("a radio with its key: no seventh counter") {
     Rig rig;
     rig.hello();
     REQUIRE(rig.identity.refresh());
     rig.identity.fillHeartbeat(&hb, nullptr, nullptr, extras, intent, errors,
                                agent::Identity::kErrorCount);
-    CHECK(hb.errorCount == agent::Identity::kLibraryErrorCount);
+    CHECK(hb.errorCount == agent::Identity::kLibraryErrorCount + core::cycle::kWakeCounterCount);
   }
 }
 

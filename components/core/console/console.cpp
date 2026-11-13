@@ -79,6 +79,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kAgentWake:
     case Verb::kAgentJobs:
     case Verb::kAgentState:
+    case Verb::kAgentCalls:
     // The settings and the rest of the console (task p3-03): about the unit, not a radio.
     case Verb::kGet:
     case Verb::kGetAll:
@@ -434,8 +435,9 @@ void Console::agentLine(const char* line) {
 
 // -- the report's sections (task p13-01) ---------------------------------------------------------
 //
-// The eleven names of `twinoak.report`, in the order the task's table lists them, and the printer
-// behind each. **There is no second rendering of anything here**: every entry is a console
+// The twelve names of `twinoak.report`, in the order the task's table lists them, and the printer
+// behind each. **`calls` is task p13-02's**, and the one the 13 November question asked for first:
+// until that task it was answered in `unknown`. **There is no second rendering of anything here**: every entry is a console
 // command, or two of them, and a line added to a command is a line the report gains with it.
 //
 // Three are not simply the command:
@@ -450,6 +452,7 @@ void Console::agentLine(const char* line) {
 const Console::SectionDef Console::kSections[] = {
     {"wakes", &Console::sectionWakes},
     {"agent", &Console::agentState},
+    {"calls", &Console::agentCalls},
     {"uplink", &Console::lte},
     {"observations", &Console::sectionObservations},
     {"jobs", &Console::agentJobs},
@@ -610,6 +613,7 @@ void Console::runLine(const char* line) {
     case Verb::kAgentWake: agentWake(); return;
     case Verb::kAgentJobs: agentJobs(); return;
     case Verb::kAgentState: agentState(); return;
+    case Verb::kAgentCalls: agentCalls(); return;
     case Verb::kGet: get(*p.command.key); return;
     case Verb::kGetAll: getAll(); return;
     case Verb::kSet: set(*p.command.key, p.command.text); return;
@@ -3517,6 +3521,14 @@ void Console::agentState() {
   loop_->state(sink());
 }
 
+// `agent calls` (task p13-02): the last eight calls to the server that did not come back 2xx.
+// The lines are the agent's own, behind the same seam `agent jobs` and `agent state` are behind
+// (core/console/agent_loop_probe.h) - core/ cannot name components/agent/.
+void Console::agentCalls() {
+  if (!loopOk()) return;
+  loop_->calls(sink());
+}
+
 void Console::fetch(const char* base_url, image::Which which) {
   if (!httpOk() || !uplinkUp()) return;
   if (fetch_ == nullptr) {
@@ -3902,6 +3914,11 @@ void Console::wake() {
   // failed connection, and `lte` said both readings were wrong. The letters say it; the legend
   // goes above the list, because a letter nobody can look up is a worse answer than a sentence.
   print("  M the uplink came up, S the server answered, J a job ran; '-' not, '?' not recorded\n");
+  // **And why a wake that sent nothing sent nothing** (task p13-02). The letters said `---` and
+  // stopped there: on 13 November a wake request reached the radio, the unit woke on the line,
+  // and the only trace of the reason was a journal entry a *timer* wake would have written and
+  // this one did not. Each entry carries it now, in the same words the journal and the wake
+  // record use (`interfaces::describe`), with the seconds when a wait was what it was.
   for (std::size_t i = 0; i < duty_->reason().count(); ++i) {
     const cycle::WakeEntry& e = duty_->reason().at(i);
     char did[4] = {'?', '?', '?', 0};
@@ -3921,6 +3938,14 @@ void Console::wake() {
       print("; it never reached sleep (a reset, a crash or the bound)");
     } else {
       printf("; awake %lu s", static_cast<unsigned long>(e.lasted_s));
+    }
+    const interfaces::Reached sent = e.sent < static_cast<std::uint8_t>(interfaces::Reached::kCount)
+                                         ? static_cast<interfaces::Reached>(e.sent)
+                                         : interfaces::Reached::kUnsaid;
+    if (sent == interfaces::Reached::kWait) {
+      printf("; nothing sent: a wait still owed, %lu s", static_cast<unsigned long>(e.owed_s));
+    } else if (sent != interfaces::Reached::kAnswered && sent != interfaces::Reached::kUnsaid) {
+      printf("; nothing sent: %s", interfaces::describe(sent));
     }
     print("\n");
   }

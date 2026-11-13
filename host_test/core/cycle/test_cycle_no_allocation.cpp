@@ -51,6 +51,7 @@ const char* const kCycleIncludes[] = {
     "core/cycle/null_backend.h",
     "core/cycle/sleep.h",
     "core/cycle/telemetry_ring.h",
+    "core/cycle/wake_counters.h",
     "core/cycle/wake_cycle.h",
     "core/cycle/wake_guard.h",
     "core/cycle/wake_reason.h",
@@ -87,6 +88,7 @@ const char* const kCycleIncludes[] = {
     // The world, each pure virtual. **No ESP-IDF**: that is tools/cmake/no_idf_include.cmake's
     // business as well, and this is the second lock on the same door.
     "interfaces/clock.h",
+    "interfaces/key_value.h",
     "interfaces/restart.h",
     "interfaces/retained.h",
     "interfaces/sleeper.h",

@@ -55,6 +55,7 @@ HeartbeatExtras IdentityProbe::extras() const {
   const mm::ObservationRing* ring = observations_.ring();
   out.observations_dropped = ring == nullptr ? 0 : static_cast<long long>(ring->dropped());
   out.reboots = static_cast<long long>(platform_.selfReboots());
+  if (wakes_ != nullptr) out.wakes = *wakes_;
   // The other three - the reconnect count, the HTTP failures and the results the offline buffer
   // had to drop - are the loop's own counters and there is no loop until task p4-05
   // (walter_agent/identity.h, HeartbeatExtras).

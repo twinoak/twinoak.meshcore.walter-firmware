@@ -18,6 +18,9 @@
 idf_component_register(
   SRCS "agent_backend.cpp"
        "agent_probe.cpp"
+       # The last eight calls that did not come back 2xx (task p13-02): what `agent calls` prints
+       # and what the report's `calls` section is.
+       "call_log.cpp"
        "firmware_jobs.cpp"
        "identity.cpp"
        "json_scan.cpp"

@@ -118,6 +118,9 @@ idf_component_register(
        # The Walter's own attention (task p4-04): the agent's 401 and a restart the library asked
        # for and did not get - a byte of the duty cycle's record, a letter in the wake record.
        "cycle/agent_attention.cpp"
+       # What woke this unit, counted and kept across a power cut (task p13-02): the four totals
+       # the heartbeat carries beside the library's own counters.
+       "cycle/wake_counters.cpp"
   INCLUDE_DIRS "include"
   REQUIRES interfaces)
 

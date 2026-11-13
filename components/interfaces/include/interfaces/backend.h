@@ -332,6 +332,14 @@ enum class Reached : std::uint8_t {
   kNotConfigured = 4,   // nothing was sent: this unit has no server to send it to
   kHalted = 5,          // nothing was sent: a 401, and a person has to act
   kElse = 6,            // nothing was sent, for a reason this seam has no word for
+  // nothing was sent: the **uplink's own** backoff skipped the modem this wake
+  // (core/uplink/policy.h, `mayTry()`), so the seam was never reached at all. **Not a value this
+  // seam ever answers** - a backend that was not called says nothing - but one the wake cycle
+  // writes for it (task p13-02, core/cycle/wake_cycle.cpp): step 8 needs step 6, and a wake the
+  // backoff skipped left *it did not say* where a person was looking for a reason. It is in this
+  // enum and not beside it so that the journal, the wake record and `wake`'s list have one
+  // vocabulary for *why nothing was sent* and not two.
+  kUplinkBackoff = 7,
   kCount,
 };
 
@@ -345,6 +353,7 @@ inline const char* describe(Reached reached) {
     case Reached::kNotConfigured: return "not configured";
     case Reached::kHalted: return "halted on a 401";
     case Reached::kElse: return "nothing to send";
+    case Reached::kUplinkBackoff: return "the uplink's backoff";
     case Reached::kCount: break;
   }
   return "?";

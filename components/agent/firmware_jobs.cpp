@@ -454,6 +454,19 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
              : parts_.fetch->run(base_url_, img::Which::kCandidate, radio_.slot(), budget, token, kFilesDir,
                                  &listener);
   wipeBearer();
+  // **The eighth call this unit makes to that server**, into the same list as the seven of the
+  // uplink (task p13-02, walter_agent/call_log.h). It is recorded here and not in `core/net/` for
+  // the reason the list exists at all: a list has to say *which call* it was, and only the caller
+  // knows. Every verdict but a stored image is a range that did not come back 2xx - a 401, a 429,
+  // a 5xx, a connection that never opened - and the budget ending a download is the one exception,
+  // because that is this firmware stopping, not the server refusing.
+  if (r.verdict != upd::FetchVerdict::kStored && r.verdict != upd::FetchVerdict::kBudget) {
+    CallLog* calls = server_.callLog();
+    if (calls != nullptr) {
+      interfaces::WallTime at{};
+      calls->record(CallKind::kDownload, r.status, r.outcome, wall_.now(&at) ? at.epoch : 0);
+    }
+  }
   counters_.bytes_downloaded += r.bytes;
   did_.outside_ms += static_cast<std::uint32_t>(clock_.nowMs() - began);
   did_.asks = static_cast<std::uint8_t>(did_.asks | interfaces::askBit(interfaces::Ask::kFetchRelease));

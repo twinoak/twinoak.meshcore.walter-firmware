@@ -67,6 +67,12 @@ struct ScriptedReply {
   int status = 200;
   std::vector<std::string> headers;
   std::string body;
+  // **This one request gets no answer at all** (task p13-02): the server takes it and says
+  // nothing, so the call ends at its deadline with no status. `no_response` above is the same
+  // thing for every request; this is for a script that wants one route to stall and the rest to
+  // answer - *the heartbeat came back 503 and the claim never came back* is one wake, and that
+  // is the wake a failed-call list has to be able to show.
+  bool no_response = false;
 };
 
 // meshmaster.dk's agent API prefix, and the header every request under it carries

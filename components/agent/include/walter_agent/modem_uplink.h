@@ -64,11 +64,13 @@
 #include <agent/RateLimit.h>
 
 #include "core/cycle/agent_attention.h"
+#include "core/cycle/wake_counters.h"
 #include "core/net/client.h"
 #include "core/settings/settings.h"
 #include "interfaces/clock.h"
 #include "interfaces/http.h"
 #include "interfaces/wall_clock.h"
+#include "walter_agent/call_log.h"
 
 namespace agent {
 
@@ -84,10 +86,12 @@ constexpr std::size_t kClaimReplyBytes = 6144;
 constexpr std::size_t kHeartbeatBodyBytes = 1536;
 
 // How many `errors` entries one heartbeat may carry through here: the library's six and room for
-// a few of this board's own behind them (task p10-03's `radioIdentityLost` is the first). A
-// heartbeat with more than this keeps the ones the library wrote, because a counter is worth
-// less than the heartbeat it would cost.
-constexpr std::size_t kHeartbeatErrorsMax = 10;
+// a few of this board's own behind them (task p10-03's `radioIdentityLost` is the first, and task
+// p13-02's four wake counters are the next). A heartbeat with more than this keeps the ones the
+// library wrote, because a counter is worth less than the heartbeat it would cost.
+constexpr std::size_t kHeartbeatErrorsMax = 12;
+static_assert(kHeartbeatErrorsMax >= 6 + 1 + core::cycle::kWakeCounterCount,
+              "the library's six, the radio's refusal and the four wake counters have to fit");
 
 // The least that may be left of the wake's uplink deadline for a call to be begun: a connect and
 // a TLS handshake over LTE-M are seconds each before a byte of the request goes, and a call begun
@@ -180,6 +184,17 @@ class ModemUplink final : public mm::IUplink {
   // nothing else changes about the body.
   void setRadioIdentityLost(bool lost) { radio_identity_lost_ = lost; }
   bool radioIdentityLost() const { return radio_identity_lost_; }
+  // **What woke this unit** (task p13-02), as core/cycle/wake_counters.h has counted it. The same
+  // seam as the line above and for the same reason: the library writes `hb.errors` whole, so this
+  // is the one place a counter of ours can be added to the body that goes out. Held by pointer -
+  // the object outlives this one - and null is a build with no settings store, whose heartbeat is
+  // byte for byte what it was.
+  void countWakesFrom(const core::cycle::WakeTotals* wakes) { wakes_ = wakes; }
+  // **Where a call that did not come back 2xx is written down** (task p13-02,
+  // walter_agent/call_log.h). Every call the library asks for passes through `call()` below, so
+  // this is the one place the list can be kept from. Null keeps none.
+  void recordFailuresIn(CallLog* calls) { calls_ = calls; }
+  CallLog* callLog() const { return calls_; }
   // Where a 401 is raised (task p4-04): the Walter's own attention, for the next wake record and
   // for `status`. A null one is a build with no duty cycle, and then a 401 is a log line and the
   // `Call` record and nothing more.
@@ -232,13 +247,19 @@ class ModemUplink final : public mm::IUplink {
   // request, and the Call record. `endpoint` is the path under kAgentRoute; `body` nullptr is a
   // GET. True when a status came back (`out.reachable`); the reply's bytes are in reply_,
   // `reply_len` of them, NUL-terminated.
-  bool call(const char* endpoint, const std::uint8_t* body, std::size_t body_len, std::size_t bound,
-            std::size_t& reply_len, Call& out);
+  // `what` is which of the eight this is, for the failed-call list (task p13-02): it is passed in
+  // rather than worked out from `endpoint`, because a list that names the wrong call is worse than
+  // no list and a path is not a name.
+  bool call(CallKind what, const char* endpoint, const std::uint8_t* body, std::size_t body_len,
+            std::size_t bound, std::size_t& reply_len, Call& out);
   // A POST to /jobs/<id>/<action> (the result, the extend, the progress).
-  bool callJob(long long jobId, const char* action, const std::uint8_t* body, std::size_t body_len,
-               std::size_t& reply_len, Call& out);
+  bool callJob(CallKind what, long long jobId, const char* action, const std::uint8_t* body,
+               std::size_t body_len, std::size_t& reply_len, Call& out);
   // The URL as the client is given it: url() and the endpoint. False when it does not fit.
   bool buildUrl(const char* endpoint);
+  // One failed call into the list, when this object was given one.
+  void noteFailedCall(CallKind what, std::uint16_t status, interfaces::HttpOutcome outcome,
+                      std::uint32_t at_epoch);
   void offerServerTime(std::uint32_t epoch);
   void wipeSecret();
   void wipeReply();
@@ -256,6 +277,8 @@ class ModemUplink final : public mm::IUplink {
   LinkState link_;
   std::uint64_t deadline_ms_ = 0;
   bool radio_identity_lost_ = false;
+  const core::cycle::WakeTotals* wakes_ = nullptr;
+  CallLog* calls_ = nullptr;
   core::cycle::AgentAttention* attention_ = nullptr;
   ResultGate* gate_ = nullptr;
   KeptPayload payloads_[mm::kClaimMax];

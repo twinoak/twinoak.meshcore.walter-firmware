@@ -266,6 +266,20 @@ void WakeReason::didThisWake(std::uint8_t bits) {
   if (begun_) save();
 }
 
+// Why this wake sent nothing (task p13-02), into this wake's own entry. The same shape as the
+// bits above: nothing new is no write, and a write goes to retained storage at once so that a
+// wake ended by a reset, a crash or the bound still leaves what it had settled.
+void WakeReason::sentThisWake(std::uint8_t reached, std::uint32_t owed_s) {
+  if (count_ == 0) return;
+  const std::uint16_t owed = owed_s > kOwedAtMostS ? static_cast<std::uint16_t>(kOwedAtMostS)
+                                                   : static_cast<std::uint16_t>(owed_s);
+  WakeEntry& e = record_.items[0];
+  if (e.sent == reached && e.owed_s == owed) return;
+  e.sent = reached;
+  e.owed_s = owed;
+  if (begun_) save();
+}
+
 void WakeReason::endingInSleep(std::uint32_t lasted_s, std::uint32_t asked_s) {
   // 0 is reserved for "it never reached sleep", so a wake shorter than a second is recorded as
   // one second: it did reach sleep, and that is the thing the entry is asked about. And the

@@ -81,6 +81,13 @@ void AgentBackend::begin(void (*pump)()) {
     p_.server->setResultGate(p_.firmware);
   }
   p_.server->setClock(&p_.platform->clock());
+  // The last eight failed calls, read back from the store and handed to the uplink (task p13-02):
+  // `ModemUplink::call()` is the one place every call to the server passes, so it is the one
+  // place a failure is written down.
+  if (p_.calls != nullptr) {
+    p_.calls->begin();
+    p_.server->recordFailuresIn(p_.calls);
+  }
   refreshIdentity();
   if (p_.kept != nullptr && p_.kept_scratch != nullptr) {
     p_.loop->setRetained(p_.kept, p_.kept_scratch, p_.kept_scratch_len);
@@ -243,6 +250,9 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   // (a radio that got one between two wakes reports it now) - the uplink's state and deadline,
   // what the jobs may do, and §7's ring drained into the loop's own so the batch goes with this
   // wake.
+  // The wake's number the failures of this wake are stamped with (task p13-02): the duty cycle's
+  // own count, which `wake`'s list and a journal entry are read against.
+  if (p_.calls != nullptr) p_.calls->atWake(known.wake.wakes);
   const bool radio_known = knowTheRadio();
   const bool radio_up = p_.identity->sessionUp();
   sayRadio(radio_known, radio_up);
@@ -322,6 +332,9 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
     if (p_.firmware != nullptr) posted_owed = p_.firmware->postOwedResult();
   }
   (void)saveState();
+  // ... and the failed calls of this wake, **only when one failed** (task p13-02): a wake in which
+  // nothing failed writes nothing here, which is the fourth deliverable of that task.
+  if (p_.calls != nullptr) (void)p_.calls->save();
 
   // The answer: what the jobs did, and how long to sleep at least.
   if (out != nullptr) {
@@ -573,6 +586,52 @@ void AgentBackend::sayLocalDoor(interfaces::TextOut& out) const {
       sayf(&out, "  %s...  the mesh; NOT this radio's key %s...\n", hex, own_hex);
     } else {
       sayf(&out, "  %s...  the mesh; not this radio's key, which this end no longer holds\n", hex);
+    }
+  }
+}
+
+// `agent calls`, and the report's `calls` section (task p13-02): the last eight calls to the
+// server that did not come back 2xx, newest first. It is the answer to *httpFailures 512* - the
+// library's counter is a total with no start date and leaves 401 and 429 out of it, and until
+// this the reason for each failure was a log line a deep sleep forgot.
+//
+// **No token, no password and no byte of a body** is in a line here: an entry is a call's name, a
+// status or an `interfaces::HttpOutcome`, a wake number and an epoch, and nothing else is kept.
+void AgentBackend::calls(interfaces::TextOut& out) {
+  if (p_.calls == nullptr) {
+    say(&out, "agent calls: this build keeps no list of failed calls\n");
+    return;
+  }
+  const CallLog& log = *p_.calls;
+  sayf(&out, "agent calls: %lu of the last %lu that did not come back 2xx (401 and 429 included, "
+             "which the heartbeat's httpFailures leaves out)\n",
+       static_cast<unsigned long>(log.count()), static_cast<unsigned long>(kCallsKept));
+  const CallLogCounters& c = log.counters();
+  sayf(&out, "  %lu recorded since this unit was made, %lu pushed out, %lu written to the store, "
+             "%lu refused; the list %s this boot\n",
+       static_cast<unsigned long>(c.recorded), static_cast<unsigned long>(c.pushed_out),
+       static_cast<unsigned long>(c.writes), static_cast<unsigned long>(c.refused),
+       log.survived() ? "was read back at" : "starts at");
+  if (log.count() == 0) {
+    say(&out, "  no call has failed since the list began\n");
+    return;
+  }
+  for (std::size_t i = 0; i < log.count(); ++i) {
+    const FailedCall& call = log.at(i);
+    char when[32];
+    if (call.at_epoch != 0) {
+      std::snprintf(when, sizeof when, "at %lu", static_cast<unsigned long>(call.at_epoch));
+    } else {
+      std::snprintf(when, sizeof when, "no clock then");
+    }
+    if (call.status != 0) {
+      sayf(&out, "  %lu. %s, wake %lu, %s: http %lu\n", static_cast<unsigned long>(i + 1),
+           callKindName(call.what), static_cast<unsigned long>(call.wake), when,
+           static_cast<unsigned long>(call.status));
+    } else {
+      sayf(&out, "  %lu. %s, wake %lu, %s: nothing answered, %s\n",
+           static_cast<unsigned long>(i + 1), callKindName(call.what),
+           static_cast<unsigned long>(call.wake), when, interfaces::describe(call.outcome));
     }
   }
 }

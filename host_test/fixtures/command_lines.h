@@ -86,6 +86,7 @@ const CommandLine kCommandLines[] = {
     {"agent wake", "agent wake"},
     {"agent jobs", "agent jobs"},
     {"agent state", "agent state"},
+    {"agent calls", "agent calls"},
     {"wake", "wake"},
     {"power", "power"},
     {"sleep now", "sleep now"},

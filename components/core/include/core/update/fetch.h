@@ -31,6 +31,7 @@
 #include "core/net/download.h"
 #include "core/net/url.h"
 #include "interfaces/clock.h"
+#include "interfaces/http.h"
 #include "interfaces/text_out.h"
 
 namespace core {
@@ -69,6 +70,10 @@ struct FetchResult {
   const char* why = "";
   image::Check check = image::Check::kNone;  // kRefused: which check
   std::uint16_t status = 0;                  // the last HTTP status seen
+  // How far the last request got when no status came back at all (task p13-02): what the failed
+  // call list keeps for a download range, as it does for the seven agent calls
+  // (walter_agent/call_log.h). Read only when `status` is 0.
+  interfaces::HttpOutcome outcome = interfaces::HttpOutcome::kOk;
   std::uint64_t bytes = 0;                   // image bytes downloaded in this call
   std::uint32_t held = 0;                    // image bytes in flash afterwards (0 when stored or refused)
   std::uint32_t expected = 0;                // the file's size, once the manifest was accepted
