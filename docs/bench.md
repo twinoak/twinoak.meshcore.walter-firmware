@@ -2118,6 +2118,60 @@ case — and nothing here changes what the unit does, only what it says it did.
       wake ends `, nothing sent: <reason>`; an answered wake's line has no such clause. This is
       what a person watching the port at 3 a.m. reads, and it is the cheapest of these items.
 
+## 21. What the unit says about itself
+
+From task p13-01 (`twinoak.report`, `core/console/report_source.h`,
+`components/agent/firmware_jobs.cpp`). A unit on a mast is read through meshmaster.dk or not at
+all, and what it answers with is **the console's own lines**: a section is a console command,
+printing into the result instead of into the port. So every item here is the same test — *is the
+section the same bytes as the command typed on the cable in that same wake* — and that is a thing
+only a unit and a server together can show. **meshmaster.dk's task 216 has to be deployed first**;
+until it is, nothing here can be asked for.
+
+- [ ] ★ **A report, against the port.** Queue a `twinoak.report` for
+      `wakes, agent, uplink, jobs`, then `agent wake` on the cable. Type `wake`, `agent state`,
+      `lte` and `agent jobs` immediately afterwards and read the job's page beside them: the four
+      sections must be **those four commands' own lines**, in the order asked, each ending at its
+      last line. A section that reads like a summary of a command rather than the command is this
+      task's whole premise failing.
+
+- [ ] ★ **The 13 November question.** With a wake request sent from meshmaster.dk to a unit on
+      the mast, ask for `wakes` and `agent` afterwards. Read: did it wake at that time, by what,
+      how long was it awake, did the uplink come up, did the server answer — and what wait was
+      still owed. **This is what the first open item of `tasks/phase-13/FOLLOWUPS.md` is to be
+      decided from**, and `journal`'s dated wake entries are where the wakes under the top of the
+      list are timed.
+
+- [ ] **All eleven sections in one answer.** Ask for every name. On a unit that has been running a
+      while the result will be full: the last section written comes back `cut` **at a line end**
+      (never half a line), and the ones after it are named in `left`. Ask again for just those,
+      and they come back whole. Measured in the simulator: eleven sections of a fresh unit are
+      ~7 kB, and a full result is ~7.7 kB of the 8 000 the contract allows.
+
+- [ ] **Two reports in one hour, against the wake's bytes.** The second one may not fit the wake's
+      32 kB: it must be **kept and posted at the next wake**, not dropped. `agent jobs`' `buffer`
+      line shows it waiting and `agent state`'s *result(s) posted late* counts it. A report that
+      vanished is the thing to catch here.
+
+- [ ] **A report changes nothing.** Ask for all eleven twice in two wakes, with nothing else
+      happening in between. `rak events`, `agent obs`, `power` and `journal` on the cable must
+      read the same before and after: no event taken out of the queue, no advert pulled, no
+      battery sample added, no journal entry written.
+
+- [ ] **No secret and nothing a stranger said.** With the token, the SIM PIN and a repeater
+      password all set, and a scanner line heard: grep a report of all eleven sections for each.
+      The token and the PIN appear as *set* and never as a value; the scanner's words appear
+      nowhere at all.
+
+- [ ] **The `radio` section with the radio's jumper pulled.** It must come back with `rak status`'s
+      refusal line in it, promptly, rather than holding the wake open on a link that is not there.
+
+- [ ] **The four new console lines, on the port.** `wake`'s `the clock: <epoch>, from <source>`;
+      `journal`'s wake entries reading `seq <n> at <epoch>`; `agent state`'s own clock line; and
+      `rak events` printing the link's counters (`link: ...; retries, timeouts, drops, events`)
+      before the events themselves. All four were seen in the simulator and none on a board. **No
+      line of any of them may run past 100 columns.**
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
