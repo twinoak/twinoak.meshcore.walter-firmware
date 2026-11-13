@@ -125,6 +125,10 @@ against 0.1.1 or newer, and the hello's version word refuses it there.
 meshmaster.dk, on the **unit's own exit-node page**, and the unit does the rest across one or two of
 its own wakes. Nothing here is typed at a console; the console is only where it can be watched.
 
+**A unit has now walked it.** *What it did on 10 November*, at the end of this section, is the one
+that held, with the three offers before it that expired because nobody was listening. Read that
+before pressing anything, and read it again if the unit is one that sleeps a long time.
+
 > **It has never once finished, before v0.1.3, and here is what had to change.** The first update of
 > a unit over LTE — job 22841, 8 November 2026 — failed in two seconds with *a status this firmware
 > does not act on*. meshmaster.dk refuses every `/agent/v1` request that does not carry
@@ -240,6 +244,61 @@ On the unit's page: the job reads *committed* with the version it moved to, or *
 journal line by line — which is the unit disagreeing with the server, and allowed to. Afterwards the
 heartbeat's `agentVersion` is `0.1.4+<sha7>`, and that is the one place a person sees which release
 a unit out there is really running.
+
+### What it did on 10 November
+
+The first unit — *LTE Exit Node 1*, the uplink of *LTE Repeater Node 1* — took this walk from
+`v0.1.2` on **10 November 2026**, with nobody at it. Every time below is UTC and comes from
+meshmaster.dk's own pages, read on 12 November
+([`tasks/phase-12/evidence/`](../tasks/phase-12/evidence/README.md)); **no console was watched**, so
+nothing here is a reading from a port.
+
+| | |
+|---|---|
+| 11:05:43 → 11:35:50 | offer 24781, **expired**: no exit node took it. Attempts 0 of 1 |
+| 11:58:26 → 12:28:50 | offer 24812, the same |
+| 12:30:01 → 13:00:50 | offer 24837, the same |
+| 14:42:11 → 14:52:27 | offer 24932, **succeeded**: *stored* as the other slot's image, `manager.walter.lte-m`, 780 528 bytes |
+| 14:53:18 → 15:20:17 | apply 24938, **committed**: *the candidate proved itself and is the golden image now (0.1.2 → 0.1.4)* |
+
+**An offer lives thirty minutes, and a sleeping unit misses it.** The first three were never handed
+to the unit at all — it claimed nothing inside any of the three windows, and each one simply ran
+out. The server does not re-offer by itself and the unit cannot ask for an offer that has expired,
+so **a release offered to a unit that was away has to be offered again**. A unit the battery has put
+on an hourly or a daily wake may miss one window after another ([`power.md`](power.md) is what
+decides that interval, and the unit's page says which one it chose) — but this unit reports a
+**quarter-hour** check-in and missed three windows anyway, and why it was not checking in on that
+morning is not on the server's pages. So: do not read an expired offer as a unit that is gone, and
+do not read a quarter-hour interval as a guarantee that the next offer will be caught. Nothing is
+wasted by an expired offer but the press — no bytes were fetched and no plan was billed, because
+the job never reached the unit (its page says *attempts 0 of 1*).
+
+What the fourth one cost, as the server counted it:
+
+- **at most 10 min 15 s** for the download. The job was made at 14:42:11 and the file was stored at
+  14:52:26; the page does not say when the unit *claimed* it, so the download is bounded from above
+  and no closer. One progress line survives on the job's page: **687 kB of 781 kB at 14:51:31**. The
+  real figure is a reading a cable gives and nobody has taken it yet ([`bench.md`](bench.md) §18).
+- **877 kB billed for a 781 kB file, in 14 requests.** Twelve 64 kB ranges cover 780 528 bytes, so
+  two requests — about 96 kB — were served a second time. That is a retry, and it is the download
+  working: a range whose bytes never reach the slot is asked for again from where the slot actually
+  stands (`core/net/download.cpp`, *Not whole*), and a server that has already written the body
+  counts what it wrote. **Nothing the unit sent says so.** The counts exist
+  (`DownloadResult::ranges`, `retries`, `restarts`) and the console prints them in its `fetch:
+  … 12 range(s), N retries …` line, but `Fetch` does not carry them out, so the offer's result and
+  its log cannot mention them — `resumed: false` there answers a different question, namely whether
+  an *earlier wake* had already put bytes in flash, and for the Walter's own slot that is false by
+  construction. The plan's own bill is the only place a repeat shows today.
+- For comparison, `v0.1.3` on 9 November: 785 kB of 785 kB in **12 requests**, no repeat at all.
+
+And one thing not to read too closely on the job's page: the apply's journal comes back as three
+lines — *switching*, *on-trial*, *confirmed* — **all stamped 15:20:13Z**. A trial is not over in a
+second. The steps are kept in the journal in flash as a sequence with no clock of its own
+(`SelfPayload` carries a state, a slot, a reason and two versions, and the entry around it carries a
+`seq`), and `at` is written when the result is *composed*, in the one loop of the wake after the
+restart that posts it (`components/agent/firmware_jobs.cpp`, `FirmwareJobs::line()` →
+`nowEpoch()`). So **the order of those lines is true and the times are the moment of posting**:
+15:20:13Z is when the unit, already back up and already confirmed, wrote the story down.
 
 ### If it is wanted by cable instead
 

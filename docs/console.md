@@ -1116,6 +1116,14 @@ every 100 ms or less - and wait in the client's queue until `rak events` prints 
 printed as it arrives, because a Walter on a mast has nobody reading. ESP-IDF's own boot messages
 come before the banner at the bootloader's log level.
 
+**The boot's first lines are gone by the time a cable is plugged in.** The banner, the `heap:`
+line, the running partition and the rest of what `main` prints are `printf`, and `printf` goes
+through the VFS, which **throws away everything written while no USB host is connected** — so a
+Walter booting on a mast prints them to nobody, which is right, and a person who attaches
+afterwards sees neither them nor any trace of them in `dump` (they were written before the
+console's ring existed). To see them, type `status`, which prints the banner again, or `reboot`,
+which prints the whole boot (task p11-04).
+
 The lines that *are* printed without being asked for are these, and `log.level` is what decides
 which of them a port sees:
 

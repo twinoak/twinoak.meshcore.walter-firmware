@@ -55,9 +55,20 @@ interval, runs the jobs the server has for it and sleeps again
 > `v0.1.3` that starts: the room back, a build that **fails when the main task would not fit**, a
 > rollback that says what killed the trial, and a release that is **booted in an emulator before
 > it is published** ([`tasks/phase-11/`](tasks/phase-11/README.md),
-> [`docs/release.md`](docs/release.md)). Whether a unit has taken `v0.1.4` over LTE is **not known
-> when this was written**: the release went out by hand on 10 November and nothing in this
-> repository records the result yet. **Everything else is still simulators**: a simulated nRF52 down to its flash
+> [`docs/release.md`](docs/release.md)).
+> **And a unit took it over LTE, with nobody at it, and kept it.** On 10 November the first unit
+> fetched `v0.1.4` from `v0.1.2` — offer 24932, *stored* as the other slot's image at **14:52 UTC**,
+> 780 528 bytes — and the apply after it came back **committed at 15:20**: *the candidate proved
+> itself and is the golden image now (0.1.2 → 0.1.4)*. The heartbeat has said `0.1.4+62538fa`
+> since. That is the first update over LTE that held, and 9 November's rollback is the other half
+> of the same story. **It is the server's side of it and nothing else**: meshmaster.dk's pages for
+> that unit and its jobs were read on 12 November, nobody was at the unit and no console was
+> watched ([`tasks/phase-12/evidence/`](tasks/phase-12/evidence/README.md)), so what only a port shows —
+> the six checks as they pass, the ranges, `self status`, the trial's own lines, the seconds of
+> the download — is still unread. **Three offers before it expired unclaimed**, at 11:05, 11:58
+> and 12:30: an offer lives thirty minutes on the server and the unit was not checking in inside
+> any of them, which is what offering a release to a sleeping unit costs
+> ([`docs/flashing.md`](docs/flashing.md)). **Everything else is still simulators**: a simulated nRF52 down to its flash
 > controller, a flash that loses power at any operation, a scripted repeater, a fake modem that
 > fails in every way a real one does, a scripted HTTPS server, a scripted meshmaster.dk and the
 > agent library's own simulated stock repeater. [`docs/bench.md`](docs/bench.md) is the walk that
@@ -70,8 +81,9 @@ must fail its health check and bring the golden image back; §15 a scope on the 
 across sleep and wake, where there must be no edge at all; and §18's three — the first heartbeat
 recognised as *this* unit, an offer that resumes after the cable is pulled, and an apply that rolls
 back when the server asked for it. Nor has a unit yet walked a whole day, timed a flash or a push
-properly, run twenty pairs of HTTPS requests, **kept** a release of its own taken over LTE (it
-fetched and switched to one on 9 November, and the trial rolled it back), or seen
+properly, run twenty pairs of HTTPS requests, **timed** a release of its own taken over LTE (one
+was taken and kept on 10 November, but only the server watched it: the download is known as *at
+most* 10 min 15 s, because the job's page does not say when the unit claimed it), or seen
 `rak provision` give a factory radio its base.
 
 | Phase | What | |
