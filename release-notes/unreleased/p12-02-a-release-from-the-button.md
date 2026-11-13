@@ -1,1 +1,0 @@
-A release's notes are now the lines the tasks wrote as they went, in the order they merged, rather than a summary written at release time. Nothing in the firmware changed, so nothing on a board behaves differently.
