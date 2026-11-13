@@ -131,7 +131,10 @@ takes it by cable, because its second HTTPS connection of a wake was the one tha
    packet on the air; jobs for a **neighbour** go over the repeater's radio, one packet per
    command. The job logic itself is the exit-node firmware's, taken as a library at a pinned
    commit ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §13,
-   [`docs/upstream.md`](docs/upstream.md));
+   [`docs/upstream.md`](docs/upstream.md)). Among those jobs is **`twinoak.report`**, which asks
+   the unit what it says about itself: the console's own lines by section — the wakes, the
+   agent's state, the uplink, the journal, the settings, the log — so that a unit on a mast can
+   be read without the cable, and read only;
 6. it **sleeps**, and the battery it shares with the repeater chooses for how long: a full pack
    under a sunny panel gets a wake every quarter of an hour, a sinking one in December gets one a
    day, and below a floor the modem is not used at all ([`docs/power.md`](docs/power.md)). One wake

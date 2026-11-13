@@ -1719,8 +1719,9 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       this is the 6 November fault again.
 - [ ] **A silent radio, and the unit still answering for itself** (task p8-04). Pull the radio's
       jumper (or leave the slot empty, as §2 does it), then `lte up` and `agent wake`. Expected:
-      one line `agent: the radio did not answer a HELLO: only this unit's own job types are
-      claimed (twinoak.fw.offer, twinoak.fw.apply, twinoak.fw.state, twinoak.power.cycle)`, a
+      two lines `agent: the radio did not answer a HELLO: ...` and `agent: only this unit's own
+      job types are claimed: twinoak.fw.offer, twinoak.fw.apply, twinoak.fw.state,
+      twinoak.power.cycle, twinoak.report`, a
       heartbeat that goes out all the same with **no `companionPublicKey` and no mesh job type**,
       and — with a `twinoak.fw.state` queued — that job claimed, run and answered. **A mesh job
       queued for this unit must not be claimed in that wake**: the server's job page still shows it

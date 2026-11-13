@@ -254,6 +254,7 @@ const char* FirmwareJobs::type(int i) const {
     case 1: return kApplyType;
     case 2: return kStateType;
     case 3: return kPowerCycleType;
+    case 4: return kReportType;
     default: return "";
   }
 }
@@ -309,6 +310,7 @@ bool FirmwareJobs::run(const mm::ClaimedJob& job, mm::JobContext& ctx, mm::Resul
   if (isType(job.type, kOfferType)) return runOffer(job, payload, ctx, out);
   if (isType(job.type, kApplyType)) return runApply(job, payload, ctx, out);
   if (isType(job.type, kPowerCycleType)) return runPowerCycle(job, payload, ctx, out);
+  if (isType(job.type, kReportType)) return runReport(job, payload, ctx, out);
   return false;  // not ours: the runner answers `unsupported`
 }
 
@@ -528,7 +530,7 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
 
 std::size_t FirmwareJobs::writeOfferResult(bool stored, const char* image_id, const char* sha256_hex,
                                            std::uint64_t bytes, int check, const char* reason, bool resumed) {
-  mm::JsonWriter w(data_, sizeof data_);
+  mm::JsonWriter w(data_, kDataBytes);
   w.beginObject();
   w.key("stored");
   w.boolean(stored);
@@ -608,7 +610,7 @@ void FirmwareJobs::writeTrial(mm::JsonWriter& w, const core::update::SelfUpdate:
 std::size_t FirmwareJobs::writeApplyResult(ApplyOutcome outcome, const char* from, const char* to,
                                            Refusal refusal, const char* reason,
                                            const core::update::SelfUpdate::LastTrial* trial) {
-  mm::JsonWriter w(data_, sizeof data_);
+  mm::JsonWriter w(data_, kDataBytes);
   w.beginObject();
   w.key("outcome");
   w.string(name(outcome));
@@ -1031,7 +1033,7 @@ bool FirmwareJobs::postOwedResult() {
   report.transactions = 0;
   report.data = data_;
   report.log = "the Walter's own apply: the trial's outcome, posted from the journal after the restart";
-  const std::size_t len = mm::writeJobResult(report, body_, sizeof body_);
+  const std::size_t len = mm::writeJobResult(report, body_, kEnvelopeBytes);
   if (len == 0) return false;
   if (!server_.postJobResult(owed.job_id, body_, len)) return false;
   counters_.owed_posted = saturate(counters_.owed_posted);
@@ -1066,7 +1068,7 @@ bool FirmwareJobs::runState(const mm::ClaimedJob& job, mm::JobContext& ctx, mm::
 }
 
 std::size_t FirmwareJobs::writeStateResult() {
-  mm::JsonWriter w(data_, sizeof data_);
+  mm::JsonWriter w(data_, kDataBytes);
   const core::board::Slot slot = radio_.slot();
   const lc::Session& session = radio_.session();
   img::Record golden{};
@@ -1196,7 +1198,7 @@ std::size_t FirmwareJobs::writeStateResult() {
 
 std::size_t FirmwareJobs::writePowerCycleResult(std::uint32_t off_ms, bool radio_back, bool has_boot_id,
                                                 std::uint32_t boot_id) {
-  mm::JsonWriter w(data_, sizeof data_);
+  mm::JsonWriter w(data_, kDataBytes);
   w.beginObject();
   w.key("offMs");
   w.integer(static_cast<long long>(off_ms));
@@ -1285,6 +1287,252 @@ bool FirmwareJobs::runPowerCycle(const mm::ClaimedJob& job, const char* payload,
   ctx.log(note);
   const std::size_t n = writePowerCycleResult(off_ms, back, back, radio_.session().boot_id);
   if (n != 0) out.data(data_, n);
+  out.outcome(mm::Outcome::Ok);
+  return true;
+}
+
+// -- twinoak.report (task p13-01) ------------------------------------------------------------------
+//
+// What the unit says about itself, for whoever has to find a fault without the cable. On
+// 13 November a wake request reached the unit's radio, the radio answered *ok*, and the unit did
+// not check in; `wake`, `agent state` and `lte` say why, and they are behind a USB port on a unit
+// meant to sit on a mast. This job returns those lines.
+//
+// **The lines are the console's own.** Nothing here renders anything: a section is a console
+// command (core/console/report_source.h), run with its output going into this buffer instead of
+// into the port, so that a line added to a command is a line the report gains with it and no
+// wording of this firmware exists twice.
+//
+// **It changes nothing.** The sections are the read-only commands; `radio` asks this unit's own
+// radio over the box link and nothing goes on the air. The one thing a report leaves behind is
+// the record of the job itself - the library's `last ten`, and the lines the library logged,
+// which are in the ring `dump` prints as every other line of this port is.
+//
+// **It fits.** The whole data object is kReportDataBytes; sections are written in the order asked;
+// one that does not fit whole is cut at a line end and marked, and the ones after it are named in
+// `left`. Every list this console prints is newest first, so a cut at the end loses the oldest,
+// which is the end to lose.
+
+namespace {
+
+// What became of one name the payload asked for.
+enum class Fate : std::uint8_t {
+  kWritten,   // the section, whole
+  kCut,       // the section, cut at a line end: the result was full
+  kLeft,      // not started: the result was full
+  kUnknown,   // this firmware has no section of that name
+  kNotAName,  // not 1 to kReportNameMax characters of a-z: not answered at all
+};
+
+bool nameOk(const char* name) {
+  const std::size_t n = std::strlen(name);
+  if (n == 0 || n > kReportNameMax) return false;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (name[i] < 'a' || name[i] > 'z') return false;
+  }
+  return true;
+}
+
+// One section's lines, escaped into the result as the console prints them.
+//
+// A section that does not fit is cut **at a line end**, so every call is split at every '\n' and
+// the end of the last whole line is remembered. The escaping is `mm::JsonWriter`'s - the one JSON
+// writer this firmware sends anything with, and the only thing here that has seen a stranger's
+// bytes - done **in place**: the writer is given the room that is left and writes the line into
+// it as a JSON string, quotes and all, and the two quotes are then taken off. There is no second
+// buffer, which is what a board whose tightest heap arrangement has a few hundred bytes of margin
+// can afford (task p11-01, rail R22).
+class ReportText final : public interfaces::TextOut {
+ public:
+  ReportText(char* buffer, std::size_t at, std::size_t limit)
+      : buffer_(buffer), pos_(at), text_end_(at), limit_(limit) {}
+
+  void write(const char* text, std::size_t length) override {
+    if (text == nullptr || cut_) return;
+    std::size_t i = 0;
+    while (i < length) {
+      std::size_t end = i;
+      while (end < length && text[end] != '\n') ++end;
+      const bool whole = end < length;  // the '\n' is in this call
+      const std::size_t n = whole ? end + 1 - i : length - i;
+      if (!append(text + i, n)) {
+        cut_ = true;
+        return;
+      }
+      ends_with_newline_ = whole;
+      if (whole) text_end_ = pos_ - kNewlineEscaped;
+      i += n;
+    }
+  }
+
+  // Not text. Nothing of a section writes bytes: a frame of the image transfer is the only thing
+  // in this console that does, and it is not a section.
+  bool writeBytes(const std::uint8_t*, std::size_t) override { return false; }
+
+  bool cut() const { return cut_; }
+  // Where the text ends: with no '\n' at the end, and at a line end when it was cut.
+  std::size_t end() const { return (cut_ || ends_with_newline_) ? text_end_ : pos_; }
+
+ private:
+  // A '\n' is written as `\n`: two characters, which is what comes off the end.
+  static constexpr std::size_t kNewlineEscaped = 2;
+
+  bool append(const char* text, std::size_t n) {
+    if (n == 0) return true;
+    if (pos_ >= limit_) return false;
+    mm::JsonWriter w(buffer_ + pos_, limit_ - pos_ + 1);
+    w.string(text, n);
+    if (w.overflowed() || w.length() < 2) return false;
+    const std::size_t inner = w.length() - 2;  // without the writer's two quotes
+    std::memmove(buffer_ + pos_, buffer_ + pos_ + 1, inner);
+    pos_ += inner;
+    return true;
+  }
+
+  char* buffer_;
+  std::size_t pos_;
+  std::size_t text_end_;
+  std::size_t limit_;
+  bool cut_ = false;
+  bool ends_with_newline_ = false;
+};
+
+// The document around the sections: bounded, and written by hand rather than with mm::JsonWriter
+// because a report is cut at a line end and a forward-only writer cannot be rewound. **Nothing
+// written through this needs escaping**: it is this firmware's own punctuation and the section
+// names, which nameOk() has held to a-z. The only text in the document is a section's lines, and
+// those go through ReportText above, which is mm::JsonWriter.
+struct Doc {
+  char* out;
+  std::size_t at;
+  std::size_t cap;
+  bool full;
+
+  void raw(const char* text) {
+    const std::size_t n = std::strlen(text);
+    if (full || at + n >= cap) {
+      full = true;
+      return;
+    }
+    std::memcpy(out + at, text, n);
+    at += n;
+  }
+  void number(std::uint32_t value) {
+    char digits[12];
+    std::snprintf(digits, sizeof digits, "%lu", static_cast<unsigned long>(value));
+    raw(digits);
+  }
+};
+
+}  // namespace
+
+bool FirmwareJobs::runReport(const mm::ClaimedJob& job, const char* payload, mm::JobContext& ctx,
+                             mm::ResultWriter& out) {
+  (void)job;
+  counters_.reports = saturate(counters_.reports);
+  const std::size_t plen = std::strlen(payload);
+  const json::Value asked = json::member(payload, plen, "sections");
+  if (!json::element(asked, 0).found()) {
+    counters_.malformed = saturate(counters_.malformed);
+    ctx.log("the payload names no sections");
+    out.outcome(mm::Outcome::Failed);
+    return true;
+  }
+  if (parts_.report == nullptr) {
+    ctx.log("this build has no console to read the unit out of");
+    out.outcome(mm::Outcome::Failed);
+    return true;
+  }
+
+  int count = 0;
+  while (count < kReportSectionsMax && json::element(asked, count).found()) ++count;
+  Fate fate[kReportSectionsMax] = {};
+
+  Doc doc{buffer_, 0, kReportDataBytes, false};
+  doc.raw("{\"at\":");
+  doc.number(nowEpoch());
+  doc.raw(",\"sections\":[");
+  bool first = true;
+  bool full = false;
+  int written = 0;
+  int left = 0;
+  int unknown = 0;
+  int dropped = 0;  // not 1 to kReportNameMax characters of a-z: the contract says they are
+  char name[kReportNameMax + 1] = {};
+  for (int i = 0; i < count; ++i) {
+    if (!json::text(json::element(asked, i), name, sizeof name) || !nameOk(name)) {
+      fate[i] = Fate::kNotAName;
+      ++dropped;
+      continue;
+    }
+    bool have = false;
+    for (int s = 0; s < parts_.report->sectionCount() && !have; ++s) {
+      have = std::strcmp(name, parts_.report->sectionName(s)) == 0;
+    }
+    if (!have) {
+      fate[i] = Fate::kUnknown;
+      ++unknown;
+      continue;
+    }
+    // A section is not begun with less room than its entry, a line or two of text and the two
+    // lists at the end need: naming it in `left` says more than an entry that holds nothing.
+    if (full || doc.at + kReportEntryBytes + kReportLeastText + kReportTailBytes > kReportDataBytes) {
+      full = true;
+      fate[i] = Fate::kLeft;
+      ++left;
+      continue;
+    }
+    doc.raw(first ? "{\"name\":\"" : ",{\"name\":\"");
+    first = false;
+    doc.raw(name);
+    doc.raw("\",\"text\":\"");
+    // The room the text may have: everything but the two lists at the end and this entry's own
+    // closing `","cut":false}`.
+    ReportText text(buffer_, doc.at, kReportDataBytes - kReportTailBytes - kReportEntryBytes);
+    (void)parts_.report->writeSection(name, text);
+    doc.at = text.end();
+    doc.raw(text.cut() ? "\",\"cut\":true}" : "\",\"cut\":false}");
+    fate[i] = text.cut() ? Fate::kCut : Fate::kWritten;
+    ++written;
+    if (text.cut()) {
+      full = true;
+      counters_.reports_cut = saturate(counters_.reports_cut);
+    }
+  }
+  doc.raw("]");
+
+  // The names asked for that this firmware has and did not start, and the ones it has no section
+  // for: read back out of the payload, because nothing of them was kept.
+  for (int pass = 0; pass < 2; ++pass) {
+    doc.raw(pass == 0 ? ",\"left\":[" : ",\"unknown\":[");
+    const Fate wanted = pass == 0 ? Fate::kLeft : Fate::kUnknown;
+    bool first_name = true;
+    for (int i = 0; i < count; ++i) {
+      if (fate[i] != wanted) continue;
+      if (!json::text(json::element(asked, i), name, sizeof name)) continue;
+      doc.raw(first_name ? "\"" : ",\"");
+      first_name = false;
+      doc.raw(name);
+      doc.raw("\"");
+    }
+    doc.raw("]");
+  }
+  doc.raw("}");
+
+  if (doc.full) {
+    // The reserves above are what stop this; it is here because a result that is not whole JSON
+    // is worse than a job that says it failed.
+    ctx.log("the report did not fit its buffer");
+    out.outcome(mm::Outcome::Failed);
+    return true;
+  }
+  buffer_[doc.at] = 0;
+  char note[128];
+  std::snprintf(note, sizeof note,
+                "%d section(s) written, %d left, %d unknown, %d not a name; %lu bytes", written, left,
+                unknown, dropped, static_cast<unsigned long>(doc.at));
+  ctx.log(note);
+  out.data(buffer_, doc.at);
   out.outcome(mm::Outcome::Ok);
   return true;
 }

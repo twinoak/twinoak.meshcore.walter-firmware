@@ -15,3 +15,20 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   meshmaster.dk's diagnostics switch on, the report takes one of the two. A second claim while
   jobs wait and time is left is the library's to grow, in the exit-node firmware's repository.
 - [ ] **[later] agent-core is behind**, carried from phase 12's follow-ups.
+- [ ] **[later] `twinoak.report`'s two fixtures are this end's words, not meshmaster.dk's.**
+  `host_test/fixtures/contracts-ahead/UnitReportPayload.json` and `UnitReportResult.json` were
+  written from task 01's *The contract* block, because the copied tree
+  (`host_test/agent-core/tests/fixtures/contracts/`) is held byte for byte to its manifest and a
+  shape the server does not have yet cannot be put there. Once meshmaster.dk's task 216 is
+  deployed: compare the two byte for byte with the server's own, and move them into the copied
+  tree where every other fixture is. That directory's README says the same.
+- [ ] **[later] The radio cannot say how many attentions it raised, or how many its hourly limit
+  refused.** The report's `radio` section answers the rest of its question from `STATUS`, `rak
+  watch` and the link's counters, but §5.7's `STATUS` carries neither figure and nothing else
+  does, so the firmware says nothing rather than guessing. The link protocol is the design
+  repository's: `LINK-PROTOCOL.md` §5.7 would have to carry them.
+- [ ] **[later] `agent jobs` cannot say how long a job took.** The report's `jobs` section answers
+  the type, the outcome, when it ran and whether a result still waits, but not the duration: the
+  copied library's `JobRunner::Record` keeps `atEpoch` and the transaction count and no start or
+  finish (`components/agent-core/src/JobRunner.cpp`, `remember`). It is the exit-node firmware's
+  to add, and arrives here with the next copy.

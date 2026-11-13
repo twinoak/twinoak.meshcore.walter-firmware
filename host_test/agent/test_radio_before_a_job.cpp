@@ -137,8 +137,10 @@ TEST_CASE("a wake before the fix: without the key no mesh type is offered, so no
   CHECK_FALSE(anythingWentOnTheAir(bench));
   CHECK(has(text, "the radio answered but has made no identity yet"));
   // The whole of it: the library's line buffer is 239 characters and this is the longer of the
-  // two reasons, so a line that grew would be cut off exactly where it says why.
+  // two reasons, so a line that grew would be cut off exactly where it says why. Since task
+  // p13-01 the job types are a line of their own, which is what made room for a fifth.
   CHECK(has(text, "is not claimed"));
+  CHECK(has(text, "only this unit's own job types are claimed: twinoak.fw.offer"));
 }
 
 TEST_CASE("a radio that refuses: the wake says so, and the heartbeat carries radioIdentityLost") {

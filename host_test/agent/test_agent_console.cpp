@@ -167,10 +167,10 @@ TEST_CASE("agent id prints the local door's counters, and says when the door is 
   INFO(text);
   CHECK(has(text, "local door: open: a job naming this radio is answered here"));
   CHECK(has(text, "1 job(s),"));
-  // And the line above it is whole: seventeen job types are over three hundred characters, so
+  // And the line above it is whole: eighteen job types are over three hundred characters, so
   // `job types` used to be cut at `twinoak.` by printf's line buffer and lose its newline, which
-  // this line then ran on from (task p9-04).
-  CHECK(has(text, "twinoak.power.cycle\n"));
+  // this line then ran on from (task p9-04). The last of the eighteen is task p13-01's.
+  CHECK(has(text, "twinoak.power.cycle, twinoak.report\n"));
   CHECK(has(text, "\nlocal door: "));
   // §5.9 (task p9-06): which of the four requests the door answers out of the radio's own
   // handler. This bench's radio carries no `LOCAL_REQUEST` capability - a radio at link 1.1, as

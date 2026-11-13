@@ -475,9 +475,11 @@ struct WakeWalter {
                                                &agent->uplink_probe, &agent->identity_probe,
                                                &agent->backend, nullptr, &wall, nullptr,
                                                nullptr, &dumps));
-      // main.cpp's own last two lines of wiring (task p4-06): the library's log goes where every
-      // other line of this port goes, at the `log.level` setting. The cast is main.cpp's
+      // main.cpp's own last lines of wiring (tasks p4-06 and p13-01): the library's log goes
+      // where every other line of this port goes, at the `log.level` setting, and
+      // `twinoak.report` reads the unit out of this console. The cast is main.cpp's
       // `agentLogLevel`, whose static_assert holds the two enumerations' four values together.
+      agent->firmware.readTheUnitFrom(console.get());
       w.agent->console = console.get();
       AgentWorld::sink_owner = w.agent.get();
       agent->platform.beginLog(&AgentWorld::logLine, static_cast<mm::LogLevel>(settings.level()));
@@ -495,8 +497,10 @@ struct WakeWalter {
     CHECK(pins.violations.empty());
 #if WALTER_AGENT
     // This life's console is about to go; the library's sink must not reach it afterwards (the
-    // platform's own destructor takes the sink away, but it runs after the console's).
+    // platform's own destructor takes the sink away, but it runs after the console's), and
+    // neither must `twinoak.report` (task p13-01).
     if (w.agent) w.agent->console = nullptr;
+    if (agent) agent->firmware.readTheUnitFrom(nullptr);
 #endif
   }
 

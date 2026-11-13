@@ -8,6 +8,7 @@
 #include <agent/TextOut.h>
 
 #include "core/cycle/wake_cycle.h"
+#include "core/link/client/words.h"
 #include "core/power/interval_policy.h"
 
 namespace agent {
@@ -141,8 +142,10 @@ void AgentBackend::sayRadio(bool radio_known, bool radio_up) const {
     }
   }
   types[at] = 0;
-  // Inside the library's own 239-character line (agent/Log.cpp), with the longest of the three
-  // reasons and the four types in it: a line that said why and was cut off would say neither.
+  // **Two lines and not one since task p13-01**, when the fifth job type (`twinoak.report`) took
+  // the one line past the library's own 239 characters (agent/Log.cpp) and cut it off exactly
+  // where it said why. The reason is one line and the types are the next, so a sixth type costs
+  // the list and nothing else.
   // **Three reasons and not two** (task p10-03): a radio that answered but refuses §5.6 is not a
   // radio awaiting its first install, and until this line both read as *has made no identity
   // yet*.
@@ -155,9 +158,9 @@ void AgentBackend::sayRadio(bool radio_known, bool radio_up) const {
     why = p_.identity->identityLost() ? "the radio refuses: its identity is lost"
                                       : "the radio answered but has made no identity yet";
   }
-  LOG_I("agent: %s: only this unit's own job types are claimed (%s); a mesh job this end cannot "
-        "tell is its own is not claimed",
-        why, at == 0 ? "none in this build" : types);
+  LOG_I("agent: %s: a mesh job this end cannot tell is its own is not claimed", why);
+  LOG_I("agent: only this unit's own job types are claimed: %s",
+        at == 0 ? "none in this build" : types);
 }
 
 // -- the state across a sleep ----------------------------------------------------------------------
@@ -513,9 +516,10 @@ void AgentBackend::jobs(interfaces::TextOut& out) {
          static_cast<unsigned long>(f.rolled_back), static_cast<unsigned long>(f.refused),
          static_cast<unsigned long>(f.stuck), static_cast<unsigned long>(f.switches),
          static_cast<unsigned long>(f.owed_posted));
-    sayf(&out, "          %lu state(s); %lu power cycle(s), %lu refused; %lu progress, "
-               "%lu extend(s); %lu bytes downloaded\n",
-         static_cast<unsigned long>(f.states), static_cast<unsigned long>(f.power_cycles),
+    sayf(&out, "          %lu state(s), %lu report(s) (%lu cut); %lu power cycle(s), %lu refused; "
+               "%lu progress, %lu extend(s); %lu bytes downloaded\n",
+         static_cast<unsigned long>(f.states), static_cast<unsigned long>(f.reports),
+         static_cast<unsigned long>(f.reports_cut), static_cast<unsigned long>(f.power_cycles),
          static_cast<unsigned long>(f.power_cycles_refused), static_cast<unsigned long>(f.progress_posted),
          static_cast<unsigned long>(f.extends), static_cast<unsigned long>(f.bytes_downloaded));
     JobEntry owed;
@@ -613,6 +617,18 @@ void AgentBackend::state(interfaces::TextOut& out) {
        static_cast<unsigned long>(s.counters.observationsPosted),
        static_cast<unsigned long>(s.counters.observationsRefused),
        static_cast<unsigned long>(s.counters.claimFailures), static_cast<unsigned long>(s.counters.resultsPosted));
+  // **Is this unit's clock set, and from where** (task p13-01). Every figure above that is an
+  // epoch - the last heartbeat, a result's timestamps - is this clock's, and a unit that never
+  // attached has none at all: `lastHeartbeatAtEpoch 0` then means *no clock*, not *never*. The
+  // source is spec/LINK-PROTOCOL.md §5.4's: 1 the cellular network, 2 the server.
+  interfaces::WallTime time{};
+  if (wall_.now(&time)) {
+    sayf(&out, "  the clock: %lu, from %s\n", static_cast<unsigned long>(time.epoch),
+         core::link::client::timeSourceName(time.source));
+  } else {
+    say(&out, "  the clock: not set in this boot, so nothing this end says is dated (a sleep "
+              "loses it: there is no RTC to keep it in)\n");
+  }
   sayf(&out, "  the sleep keeps: %s, %lu image(s) written, %lu read back, %lu refused whole; %lu exchange(s), %lu wake(s) run, %lu not run\n",
        p_.kept != nullptr ? (p_.kept->capacity() != 0 ? "a flash window" : "a store of no capacity") : "no store",
        static_cast<unsigned long>(counters_.kept_written), static_cast<unsigned long>(counters_.kept_restored),

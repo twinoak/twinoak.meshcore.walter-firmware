@@ -163,8 +163,10 @@ bool Console::slotOk(board::Slot slot) {
 
 void Console::print(const char* text) {
   const std::size_t n = std::strlen(text);
-  out_.write(text, n);
-  log_.append(text, n);
+  sink().write(text, n);
+  // Not the port, so not the ring either (task p13-01): a `log` section that answered with the
+  // last report instead of with the last lines this port printed would answer nothing.
+  if (report_ == nullptr) log_.append(text, n);
 }
 
 // Into a stack buffer: no heap. A line that does not fit is cut, never overrun.
@@ -177,8 +179,8 @@ void Console::printf(const char* format, ...) {
   if (n <= 0) return;
   const std::size_t length =
       static_cast<std::size_t>(n) < sizeof buf ? static_cast<std::size_t>(n) : sizeof buf - 1;
-  out_.write(buf, length);
-  log_.append(buf, length);
+  sink().write(buf, length);
+  if (report_ == nullptr) log_.append(buf, length);
 }
 
 // Is a line nobody asked for worth printing. `log.level` and below; `info` without a settings
@@ -422,7 +424,96 @@ void Console::pump() {
 
 void Console::agentLine(const char* line) {
   if (line == nullptr) return;
-  print(line);
+  // **Not through print()**: a line the copied library formatted belongs to the port and to the
+  // ring `dump` prints, even if a report section happens to be being written into a buffer at
+  // that moment (task p13-01). It is the one thing this console says that a section never is.
+  const std::size_t n = std::strlen(line);
+  out_.write(line, n);
+  log_.append(line, n);
+}
+
+// -- the report's sections (task p13-01) ---------------------------------------------------------
+//
+// The eleven names of `twinoak.report`, in the order the task's table lists them, and the printer
+// behind each. **There is no second rendering of anything here**: every entry is a console
+// command, or two of them, and a line added to a command is a line the report gains with it.
+//
+// Three are not simply the command:
+//
+//   observations  `agent obs` **without its pull**, which is the read-only half of it; a pull
+//                 drains the radio's ring.
+//   radio         `rak status` and `rak watch`, and then the *counts* of `rak events` - not the
+//                 events themselves, which taking out of the queue would lose.
+//   power         the band this wake decided, not a new reading and a new decision: `power`
+//                 itself asks the radio and decides, and both change what the next wake sees.
+//
+const Console::SectionDef Console::kSections[] = {
+    {"wakes", &Console::sectionWakes},
+    {"agent", &Console::agentState},
+    {"uplink", &Console::lte},
+    {"observations", &Console::sectionObservations},
+    {"jobs", &Console::agentJobs},
+    {"journal", &Console::journal},
+    {"radio", &Console::sectionRadio},
+    {"power", &Console::sectionPower},
+    {"restarts", &Console::sectionRestarts},
+    {"settings", &Console::getAll},
+    {"log", &Console::dump},
+};
+const int Console::kSectionCount = static_cast<int>(sizeof kSections / sizeof kSections[0]);
+
+int Console::sectionCount() const { return kSectionCount; }
+
+const char* Console::sectionName(int i) const {
+  return i >= 0 && i < kSectionCount ? kSections[i].name : "";
+}
+
+void Console::sectionRadio() {
+  // What `runLine` does for a `rak ...` line, which these three are: the slot this adapter has,
+  // and the link steered to it. A link in the middle of something else is one line of refusal,
+  // as it is at the port.
+  slot_ = board::Slot{0};
+  if (!slotOk(slot_)) return;
+  if (!radio_.useSlot(slot_)) {
+    printf("error: the link is in the middle of something on slot %u\n",
+           static_cast<unsigned>(radio_.slot().index));
+    return;
+  }
+  rakStatus();
+  rakWatch();
+  eventCounts();
+}
+
+void Console::sectionRestarts() {
+  reboots();
+  heap();
+}
+
+bool Console::writeSection(const char* name, interfaces::TextOut& out) {
+  if (name == nullptr || report_ != nullptr) return false;  // never one inside another
+  // The printer, looked up and taken out of the table before anything else: called straight out
+  // of `kSections[i]` inside the loop, g++ 13 reads the index as possibly uninitialised and -Werror
+  // stops the build.
+  void (Console::*write)() = nullptr;
+  for (int i = 0; i < kSectionCount && write == nullptr; ++i) {
+    if (std::strcmp(name, kSections[i].name) == 0) write = kSections[i].write;
+  }
+  if (write == nullptr) return false;
+  {
+    // A command of this console is on the stack for as long as the section is written, so that
+    // `pump()` - which the link's waits call, and `rak status` waits - polls the radio and leaves
+    // the console alone: a transfer or a trial stepped from inside a section would print its
+    // lines into the section's buffer and never into the port. Saved and put back rather than
+    // taken with a LineInProgress, because a report can be asked for by a wake that a typed
+    // `agent wake` started, and the flag of the line that is already running is not ours to clear.
+    const bool was_running = running_line_;
+    running_line_ = true;
+    report_ = &out;
+    (this->*write)();
+    report_ = nullptr;
+    running_line_ = was_running;
+  }
+  return true;
 }
 
 void Console::runLine(const char* line) {
@@ -660,12 +751,7 @@ void Console::status() {
       print("battery: never read (POWER_GET has not answered)\n");
     }
   }
-  const link::client::Counters& counted = radio_.counters();
-  printf("link: %s; retries %lu, timeouts %lu, drops %lu, events %lu\n",
-         link::client::describe(radio_.mode()), static_cast<unsigned long>(counted.retries),
-         static_cast<unsigned long>(counted.timeouts),
-         static_cast<unsigned long>(radio_.receiver().dropped()),
-         static_cast<unsigned long>(counted.events));
+  printLinkCounts();
   // Two lines, so that neither is over a hundred characters: `status` is read in a terminal
   // window (docs/bench.md §14), and `pins` is the command that says it pin by pin.
   printf("pins: power %s; next reset %s\n", board::describe(pins_.power()),
@@ -784,6 +870,18 @@ void Console::status() {
            every, settings_->wakeOnRadio() ? "yes" : "no");
   }
 }
+// One line, two readers: `status` has printed it since task p3-03, and `rak events` prints it too
+// since task p13-01 - the report's `radio` section is the counts of `rak events`, and the question
+// that section has to answer includes how many link retries and timeouts this boot has had.
+void Console::printLinkCounts() {
+  const link::client::Counters& counted = radio_.counters();
+  printf("link: %s; retries %lu, timeouts %lu, drops %lu, events %lu\n",
+         link::client::describe(radio_.mode()), static_cast<unsigned long>(counted.retries),
+         static_cast<unsigned long>(counted.timeouts),
+         static_cast<unsigned long>(radio_.receiver().dropped()),
+         static_cast<unsigned long>(counted.events));
+}
+
 void Console::reboots() {
   printf("boots since the record began: %lu%s\n", static_cast<unsigned long>(health_.boots()),
          health_.recordSurvived() ? "" : " (the record started at this boot: a power cut, or the first boot)");
@@ -1305,7 +1403,9 @@ void Console::printEvent(const lc::QueuedEvent& event, std::size_t number) {
          static_cast<unsigned>(event.size));
 }
 
-void Console::rakEvents() {
+// The counts, and nothing taken out of the queue (task p13-01): what `rak events` says first, and
+// the whole of what the report's `radio` section asks of it - a section may not empty a queue.
+void Console::eventCounts() {
   // Whatever has arrived since the last look: the main loop polls the port every time round, so
   // an event that came while nobody was asking is already here.
   radio_.poll();
@@ -1315,13 +1415,18 @@ void Console::rakEvents() {
            static_cast<unsigned long>(counted.events),
            static_cast<unsigned long>(counted.events_dropped),
            static_cast<unsigned long>(counted.event_gaps));
-    return;
+  } else {
+    printf("%lu event%s queued (%lu seen, %lu dropped, %lu gaps):\n",
+           static_cast<unsigned long>(radio_.eventsQueued()),
+           radio_.eventsQueued() == 1 ? "" : "s", static_cast<unsigned long>(counted.events),
+           static_cast<unsigned long>(counted.events_dropped),
+           static_cast<unsigned long>(counted.event_gaps));
   }
-  printf("%lu event%s queued (%lu seen, %lu dropped, %lu gaps):\n",
-         static_cast<unsigned long>(radio_.eventsQueued()),
-         radio_.eventsQueued() == 1 ? "" : "s", static_cast<unsigned long>(counted.events),
-         static_cast<unsigned long>(counted.events_dropped),
-         static_cast<unsigned long>(counted.event_gaps));
+  printLinkCounts();
+}
+
+void Console::rakEvents() {
+  eventCounts();
   lc::QueuedEvent event;
   for (std::size_t number = 1; radio_.takeEvent(&event); ++number) {
     printEvent(event, number);
@@ -3399,17 +3504,17 @@ void Console::agentWake() {
   // and reaches no line of it (task p4-03).
   if (!loopOk() || !uplinkUp()) return;
   print("agent wake: one wake of the loop now (a job can take minutes)\n");
-  if (!loop_->wake(out_)) print("agent wake: the loop did not run\n");
+  if (!loop_->wake(sink())) print("agent wake: the loop did not run\n");
 }
 
 void Console::agentJobs() {
   if (!loopOk()) return;
-  loop_->jobs(out_);
+  loop_->jobs(sink());
 }
 
 void Console::agentState() {
   if (!loopOk()) return;
-  loop_->state(out_);
+  loop_->state(sink());
 }
 
 void Console::fetch(const char* base_url, image::Which which) {
@@ -3730,6 +3835,20 @@ void Console::wake() {
   if (!dutyOk()) return;
   const cycle::WakeInfo& w = duty_->wake();
   printf("this wake: %s\n", cycle::describe(w.wake));
+  // **When** (task p13-01). A list of the last ten wakes answers *what* this unit did; lining it
+  // up with something that happened elsewhere - a wake request on meshmaster.dk's page, a job id
+  // - needs a time of day, and the record below carries none: it is eight bytes a wake in RTC
+  // memory and has no room for one (core/cycle/wake_reason.h). So this is the one timestamp
+  // `wake` gives, for the top of the list; the wakes under it are dated by `journal`, whose wake
+  // entries each carry the epoch they were written at.
+  interfaces::WallTime time{};
+  if (wall_ != nullptr && wall_->now(&time)) {
+    printf("the clock: %lu, from %s\n", static_cast<unsigned long>(time.epoch),
+           link::client::timeSourceName(time.source));
+  } else {
+    print("the clock: not set in this boot, so nothing here is dated (the network's time comes "
+          "with the uplink)\n");
+  }
   if (w.wake == cycle::Wake::kAttention) {
     printf("  attention: reason %u (%s), detail %u, repeat %u; heard after %lu ms of the %lu ms "
            "window\n", static_cast<unsigned>(w.attention.reason),
@@ -3812,10 +3931,27 @@ void Console::wake() {
 void Console::power() {
   if (!dutyOk()) return;
   const bool had = duty_->readPower();
-  const power::Decision d = duty_->decide();
+  printPower(duty_->decide(), true, had);
+}
+
+// The report's `power` section (task p13-01): the band, the readings behind it and the interval
+// it chose, **without taking a reading and without deciding** - a reading is a POWER_GET on the
+// link and one more sample in the policy's ring, and a decision is remembered for the next wake's
+// hysteresis. Both are changes, and a section changes nothing. What is printed is the decision
+// the wake itself took at its own step, which is the one the sleep will use.
+void Console::sectionPower() {
+  if (!dutyOk()) return;
+  if (!duty_->decided()) {
+    print("band: not decided in this wake yet (the wake decides at its last step; "
+          "'power' decides now)\n");
+  }
+  printPower(duty_->decision(), false, false);
+}
+
+void Console::printPower(const power::Decision& d, bool asked, bool had) {
   printf("band: %s - %s\n", power::name(d.band), power::describe(d.band));
   printf("  because: %s%s\n", d.why, d.changed ? "; the band changed this wake" : "");
-  if (!had) print("  this wake's POWER_GET did not answer (the link is down, or channel 2 is not valid)\n");
+  if (asked && !had) print("  this wake's POWER_GET did not answer (the link is down, or channel 2 is not valid)\n");
   if (d.reading_known) {
     printf("reading: %lu mV (the median of %lu sample(s))", static_cast<unsigned long>(d.median_mv),
            static_cast<unsigned long>(d.samples < power::kMedianOf ? d.samples : power::kMedianOf));
@@ -3929,7 +4065,7 @@ void Console::dump() {
   printf("dump: %lu of %lu bytes kept%s\n", static_cast<unsigned long>(log_.kept()),
          static_cast<unsigned long>(LogRing::kBytes),
          log_.wrapped() ? "; the ring has wrapped, so the log begins at the first whole line" : "");
-  log_.writeTo(out_);
+  log_.writeTo(sink());
   printf("dump: end (%lu byte(s) dropped since this boot)\n",
          static_cast<unsigned long>(log_.dropped()));
 }
@@ -4124,8 +4260,12 @@ void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
   for (std::size_t i = 0; i < cycle::kStepCount && i + 1 < sizeof letters; ++i) {
     letters[i] = cycle::letter(p.step[i]);
   }
-  printf("  %2lu. seq %lu: wake %lu, %s: radio %s, band %s, steps %s, awake %lu s, next %lu min",
+  // The epoch the entry was written at (task p13-01): the wake record keeps no time of day, so
+  // this is where the last twelve wakes are dated - which is what lines a wake up with a wake
+  // request a server sent. 0 is a wake in which this unit never learnt the time.
+  printf("  %2lu. seq %lu at %lu: wake %lu, %s: radio %s, band %s, steps %s, awake %lu s, next %lu min",
          static_cast<unsigned long>(number), static_cast<unsigned long>(entry.seq),
+         static_cast<unsigned long>(p.at_epoch),
          static_cast<unsigned long>(p.wakes), cycle::name(p.wake),
          supervisor::describe(p.radio), power::name(p.band), letters,
          static_cast<unsigned long>(p.awake_s), static_cast<unsigned long>(p.interval_s / 60u));
