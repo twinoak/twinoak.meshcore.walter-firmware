@@ -64,6 +64,7 @@
 
 #include "core/board/radio_pins.h"
 #include "core/board/slot.h"
+#include "core/console/report_source.h"
 #include "core/cycle/wake_guard.h"
 #include "core/image/store.h"
 #include "core/link/client/client.h"
@@ -83,12 +84,16 @@ namespace agent {
 
 namespace lc = core::link::client;
 
-// The four types, as meshmaster.dk's `JobTypes` spells them, and the two products.
+// The five types, as meshmaster.dk's `JobTypes` spells them, and the two products.
 constexpr const char kOfferType[] = "twinoak.fw.offer";
 constexpr const char kApplyType[] = "twinoak.fw.apply";
 constexpr const char kStateType[] = "twinoak.fw.state";
 constexpr const char kPowerCycleType[] = "twinoak.power.cycle";
-constexpr int kFirmwareJobTypes = 4;
+// What the unit says about itself (task p13-01): the console's own lines by section, read only.
+constexpr const char kReportType[] = "twinoak.report";
+constexpr int kFirmwareJobTypes = 5;
+static_assert(kFirmwareJobTypes <= mm::kMaxExtensionTypes,
+              "the heartbeat carries at most kMaxExtensionTypes extension types");
 constexpr const char kProductRepeater[] = "twinoak-repeater-firmware";
 constexpr const char kProductWalter[] = "twinoak-walter-firmware";
 // Where a release's files are under its base (unit-protocol.md §4).
@@ -114,6 +119,35 @@ constexpr std::size_t kJournalNoteBytes = 72;
 // The result's data buffer: a state result is some 700 bytes and an apply's journal at its bound
 // a little over 2 kB with its envelope; 4 kB holds both with room, inside the library's own 8 kB.
 constexpr std::size_t kDataBytes = 4096;
+// An owed result's whole envelope (postOwedResult): the data above and the JobReport around it.
+constexpr std::size_t kEnvelopeBytes = kDataBytes + 512;
+
+// -- the report (task p13-01) --------------------------------------------------------------------
+
+// The contract's ceiling on the whole data object. A reader who has to find a fault without the
+// cable wants as much of the console in one answer as the library will carry, and the library's
+// own buffer is 8 192 (mm::JobRunner::kDataCap).
+constexpr std::size_t kReportDataBytes = 8000;
+// The most names one payload may ask for, and the longest a name may be: a-z, as the contract has
+// it. Both are the server's bound as well as this end's.
+constexpr int kReportSectionsMax = 12;
+constexpr std::size_t kReportNameMax = 16;
+// What is kept back for `],"left":[...],"unknown":[...]}` while the sections are being written:
+// every name asked for could end up in one of the two lists, each costing its quotes and a comma.
+constexpr std::size_t kReportTailBytes = kReportSectionsMax * (kReportNameMax + 3) + 40;
+// A section is not begun with less than this much room left for its text: an entry whose text
+// could only be a few characters says less than naming the section in `left` does.
+constexpr std::size_t kReportLeastText = 64;
+// `{"name":"<name>","text":"","cut":false},` with the name at its longest.
+constexpr std::size_t kReportEntryBytes = 40 + kReportNameMax;
+
+// **The report's result and an owed result's envelope share one array**, because the DRAM of this
+// board is counted to the byte (task p11-01, rail R22: the main task's stack has to come out of
+// one free block, and 4 kB more of .bss moves the agent's 20 kB scratch into another heap). The
+// two uses cannot overlap: `postOwedResult` runs after the heartbeat, outside any job, and a
+// report is never owed - it is written, posted and done inside the one call that runs it.
+constexpr std::size_t kResultBufferBytes = kDataBytes + kEnvelopeBytes;
+static_assert(kResultBufferBytes > kReportDataBytes, "a report's result has to fit the buffer");
 
 // After a power cycle the radio has the update machine's boot window to answer HELLO in.
 constexpr std::uint32_t kPowerCycleHelloWindowMs = core::update::kBootWindowMs;
@@ -236,6 +270,8 @@ struct FirmwareJobCounters {
   std::uint32_t switches = 0;            // the Walter's own: a switch asked for
   std::uint32_t owed_posted = 0;         // results posted after a boot, from the journal
   std::uint32_t states = 0;
+  std::uint32_t reports = 0;           // `twinoak.report`: the console read out, changing nothing
+  std::uint32_t reports_cut = 0;       // of those, ones whose last section did not fit whole
   std::uint32_t power_cycles = 0;
   std::uint32_t power_cycles_refused = 0;
   std::uint32_t progress_posted = 0;
@@ -257,11 +293,20 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
     core::update::Journal* journal = nullptr;
     core::supervisor::Supervisor* supervisor = nullptr;
     core::cycle::WakeGuard* guard = nullptr;
+    // What `twinoak.report` reads the unit out of (task p13-01): the console, behind the seam
+    // core/console/report_source.h. Null in a build with no console - every host test but the
+    // report's own - and the job then answers `failed` in one sentence.
+    core::console::ReportSource* report = nullptr;
   };
 
   FirmwareJobs(const Parts& parts, core::board::RadioPins& pins, core::board::SlotLock& slots,
                lc::Client& radio, ModemUplink& server, core::settings::Settings& settings,
                interfaces::Clock& clock, interfaces::WallClock& wall);
+
+  // The console `twinoak.report` reads the unit out of (task p13-01). Not in Parts, because the
+  // console is built **after** this object - it is handed the agent's four probes - so main/ and
+  // the bench hand it over here, in the one line after the console exists.
+  void readTheUnitFrom(core::console::ReportSource* report) { parts_.report = report; }
 
   // Once a wake, before the loop runs: what this wake knows (the band's say, S-7's state).
   void beginWake(const WakeContext& context);
@@ -302,6 +347,9 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
                     mm::ResultWriter& out);
   bool runState(const mm::ClaimedJob& job, mm::JobContext& ctx, mm::ResultWriter& out);
   bool runPowerCycle(const mm::ClaimedJob& job, const char* payload, mm::JobContext& ctx, mm::ResultWriter& out);
+  // The console's own lines by section (task p13-01), into the shared result buffer. The length,
+  // or 0 when the payload named no sections at all.
+  bool runReport(const mm::ClaimedJob& job, const char* payload, mm::JobContext& ctx, mm::ResultWriter& out);
 
   // The result shapes, into data_; the length, or 0 when it did not fit.
   std::size_t writeOfferResult(bool stored, const char* image_id, const char* sha256_hex, std::uint64_t bytes,
@@ -360,8 +408,12 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   Line lines_[kJournalMaxEntries];
   int line_count_ = 0;
   std::size_t line_chars_ = 0;
-  char data_[kDataBytes] = {};
-  char body_[kDataBytes + 512] = {};  // an owed result's whole envelope
+  // One array, three uses that cannot overlap (see kResultBufferBytes above): a result's `data`
+  // in the first kDataBytes, an owed result's whole envelope in the rest, and - for a report,
+  // which is never owed - the whole of it.
+  char buffer_[kResultBufferBytes] = {};
+  char* data_ = buffer_;
+  char* body_ = buffer_ + kDataBytes;  // an owed result's whole envelope
   char secret_[kBearerBytes] = {};
   char base_url_[core::settings::kMaxUrlLen + 128] = {};
 };

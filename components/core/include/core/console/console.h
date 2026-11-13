@@ -28,6 +28,7 @@
 #include "core/console/mesh_probe.h"
 #include "core/console/modem_trace.h"
 #include "core/console/parser.h"
+#include "core/console/report_source.h"
 #include "core/cycle/agent_attention.h"
 #include "core/cycle/duty_cycle.h"
 #include "core/cycle/wake_cycle.h"
@@ -56,7 +57,7 @@
 namespace core {
 namespace console {
 
-class Console {
+class Console final : public ReportSource {
  public:
   // The image store and the USB transfer (task p2-02) are pointers and not references because a
   // build can be without them: platform::FlashPartition::begin() fails when the partition table
@@ -180,7 +181,27 @@ class Console {
   // this console for a secret greps these too.
   void agentLine(const char* line);
 
+  // ------------------------------------------------------------------ ReportSource (task p13-01)
+  //
+  // The eleven sections of `twinoak.report`, written by the very printers the commands use: the
+  // section's lines go into `out` instead of into the port, and nothing else about them changes.
+  // While one is being written **nothing is kept in the ring `dump` prints** - the report did not
+  // print to the port, and a ring filled with the report of the last wake is a `log` section that
+  // says nothing - and `pump()` is held to polling the radio, so that a wait inside `rak status`
+  // cannot drive a transfer or a trial whose lines would land in the buffer.
+  int sectionCount() const override;
+  const char* sectionName(int i) const override;
+  bool writeSection(const char* name, interfaces::TextOut& out) override;
+
  private:
+  // One name of the table above and the printer behind it. The printers are private members, so
+  // the table is a member too.
+  struct SectionDef {
+    const char* name;
+    void (Console::*write)();
+  };
+  static const SectionDef kSections[];
+  static const int kSectionCount;
   // Set while a command of this console is on the stack, so that `pump()` leaves the console
   // alone while one is (task p4-04).
   class LineInProgress;
@@ -194,9 +215,13 @@ class Console {
 
   void prompt();
   // The two ways anything of this console reaches the port, and the only two: both keep what
-  // they printed in the ring that `dump` prints (log_ring.h).
+  // they printed in the ring that `dump` prints (log_ring.h). While a report section is being
+  // written (writeSection) both go to that section's buffer instead, and keep nothing: the
+  // bytes were never on the port.
   void print(const char* text);
   void printf(const char* format, ...) __attribute__((format(printf, 2, 3)));
+  // Where print() and printf() put their bytes: the port, or the section being written.
+  interfaces::TextOut& sink() { return report_ != nullptr ? *report_ : out_; }
   // A line nobody asked for - a boot's own lines, a resumed update's transitions, a trial's
   // steps - printed only at `log.level` and below (task p3-03). A reply and a refusal are never
   // gated: a person who typed a command gets an answer whatever the level says.
@@ -204,6 +229,10 @@ class Console {
   void help();
   void helpLine(const char* usage, const char* text);
   void status();
+  // The link's own counters, in one line: `status` and `rak events` print the same one (task
+  // p13-01 added it to the second, because the report's `radio` section is what answers how many
+  // retries and timeouts this boot has had).
+  void printLinkCounts();
   void reboots();
   // The heap now (task p11-02): the four figures of heap_report.h, and the sentence that says
   // which of them is the one a build is held to.
@@ -231,6 +260,10 @@ class Console {
   void rakCli(const char* line, std::size_t size);
   void rakRequest(std::uint8_t req_type, const std::uint8_t* data, std::size_t size);
   void rakEvents();
+  // The queued/seen/dropped/gaps line and the link's counters, taking nothing out of the queue:
+  // the first thing `rak events` prints, and the whole of what the report's `radio` section asks
+  // of it (task p13-01).
+  void eventCounts();
   void rakText();
   void printEvent(const link::client::QueuedEvent& event, std::size_t number);
   void printBytes(const char* label, link::Bytes bytes);
@@ -369,6 +402,10 @@ class Console {
   bool dutyOk();  // false, with one error line, when this build has no duty cycle
   void wake();
   void power();
+  // What `power` prints once the band is settled. `asked` is false for the report's `power`
+  // section (task p13-01), which takes no reading and decides nothing: `power` itself asks the
+  // radio for a reading and decides, and both of those change what the next wake sees.
+  void printPower(const power::Decision& d, bool asked, bool had);
   void decideIfNeeded();  // a band for a sleep, from a reading, when this wake has none
   void sleepNow();
   void sleepFor(std::uint32_t seconds);
@@ -393,6 +430,14 @@ class Console {
   void printJournalEntry(std::size_t number, const update::Entry& entry);
   void printSupervisorEntry(std::size_t number, const update::Entry& entry,
                             const supervisor::Payload& p);
+
+  // The sections of `twinoak.report` that are more than one command, or are a command read
+  // only (task p13-01). Each is in the table kSections.
+  void sectionWakes() { wake(); }
+  void sectionObservations() { agentObs(false); }
+  void sectionRadio();
+  void sectionPower();
+  void sectionRestarts();
 
   interfaces::TextOut& out_;
   board::RadioPins& pins_;
@@ -430,6 +475,9 @@ class Console {
   // console alone, so that a blocking call inside a command cannot drive a transfer or a trial
   // from inside it (task p4-04).
   bool running_line_ = false;
+  // Set while a report section is being written: where print() and printf() go instead of the
+  // port, and nothing is kept in the ring while it is (task p13-01).
+  interfaces::TextOut* report_ = nullptr;
   board::Slot slot_{};  // the slot the line being run is about
   // A member, not a local: it carries three page buffers (12 KB), more than the main task's stack
   // (CONFIG_ESP_MAIN_TASK_STACK_SIZE 3584) would hold; the console itself has static storage.

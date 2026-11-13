@@ -104,6 +104,8 @@ const char* const kAgentIncludes[] = {
     "walter_agent/firmware_jobs.h",
     "walter_agent/json_scan.h",
     "walter_agent/region_store.h",
+    // Task p13-01: the seam `twinoak.report` reads the console's own sections through.
+    "core/console/report_source.h",
 };
 
 }  // namespace

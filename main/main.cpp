@@ -652,6 +652,10 @@ extern "C" void app_main() {
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
   g_console = &console;
+  // What `twinoak.report` reads the unit out of (task p13-01): this console's own sections. It
+  // is handed over here and not in `job_parts` above, because the console is built after the
+  // firmware jobs - it is given the agent's probes.
+  firmware_jobs.readTheUnitFrom(&console);
   agent_platform.beginLog(&agentLogLine, agentLogLevel(settings.level()));
   // The loop begun over the seams (docs/library.md §6): the runner and the loop, the identity,
   // the extension, the state the last sleep left in NVS, the kept image read back. The pump the

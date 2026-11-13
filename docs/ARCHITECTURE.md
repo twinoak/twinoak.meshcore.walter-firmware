@@ -1568,7 +1568,7 @@ wake cycle's business and are handed to it, not acted on here:
   and the journal see it exactly as they see a console-driven update.
 
 The firmware jobs are `agent::FirmwareJobs : mm::IJobExtension` (`components/agent/firmware_jobs.h`),
-four types the library hands over by name, each mapped onto phase 2's image store and update
+five types the library hands over by name, each mapped onto phase 2's image store and update
 machines and run **for the unit's own repeater through the local door** — no `client_tx`, no packet
 on the air:
 
@@ -1578,13 +1578,14 @@ on the air:
 | `twinoak.fw.apply` | the radio's `RadioUpdate` or this board's own `SelfUpdate`, in slices, journalled (the journal truncated to 40 entries / 2000 characters for the result); refused by a word (`battery`, `link`, `clock`, `inProgress`, `noGolden`, `badList`, `order`) rather than a silent failure | `committed` or `rolledBack`; **the Walter's own apply result is posted by the *next* boot's wake**, after the trial whose third condition is one heartbeat `ok` |
 | `twinoak.fw.state` | read back the store's records, the running and golden versions, the journal and the supervisor's counts | the state, as bytes. The slot's `role`, `board` and `band` - the three words the server picks an image by - come from the **golden image's descriptor** when there is one, and from `HELLO` when there is none, which is every radio before its first install through the Walter commits; `band` is left out when the radio speaks link 1.0 and says none (task p8-05) |
 | `twinoak.power.cycle` | `RadioPins::killCycle` within the §2 bounds, then a `HELLO` to prove the radio came back | the cycle's outcome |
+| `twinoak.report` | **what the unit says about itself** (task p13-01): the console's own lines by section — `wake`, `agent state`, `lte`, `agent obs`, `agent jobs`, `journal`, the radio's three, `power`, `reboots` and `heap`, the settings, `dump`. Read only: no section changes a counter, a queue or a record, and nothing goes on the air. The lines are not written twice — a section is the console command, printing into the result's buffer instead of into the port (`core/console/report_source.h`) | the sections asked for, in the order asked, each cut at a line end if the whole data object would pass 8 000 bytes; the ones not started in `left`, the names this firmware has no section for in `unknown` |
 
 Telemetry a job needs is read with §5.8's `LPP_GET`, never a chat line. The payloads and results are
 read and written through meshmaster.dk's own fixture bytes (`unit-protocol.md` §5), held to them by
 `host_test/agent/test_firmware_jobs.cpp`.
 
 **A second deviation from p4-04's empty list.** §13's identity note above says the *mesh* job type
-list is not reduced by the local door. The extension's four `twinoak.*` types go further: they are
+list is not reduced by the local door. The extension's five `twinoak.*` types go further: they are
 advertised in the heartbeat **even before the repeater has a key**, where the mesh list is empty,
 because they concern the unit and its own store rather than a neighbour, and the server routes them
 to it only once it is linked. `host_test/agent/test_agent_backend.cpp` holds both halves.
