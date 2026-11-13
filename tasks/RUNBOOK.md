@@ -69,6 +69,17 @@ Say in the report that the task was done in more than one session.
 - The conventions in `tasks/README.md` apply: spec wins, no scope creep,
   libraries pinned to an exact version with a one-line justification, secrets
   never in the repo, docs move with code, leave the evidence.
+- **A task that changes something a person with a unit will notice adds its
+  line to `release-notes/unreleased/pP-NN-<name>.md`, in this same pull
+  request** (task p12-02). One or two sentences, plain words, at most 400
+  characters: what a person will notice — not what was done, and naming no
+  task, decision or section of the specification — and **what has and has not
+  been on a board**. A change nobody can see (ci, a refactoring, tests, a
+  document, a rail) writes **no** file. `release-notes/README.md` is the rule
+  and the examples, and a file that breaks it fails
+  `tools/release/test_release_notes.py`. The release workflow compiles the
+  waiting lines into the release's body, in the order the tasks merged, so a
+  line not written here is a change nobody is ever told about.
 - **One command verifies the repository: `tools/verify.ps1`** (phase 0's task
   01 writes it; until it exists, the task's own commands are the
   verification). It runs what CI runs — the check of `spec/` against its
@@ -161,8 +172,11 @@ task/pP-NN-<name> -m "Merge task/pP-NN-<name>" && git push && git branch -d
 task/pP-NN-<name>`. CI runs on `main`; the reviewer watches it.
 
 The driver considers the task done when `tasks/phase-P/reports/NN.md` exists
-on `origin/main`. Nothing else counts. Merging never releases: a release is a
-person pushing a tag `vX.Y.Z` (or pressing *Run workflow* for a dry run).
+on `origin/main`. Nothing else counts. **Merging never releases, and no task
+ever releases**: a release is Thomas pressing *Run workflow* on `release` with
+*dry run* unticked, which publishes the version `VERSION` names with the
+waiting lines as its body (`docs/release.md`). A task never pushes a tag — a
+tag pushed by hand starts nothing — and never edits `VERSION`.
 
 ## 5. Stop conditions
 

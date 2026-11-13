@@ -17,6 +17,8 @@
 #                 there); then the logic, with host_test/rails/ holding the assertions that are
 #                 about every test in the suite
 #   release-tests tools/release/test_release.py               - what the release tooling refuses
+#                 tools/release/test_release_notes.py         - the version, the lines a release
+#                 is published with, the three refusals and the move after one (task p12-02)
 #   build         idf.py build, merge-bin, size, heap_at_start.py
 #                 - the firmware, then **the heap at start** (task p11-02: the main task's stack
 #                 has to have a block, with HEAP_MIN_SPARE to spare, or the image cannot start and
@@ -346,11 +348,14 @@ step_partitions() {
 }
 
 step_release_tests() {
-  # The release tooling's own tests: what it refuses, and why (tools/release/test_release.py).
+  # The release tooling's own tests: what it refuses, and why (tools/release/test_release.py),
+  # and the version and the notes a release is published with (test_release_notes.py, task
+  # p12-02: the lines, their order, the three refusals and the move after a release).
   # They need no firmware - a stand-in image with a descriptor in it is enough - so they run
   # before the build, where a mistake in them is cheapest to find. Then the trust table
   # generator's (task p2-01), and the check that the vendored TweetNaCl extract is what it says.
   python tools/release/test_release.py &&
+  python tools/release/test_release_notes.py &&
   python tools/test_gen_trust_table.py &&
   python tools/vendor_tweetnacl_verify.py selfcheck components/core/third_party/tweetnacl/tweetnacl_verify.c
 }
@@ -370,6 +375,15 @@ step_release() {
   case $commit in
     *[!0-9a-f]* | "") commit=0000000000000000000000000000000000000000 ;;
   esac
+  # The version this repository would release next, and the lines that would be its body
+  # (task p12-02). A malformed VERSION or a line that cannot be published stops here, on a laptop
+  # and in ci, rather than when the button is pressed - the release's own preflight asks the two
+  # questions a laptop cannot (is this main, and is that tag already there) and these are the two
+  # it can.
+  local next
+  next=$(python tools/release/release_notes.py version) || return 1
+  echo "the next release would be v$next, and these are the lines it would carry:"
+  python tools/release/release_notes.py lines || return 1
   rm -rf "$RELEASE"
   if [ "$TESTKEY" = 1 ]; then
     # A test-key build is never released: the tooling must refuse it, by the +TESTKEY in its

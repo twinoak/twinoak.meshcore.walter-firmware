@@ -12,10 +12,11 @@ Writes into --out (spec/FIRMWARE-MANIFEST.md §2):
                                        flashed at 0x0 - `use: factory`, a module out of the box
     manifest.json                      what each of them is, validated before it is written
     SHA256SUMS                         the three of them, for sha256sum -c
-    NOTES.md                           the release notes the workflow publishes: the hand-written
-                                       release-notes/vX.Y.Z.md of this repository first, then the
+    NOTES.md                           the release notes the workflow publishes: the lines the
+                                       tasks left in release-notes/unreleased/ and the standing
+                                       part (tools/release/release_notes.py) first, then the
                                        generated part (the version, the commit, the esptool line,
-                                       what a factory flash keeps)
+                                       the flashing guide, what a factory flash keeps)
 
 The signature is the next step (sign_manifest.py) and the check before publishing the one after
 (verify_release.py). Nothing here signs, and nothing here publishes.
@@ -36,10 +37,12 @@ tools/release/test_release.py:
   * the build is a test-key build (task p2-01): its version says +TESTKEY, or the bytes of the
     specification's public test key are in an image. Such a build trusts a key everybody has,
     and is never released (spec/FIRMWARE-MANIFEST.md §3);
-  * a release has no hand-written notes (task p7-01): a version of the shape X.Y.Z+<sha7> needs
-    release-notes/vX.Y.Z.md, a few lines a person wrote about what this release is. A tag without
-    that file is refused the way a tag without a key is - nobody reads a release whose body is
-    only a table.
+  * a release nobody wrote a word about (tasks p7-01, p12-02): a version of the shape
+    X.Y.Z+<sha7> needs at least one line in release-notes/unreleased/, written by the task that
+    changed something a person with a unit will notice. A release with none is refused the way one
+    with no key is - nobody reads a release whose body is only a table. The release workflow asks
+    the same question before it builds anything; this is where the files are made, so it is asked
+    again here.
 """
 
 import argparse
@@ -58,11 +61,17 @@ sys.path.insert(0, os.path.join(REPO, "tools"))
 
 import check_partitions  # noqa: E402  tools/check_partitions.py
 import manifestref  # noqa: E402  spec/tools/manifestref.py - the specification as code
+import release_notes  # noqa: E402  the version, and the lines a release is published with
+from release_notes import Refused  # noqa: E402  one refusal for the whole release path
 
 # What this firmware is, in the manifest's words (spec/FIRMWARE-MANIFEST.md §2). These are this
 # repository's own knowledge of its product, not something read out of the image: the descriptor
 # found inside each file is held against them, which is the point of having both.
 PRODUCT = "twinoak-walter-firmware"
+# Where this repository is read. A release's body is rendered on github.com, where a relative link
+# resolves against nothing, so the links the generated part makes are absolute and point at the
+# commit being released rather than at a tag or at main - the guide as it was when this was built.
+REPO_URL = "https://github.com/twinoak/twinoak.meshcore.walter-firmware"
 PROJECT_NAME = "twinoak-walter"  # the ESP-IDF project, so the names of the built files
 ROLE = "manager"
 BOARD = "walter"
@@ -75,10 +84,6 @@ SLOT_ANY = 0xFF  # the manager's image is not for a radio position (§4)
 # 0.0.0-dryrun+<sha7> and a local build's 0.0.0-dev are deliberately not of this shape, and
 # sign_manifest.py refuses to sign one that is with the specification's test key.
 RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+\+[0-9a-f]{7,40}$")
-
-
-class Refused(Exception):
-    """Something the release may not contain. The message is for a person reading a workflow log."""
 
 
 # A test-key build (task p2-01): CMakeLists.txt stamps PROJECT_VER with this when
@@ -242,40 +247,25 @@ def modem_version():
 
 # ------------------------------------------------------------------ the notes
 
-# The hand-written top of a release's body, one file per tag, kept in the repository so that it is
-# reviewed with the code it describes and so that a tag cannot publish a body nobody wrote
-# (task p7-01). release-notes/README.md says what belongs in one.
-NOTES_DIR = os.path.join(REPO, "release-notes")
-
-NO_HANDWRITTEN_NOTES = """%s is not there, and a release's notes are not only generated.
-
-A release of this firmware is read by a person: what it is, what has and has not been on a board,
-and which repeater-firmware release it goes with. That part is hand-written, kept in the
-repository beside the code it describes, and put in front of the generated NOTES.md by this
-script - so a tag with no such file is refused here, before anything is signed or published, the
-way a tag with no release key is.
-
-Write a few lines in %s (release-notes/README.md says what belongs in one),
-commit them on the branch that is tagged, and push the tag again."""
+# The top of a release's body: the lines the tasks left in release-notes/unreleased/, in the order
+# they merged, and then the standing part (task p12-02). release_notes.py owns all of it - what a
+# line is, what order they come in, and the three refusals the workflow runs before anything is
+# built - and this script's part is to put it in front of the generated notes and to refuse a
+# release that has none, as it refused a missing hand-written file before (task p7-01).
+NOTES_DIR = release_notes.NOTES_DIR
 
 
-def handwritten_notes(tag, is_release, notes_dir=None):
-    """The hand-written part of the body for this tag, or None when there is none to find.
+def notes_top(is_release, notes_dir=None, repo=None):
+    """The written part of the body, or None when no task left a line.
 
-    Required for a release (X.Y.Z+<sha7>): that is the refusal above. A dry run and a local
-    0.0.0-dev build have no such file and want none - their body is the generated part alone,
-    which says in its first paragraph that nothing is published."""
-    path = os.path.join(notes_dir or NOTES_DIR, "%s.md" % tag)
-    where = os.path.relpath(path, REPO) if path.startswith(REPO) else path
-    text = ""
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
-    if not text.strip():
-        if is_release:
-            raise Refused(NO_HANDWRITTEN_NOTES % (where, where))
-        return None
-    return text.strip("\n")
+    Required for a release (X.Y.Z+<sha7>): a release of this firmware is read by a person, and a
+    release nobody wrote a word about is not one. A dry run and a local 0.0.0-dev build need none
+    - they publish nothing - but they get the waiting lines when there are any, because a dry run
+    is a rehearsal of the body as much as of the files."""
+    text = release_notes.body(notes_dir, repo)
+    if text is None and is_release:
+        raise Refused(release_notes.NOTHING_TO_RELEASE)
+    return text.strip("\n") if text else None
 
 
 def notes(manifest, files, facts, is_release, handwritten=None):
@@ -306,6 +296,10 @@ def notes(manifest, files, facts, is_release, handwritten=None):
                   "specification's public test key, and nothing is published.", ""]
     lines += [
         "## Flashing a module",
+        "",
+        "**[The flashing guide](%s/blob/%s/docs/flashing.md)** is the whole walk, from a module "
+        "out of its box to a unit checking in: the lines to look at on the console and the first "
+        "things to try when it does not come up. The short of it:" % (REPO_URL, manifest["commit"]),
         "",
         "**A Walter out of the box takes the factory image** at `0x0`: it carries the bootloader, "
         "the partition table and the OTA data with it. The module's USB-C is the ESP32-S3's own "
@@ -350,15 +344,17 @@ def notes(manifest, files, facts, is_release, handwritten=None):
 
 
 def build(version, commit, tag, app_path, factory_path, out_dir, table_path, built_at,
-          build_dir=None, require_descriptor=True, notes_dir=None):
+          build_dir=None, require_descriptor=True, notes_dir=None, notes_repo=None):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise Refused("--commit must be 40 lowercase hex characters, not %r" % commit)
     if not version:
         raise Refused("--version is required")
 
-    # Before a byte is read: a release needs the notes a person wrote for it (task p7-01).
+    # Before a byte is read: a release needs the lines the tasks wrote for it (tasks p7-01,
+    # p12-02). The workflow has asked the same question before it built anything; this is the
+    # backstop, where the files are actually made.
     is_release = bool(RELEASE_VERSION.fullmatch(version))
-    handwritten = handwritten_notes(tag, is_release, notes_dir)
+    handwritten = notes_top(is_release, notes_dir, notes_repo)
 
     load_address, by_name = app_slot_offset(table_path)
     app = read(app_path)
@@ -489,11 +485,11 @@ def main(argv):
                  fields["version"], fields["link_major"], fields["link_minor"]))
     print("ok    the manifest validates against spec/FIRMWARE-MANIFEST.md section 2")
     if result["handwritten"]:
-        print("ok    NOTES.md begins with release-notes/%s.md, %d hand-written lines"
-              % (tag, len(result["handwritten"].splitlines())))
+        print("ok    NOTES.md begins with the %d line(s) the tasks left in release-notes/%s/"
+              % (len(release_notes.unreleased()), release_notes.UNRELEASED))
     else:
-        print("      NOTES.md is the generated part alone: %s is not a release, so it needs no "
-              "hand-written notes" % args.version)
+        print("      NOTES.md is the generated part alone: no task has left a line, and %s is not "
+              "a release, so it needs none" % args.version)
     print("%s: %s" % (args.out, ", ".join(result["written"])))
     print("the application image loads at 0x%08X (%s, from %s)"
           % (result["load_address"], check_partitions.APP_SLOTS[0], os.path.relpath(args.partitions, REPO)))
