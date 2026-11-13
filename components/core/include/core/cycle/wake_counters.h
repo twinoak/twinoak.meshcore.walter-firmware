@@ -67,9 +67,11 @@ struct WakeTotals {
   std::uint32_t silent = 0;
 };
 
+// Saturating 16-bit counters, for the reason `agent::CallLogCounters` gives: this object is in
+// static storage and the margin the main task's stack is found in is counted in tens of bytes.
 struct WakeCounterWrites {
-  std::uint32_t writes = 0;   // values written to the store
-  std::uint32_t refused = 0;  // a stored value of another version or shape
+  std::uint16_t writes = 0;   // values written to the store
+  std::uint16_t refused = 0;  // a stored value of another version or shape
 };
 
 class WakeCounters {

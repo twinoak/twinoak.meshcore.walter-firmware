@@ -617,7 +617,7 @@ void AgentBackend::calls(interfaces::TextOut& out) {
     return;
   }
   for (std::size_t i = 0; i < log.count(); ++i) {
-    const FailedCall& call = log.at(i);
+    const FailedCall call = log.at(i);
     char when[32];
     if (call.at_epoch != 0) {
       std::snprintf(when, sizeof when, "at %lu", static_cast<unsigned long>(call.at_epoch));

@@ -32,3 +32,28 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   copied library's `JobRunner::Record` keeps `atEpoch` and the transaction count and no start or
   finish (`components/agent-core/src/JobRunner.cpp`, `remember`). It is the exit-node firmware's
   to add, and arrives here with the next copy.
+
+- [ ] **[later] The heap at start is down to 116 bytes of margin.** `tools/heap_at_start.py` over
+  this task's build: the 20 480-byte kept scratch is carved out of a free block of 20 596, and
+  **117 more bytes of `.data` or `.bss` move it into another heap** - which is what v0.1.3 died of
+  (rail R22, phase 11's task 01). main was at 300 bytes before this task and this task spent 184
+  of them on what it had to keep: two bytes an entry in the wake record (why a wake sent nothing,
+  and the seconds), the eight failed calls packed to 72 bytes, and the four wake counters. The
+  rest of it was given back by holding the ring in the form it is stored in and the counters to
+  16 bits. **The next task that adds static storage has to make room first**, and the place to
+  make it is `agent::kKeptScratchBytes` (20 480) or the library's runner beside it, not another
+  round of byte-shaving: those two are the allocations the margin is measured against.
+
+- [ ] **[later] A failed call that never left the board is in no list.** `agent calls` holds the
+  calls the server answered badly or did not answer; a call the uplink refused before anything
+  went out - not configured, a URL that did not fit, the 120-a-minute ceiling, too little of the
+  wake's deadline left - is counted by `ModemUplink::uplinkCounters()` and `agent probe` and is
+  nowhere in the list. That is deliberate (*what came back* is the list's question), but a unit
+  whose wakes all end in *budget* would show an empty list and a person would read it as a unit
+  with no trouble. Either the list or the `calls` section should say the four refusal counts
+  beside it.
+
+- [ ] **[later] A download range's failure has no `Retry-After` and no byte count in the list.**
+  `core::update::FetchResult` carries both and the entry keeps neither: an entry is nine bytes and
+  the eight have to fit one 160-character value of the settings store. If the list is ever wanted
+  wider, the place to put the extra bytes is a second key, not a longer entry.

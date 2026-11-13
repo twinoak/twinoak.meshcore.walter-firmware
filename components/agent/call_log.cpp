@@ -1,12 +1,11 @@
 #include "walter_agent/call_log.h"
 
-#include <cstdio>
 #include <cstring>
 
 namespace agent {
 namespace {
 
-std::uint32_t saturate(std::uint32_t n) { return n == 0xFFFFFFFFu ? n : n + 1; }
+std::uint16_t saturate(std::uint16_t n) { return n == 0xFFFFu ? n : static_cast<std::uint16_t>(n + 1); }
 
 int hexValue(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -31,9 +30,6 @@ std::uint32_t get32(const std::uint8_t* at) {
   return v;
 }
 
-// What `at()` answers for an index this list does not hold.
-const FailedCall kNoCall;
-
 }  // namespace
 
 const char* callKindName(CallKind what) {
@@ -56,6 +52,7 @@ CallLog::CallLog(interfaces::KeyValue* store) : store_(store) {}
 
 void CallLog::begin() {
   begun_ = true;
+  for (std::size_t i = 0; i < sizeof items_; ++i) items_[i] = 0;
   count_ = 0;
   survived_ = false;
   dirty_ = false;
@@ -66,6 +63,29 @@ void CallLog::begin() {
   char hex[kCallsHexBytes] = {};
   if (!store_->read(kCallsKey, hex, sizeof hex)) return;
   decode(hex);
+}
+
+void CallLog::pack(std::uint8_t* at, const FailedCall& call) {
+  at[0] = static_cast<std::uint8_t>((static_cast<std::uint8_t>(call.what) & 0x0Fu) |
+                                    ((static_cast<std::uint8_t>(call.outcome) & 0x0Fu) << 4));
+  put16(at + 1, call.status);
+  put16(at + 3, call.wake);
+  put32(at + 5, call.at_epoch);
+}
+
+FailedCall CallLog::unpack(const std::uint8_t* at) {
+  FailedCall call;
+  const std::uint8_t kind = static_cast<std::uint8_t>(at[0] & 0x0Fu);
+  const std::uint8_t outcome = static_cast<std::uint8_t>((at[0] >> 4) & 0x0Fu);
+  call.what = kind < static_cast<std::uint8_t>(CallKind::kCount) ? static_cast<CallKind>(kind)
+                                                                 : CallKind::kUnknown;
+  call.status = get16(at + 1);
+  call.outcome = outcome <= static_cast<std::uint8_t>(interfaces::HttpOutcome::kSocketFailed)
+                     ? static_cast<interfaces::HttpOutcome>(outcome)
+                     : interfaces::HttpOutcome::kOk;
+  call.wake = get16(at + 3);
+  call.at_epoch = get32(at + 5);
+  return call;
 }
 
 void CallLog::decode(const char* hex) {
@@ -89,19 +109,12 @@ void CallLog::decode(const char* hex) {
   }
   // The entries are stored newest first and a kind of `kUnknown` ends the list: a value written
   // with fewer than eight is zero-padded behind them.
+  std::memcpy(items_, bytes + 1, sizeof items_);
+  count_ = 0;
   for (std::size_t i = 0; i < kCallsKept; ++i) {
-    const std::uint8_t* e = bytes + 1 + i * kCallEntryBytes;
-    const std::uint8_t kind = static_cast<std::uint8_t>(e[0] & 0x0Fu);
+    const std::uint8_t kind = static_cast<std::uint8_t>(items_[i * kCallEntryBytes] & 0x0Fu);
     if (kind == 0 || kind >= static_cast<std::uint8_t>(CallKind::kCount)) break;
-    const std::uint8_t outcome = static_cast<std::uint8_t>((e[0] >> 4) & 0x0Fu);
-    FailedCall& call = items_[count_++];
-    call.what = static_cast<CallKind>(kind);
-    call.status = get16(e + 1);
-    call.outcome = outcome <= static_cast<std::uint8_t>(interfaces::HttpOutcome::kSocketFailed)
-                       ? static_cast<interfaces::HttpOutcome>(outcome)
-                       : interfaces::HttpOutcome::kOk;
-    call.wake = get16(e + 3);
-    call.at_epoch = get32(e + 5);
+    ++count_;
   }
   survived_ = true;
 }
@@ -119,13 +132,18 @@ void CallLog::record(CallKind what, std::uint16_t status, interfaces::HttpOutcom
   } else {
     ++count_;
   }
-  for (std::size_t i = count_ - 1; i > 0; --i) items_[i] = items_[i - 1];
-  FailedCall& call = items_[0];
+  // The oldest of the eight falls off the end of the move, which is what pushes it out.
+  std::memmove(items_ + kCallEntryBytes, items_, sizeof items_ - kCallEntryBytes);
+  FailedCall call;
   call.what = what;
   call.status = status;
   call.outcome = outcome;
   call.wake = wake_;
   call.at_epoch = at_epoch;
+  pack(items_, call);
+  // Whatever is past the list is zeroed: a stale entry the move pushed into an unused slot would
+  // be read back from the store as a ninth call, because a kind of 0 is what ends the list.
+  for (std::size_t i = count_ * kCallEntryBytes; i < sizeof items_; ++i) items_[i] = 0;
   counters_.recorded = saturate(counters_.recorded);
   dirty_ = true;
 }
@@ -137,15 +155,8 @@ bool CallLog::save() {
   if (store_ == nullptr || !store_->ready()) return false;
   std::uint8_t bytes[kCallsBytes] = {};
   bytes[0] = kCallsVersion;
-  for (std::size_t i = 0; i < count_; ++i) {
-    const FailedCall& call = items_[i];
-    std::uint8_t* e = bytes + 1 + i * kCallEntryBytes;
-    e[0] = static_cast<std::uint8_t>((static_cast<std::uint8_t>(call.what) & 0x0Fu) |
-                                     ((static_cast<std::uint8_t>(call.outcome) & 0x0Fu) << 4));
-    put16(e + 1, call.status);
-    put16(e + 3, call.wake);
-    put32(e + 5, call.at_epoch);
-  }
+  std::memcpy(bytes + 1, items_, sizeof items_);
+  // The hex is a local and not a member, for the reason `begin()` gives.
   char hex[kCallsHexBytes] = {};
   const char digits[] = "0123456789abcdef";
   for (std::size_t i = 0; i < sizeof bytes; ++i) {
@@ -159,11 +170,12 @@ bool CallLog::save() {
   return true;
 }
 
-const FailedCall& CallLog::at(std::size_t index) const {
-  return index < count_ ? items_[index] : kNoCall;
+FailedCall CallLog::at(std::size_t index) const {
+  return index < count_ ? unpack(items_ + index * kCallEntryBytes) : FailedCall();
 }
 
 void CallLog::forget() {
+  for (std::size_t i = 0; i < sizeof items_; ++i) items_[i] = 0;
   count_ = 0;
   dirty_ = false;
   survived_ = false;

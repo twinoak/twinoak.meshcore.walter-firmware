@@ -2172,6 +2172,54 @@ until it is, nothing here can be asked for.
       before the events themselves. All four were seen in the simulator and none on a board. **No
       line of any of them may run past 100 columns.**
 
+## 22. What is kept for the asking
+
+From task p13-02 (`walter_agent/call_log.h`, `core/cycle/wake_counters.h`,
+`core/cycle/wake_reason.h`). Three things a unit forgot before this release, each answering a
+question 13 November 2026 could not be answered from: *which calls failed and with what*, *why a
+wake sent nothing*, and *what woke it*. §21's report is how they are read from a server; these
+items are them against the cable and a real network.
+
+- [ ] ★ **A failed call, on a real network, and the list a boot later.** With the unit attached,
+      point `server.url` at a host that answers 503 (or pull the SIM's data while a wake is
+      running). `agent calls` must name the call, what came back and the wake's number. Then
+      `sleep 60`, let it wake, and type it again: **the same list, with the same wake numbers**.
+      Then pull the power, put it back, and type it a third time — the list is in the settings
+      store and a power cut does not take it.
+
+- [ ] **The eighth and the ninth.** Nine failures in a row (the host that answers 503 is the
+      easy way): the list holds eight, newest first, and the oldest is gone. The counters line
+      says `9 recorded`, `1 pushed out`.
+
+- [ ] **What a real failure looks like.** The interesting entries are the ones no simulator
+      writes: a handshake that failed on the modem, a socket the modem stopped answering for, a
+      timeout at the wake's budget. Bring back the words `agent calls` printed for each — they
+      are `interfaces/http.h`'s sentences, and this is the first time they are read off a board.
+
+- [ ] ★ **Why a wake sent nothing, for a wake on the radio's line.** Make one call fail (above),
+      so a wait is owed, and then have the radio raise an attention inside that wait — `rak`
+      side, or a wake request from meshmaster.dk. The unit wakes, sends nothing, and goes back to
+      sleep. `wake` must then read `; nothing sent: a wait still owed, <n> s` against that entry,
+      and the seconds must be the wait the server asked for. **This is the line the first open
+      follow-up of phase 13 is to be decided from.**
+
+- [ ] **And for the uplink's backoff.** With the SIM out or no coverage, let two wakes fail to
+      register; the third wake's entry must read `; nothing sent: the uplink's backoff`.
+
+- [ ] **The wake log starts again, once.** The first boot of this release reads no wake record —
+      the record grew by two bytes an entry — so `wake` says *the wake log starts at this wake*
+      and the spurious count, the band's hysteresis and the faults in a row all begin again. One
+      wake, and then it is normal. Check it happens exactly once.
+
+- [ ] **The four counters on the exit node's page.** After a day: `wakesTimer`, `wakesRadio`,
+      `wakesSpurious` and `wakesSilent` in the unit's *Counters* row on meshmaster.dk, and they
+      must agree with what `wake` and `journal` say happened. A `wakesRadio` that stays 0 while
+      wake requests are being sent is the 13 November fault, visible from a desk at last.
+
+- [ ] **What it costs the flash.** `agent state`'s counters and the NVS wear: a wake now writes
+      `agent_wakes` as well as `agent_state`, and `agent_calls` only when a call failed. Watch
+      that a unit with a healthy server writes exactly two values a wake and no more.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the

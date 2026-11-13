@@ -7,6 +7,9 @@ namespace cycle {
 namespace {
 
 std::uint32_t saturate(std::uint32_t n) { return n == 0xFFFFFFFFu ? n : n + 1; }
+std::uint16_t saturate16(std::uint16_t n) {
+  return n == 0xFFFFu ? n : static_cast<std::uint16_t>(n + 1);
+}
 
 int hexValue(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -46,7 +49,7 @@ void WakeCounters::begin() {
 
 void WakeCounters::decode(const char* hex) {
   if (std::strlen(hex) != kWakeCountersHexBytes - 1) {
-    writes_.refused = saturate(writes_.refused);
+    writes_.refused = saturate16(writes_.refused);
     return;
   }
   std::uint8_t bytes[kWakeCountersBytes] = {};
@@ -54,13 +57,13 @@ void WakeCounters::decode(const char* hex) {
     const int hi = hexValue(hex[2 * i]);
     const int lo = hexValue(hex[2 * i + 1]);
     if (hi < 0 || lo < 0) {
-      writes_.refused = saturate(writes_.refused);
+      writes_.refused = saturate16(writes_.refused);
       return;
     }
     bytes[i] = static_cast<std::uint8_t>((hi << 4) | lo);
   }
   if (bytes[0] != kWakeCountersVersion) {
-    writes_.refused = saturate(writes_.refused);
+    writes_.refused = saturate16(writes_.refused);
     return;
   }
   totals_.timer = get32(bytes + 1);
@@ -116,7 +119,7 @@ bool WakeCounters::save() {
   }
   hex[2 * sizeof bytes] = 0;
   if (!store_->write(kWakeCountersKey, hex)) return false;
-  writes_.writes = saturate(writes_.writes);
+  writes_.writes = saturate16(writes_.writes);
   dirty_ = false;
   return true;
 }

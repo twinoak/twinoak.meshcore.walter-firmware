@@ -104,11 +104,14 @@ struct FailedCall {
 // above it is recorded as this one rather than wrapping to a small number that reads as recent.
 constexpr std::uint32_t kWakeAtMost = 0xFFFFu;
 
+// Saturating 16-bit counters, and not 32: this object is in static storage and the main task's
+// stack has to be found around every byte of it afterwards (docs/ARCHITECTURE.md §14, rail R22).
+// A unit that has recorded 65 535 failed calls has said everything these four have to say.
 struct CallLogCounters {
-  std::uint32_t recorded = 0;    // calls put in the list
-  std::uint32_t pushed_out = 0;  // ... and the oldest ones they pushed out
-  std::uint32_t writes = 0;      // values written to the store
-  std::uint32_t refused = 0;     // a stored value of another version or shape
+  std::uint16_t recorded = 0;    // calls put in the list
+  std::uint16_t pushed_out = 0;  // ... and the oldest ones they pushed out
+  std::uint16_t writes = 0;      // values written to the store
+  std::uint16_t refused = 0;     // a stored value of another version or shape
 };
 
 class CallLog {
@@ -137,8 +140,11 @@ class CallLog {
   bool save();
 
   std::size_t count() const { return count_; }
-  // 0 is the newest.
-  const FailedCall& at(std::size_t index) const;
+  // 0 is the newest. **By value**: the ring is held in the nine bytes an entry is stored as and
+  // not as eight `FailedCall`s, which would be 96 bytes of static storage for 72 bytes of facts -
+  // and the margin the main task's stack is found in is counted in tens of bytes
+  // (docs/ARCHITECTURE.md §14, rail R22).
+  FailedCall at(std::size_t index) const;
 
   // Everything forgotten and the key erased: the bench, and a test.
   void forget();
@@ -147,10 +153,16 @@ class CallLog {
 
  private:
   void decode(const char* hex);
+  // One entry into and out of the nine bytes it is stored as.
+  static void pack(std::uint8_t* at, const FailedCall& call);
+  static FailedCall unpack(const std::uint8_t* at);
 
   interfaces::KeyValue* store_;
-  FailedCall items_[kCallsKept];
-  std::size_t count_ = 0;
+  // The ring, newest first, in the form it is written in: the value's bytes without its version
+  // byte. A record is a memmove of this and nine bytes written over the front, and saving it is
+  // the hex of one byte and this.
+  std::uint8_t items_[kCallsKept * kCallEntryBytes] = {};
+  std::uint8_t count_ = 0;
   std::uint16_t wake_ = 0;
   bool begun_ = false;
   bool survived_ = false;
