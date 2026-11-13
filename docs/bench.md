@@ -8,7 +8,9 @@ HTTPS, provisioning, sleep, and a day of it. A Walter has run a development buil
 and checked in with meshmaster.dk once (23 October 2026, `0.0.0-dev`); the first unit ran `v0.1.0`
 at a desk on 6 November — half an hour that found five faults — `v0.1.1` on 7 November, which
 gave its radio a golden image and found five more, and `v0.1.2` on 8 November, which ran a night on
-its battery and was heard on about every sixth wake. **No unit has walked this file.** It is what
+its battery and was heard on about every sixth wake. That unit has since taken `v0.1.4` **over
+LTE** and kept it (10 November, §18) — but from meshmaster.dk's pages, with nobody at it and nobody
+watching, which is a result and not a reading. **No unit has walked this file.** It is what
 turns that sentence over, and **`v0.1.4` is the release it is walked with**
 ([`flashing.md`](flashing.md), [`release.md`](release.md)) — every item added by phases 8 to 11
 needs that release or later, and says so. (`v0.1.3` was withdrawn in everything but name: it
@@ -1893,9 +1895,31 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       after any run: the oldest entry of it, `check`, carries the candidate's `sha256` and not
       `0000000000000000…`. On the first unit the 6 November run's `seq 28` was all zeros and the
       journal never said which image that run was about.
-- [ ] **The Walter's own release over LTE, 0.1.2 to 0.1.3** (tasks p9-07 and p10-07). The item
-      this release exists to make possible, and **the first one that would put a new image on a unit
-      with no cable in it**.
+- [ ] **The Walter's own release over LTE, 0.1.2 to 0.1.4** (tasks p9-07, p10-07 and p11-04). The
+      item this release exists to make possible, and **the first one that would put a new image on a
+      unit with no cable in it**.
+      **The field has already given half of it** (10 November 2026, `tasks/phase-12/evidence/`,
+      [`flashing.md`](flashing.md) *What it did on 10 November*): a unit at `v0.1.2` was offered
+      `v0.1.4`, stored it at **14:52 UTC** — `manager.walter.lte-m`, **780 528 bytes**, result
+      *stored*, `resumed: false` — and the apply after it came back **committed at 15:20**
+      (`0.1.2 → 0.1.4`), with the heartbeat reporting `0.1.4+62538fa` since. **Nobody was at it and
+      no console was watched**, so what the server saw is ticked by that and nothing else is.
+      Given by the field, from the server's pages: **the result** (*stored*, then *committed*), the
+      **bytes** (780 528, the manifest's hash), the **requests** (14 of them for 12 ranges, 877 kB
+      billed — a retry the unit's own result does not mention, `phase-12/FOLLOWUPS.md`), one
+      **progress** line (687 kB of 781 kB at 14:51:31) and the **version on the heartbeat**. Three
+      offers expired unclaimed before it (11:05, 11:58, 12:30), which is the thirty-minute window
+      and a unit that was not checking in.
+      **Still only a cable gives these, and they are what this item is still open for**: the six
+      checks in the console's `fetch` lines as they pass, the **twelve ranges** one by one with
+      their attempts, `self status` saying `received: 0.1.4 … waiting for 'self switch'` before the
+      apply and `valid` rather than `pending-verify` after it, the trial's own `self-update:` lines,
+      the banner of the boot after it, and — the figure nothing else can give — **the wall-clock
+      seconds of the download**. The field bounds that one from above only: the job was made at
+      14:42:11 and stored at 14:52:26, and the page does not say when the unit claimed it, so it is
+      known as **at most 10 min 15 s** and no closer. Write the real one down here.
+      When it is walked, offer `v0.1.4` (or whatever is current) to a unit still at `v0.1.2` or
+      `v0.1.1`; a unit at `v0.1.3` or newer is already past the server's half, below.
       **Both halves are in place now (task p10-05).** On 8 November job 22841 failed in two seconds
       because no download had ever sent `X-Agent-Version`, which the server requires on every
       `/agent/v1` request. meshmaster.dk's pile 4.28 task 177 serves the three download routes
@@ -1904,26 +1928,34 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       walk this, and a unit at v0.1.3 or newer needs nothing of the server's half. A refusal that
       still comes back names its status and its file now, which is where to read what went wrong.
       *Offer a release* on the unit's page, product `twinoak-walter-firmware`,
-      release `v0.1.3`, with a reason; then `agent wake` (or wait for one). Expected, in this
+      release `v0.1.4`, with a reason; then `agent wake` (or wait for one). Expected, in this
       order: the six checks in the console's `fetch` lines, **twelve ranges** of 64 kB for
-      **784 560 bytes** (the last one 19 kB), a `progress` line on the job's page every 128 kB, and
+      **780 528 bytes** (the last one 58 kB), a `progress` line on the job's page every 128 kB, and
       the result `stored` with the manifest's hash — then `self status` saying
-      `received: 0.1.3 … waiting for 'self switch'`.
+      `received: 0.1.4 … waiting for 'self switch'`. The `fetch:` summary line is worth a glance for
+      its **retries** and **restarts**: on 10 November the server billed 877 kB for this 781 kB file
+      in 14 requests, and that line is the only place the repeat is said at all.
       **Write down the wall-clock seconds of the download and the wake's own elapsed time**: the
       Walter's slot does **not** resume across wakes (`SelfUpdate::beginWrite` erases it), so the
-      whole file has to fit one wake's twenty minutes, and this is the first measurement of whether
-      it does on a real LTE-M plan. If the wake's budget cuts it short, the job's message now says
+      whole file has to fit one wake's twenty minutes. The field says it fits — the whole file was
+      stored inside one wake on 10 November — but the only bound it gives is *at most 10 min 15 s*,
+      which is not a measurement. If the wake's budget cuts it short, the job's message now says
       so (task p10-04): the result's reason is *this slot keeps no progress, so the next wake starts
       the file again from zero* and the console's line ends the same way — note the bytes that were
       paid for twice. **Write the download's seconds into this item**, whether it finished or not:
       it is the figure that decides whether a resume is worth building at all, and nothing but the
       bench can give it.
       Then *Apply the candidate*: the board restarts, the trial's three conditions hold inside the
-      next boot's own wake, and that same exchange posts `committed` with `0.1.3+<sha7>` — the
+      next boot's own wake, and that same exchange posts `committed` with `0.1.4+<sha7>` — the
       banner, `agentVersion` on the page and `self status` all saying it, and `self status` `valid`
-      rather than `pending-verify`. **If the trial rolls back**, the previous image returns by
-      itself and the page says `rolledBack` with the journal: read it before flashing anything by
-      cable, because the rollback working is the better half of this item.
+      rather than `pending-verify`. The job's journal comes back as three lines with **one second**
+      on all three (15:20:13Z on 10 November): that is right, not a stall — `at` is when the result
+      was composed in the wake after the restart, not when the step happened
+      ([`flashing.md`](flashing.md), *What it did on 10 November*). **If the trial rolls back**, the
+      previous image returns by itself and the page says `rolledBack` with the journal: read it
+      before flashing anything by cable, because the rollback working is the better half of this
+      item — and it has been seen in the field, on 9 November with `v0.1.3`
+      (`tasks/phase-11/evidence/`).
 - [ ] **The budget's message, for the box it is about** (task p10-04). Only reachable if the
       download above is cut short by the wake's budget, which on a megabyte-a-wake cap and a 785 kB
       file it should not be — so this is the item to read **if** the release above comes back
