@@ -389,6 +389,7 @@ class Console final : public ReportSource {
   void agentWake();
   void agentJobs();
   void agentState();
+  void agentCalls();
 
   // One whole wake (task p3-05).
   bool cycleOk();  // false, with one error line, when this build has no wake cycle

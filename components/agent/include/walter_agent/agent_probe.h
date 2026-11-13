@@ -18,6 +18,7 @@
 
 #include "core/console/agent_probe.h"
 #include "core/cycle/duty_cycle.h"
+#include "core/cycle/wake_counters.h"
 #include "walter_agent/identity.h"
 #include "walter_agent/link_mesh.h"
 #include "walter_agent/observations.h"
@@ -51,6 +52,11 @@ class IdentityProbe final : public core::console::AgentProbe {
   // own three from the loop.
   HeartbeatExtras extras() const;
 
+  // What woke this unit, so that `agent heartbeat` prints the same four counters the wake's own
+  // heartbeat posts (task p13-02, core/cycle/wake_counters.h). Null leaves them out, which is a
+  // build with no settings store to keep them in.
+  void countWakesFrom(const core::cycle::WakeTotals* wakes) { wakes_ = wakes; }
+
  private:
   Identity& identity_;
   LinkMesh& mesh_;
@@ -58,6 +64,7 @@ class IdentityProbe final : public core::console::AgentProbe {
   WalterPlatform& platform_;
   core::cycle::DutyCycle* duty_ = nullptr;
   const mm::IJobExtension* extension_ = nullptr;
+  const core::cycle::WakeTotals* wakes_ = nullptr;
   // The body is built here and not on the caller's stack: the main task's stack is 3584 bytes
   // (task p4-03's note on the same buffer).
   char body_[kHeartbeatBodyMax] = {};

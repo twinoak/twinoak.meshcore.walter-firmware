@@ -204,6 +204,9 @@ const CommandDef kCommands[kCommandCount] = {
     {"agent state", "agent state", Group::kUplink,
      "the loop's saved state - the backoff, the accepted interval, the budget, a 401, the "
      "counters - and what the sleep keeps: whether it survived, and the kept image's store"},
+    {"agent calls", "agent calls", Group::kUplink,
+     "the last eight calls to the server that did not come back 2xx, newest first: which call, "
+     "what came back or how far the uplink got, the wake's number and when. Kept across a sleep"},
 
     // -- sleep and the battery (task p3-04) ----------------------------------------------------
     {"wake", "wake", Group::kDutyCycle,

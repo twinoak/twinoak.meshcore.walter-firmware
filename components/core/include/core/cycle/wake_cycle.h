@@ -82,6 +82,7 @@
 #include "core/cycle/duty_cycle.h"
 #include "core/cycle/network_clock.h"
 #include "core/cycle/telemetry_ring.h"
+#include "core/cycle/wake_counters.h"
 #include "core/image/store.h"
 #include "core/link/client/client.h"
 #include "core/power/interval_policy.h"
@@ -460,6 +461,12 @@ class WakeCycle {
   std::uint8_t asked() const { return wanted_; }
   void forgetAsks() { wanted_ = 0; }
 
+  // Where the four wake counters a heartbeat carries are kept (task p13-02,
+  // core/cycle/wake_counters.h). A setter and not a thirteenth constructor argument: every caller
+  // of that constructor passes `out` positionally behind the optional ones, and a build without
+  // a settings store has none of these to keep. Null counts nothing.
+  void countWakesIn(WakeCounters* counters) { tally_ = counters; }
+
  private:
   // One step, run or not: the table's row, the preconditions, the budget, and the record.
   bool begin(Step step);                     // false: it was skipped or there was no time
@@ -468,6 +475,16 @@ class WakeCycle {
   std::uint32_t leftMs() const;
   // The journal, when the wake has news.
   void journalWake();
+  // **Why nothing was sent**, when a step settles it (task p13-02): into this pass - which the
+  // record line and the journal entry are written from - and into this wake's own entry in
+  // retained storage, which is what `wake` prints a boot later. One reading, two readers, as
+  // step 8's `reached` has been since p10-02.
+  //
+  // Step 8 is the seam's own answer and is the last word. **Step 6 answers for the wakes step 8
+  // never runs in**: the table above makes step 8 need step 6, so a wake the uplink's backoff
+  // skipped - or one in a band that does not allow the modem - reached no seam at all and left
+  // *it did not say* exactly where a person was looking for a reason.
+  void sentNothing(interfaces::Reached why, std::uint32_t owed_s = 0);
   void say(const char* text);
   void sayf(const char* format, ...) __attribute__((format(printf, 2, 3)));
 
@@ -517,6 +534,7 @@ class WakeCycle {
   image::Store* store_ = nullptr;
   update::Journal* journal_ = nullptr;
   settings::Settings* settings_ = nullptr;
+  WakeCounters* tally_ = nullptr;
   interfaces::TextOut* out_ = nullptr;
 
   Pass pass_{};

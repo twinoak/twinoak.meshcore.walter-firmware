@@ -30,6 +30,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <agent/Iso8601.h>
@@ -87,7 +88,21 @@ class MeshMasterScript {
     fail_status_ = status;
     fail_retry_after_ = retry_after;
   }
-  void answerAgain() { fail_status_ = 0; }
+  void answerAgain() {
+    fail_status_ = 0;
+    route_status_.clear();
+    silent_routes_.clear();
+  }
+  // **One route**, from now on: a status for it while the rest of the API answers normally (the
+  // path's suffix under `/agent/v1`, as the uplink builds it - `/heartbeat`, `/jobs/claim`).
+  // Task p13-02: *the heartbeat came back 503 and the claim never came back* is one wake, and it
+  // is the wake a list of failed calls has to be able to show.
+  void failRoute(const std::string& suffix, int status, const std::string& retry_after = "") {
+    route_status_[suffix] = std::make_pair(status, retry_after);
+  }
+  // The same, for a route that is taken and never answered: the call ends at its deadline with
+  // no status at all.
+  void silenceRoute(const std::string& suffix) { silent_routes_.push_back(suffix); }
   // The next `count` result posts answer `status` (a server that takes everything but results).
   void failResults(int status, int count) {
     result_fail_status_ = status;
@@ -226,6 +241,22 @@ class MeshMasterScript {
     calls.push_back(path);
     reply->headers.push_back("X-RateLimit-Remaining: 119");
     reply->headers.push_back("Content-Type: application/json");
+    const std::string suffix = path.substr(9);  // past "/agent/v1"
+    for (const std::string& silent : silent_routes_) {
+      if (suffix == silent) {
+        reply->no_response = true;
+        return true;
+      }
+    }
+    const auto scripted = route_status_.find(suffix);
+    if (scripted != route_status_.end()) {
+      reply->status = scripted->second.first;
+      if (!scripted->second.second.empty()) {
+        reply->headers.push_back("Retry-After: " + scripted->second.second);
+      }
+      reply->body = "{\"title\":\"scripted\"}";
+      return true;
+    }
     if (fail_status_ != 0) {
       reply->status = fail_status_;
       if (!fail_retry_after_.empty()) reply->headers.push_back("Retry-After: " + fail_retry_after_);
@@ -341,6 +372,9 @@ class MeshMasterScript {
   int gap_seconds_ = 20;
   int fail_status_ = 0;
   std::string fail_retry_after_;
+  // One route's scripted answer, by the path's suffix under /agent/v1 (task p13-02).
+  std::map<std::string, std::pair<int, std::string>> route_status_;
+  std::vector<std::string> silent_routes_;
   int result_fail_status_ = 503;
   int result_fail_count_ = 0;
 };

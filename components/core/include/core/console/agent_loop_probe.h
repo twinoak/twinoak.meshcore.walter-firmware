@@ -32,6 +32,12 @@ class AgentLoopProbe {
 
   // The loop's saved state - what the next wake restores - and what the sleep keeps beside it.
   virtual void state(interfaces::TextOut& out) = 0;
+
+  // The last eight calls to the server that did not come back 2xx, newest first (task p13-02):
+  // which call, what came back, the wake's number and when. No token, no password and no byte of
+  // a body crosses here either - an entry is a kind, a number and two timestamps
+  // (walter_agent/call_log.h).
+  virtual void calls(interfaces::TextOut& out) = 0;
 };
 
 }  // namespace console

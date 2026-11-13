@@ -185,13 +185,18 @@ TEST_CASE("a wake that never got its uplink: no letter of the three, and the ste
   const Pass& pass = bench.oneWake();
   CHECK(pass.outcomeOf(Step::kUplink) == Outcome::kFailed);
   CHECK(pass.outcomeOf(Step::kBackend) == Outcome::kSkipped);
-  CHECK(pass.reached == Reached::kUnsaid);
+  // **Since task p13-02 the wake says why, and step 6 is who says it.** Step 8 needs step 6, so
+  // the seam was never reached and `kUnsaid` was all a reader got where the reason was: the
+  // modem did not come up, and that is `kNoUplink`.
+  CHECK(pass.reached == Reached::kNoUplink);
 
   const std::string said = bench.v().runLine("wake");
   INFO(said);
   // `---` and not `???`: this wake ran to its end and did none of the three, which is a fact and
   // not a silence.
   CHECK(lettersOfTheNewest(said) == "---");
+  // ... and the list says why, which is what 13 November was missing.
+  CHECK(has(said, "nothing sent: no uplink"));
 }
 
 TEST_CASE("a wake that never reached sleep wrote nothing down, and `wake` says `???` for it") {

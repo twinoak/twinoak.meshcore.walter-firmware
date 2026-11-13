@@ -93,8 +93,12 @@ constexpr std::uint32_t kAttentionPollMs = 50;
 constexpr std::uint8_t kSpuriousPerWindow = 3;
 
 // How many wakes are remembered, with their reasons and durations: what `wake` prints. Ten, as
-// the task asks. Eight bytes each, inside one retained record.
+// the task asks. Ten bytes each, inside one retained record.
 constexpr std::size_t kWakesRemembered = 10;
+
+// The ceiling `owed_s` is clamped to (task p13-02), said once so that the console and the tests
+// can name it.
+constexpr std::uint32_t kOwedAtMostS = 0xFFFFu;
 
 // **The deep-sleep timer's own error**, as a percentage, taken off the seconds the last sleep
 // asked for before `timeAwayMs()` believes any of it (task p10-01). The rule that figure is
@@ -184,7 +188,20 @@ struct WakeEntry {
   // before this task reads back with the same length and `did` == 0, which is *not recorded*.
   std::uint16_t lasted_s = 0;
   std::uint8_t did = 0;  // kDid* above
-  std::uint8_t spare = 0;
+  // **Why that wake sent nothing** (task p13-02): `interfaces::Reached` as a byte, which is the
+  // one vocabulary the journal, the wake record and this list share. `kUnsaid` (0) is *it did not
+  // say* and is what an entry written by a firmware before this task reads as - the record's size
+  // changed with it, so in practice such an entry is not read back at all (see Record).
+  //
+  // The question is the 13 November one: a wake request reached the radio, the unit woke, and
+  // nothing went out. `wake`'s letters said `---` and stopped there. Only a *timer* wake inside a
+  // wait left a trace anywhere (the journal, as news), and the wake a person asked for - the
+  // radio's line inside that same wait - left none.
+  std::uint8_t sent = 0;
+  // The seconds of the wait that was still owed, when `sent` is `kWait`; 0 otherwise. Clamped to
+  // 18 hours, which no wait this firmware is given comes near (the library's backoff doubles to
+  // minutes and a Retry-After is capped well under a day).
+  std::uint16_t owed_s = 0;
 };
 
 // The ceiling `lasted_s` is clamped to, said once so that the console and the tests can name it.
@@ -260,6 +277,14 @@ class WakeReason {
   void didThisWake(std::uint8_t bits);
   std::uint8_t didSoFar() const { return count_ == 0 ? 0 : record_.items[0].did; }
 
+  // **Why this wake sent nothing**, into this wake's own entry (task p13-02): `reached` is an
+  // `interfaces::Reached` as a byte and `owed_s` the seconds still owed when it is `kWait`.
+  // Stored at once, like the bits above, and called as each step settles the answer - step 6 when
+  // the modem did not come up, step 8 when the seam answered - so the last word wins and `wake`
+  // typed in the middle of a wake tells the truth about the wake in hand.
+  void sentThisWake(std::uint8_t reached, std::uint32_t owed_s);
+  std::uint8_t sentSoFar() const { return count_ == 0 ? 0 : record_.items[0].sent; }
+
   // The wake is ending in a sleep: its duration goes into this wake's entry, the seconds the
   // timer is being asked for are written down for the *next* boot to read, and the record is
   // stored. Called by core/cycle/sleep.h on the one way out of a wake.
@@ -307,6 +332,14 @@ class WakeReason {
   // before p10-02 reads back with the right length and nothing claimed about what it did, which
   // is the honest answer and the reason the layout was changed this way rather than grown.
   //
+  // **Task p13-02 did grow it**, by two bytes an entry - *why that wake sent nothing*, and the
+  // seconds of the wait when that is what it was. There was nowhere to put them: `did`'s free
+  // bits could have held the reason and no byte of the entry could have held the seconds, and the
+  // seconds are half the answer ("a wait was owed" without "how long" does not tell a person
+  // whether the next wake will send either). 100 bytes became 120, which is still inside
+  // kRetainedRecordMax, and the cost is the one the paragraph below describes: the first boot of
+  // the release that carries it reads no record.
+  //
   // **It grew by four bytes in task p10-01**, and a record of another size in the same slot is
   // not the same record (interfaces/retained.h), so the first boot of 0.1.3 reads no record and
   // `recordSurvived()` is false for that one wake: the wake log, the band's hysteresis, the
@@ -334,7 +367,7 @@ class WakeReason {
     std::uint8_t spare;
     WakeEntry items[kWakesRemembered];
   };
-  static_assert(sizeof(WakeEntry) == 8, "a wake entry is eight bytes");
+  static_assert(sizeof(WakeEntry) == 10, "a wake entry is ten bytes");
   static_assert(sizeof(Record) <= interfaces::kRetainedRecordMax,
                 "the duty cycle's record has to fit a retained slot");
 

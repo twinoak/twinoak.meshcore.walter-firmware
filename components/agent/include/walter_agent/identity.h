@@ -66,6 +66,7 @@
 #include <agent/IMesh.h>
 #include <agent/JobEnvelopes.h>
 
+#include "core/cycle/wake_counters.h"
 #include "core/link/client/client.h"
 #include "core/link/radio_identity.h"
 #include "core/power/interval_policy.h"
@@ -98,6 +99,21 @@ constexpr const char kRadioIdentityLostKey[] = "radioIdentityLost";
 // key or about when it is there. Returns the new count; `count` unchanged when there is no room
 // or the radio has not refused.
 int addRadioIdentityLost(mm::ErrorCounter* out, int count, int capacity, bool lost);
+
+// -- what meshmaster.dk is told about what woke this unit (task p13-02) -------------------------
+//
+// Four more counters of the same open key space, and the same arrangement: one function, called
+// by the console's `agent heartbeat` (`Identity::fillHeartbeat`) and by the wake's own heartbeat
+// (`ModemUplink::postHeartbeat`), so the printed body and the posted one cannot disagree about
+// the keys or the order. `core/cycle/wake_counters.h` is what keeps the numbers and why there
+// are four. Returns the new count; `count` unchanged when there is no room for all four.
+constexpr const char kWakesTimerKey[] = "wakesTimer";
+constexpr const char kWakesRadioKey[] = "wakesRadio";
+constexpr const char kWakesSpuriousKey[] = "wakesSpurious";
+constexpr const char kWakesSilentKey[] = "wakesSilent";
+
+int addWakeCounters(mm::ErrorCounter* out, int count, int capacity,
+                    const core::cycle::WakeTotals& totals);
 
 // -- what one wake promises the server ---------------------------------------------------------
 //
@@ -191,6 +207,10 @@ struct HeartbeatExtras {
   long long observations_dropped = 0;
   long long results_dropped = 0;
   long long reboots = 0;
+  // What woke this unit, as `core/cycle/wake_counters.h` has counted it (task p13-02). The
+  // console's `agent heartbeat` fills this from the duty cycle's own; the wake's heartbeat does
+  // not come through here at all and takes the same four straight from that object.
+  core::cycle::WakeTotals wakes;
 };
 
 struct IdentityCounters {
@@ -297,8 +317,12 @@ class Identity {
   // How much room `fillHeartbeat`'s `errors` needs: the library's six, and this board's own
   // `radioIdentityLost` behind them, which is written only while the radio refuses (task
   // p10-03). `mm::Heartbeat::errorCount` is what was actually written - six, or seven.
+  //
+  // **And the four of task p13-02** behind that: what woke this unit, which a server cannot see
+  // for itself. Those four are written at every heartbeat, not only while something is wrong, so
+  // `errorCount` is now ten, or eleven while the radio refuses.
   static constexpr int kLibraryErrorCount = 6;
-  static constexpr int kErrorCount = kLibraryErrorCount + 1;
+  static constexpr int kErrorCount = kLibraryErrorCount + 1 + core::cycle::kWakeCounterCount;
 
  private:
   bool readKey();

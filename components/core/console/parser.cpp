@@ -760,7 +760,7 @@ Parsed parseLine(const char* line) {
   // words, no argument but `agent obs pull`.
   if (std::strcmp(verb, "agent") == 0) {
     if (!hasRest) {
-      return refuse("agent needs a subcommand: agent url, probe, id, heartbeat, obs, wake, jobs, state");
+      return refuse("agent needs a subcommand: agent url, probe, id, heartbeat, obs, wake, jobs, state, calls");
     }
     if (std::strcmp(rest, "url") == 0) return accept(Verb::kAgentUrl);
     if (std::strcmp(rest, "probe") == 0) return accept(Verb::kAgentProbe);
@@ -771,7 +771,8 @@ Parsed parseLine(const char* line) {
     if (std::strcmp(rest, "wake") == 0) return accept(Verb::kAgentWake);
     if (std::strcmp(rest, "jobs") == 0) return accept(Verb::kAgentJobs);
     if (std::strcmp(rest, "state") == 0) return accept(Verb::kAgentState);
-    return refuse2("unknown agent subcommand (url, probe, id, heartbeat, obs, obs pull, wake, jobs, state): ", rest);
+    if (std::strcmp(rest, "calls") == 0) return accept(Verb::kAgentCalls);
+    return refuse2("unknown agent subcommand (url, probe, id, heartbeat, obs, obs pull, wake, jobs, state, calls): ", rest);
   }
   if (std::strcmp(verb, "image") == 0) {
     std::uint8_t slot = 0;

@@ -368,6 +368,10 @@ struct WakeWalter {
   core::update::SelfUpdate self{w.own,  w.images.store, journal, link,   trialCheck(),
                                 clock, restart,        battery, health, &dumps};
   cyc::TelemetryRing readings{w.retained};
+  // What woke this unit, counted and kept (task p13-02): the life's object over the world's
+  // key-value store, as main.cpp builds it - so a sleep and a power cut both leave the totals
+  // where NVS leaves them.
+  cyc::WakeCounters wake_counters{&w.kv};
   std::unique_ptr<core::supervisor::Supervisor> supervisor;
   std::unique_ptr<cyc::DutyCycle> duty;
 #if WALTER_AGENT
@@ -465,6 +469,14 @@ struct WakeWalter {
     cycle.reset(new cyc::WakeCycle(*duty, link, uplink, *backend, readings, wall, clock,
                                    supervisor.get(), &update, &self, &fetch, &w.images.store,
                                    &journal, &settings));
+    wake_counters.begin();
+    cycle->countWakesIn(&wake_counters);
+#if WALTER_AGENT
+    if (agent) {
+      agent->server.countWakesFrom(&wake_counters.totals());
+      agent->identity_probe.countWakesFrom(&wake_counters.totals());
+    }
+#endif
 #if WALTER_AGENT
     if (agent) {
       console.reset(new core::console::Console(out, board, health, clock, restart, link, slots,

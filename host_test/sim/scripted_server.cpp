@@ -168,6 +168,7 @@ std::vector<std::uint8_t> ScriptedServer::respond(const std::string& text) {
   if (on_request) {
     ScriptedReply reply;
     if (on_request(r, &reply)) {
+      if (reply.no_response) return {};
       return response(reply.status, reply.headers, reinterpret_cast<const std::uint8_t*>(reply.body.data()),
                       reply.body.size(), true);
     }

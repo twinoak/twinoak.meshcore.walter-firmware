@@ -489,6 +489,9 @@ void WakeCycle::stepWhy() {
   pass_.attention = w.attention.reason;
   pass_.wakes = w.wakes;
   pass_.time_known = wall_.known();
+  // What woke this unit, counted and kept across the sleep and a power cut (task p13-02): the
+  // three a server cannot see for itself - the timer, the radio's line, a chattering line.
+  if (tally_ != nullptr) tally_->countWake(w.wake);
   finish(Step::kWhy, Outcome::kDone, cycle::describe(w.wake));
   if (out_ != nullptr) sayf("cycle: wake %lu, %s\n", static_cast<unsigned long>(w.wakes),
                             cycle::describe(w.wake));
@@ -688,21 +691,25 @@ void WakeCycle::stepUplink() {
     // A wake that does not use the modem still has to say so, or `saving`'s every-Nth counter
     // would never move (core/cycle/wake_reason.h).
     duty_.modemWasSkipped();
+    sentNothing(interfaces::Reached::kNoUplink);
     return;
   }
   if (!pass_.decision.may.modem) {
     duty_.modemWasSkipped();
     finish(Step::kUplink, Outcome::kSkipped, "the band does not allow the modem");
+    sentNothing(interfaces::Reached::kNoUplink);
     return;
   }
   if (!pass_.decision.modem_this_wake) {
     duty_.modemWasSkipped();
     finish(Step::kUplink, Outcome::kSkipped, "`saving` uses the modem every fourth wake");
+    sentNothing(interfaces::Reached::kNoUplink);
     return;
   }
   if (!uplink_.mayTry()) {
     duty_.modemWasSkipped();
     finish(Step::kUplink, Outcome::kSkipped, "the uplink's backoff");
+    sentNothing(interfaces::Reached::kUplinkBackoff);
     return;
   }
   const std::uint32_t left = leftMs();
@@ -716,6 +723,7 @@ void WakeCycle::stepUplink() {
   known_.uplink.spent_ms = r.spent_ms;
   if (!r.up) {
     finish(Step::kUplink, Outcome::kFailed, uplink::describe(r.failure));
+    sentNothing(interfaces::Reached::kNoUplink);
     return;
   }
   // The uplink came up: the first of `wake`'s three letters, into this wake's own entry in
@@ -800,6 +808,10 @@ void WakeCycle::stepBackend() {
                                                                    : answer_.reached;
   pass_.jobs_ran = answer_.jobs_ran;
   pass_.owed_s = pass_.reached == interfaces::Reached::kWait ? answer_.sleep_at_least_s : 0;
+  // ... and into this wake's own entry in retained storage, so that a boot later the list says
+  // why this wake sent nothing (task p13-02). The seam's word overwrites step 6's, which is the
+  // order these are decided in.
+  sentNothing(pass_.reached, pass_.owed_s);
   if (interfaces::wasAnswered(pass_.exchanged, answer_)) duty_.reason().didThisWake(kDidAnswered);
   if (answer_.jobs_ran > 0) duty_.reason().didThisWake(kDidJobs);
   outside_ms_ += answer_.outside_ms;
@@ -1186,6 +1198,14 @@ void WakeCycle::stepSleep() {
   // tells `wake`'s `---` (it did none of the three) from its `???` (nobody wrote it down) - a
   // wake ended by a reset, a crash or the bound keeps only the bits it had reached (task p10-02).
   duty_.reason().didThisWake(kDidSaid);
+  // ... and whether it sent anything, into the fourth of the counters a heartbeat carries (task
+  // p13-02). Here, and not at step 8: a wake that never reached step 8 sent nothing either, and
+  // it is the one a person is asking about. The totals go to the store in the same breath, and
+  // only when one of the four moved.
+  if (tally_ != nullptr) {
+    tally_->countSent(pass_.reached);
+    (void)tally_->save();
+  }
   // The wake's record goes to the journal **before** the sleep, because a sleep does not return.
   // A sleep that is then refused writes its own entry after this one (core/cycle/sleep.h), and
   // the two together are the story.
@@ -1215,6 +1235,12 @@ void WakeCycle::stepSleep() {
   duty_.guard().disarm();
   finish(Step::kSleep, Outcome::kDone, "asleep");
   if (pass_.ending == Ending::kRunning) pass_.ending = Ending::kSlept;
+}
+
+void WakeCycle::sentNothing(interfaces::Reached why, std::uint32_t owed_s) {
+  pass_.reached = why;
+  pass_.owed_s = owed_s;
+  duty_.reason().sentThisWake(static_cast<std::uint8_t>(why), owed_s);
 }
 
 void WakeCycle::journalWake() {

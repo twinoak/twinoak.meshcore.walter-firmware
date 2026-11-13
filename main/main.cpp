@@ -16,6 +16,7 @@
 #include "core/cycle/network_clock.h"
 #include "core/cycle/null_backend.h"
 #include "core/cycle/telemetry_ring.h"
+#include "core/cycle/wake_counters.h"
 #include "core/cycle/wake_cycle.h"
 #include "core/health/coredump.h"
 #include "core/health/health.h"
@@ -541,6 +542,14 @@ extern "C" void app_main() {
   // next boot's record says who asked. A USB host holds it off, and so does `stay`.
   duty.guard().arm();
 
+  // What woke this unit, counted and kept across a power cut (task p13-02,
+  // core/cycle/wake_counters.h): the four totals a heartbeat carries beside the library's own
+  // counters. Built here, where the wake has just been worked out, and handed to the wake cycle
+  // below - which counts this wake at its first step and writes the totals at its last, and only
+  // when one of them moved.
+  static core::cycle::WakeCounters g_wake_counters(g_nvs.ready() ? &g_nvs : nullptr);
+  g_wake_counters.begin();
+
   // The readings of every wake's step 4, kept while there is nobody to give them to (task
   // p3-05, core/cycle/telemetry_ring.h): a bounded ring in retained storage, oldest dropped
   // first, with the count of what was dropped - and the asks this firmware refused and has not
@@ -577,6 +586,13 @@ extern "C" void app_main() {
   static agent::ModemUplink server(http_client, settings, g_clock, g_wall, core::version());
   static agent::ModemUplinkProbe agent_probe(server);
   server.raiseAttentionThrough(&agent_attention);
+  // What is kept for the asking (task p13-02): the last eight calls that did not come back 2xx,
+  // and the four counters a heartbeat carries about what woke this unit. Both are one value of
+  // the settings store each, written only when they move; both are read back at `begin()`, which
+  // the backend does for the list and the line below does for the counters.
+  static agent::CallLog g_calls(g_nvs.ready() ? &g_nvs : nullptr);
+  server.recordFailuresIn(&g_calls);
+  server.countWakesFrom(&g_wake_counters.totals());
   static agent::WalterPlatform agent_platform(g_clock, g_wall, g_entropy, g_heap,
                                               &agent_attention);
   static agent::Identity agent_identity(radio, core::version());
@@ -593,6 +609,7 @@ extern "C" void app_main() {
                                            g_clock, g_wall);
   static agent::IdentityProbe identity_probe(agent_identity, mesh, agent_observations,
                                              agent_platform, &duty, &firmware_jobs);
+  identity_probe.countWakesFrom(&g_wake_counters.totals());
   // What a sleep keeps: the window after the image store's layout in the `rakfw` partition
   // (core/image/store.h, kStoreBytes), when the partition is there and has room.
   agent::RegionStore* kept = nullptr;
@@ -614,6 +631,7 @@ extern "C" void app_main() {
   agent_parts.firmware = &firmware_jobs;
   agent_parts.trial = &g_uplink;
   agent_parts.state_store = g_nvs.ready() ? &g_nvs : nullptr;
+  agent_parts.calls = &g_calls;
   agent_parts.kept = kept;
   agent_parts.kept_scratch = g_kept_scratch;
   agent_parts.kept_scratch_len = agent::kKeptScratchBytes;
@@ -632,6 +650,7 @@ extern "C" void app_main() {
   static core::cycle::WakeCycle cycle(duty, radio, uplink, the_backend, readings, g_wall, g_clock,
                                       &supervisor, g_update, self_update_ptr, g_fetch, g_store,
                                       g_journal, &settings);
+  cycle.countWakesIn(&g_wake_counters);
 
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
   // time round, the uptime kept in retained storage about once a second. Returning is not an

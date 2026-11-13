@@ -283,6 +283,8 @@ enum class Verb : std::uint8_t {
   kAgentWake,
   kAgentJobs,
   kAgentState,
+  // The last eight calls that did not come back 2xx (task p13-02).
+  kAgentCalls,
   // The Walter's own update (task p2-04).
   kSelfStatus,
   kSelfReceive,
@@ -371,7 +373,12 @@ static_assert(settings::kMaxValueLen <= kMaxCliLine, "a setting's value has to f
 struct Parsed {
   bool ok = false;
   Command command;
-  char error[96] = {};  // one line, when !ok, without the "error: " prefix
+  // One line, when !ok, without the "error: " prefix. **112 and not 96 since task p13-02**: the
+  // `agent` refusal lists every subcommand, and `agent calls` was the one that made the list
+  // longer than the buffer - the message was cut before the word it was refusing, which is the
+  // one part of it a person needs. A `Parsed` is a local of `runLine()` and of the parser's own
+  // tests and of nothing else, so the sixteen bytes are stack and not .bss.
+  char error[112] = {};
 };
 
 Parsed parseLine(const char* line);

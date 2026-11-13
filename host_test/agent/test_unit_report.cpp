@@ -10,13 +10,14 @@
 //     prints in the same state, for every section where the state does not move between the two
 //     readings - and, where it does (the three that ask the radio, and the two that cannot be
 //     read twice), what moved and why;
-//   * all eleven names answered; `calls` - which is task 02's - and a name nobody has in
+//   * all twelve names answered (`calls` is task 02's and is one of them now), and a name
+//     nobody has in
 //     `unknown`;
 //   * a scripted unit woken by the radio's line inside a wait, and one with three spurious wakes:
 //     the report says so;
 //   * a result that would pass the contract's 8 000 bytes: cut at a line end, the rest left, and
 //     still JSON;
-//   * no secret and no stranger's words in a report of all eleven sections;
+//   * no secret and no stranger's words in a report of all twelve sections;
 //   * the heartbeat's job types;
 //   * **nothing changed**: no counter, no queue, no record.
 #include <doctest.h>
@@ -36,9 +37,10 @@ using core::cycle::Step;
 
 namespace {
 
-// The eleven names, in the table's order (tasks/phase-13/01-what-the-unit-says.md).
-const char* const kAll[] = {"wakes", "agent",     "uplink",   "observations", "jobs", "journal",
-                            "radio", "power",     "restarts", "settings",     "log"};
+// The twelve names, in the table's order (tasks/phase-13/01-what-the-unit-says.md, and `calls`
+// where that task's own payload block puts it - task 02 is what filled it in).
+const char* const kAll[] = {"wakes", "agent",  "calls",    "uplink",   "observations", "jobs",
+                            "journal", "radio", "power",   "restarts", "settings",     "log"};
 constexpr int kAllCount = static_cast<int>(sizeof kAll / sizeof kAll[0]);
 
 bool has(const std::string& text, const std::string& what) {
@@ -254,16 +256,17 @@ TEST_CASE("twinoak.report: the contract's shape, out of a claimed job") {
         bench::topKeys(fixture_one));
   // And the payload this job was given is the payload's own shape.
   CHECK(bench::topKeys(aheadFixture("UnitReportPayload")) == std::vector<std::string>{"sections"});
-  // The order asked is the order written, and the one name this firmware has no section for is
-  // the one task 02 will bring.
+  // The order asked is the order written. `calls` was in `unknown` until task p13-02; it is a
+  // section now, and the one the 13 November question asked for first.
   const std::vector<Section> sections = sectionsOf(data);
-  REQUIRE(sections.size() == 5);
+  REQUIRE(sections.size() == 6);
   CHECK(sections[0].name == "wakes");
   CHECK(sections[1].name == "agent");
-  CHECK(sections[2].name == "uplink");
-  CHECK(sections[3].name == "observations");
-  CHECK(sections[4].name == "jobs");
-  CHECK(namesOf(data, "unknown") == std::vector<std::string>{"calls"});
+  CHECK(sections[2].name == "calls");
+  CHECK(sections[3].name == "uplink");
+  CHECK(sections[4].name == "observations");
+  CHECK(sections[5].name == "jobs");
+  CHECK(namesOf(data, "unknown").empty());
   CHECK(namesOf(data, "left").empty());
   for (const Section& s : sections) {
     CHECK_FALSE(s.cut);
@@ -272,9 +275,10 @@ TEST_CASE("twinoak.report: the contract's shape, out of a claimed job") {
   }
   CHECK(has(sections[0].text, "this wake:"));
   CHECK(has(sections[1].text, "agent state:"));
-  CHECK(has(sections[2].text, "lte:"));
-  CHECK(has(sections[3].text, "agent obs:"));
-  CHECK(has(sections[4].text, "budget "));
+  CHECK(has(sections[2].text, "agent calls:"));
+  CHECK(has(sections[3].text, "lte:"));
+  CHECK(has(sections[4].text, "agent obs:"));
+  CHECK(has(sections[5].text, "budget "));
   // The unit's clock, as `at` carries it: the wake took the network's time at its step 6.
   CHECK(std::stoul(bench::member(data, "at")) > 0u);
 }
@@ -294,6 +298,11 @@ TEST_CASE("a section's text is the console command's own lines, byte for byte") 
     const std::string section = viaSection(bench, "agent");
     CHECK(section == bench.v().runLine("agent state"));
     CHECK(has(section, "the clock:"));
+  }
+  SUBCASE("calls is `agent calls`") {
+    const std::string section = viaSection(bench, "calls");
+    CHECK(section == bench.v().runLine("agent calls"));
+    CHECK(has(section, "did not come back 2xx"));
   }
   SUBCASE("uplink is `lte`") {
     const std::string section = viaSection(bench, "uplink");
@@ -360,13 +369,13 @@ TEST_CASE("a section's text is the console command's own lines, byte for byte") 
   }
 }
 
-TEST_CASE("all eleven names are answered; a name nobody has is unknown") {
+TEST_CASE("all twelve names are answered; a name nobody has is unknown") {
   AgentBench bench(nullptr, false);
   bench.modemWorks();
   bench.server().queue(bench::ownJob(7, agent::kReportType,
-                                     payloadFor({"wakes", "agent", "uplink", "observations", "jobs",
-                                                 "journal", "radio", "power", "restarts",
-                                                 "settings", "log"}))
+                                     payloadFor({"wakes", "agent", "calls", "uplink",
+                                                 "observations", "jobs", "journal", "radio",
+                                                 "power", "restarts", "settings", "log"}))
                            .json());
   (void)bench.oneWake();
   const std::string data = bench.lastData(7);
@@ -382,20 +391,21 @@ TEST_CASE("all eleven names are answered; a name nobody has is unknown") {
   // may post (walter_agent/agent_backend.h, kWakePostBytes).
   std::string sizes;
   for (const Section& s : sections) sizes += " " + s.name + "=" + std::to_string(s.text.size());
-  MESSAGE("all eleven sections on a fresh unit: " << data.size() << " bytes of data, "
+  MESSAGE("all twelve sections on a fresh unit: " << data.size() << " bytes of data, "
           << sections.size() << " written, " << namesOf(data, "left").size() << " left;" << sizes);
 
-  // `calls` is task 02's, and a name nobody has at all: both are unknown, which is what unknown
-  // is for.
+  // A name nobody has at all is unknown, which is what unknown is for - and `calls`, which was
+  // in that list until task p13-02, is a section beside it.
   AgentBench other(nullptr, false);
   other.modemWorks();
   other.server().queue(
       bench::ownJob(8, agent::kReportType, payloadFor({"calls", "weather", "agent"})).json());
   (void)other.oneWake();
   const std::string second = other.lastData(8);
-  CHECK(namesOf(second, "unknown") == std::vector<std::string>{"calls", "weather"});
-  REQUIRE(sectionsOf(second).size() == 1);
-  CHECK(sectionsOf(second)[0].name == "agent");
+  CHECK(namesOf(second, "unknown") == std::vector<std::string>{"weather"});
+  REQUIRE(sectionsOf(second).size() == 2);
+  CHECK(sectionsOf(second)[0].name == "calls");
+  CHECK(sectionsOf(second)[1].name == "agent");
 }
 
 TEST_CASE("a wake on the radio's line with a wait still owed: the report says so") {
@@ -479,7 +489,7 @@ TEST_CASE("a result that would pass 8 000 bytes is cut at a line end, and the re
   }
 }
 
-TEST_CASE("no secret and nothing a stranger said is in a report of all eleven sections") {
+TEST_CASE("no secret and nothing a stranger said is in a report of all twelve sections") {
   AgentBench bench(nullptr, false);
   awake(bench);
   const char* const kPin = "86421357";

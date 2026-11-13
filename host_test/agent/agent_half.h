@@ -38,6 +38,7 @@
 #include "walter_agent/agent_backend.h"
 #include "walter_agent/agent_probe.h"
 #include "walter_agent/agent_uplink_check.h"
+#include "walter_agent/call_log.h"
 #include "walter_agent/firmware_jobs.h"
 #include "walter_agent/identity.h"
 #include "walter_agent/link_mesh.h"
@@ -87,6 +88,9 @@ struct AgentHalf {
   agent::FirmwareJobs firmware;
   agent::IdentityProbe identity_probe;
   agent::RegionStore kept;
+  // The last eight calls that did not come back 2xx (task p13-02): the life's object over the
+  // world's key-value store, as main.cpp builds it.
+  agent::CallLog calls{p.state_store};
   mm::JobRunner jobs;
   mm::AgentLoop loop;
   std::uint8_t kept_scratch[agent::kKeptScratchBytes];
@@ -146,6 +150,7 @@ struct AgentHalf {
     b.firmware = &firmware;
     b.trial = p.trial;
     b.state_store = p.state_store;
+    b.calls = &calls;
     b.kept = kept.usable() ? &kept : nullptr;
     b.kept_scratch = kept_scratch;
     b.kept_scratch_len = sizeof kept_scratch;

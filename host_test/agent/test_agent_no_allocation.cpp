@@ -106,6 +106,9 @@ const char* const kAgentIncludes[] = {
     "walter_agent/region_store.h",
     // Task p13-01: the seam `twinoak.report` reads the console's own sections through.
     "core/console/report_source.h",
+    // Task p13-02: the last eight failed calls, and the four wake counters a heartbeat carries.
+    "core/cycle/wake_counters.h",
+    "walter_agent/call_log.h",
 };
 
 }  // namespace

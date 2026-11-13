@@ -49,6 +49,7 @@
 #include "fixtures/heartbeat_no_key.h"
 #include "sim/scripted_radio.h"
 #include "walter_agent/identity.h"
+#include "walter_agent/modem_uplink.h"
 #include "walter_agent/link_mesh.h"
 #include "walter_agent/observations.h"
 #include "walter_agent/walter_platform.h"
@@ -88,10 +89,12 @@ std::string substitute(std::string text, const std::string& from, const std::str
 }
 
 // The six counters the library writes, as JSON, in the library's own order (AgentLoop.cpp's
-// `doHeartbeat`). Every one is 0 for a unit that has not run a wake yet.
+// `doHeartbeat`), and **the four of task p13-02 behind them**: what woke this unit, which the
+// server cannot see for itself. Every one is 0 for a unit that has not run a wake yet.
 const char* const kZeroErrors =
     "\"errors\":{\"overheard\":0,\"wifiReconnects\":0,\"httpFailures\":0,"
-    "\"observationsDropped\":0,\"resultsDropped\":0,\"reboots\":0}";
+    "\"observationsDropped\":0,\"resultsDropped\":0,\"reboots\":0,"
+    "\"wakesTimer\":0,\"wakesRadio\":0,\"wakesSpurious\":0,\"wakesSilent\":0}";
 
 // A `mm::IUplink` that answers and keeps what it was given: what the loop posted, verbatim.
 class CapturingUplink final : public mm::IUplink {
@@ -114,9 +117,22 @@ class CapturingUplink final : public mm::IUplink {
     ++heartbeats;
     posted = hb;
     // The bytes, written by the library's own writer - which is what `ModemUplink` does with the
-    // struct it is handed (task p4-03).
+    // struct it is handed (task p4-03). **And the four counters of task p13-02 added first**, in
+    // the one place and the one order the real seam adds them: the library writes `hb.errors`
+    // whole at every call, so what woke this unit can only be added here. This fake stands in for
+    // `ModemUplink`, so it does what `ModemUplink` does or the test proves nothing about it.
+    mm::Heartbeat sending = hb;
+    mm::ErrorCounter errors[agent::kHeartbeatErrorsMax];
+    if (hb.errors != nullptr && hb.errorCount >= 0 &&
+        hb.errorCount < static_cast<int>(agent::kHeartbeatErrorsMax)) {
+      for (int i = 0; i < hb.errorCount; ++i) errors[i] = hb.errors[i];
+      sending.errors = errors;
+      sending.errorCount = agent::addWakeCounters(errors, hb.errorCount,
+                                                  static_cast<int>(agent::kHeartbeatErrorsMax),
+                                                  core::cycle::WakeTotals{});
+    }
     static char body[2048];
-    const std::size_t n = mm::writeHeartbeat(hb, body, sizeof body);
+    const std::size_t n = mm::writeHeartbeat(sending, body, sizeof body);
     heartbeat_body.assign(body, n);
     reply = mm::HeartbeatReply{};
     reply.pollIntervalS = static_cast<int>(hb.nextCheckInS);

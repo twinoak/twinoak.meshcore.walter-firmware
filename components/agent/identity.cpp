@@ -138,6 +138,18 @@ int addRadioIdentityLost(mm::ErrorCounter* out, int count, int capacity, bool lo
   return count + 1;
 }
 
+int addWakeCounters(mm::ErrorCounter* out, int count, int capacity,
+                    const core::cycle::WakeTotals& totals) {
+  // All four or none: a body with three of them would read on the page as a counter that had
+  // stopped moving, which is the opposite of what they are for.
+  if (out == nullptr || count < 0 || count + core::cycle::kWakeCounterCount > capacity) return count;
+  out[count + 0] = mm::ErrorCounter{kWakesTimerKey, static_cast<long long>(totals.timer)};
+  out[count + 1] = mm::ErrorCounter{kWakesRadioKey, static_cast<long long>(totals.radio)};
+  out[count + 2] = mm::ErrorCounter{kWakesSpuriousKey, static_cast<long long>(totals.spurious)};
+  out[count + 3] = mm::ErrorCounter{kWakesSilentKey, static_cast<long long>(totals.silent)};
+  return count + core::cycle::kWakeCounterCount;
+}
+
 void Identity::forget() {
   key_known_ = false;
   state_ = link::IdentityState::kNotMadeYet;
@@ -318,8 +330,13 @@ void Identity::fillHeartbeat(mm::Heartbeat* out, const mm::IMesh* mesh,
     // identity, which reads on the page exactly like one awaiting its first install - costs no
     // new field. Nothing is added when the radio has not refused, so an ordinary unit's
     // heartbeat is byte for byte what it was.
-    out->errorCount =
-        addRadioIdentityLost(errors, kLibraryErrorCount, error_capacity, identityLost());
+    int written = addRadioIdentityLost(errors, kLibraryErrorCount, error_capacity, identityLost());
+    // And the four of task p13-02, at **every** heartbeat: what woke this unit is not a fault
+    // and is not written only while something is wrong. They go behind `radioIdentityLost` so
+    // that a unit whose radio refuses keeps that counter where a reader of p10-03's bodies
+    // already found it.
+    written = addWakeCounters(errors, written, error_capacity, extras.wakes);
+    out->errorCount = written;
   }
 
   // The two of an agent that paces itself, written only when set - as the library writes them.

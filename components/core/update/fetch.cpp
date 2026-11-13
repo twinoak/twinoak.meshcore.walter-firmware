@@ -232,6 +232,7 @@ FetchResult Fetch::fetchInto(const char* base_url, image::TransferTarget& target
   BufferSink manifest_sink(manifest_, sizeof manifest_);
   net::Result r = client_.get(url_, small, manifest_sink);
   result.status = r.status;
+  result.outcome = r.outcome;
   if (r.verdict == net::Verdict::kRefusedUrl) return finish(FetchVerdict::kBadUrl, r.why);
   if (r.verdict == net::Verdict::kDenied) return finish(FetchVerdict::kDenied, r.why);
   if (r.verdict == net::Verdict::kLater) {
@@ -247,6 +248,7 @@ FetchResult Fetch::fetchInto(const char* base_url, image::TransferTarget& target
   BufferSink signature_sink(reinterpret_cast<std::uint8_t*>(signature_), sizeof signature_);
   r = client_.get(url_, small, signature_sink);
   result.status = r.status;
+  result.outcome = r.outcome;
   if (r.verdict == net::Verdict::kDenied) return finish(FetchVerdict::kDenied, r.why);
   if (r.verdict == net::Verdict::kLater) {
     result.retry_after_s = r.retry_after_s;
@@ -305,6 +307,7 @@ FetchResult Fetch::fetchInto(const char* base_url, image::TransferTarget& target
   const net::DownloadResult d = download_.fetch(url_, expected.size(), budget, sink, authorization, &printer);
   result.bytes = d.bytes;
   result.status = d.last_status;
+  result.outcome = d.last_outcome;
   result.retry_after_s = d.retry_after_s;
   switch (d.verdict) {
     case net::DownloadVerdict::kComplete:

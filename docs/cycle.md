@@ -138,6 +138,7 @@ all of them test for *failed* and nothing else).
 | `the backend answered` | a heartbeat came back |
 | `a wait still owed` | a backoff or a `Retry-After` the agent's loop is still inside. The seconds left go with it |
 | `no uplink` | there was no uplink to send it over |
+| `the uplink's backoff` | the modem was not brought up at all this wake, because the uplink's own backoff said not to (`core/uplink/policy.h`, `mayTry()`). **Written by the wake cycle, never by the seam** — step 8 needs step 6, so a wake the backoff skipped reaches no backend to answer for it (task p13-02) |
 | `not configured` | this unit has no server to send it to — **what the null backend of this repository answers, every wake** |
 | `halted on a 401` | the server refused this unit's token and a person has to act (`server.token`) |
 | `nothing to send` | nothing was sent for a reason this seam has no word for |
@@ -146,6 +147,15 @@ all of them test for *failed* and nothing else).
 A wake that sent nothing ends its record line with `, nothing sent: <reason>` — *answered* and
 *it did not say* print no clause, the first because it is the ordinary wake and the second because
 a step that never ran has nothing to explain.
+
+**Who answers, and when** (task p13-02). Step 8 is the seam's own word and is the last word. But
+step 8 *needs* step 6, so a wake whose modem never came up never reaches a backend at all, and
+until this task such a wake left `it did not say` exactly where a person was looking for a reason —
+which was the whole of what 13 November's wake request left behind. **Step 6 answers for those
+wakes**: `the uplink's backoff` when the backoff skipped the modem, `no uplink` for every other way
+step 6 did not succeed (the band does not allow it, `saving`'s every-fourth-wake counter, the
+sequence failed). One reading, written in one place, read by the record line, the journal entry and
+`wake`'s list.
 
 **What `wake` says.** The last-ten list used to give each wake's length and nothing else, and on
 7 November 2026 three wakes of 40 s and four of 6 s were read first as wakes that skipped the
@@ -167,6 +177,25 @@ them**: the two bytes they came from are the top half of a `lasted_s` that no wa
 wake is bounded at five minutes, and `stay` holds one open for twelve hours at the most), so an
 entry written by the build before this reads back with the right length and no claim about what it
 did.
+
+**And why a wake sent nothing** (task p13-02). `---` said that nothing was sent and stopped there,
+and the one wake a person cares most about — the radio's line, inside a wait — left no other trace
+anywhere: only a *timer* wake inside a wait is news for the journal. So each entry of the list now
+ends with `; nothing sent: <reason>` in the same words the table above gives, and with the seconds
+when the reason is a wait:
+
+```
+   2. attention  --- attention 4 (job), detail 0; awake 12 s; nothing sent: a wait still owed, 30 s
+   3. timer      --- ; awake 6 s; nothing sent: the uplink's backoff
+```
+
+That is three bytes an entry — the reason and a 16-bit count of seconds — and the record **did**
+have to grow for them: 100 bytes became 120, inside the 128 a retained slot holds. A record of
+another size in the same slot is not the same record (`interfaces/retained.h`), so the first boot
+of the release that carries this reads none: the wake log, the band's hysteresis, the spurious
+count and the faults in a row all start again for that one wake, exactly as after a power cut, as
+they did at task p10-01's growth. That is the rule working and not failing — the old bytes meant
+something else.
 
 ### What is journalled, and what is not
 
@@ -204,6 +233,36 @@ the log of the firmware that wrote it, and an update may not blind it.
 
 The record is written **before** the sleep, because a sleep does not return. A sleep that was then
 refused writes its own entry after it (`core/cycle/sleep.h`), and the two together are the story.
+
+### What the server is told about what woke this unit (task p13-02)
+
+On 13 November 2026 a wake request reached a unit's radio, the radio answered *ok*, and the unit
+did not check in. From meshmaster.dk there was no way to tell apart **the line never moved**, **the
+line moved and nothing valid was on it** and **the unit woke and sent nothing** — and those three
+are a radio fault, a wiring fault and a firmware fault. Everything above is in RTC memory, which
+holds ten wakes and which a power cut takes.
+
+So four running totals go out with every heartbeat, in its `errors` object, beside the library's
+own six and the `radioIdentityLost` of task p10-03:
+
+| | |
+|---|---|
+| `wakesTimer` | the check-in: the sleep timer came round |
+| `wakesRadio` | the radio's line, with a valid `EV_ATTENTION` inside §8's window — a wake somebody asked for |
+| `wakesSpurious` | the radio's line, and nothing valid inside it |
+| `wakesSilent` | a wake that **sent nothing**, whatever woke it: the reason it settled on is one of the *nothing was sent* ones above. *the backend answered* is not one, and neither is *it did not say* — which since this task means the exchange failed, and a wake that tried is not a silent one |
+
+A wake that is none of the first three — a person's cable, a power-on, a reset, a crash, a
+watchdog — moves none of them: these count the three a server cannot see, and the heartbeat's own
+record carries the total of all wakes. The first three are counted at step 1, the fourth at step
+10, and the four are kept in **one value of the settings store**, `agent_wakes`, as hex
+(`core/cycle/wake_counters.h`) — the shape `agent_state` has used since task p4-05, and for the
+same reason: RTC memory has no slot left and a power cut takes it, and *how many times has this
+unit woken on its radio's line* is exactly the question a person asks after the power came back.
+
+**What it costs the flash**: one value of the store a wake, 34 characters, **and only when one of
+the four moved**. meshmaster.dk's bound on the whole `errors` object is 4 000 characters of JSON
+(`AgentLimits.Json`); eleven counters are a little over three hundred.
 
 ## The budget, and the things that may hold a wake open
 
