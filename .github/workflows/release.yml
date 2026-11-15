@@ -139,11 +139,15 @@ jobs:
 
       # Nothing is released whose verification is red or unknown. ci.yml runs `tools/verify.ps1`
       # on every push to main, so a commit of main has a run of its own to wait for - except the
-      # one a release leaves behind, which changes VERSION and release-notes/ alone and which
-      # GitHub starts no workflow for, because the workflow's own token merged it. The gate then
-      # waits for the run of the commit below it; release_notes.ci_commit says why that is sound
-      # and its tests hold it. The wait is 80 minutes because that run is 25 to 45 (task p7-01
-      # measured 1525 s and 2528 s on two cold runners).
+      # one a release leaves behind, which changes VERSION and release-notes/ alone and whose run
+      # is not one to wait for: a person merges that pull request, so the push run that starts is
+      # for a commit nothing was compiled from, and the next push to main cancels it anyway
+      # (v0.1.5's did - run 43484073183 on 70732c0, cancelled 19 minutes later). The gate does not
+      # look at it: it walks back along the first parents while a commit changes only those two
+      # files and waits for the run of the first commit that changed anything else;
+      # release_notes.ci_commit says why that is sound and its tests hold it. The wait is 80
+      # minutes because that run is 25 to 45 (task p7-01 measured 1525 s and 2528 s on two cold
+      # runners).
       - name: Wait for the ci workflow of that commit
         if: ${{ !inputs.dry_run }}
         env:
@@ -390,12 +394,14 @@ jobs:
       # is nothing an operator can add to let a push through: GitHub's bypass lists take people,
       # teams, roles and GitHub Apps, never the Actions token. So the job opens one and asks for
       # it to be merged - and here, unlike meshmaster.dk's master, main also requires the `verify`
-      # check, which this pull request will never have: GitHub starts no workflow from an event
-      # raised with the job's own token. **So the merge is expected to be refused**, and that is
-      # not a failure of the release: the release is out, the summary says the pull request is
-      # waiting, and Thomas merges it (docs/release.md, "After a release"). The next release
-      # refuses until the version has moved, which is the backstop that makes leaving it open
-      # safe.
+      # check, which this pull request does not have when it is opened: GitHub does start a ci run
+      # for it, but **holds it for a maintainer's approval** (the run is listed as completed with
+      # the conclusion `action_required` and no job of it has run, so nothing reports `verify`).
+      # **So the merge is expected to be refused**, and that is not a failure of the release: the
+      # release is out, the summary says the pull request is waiting, and Thomas either approves
+      # the held run and merges it green or merges it without waiting (docs/release.md, "After a
+      # release"). The next release refuses until the version has moved, which is the backstop
+      # that makes leaving it open safe.
       - name: File the lines and move the version on (one pull request)
         if: needs.ci-green.outputs.release == 'true'
         env:
@@ -436,9 +442,19 @@ jobs:
 
           Opened by the publish job of \`.github/workflows/release.yml\` after the release was
           out: main requires a pull request before merging, and GitHub cannot give the Actions
-          token a bypass. No check runs on this pull request - GitHub starts no workflow from an
-          event raised with the job's own token - so main's required \`verify\` check will not
-          report and this has to be merged by hand.
+          token a bypass. **GitHub holds this pull request's \`ci\` run until a maintainer
+          approves it.** While it is held the run is listed as *action required*, no job of it
+          has started, and nothing reports main's required \`verify\` check - so the job cannot
+          merge this and a person has to. Either way is fine:
+
+          - **Approve the run** - Actions, the held \`ci\` run, *Approve and run* - and merge when
+            \`verify\` is green. It takes 25 to 45 minutes. v0.1.5's notes went that way.
+          - **Merge without waiting.** GitHub then concludes the run it was holding as **failed**,
+            the second this merges. That failure is about nothing: no job of it ever ran, and the
+            commit is \`VERSION\` and \`release-notes/\` only.
+
+          A held run left alone does not go red by itself, and nothing is waiting on it: the next
+          release does not read this commit's run (below).
 
           The commit touches \`VERSION\` and \`release-notes/\` and nothing else, which is what
           lets the release after it wait for the ci run of the commit below it

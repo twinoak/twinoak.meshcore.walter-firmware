@@ -34,3 +34,13 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
 - [ ] **[later] After a power cut the wait is owed whole.** The saved state is in flash and
   survives; the radio restarted with the board, so nothing measures the time away. The epoch
   beside the saved state, once the board has a clock again, would.
+- [ ] **[later] One sentence of the gate's log still says the old thing.**
+  `.github/workflows/release.yml` ~L160 echoes *`$SHA` changes only VERSION and release-notes/
+  above `$ci_sha`, and has no ci run of its own*. That is not a comment and not the pull
+  request's body, and task 03's deliverable 4 held every other byte of that file, so it was left
+  alone. The commit may well have a run of its own — a person's merge of the notes pull request
+  raises a push event, and v0.1.5's merge commit got run 43484073183, cancelled 19 minutes later
+  by the next push — it is simply not the run the gate waits for. The line is close to dead
+  code besides: a release is refused with no waiting line, so main's head is never a
+  release-notes-only commit when one runs, and this branch of the step does not print.
+  `tools/release/release_notes.py`'s own sentence beside it was corrected.
