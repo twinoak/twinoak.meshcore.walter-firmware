@@ -45,6 +45,10 @@ WakeReason::WakeReason(interfaces::Retained& retained, interfaces::Clock& clock)
     : retained_(retained), clock_(clock) {}
 
 void WakeReason::load() {
+  // The radio has not been asked anything about this boot yet (task p14-06): a `begin()` that
+  // runs a second time starts from "nothing could measure it" rather than from the last answer.
+  radio_away_ms_ = 0;
+  radio_measured_ = false;
   survived_ = retained_.load(interfaces::RetainedSlot::kDutyCycle, &record_, sizeof record_);
   if (!survived_) {
     record_ = Record{};
@@ -216,6 +220,11 @@ void WakeReason::begin(const health::BootRecord& boot, interfaces::WokeBy woke, 
   info_.wakes = record_.wakes;
   begun_ = true;
   save();
+  // Where this wake's time away came from, into this wake's own entry (task p14-06). The
+  // timer's is settled here, because the seconds the last sleep asked for are the whole of it;
+  // the radio's is settled by `noteRadioAtBoot()`, which the duty cycle calls a moment later for
+  // every wake that is not the timer's.
+  if (wake == Wake::kTimer && asked_s_ != 0) awayThisWake(kAwayByTimer);
 }
 
 void WakeReason::bandDecided(power::Band band) {
@@ -280,6 +289,83 @@ void WakeReason::sentThisWake(std::uint8_t reached, std::uint32_t owed_s) {
   if (begun_) save();
 }
 
+// Where this wake's figure came from (task p14-06), into this wake's own entry. Without
+// kDidSaid: see the header - these two bits answer a different question from the three letters,
+// and a wake that is reset before step 6 must still read `???` for those.
+void WakeReason::awayThisWake(std::uint8_t bits) {
+  const std::uint8_t want = static_cast<std::uint8_t>(bits & kAwayBits);
+  if (want == 0 || count_ == 0) return;
+  WakeEntry& e = record_.items[0];
+  if ((e.did & want) == want) return;
+  e.did = static_cast<std::uint8_t>(e.did | want);
+  if (begun_) save();
+}
+
+// -- the radio's clock, across a sleep (task p14-06) ---------------------------------------------
+
+void WakeReason::noteRadioBeforeSleep(std::uint32_t boot_id, std::uint32_t uptime_s) {
+  record_.radio_boot_id = boot_id;
+  record_.radio_uptime_s = uptime_s;
+  record_.radio_reading = 1;
+  save();
+}
+
+void WakeReason::forgetRadioReading() {
+  if (record_.radio_reading == 0) return;
+  record_.radio_reading = 0;
+  record_.radio_boot_id = 0;
+  record_.radio_uptime_s = 0;
+  save();
+}
+
+void WakeReason::noteRadioAtBoot(std::uint32_t boot_id, std::uint32_t uptime_s) {
+  radio_away_ms_ = 0;
+  radio_measured_ = false;
+  // A reading written down before the sleep, and the same radio on the other side of it. A
+  // different `boot_id` means the radio restarted while this board was away, so its seconds are
+  // not the same seconds and nothing here knows how many of them there were.
+  if (record_.radio_reading == 0) return;
+  if (boot_id != record_.radio_boot_id) return;
+  // An `uptime_s` below the one written down is the same thing said another way - a radio that
+  // restarted and kept its boot_id would be a radio this end does not understand - and it is the
+  // one reading that could make a span negative.
+  if (uptime_s < record_.radio_uptime_s) return;
+  radio_measured_ = true;
+  const std::uint32_t span_s = uptime_s - record_.radio_uptime_s;
+  // The span is counted in whole seconds at either end, so one second of it is not this board's
+  // to claim. A span of a second or less is believed to be no time at all - which is measured,
+  // and is not the same answer as "nothing could measure it".
+  if (span_s <= kRadioTruncationS) {
+    awayThisWake(kAwayByRadio);
+    return;
+  }
+  const std::uint64_t ms = static_cast<std::uint64_t>(span_s - kRadioTruncationS) * 1000u;
+  // Rounded up, so that no span is ever believed whole: the rule is *never more than really
+  // passed*, and a figure that is a millisecond generous is a wait called back a millisecond
+  // early.
+  const std::uint64_t error = (ms * kRadioClockErrorPpm + 999999u) / 1000000u;
+  const std::uint64_t believed = ms > error ? ms - error : 0;
+  radio_away_ms_ = believed > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<std::uint32_t>(believed);
+  awayThisWake(kAwayByRadio);
+}
+
+WakeReason::AwayFrom WakeReason::awayFrom() const {
+  if (!begun_) return AwayFrom::kNothing;
+  if (info_.wake == Wake::kTimer) {
+    return asked_s_ == 0 ? AwayFrom::kNothing : AwayFrom::kTimer;
+  }
+  return radio_measured_ ? AwayFrom::kRadio : AwayFrom::kNothing;
+}
+
+const char* WakeReason::describe(AwayFrom from) {
+  switch (from) {
+    case AwayFrom::kNothing: return "nothing";
+    case AwayFrom::kTimer: return "the timer";
+    case AwayFrom::kRadio: return "the radio";
+  }
+  return "nothing";
+}
+
 void WakeReason::endingInSleep(std::uint32_t lasted_s, std::uint32_t asked_s) {
   // 0 is reserved for "it never reached sleep", so a wake shorter than a second is recorded as
   // one second: it did reach sleep, and that is the thing the entry is asked about. And the
@@ -296,9 +382,13 @@ void WakeReason::endingInSleep(std::uint32_t lasted_s, std::uint32_t asked_s) {
 }
 
 std::uint32_t WakeReason::timeAwayMs() const {
-  // Only a timer wake. Everything else was cut short by whatever woke the board, and nothing
-  // here knows how much of the sleep had passed when it was (see the header).
-  if (!begun_ || info_.wake != Wake::kTimer || asked_s_ == 0) return 0;
+  if (!begun_) return 0;
+  // Every wake but the timer's is measured by the radio, which never sleeps (task p14-06): 0
+  // when there was no reading, when the radio answered nothing, when it restarted too, or when
+  // the span came to no time at all.
+  if (info_.wake != Wake::kTimer) return radio_away_ms_;
+  // The timer's own figure, unchanged: the one sleep this board's own clock can put a number on.
+  if (asked_s_ == 0) return 0;
   // In 64 bits: the longest interval the policy can ask for is a day doubled four times by faults
   // (core/power/interval_policy.h), and a person's `sleep <seconds>` is whatever they typed.
   const std::uint64_t believed =
@@ -312,6 +402,8 @@ void WakeReason::forget() {
   band_ = power::Band::kUnknown;
   wakes_in_saving_ = 0;
   asked_s_ = 0;
+  radio_away_ms_ = 0;
+  radio_measured_ = false;
   info_ = WakeInfo{};
   begun_ = false;
   survived_ = false;

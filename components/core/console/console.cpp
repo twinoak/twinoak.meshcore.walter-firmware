@@ -4027,7 +4027,17 @@ void Console::wake() {
                                          ? static_cast<interfaces::Reached>(e.sent)
                                          : interfaces::Reached::kUnsaid;
     if (sent == interfaces::Reached::kWait) {
-      printf("; nothing sent: a wait still owed, %lu s", static_cast<unsigned long>(e.owed_s));
+      // **And what measured that wake's time away** (task p14-06), in the two bits of the entry
+      // that were free. A wait is owed because a sleep did not cover it, and the first question
+      // about that is what the sleep was measured by: the timer, the radio's uptime, or nothing
+      // - and *nothing* is what every wake but the timer's used to answer.
+      const std::uint8_t away =
+          static_cast<std::uint8_t>(e.did & (cycle::kAwayByTimer | cycle::kAwayByRadio));
+      printf("; nothing sent: a wait still owed, %lu s (the time away: %s)",
+             static_cast<unsigned long>(e.owed_s),
+             away == cycle::kAwayByTimer   ? "the timer"
+             : away == cycle::kAwayByRadio ? "the radio"
+                                           : "nothing measured it");
     } else if (sent != interfaces::Reached::kAnswered && sent != interfaces::Reached::kUnsaid) {
       printf("; nothing sent: %s", interfaces::describe(sent));
     }

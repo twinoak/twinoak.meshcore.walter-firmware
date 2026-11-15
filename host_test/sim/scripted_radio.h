@@ -156,6 +156,12 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // fixture's: a radio whose bit 4 ("the radio initialised") never comes.
   bool override_status_flags = false;
   std::uint16_t status_flags = 0;
+  // STATUS's `attention` (§5.3) as this radio reports it: "a pending attention stays visible in
+  // STATUS until the Walter has made a request, so a Walter that woke for its own reasons sees
+  // it too" (§8). `raiseAttention` above is the other half of §8 - the event on the wire, which
+  // wakes a sleeping board - and this is the half a **timer** wake finds (task p14-06).
+  bool override_status_attention = false;
+  std::uint8_t status_attention = 0;
   // §5.4's clock, as the radio keeps it. The first-batch boards have no RTC fitted, so the
   // radio's clock is **lost at every restart** and set over the link - and a bench that did not
   // model that would have the Walter set the clock at every wake for ever, which is not what a

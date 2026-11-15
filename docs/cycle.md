@@ -103,16 +103,70 @@ passed**:
 | This wake | What it was away |
 |---|---|
 | the timer | the seconds the sleep asked for, **less ten per cent** — the deep-sleep timer runs on the internal RC oscillator the ESP32-S3's `RTC_SLOW_CLK` defaults to, which ESP-IDF calibrates against the crystal at every boot and for which Espressif publishes no tolerance ("the frequency stability of this clock source is affected by temperature fluctuations", `docs/en/api-reference/system/system_time.rst`). `core/cycle/wake_reason.h` cites all of it beside the figure |
-| anything else | **0.** The radio's line, a spurious wake, a person's cable, a power-on, a reset, a crash, a watchdog: the sleep was cut short and nothing here knows how much of it had passed |
+| anything else | **the radio's** (task p14-06, below). Until that task: **0**, because the sleep had been cut short and nothing here knew how much of it had passed |
 
 A figure too small owes a sliver of a wait for one more wake; a figure too large calls a server
-back before the wait it asked for. So the discount is deliberate and the 0 is deliberate.
+back before the wait it asked for. So the discount is deliberate and the 0 was deliberate.
 
 **The record grew by four bytes for it**, and a retained record of another size in the same slot is
 not the same record (`interfaces/retained.h`). So the first boot of 0.1.3 reads none: for that one
 wake the wake log, the band's hysteresis, the spurious count and the faults in a row all start
 again, exactly as after a power cut, and the interval is the `unknown` band's hour. `wake` says
 *the record did not survive*, and the wake after it is normal.
+
+### The radio's uptime measures the other wakes (task p14-06)
+
+The 0 above cost a unit an evening. On 13 November 2026 Thomas pressed *Wake it up* on
+meshmaster.dk (job 28399); the unit's radio answered `ok` at 18:09:02 UTC and raised §8's
+attention, reason 4; the board woke on the line — and sent nothing, because the wake before it had
+ended in a failed call and a failed call leaves the agent's library a wait. The wait was owed
+whole, because the time away was 0 for every wake but the timer's. Nothing came from the unit
+until its own timer woke it.
+
+**The radio never sleeps and counts its own seconds.** So its `uptime_s` (§5.2's `PING`) is the
+one clock that runs through a Walter's sleep whatever ends it:
+
+- the board reads it **after the agent's state has been saved and before `SLEEP_NOTICE`**, and
+  writes it down with the radio's `boot_id` in the duty-cycle retained record;
+- at a boot that is not a timer wake and has a reading, `core/cycle/duty_cycle.h`'s `begin()`
+  sends one `HELLO` and one `PING` — **before the agent's state is restored**, which is why it is
+  there and not at step 4 — and the two `uptime_s` are the two ends of the sleep;
+- the span is believed **less one second** for the whole seconds at either end and **less
+  500 ppm** for the radio's own clock, rounded up. 500 ppm is the nRF52840's LFRC in Nordic's
+  product specification (*Clock control*: "32.768 kHz +/-500 ppm RC oscillator"), and the
+  crystal is what a design fits "when better than +/- 500 ppm accuracy is required" — so it
+  bounds whichever source the RAK4631 has, and this end does not have to know which.
+
+**It is still 0** when there is no reading (a power cut, a first boot, a wake that never reached
+its sleep, a radio that did not answer the sleep), when the radio answers nothing at the boot,
+when its `boot_id` is not the one written down — it restarted too, so its seconds are not the
+same seconds — or when its `uptime_s` is below the one written down. And **the reading belongs to
+the state it was taken after**: the agent's `saveState()` voids it, because a wait is counted from
+the moment the state was taken and a reading from before that would measure too much.
+
+A timer wake keeps the timer's figure and asks the radio nothing, which is nearly every wake this
+unit has. `agent state` says which of the three measured this boot, and `wake`'s list says it for
+each wake that sent nothing for a wait.
+
+**The record grew by eight bytes for it** — the `boot_id`, the `uptime_s` and the byte that says
+whether there is a reading — so it is **128 bytes, which is `kRetainedRecordMax` exactly**. The
+first boot of the release that carries it reads no record, for the reason the paragraph above
+gives; and the next thing that has to cross a sleep needs a slot of its own.
+
+### A wake a person asked for owes no wait (task p14-06)
+
+The other half of that evening. §8's attention reason 4 is *a person asked for the Walter*, and a
+wake that carries it **does not put the saved wait back at all** — whether the event woke the
+board or step 4 found the reason still pending in `STATUS` (§8: "a pending attention stays visible
+in `STATUS` until the Walter has made a request"). Somebody is at a screen waiting to hear from
+the unit; a failed call of the wake before is not an answer to them.
+
+It is the line task p14-05 drew for a trial boot, drawn again. Nothing else of the library's state
+moves: the backoff, the run of failures, the halt on a 401, the counters and the accepted interval
+are handed back as they were saved — so a unit that cannot reach its server still backs off, it
+simply answers the person who asked. **The bound on how often is the radio's** (§8: at most one
+new attention per reason per hour); this board adds none, because a second limit here would only
+make a person press the button twice.
 
 ### What a wake did, and who was reached (task p10-02)
 
@@ -185,9 +239,15 @@ ends with `; nothing sent: <reason>` in the same words the table above gives, an
 when the reason is a wait:
 
 ```
-   2. attention  --- attention 4 (job), detail 0; awake 12 s; nothing sent: a wait still owed, 30 s
+   2. attention  --- attention 5 (obs), detail 12; awake 12 s; nothing sent: a wait still owed, 30 s (the time away: the radio)
    3. timer      --- ; awake 6 s; nothing sent: the uplink's backoff
 ```
+
+Since task p14-06 a wait that outlived a sleep also says **what measured that sleep** — *the
+timer*, *the radio* or *nothing measured it* — because that is the first question a wait which
+survived a quarter of an hour raises. It is two bits of the `did` byte, which had four free, and
+neither of them is written with the `kDidSaid` bit: a wake nobody wrote down still reads `???`
+for the three letters.
 
 That is three bytes an entry — the reason and a 16-bit count of seconds — and the record **did**
 have to grow for them: 100 bytes became 120, inside the 128 a retained slot holds. A record of

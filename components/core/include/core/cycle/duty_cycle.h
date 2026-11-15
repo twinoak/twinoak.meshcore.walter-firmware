@@ -106,6 +106,10 @@ class DutyCycle {
   void settingsChanged();
 
  private:
+  // The radio's uptime across the sleep, for a wake that is not the timer's (task p14-06):
+  // called by `begin()`, so that the time away is settled before the agent's state is restored.
+  void measureTimeAway();
+
   interfaces::Sleeper& sleeper_;
   link::client::Client& radio_;
   health::Health& health_;

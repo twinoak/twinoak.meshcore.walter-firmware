@@ -336,8 +336,10 @@ TEST_CASE("agent state says what the sleep took off the hold") {
   const std::string restored = bench.v().runLine("agent state");
   INFO(restored);
   CHECK(restored.find("agent state: restored across the last sleep") != std::string::npos);
+  // **And by what** since task p14-06: the three answers are the sleep timer, the radio's uptime
+  // and nothing at all, and a timer wake's figure is still the timer's.
   const std::string owed = "; " + std::to_string(owed_ms / 1000u) + " s owed before the sleep, " +
-                           std::to_string(believedMs(1800) / 1000u) + " s slept\n";
+                           std::to_string(believedMs(1800) / 1000u) + " s away, by the sleep timer\n";
   CHECK(restored.find(owed) != std::string::npos);
   // One line: the clause is a second write of the same one, because 200 bytes is all a line of
   // this console may be - so the newline comes after the clause and not before it.
@@ -345,12 +347,15 @@ TEST_CASE("agent state says what the sleep took off the hold") {
   REQUIRE(hold != std::string::npos);
   CHECK(restored.find('\n', hold) > restored.find(owed));
 
-  // A wake on the radio's line restores the same state and can claim none of the sleep, and the
-  // line says so rather than printing a figure it has not got.
+  // A wake on the radio's line restores the same state, and **since task p14-06 the radio is
+  // what measures it**: the scripted radio's `uptime_s` stands still in this bench, so the span
+  // is nothing and the hold is owed whole - but the line says where the figure came from, which
+  // is the question a person reading it has. Until p14-06 it read *no sleep this end could
+  // measure* for every wake but the timer's, whether the radio could have answered or not.
   bench.boot(interfaces::WokeBy::kRadioLine);
   bench.v().begin();
   const std::string line_wake = bench.v().runLine("agent state");
   INFO(line_wake);
-  CHECK(line_wake.find("no sleep this end could measure") != std::string::npos);
-  CHECK(line_wake.find(" s slept") == std::string::npos);
+  CHECK(line_wake.find("0 s away, by the radio's uptime") != std::string::npos);
+  CHECK(line_wake.find("by the sleep timer") == std::string::npos);
 }

@@ -133,6 +133,33 @@ constexpr std::uint32_t kOwedAtMostS = 0xFFFFu;
 constexpr std::uint32_t kTimerErrorPercent = 10;
 static_assert(kTimerErrorPercent < 100, "the believed part of a sleep has to be positive");
 
+// **The radio's own clock error**, in parts per million, taken off a span measured by its
+// `uptime_s` (task p14-06). The radio never sleeps and counts its own seconds, so the difference
+// between the `uptime_s` written down before a sleep and the one read after it is how long this
+// board was away - for *every* kind of wake, not only the timer's, which is the whole point.
+//
+// Where the figure comes from, read rather than remembered:
+//
+//   * **what counts the seconds.** The repeater firmware answers PING and STATUS with
+//     `millis() / 1000` (`src/roles/repeater/link/BoardLink.cpp`, `uptimeSeconds()`, read in the
+//     sibling clone at fb2b988). On the RAK4631's nRF52840 that is the Arduino core's tick,
+//     which the RTC peripheral drives from LFCLK.
+//   * **how good LFCLK is.** Nordic's nRF52840 Product Specification, *Clock control*: the LFRC
+//     is a "32.768 kHz +/-500 ppm RC oscillator", and the crystal (LFXO) is what a design uses
+//     "when better than +/- 500 ppm accuracy is required". So **500 ppm bounds either source**,
+//     and this end does not have to know which one the module fitted.
+//
+// Direction, as for the timer above: believing less than really passed leaves a sliver of a wait
+// owed for one more wake, and believing more calls a server back before the wait it asked for.
+// The subtraction is rounded **up**, so a span is never believed whole.
+constexpr std::uint32_t kRadioClockErrorPpm = 500;
+static_assert(kRadioClockErrorPpm < 1000000u, "the believed part of a span has to be positive");
+
+// Whole seconds at either end of the span are what `uptime_s` is counted in, so each end may be
+// out by up to a second and the span by up to one in all. One second is taken off before the
+// error above, and a span of a second or less is believed to be no time at all.
+constexpr std::uint32_t kRadioTruncationS = 1;
+
 // §8's attention, as this object keeps it. The same three fields the event carries.
 struct Attention {
   std::uint8_t reason = link::attention::kNone;
@@ -170,6 +197,17 @@ constexpr std::uint8_t kDidModem = 0x01;     // the uplink came up (step 6 succe
 constexpr std::uint8_t kDidAnswered = 0x02;  // the backend answered a heartbeat (step 8)
 constexpr std::uint8_t kDidJobs = 0x04;      // work of the backend's own ran in the exchange
 constexpr std::uint8_t kDidSaid = 0x80;      // this wake recorded what it did: 0 is not "none"
+
+// **And where this wake's time away came from** (task p14-06), in two more bits of the same
+// byte - which is the room the entry had, the other ten bytes being full. Neither of them is a
+// *did*, so neither is written with `kDidSaid`: the three letters above still read `???` for a
+// wake nobody wrote down, and these two answer a different question - *was this wake's wait
+// measured, and by what* - that a wake which sent nothing for a wait leaves a person asking.
+// Both clear is "nothing could measure it", which is also what an entry written before this task
+// reads as, and is the honest answer for one.
+constexpr std::uint8_t kAwayByTimer = 0x08;  // the sleep timer: the seconds the last sleep asked for
+constexpr std::uint8_t kAwayByRadio = 0x10;  // the radio's uptime across the sleep (never sleeps)
+constexpr std::uint8_t kAwayBits = static_cast<std::uint8_t>(kAwayByTimer | kAwayByRadio);
 
 // One wake, as it is remembered. Plain data: it is stored as bytes.
 struct WakeEntry {
@@ -285,6 +323,13 @@ class WakeReason {
   void sentThisWake(std::uint8_t reached, std::uint32_t owed_s);
   std::uint8_t sentSoFar() const { return count_ == 0 ? 0 : record_.items[0].sent; }
 
+  // **Where this wake's time away came from**, as kAwayBy* bits, into this wake's own entry
+  // (task p14-06). The same shape as the two above and one difference: it does **not** set
+  // kDidSaid, because it is not one of the three things a wake *did* and a wake that is reset
+  // before step 6 must still read `???` there. Set once, at the boot, by the two places that
+  // settle the figure.
+  void awayThisWake(std::uint8_t bits);
+
   // The wake is ending in a sleep: its duration goes into this wake's entry, the seconds the
   // timer is being asked for are written down for the *next* boot to read, and the record is
   // stored. Called by core/cycle/sleep.h on the one way out of a wake.
@@ -300,18 +345,59 @@ class WakeReason {
   // this firmware wrote down: the first boot, a power cut, or a record of another shape.
   std::uint32_t lastSleepAskedS() const { return asked_s_; }
 
+  // **The radio's clock, written down before a sleep** (task p14-06, deliverable 1). Called by
+  // `core/cycle/sleep.h` after the agent's state has been saved and before SLEEP_NOTICE, with
+  // the `boot_id` of the session the reading was taken in (§5.1) and the `uptime_s` PING
+  // answered with (§5.2). A reading is the one thing that lets the boot on the other side of the
+  // sleep measure itself, whatever woke it.
+  void noteRadioBeforeSleep(std::uint32_t boot_id, std::uint32_t uptime_s);
+  // **The reading belongs to the state it was taken after.** The agent saves its state at the
+  // end of a wake and the reading is taken after it; saving the state again moves the moment the
+  // wait is counted from, so the reading is void until a new one is written. A wake that saved
+  // its state and never reached the reading - a crash, a watchdog, a restart for an update, a
+  // radio that did not answer - leaves none, and the next boot measures nothing.
+  void forgetRadioReading();
+  bool hasRadioReading() const { return record_.radio_reading != 0; }
+  std::uint32_t radioReadingBootId() const { return record_.radio_boot_id; }
+  std::uint32_t radioReadingUptimeS() const { return record_.radio_uptime_s; }
+
+  // **What the radio says now**, at this boot, before anything asks for the time away (task
+  // p14-06, deliverable 2). `core/cycle/duty_cycle.h` asks the radio once, at `begin()`, for a
+  // wake that is not the timer's and only when there is a reading to measure against. A
+  // `boot_id` that is not the reading's - the radio restarted too - or an `uptime_s` below the
+  // one written down leaves the figure at 0 and the source at `kNothing`, as it was before this.
+  void noteRadioAtBoot(std::uint32_t boot_id, std::uint32_t uptime_s);
+
+  // Where this boot's figure came from, for `agent state` and `wake`'s list.
+  enum class AwayFrom : std::uint8_t {
+    kNothing = 0,  // nothing could measure it: the figure is 0
+    kTimer = 1,    // the sleep timer, less its own error
+    kRadio = 2,    // the radio's uptime across the sleep, less the whole seconds and its error
+  };
+  AwayFrom awayFrom() const;
+  static const char* describe(AwayFrom from);
+
   // **How long this board was away before this boot**, in milliseconds, and never more than
   // really passed - which is the rule `mm::AgentLoop::restore(state, awayMs)` is handed it under
   // (the exit-node firmware's task p1.10-42).
   //
   //   a timer wake   has slept the interval the last sleep asked for, less the timer's own error
-  //                  (`kTimerErrorPercent` above). That is the one sleep this board can put a
-  //                  number on.
-  //   anything else  **0**. A wake on the radio's line, a spurious one, a person's cable, a
-  //                  power-on, a reset, a crash, a watchdog: the sleep was cut short by whatever
-  //                  woke us and nothing here knows how much of it had passed. 0 is "no time
-  //                  passed", which is the behaviour this firmware had before it measured any,
-  //                  and it errs the safe way - a wait is owed a little longer, never less.
+  //                  (`kTimerErrorPercent` above). That is the one sleep this board's own clock
+  //                  can put a number on, and it is unchanged by task p14-06.
+  //   anything else  **the radio's**. The radio never sleeps and counts its own seconds, so the
+  //                  `uptime_s` read at this boot less the one written down before the sleep is
+  //                  the time away - less a second for the whole seconds at either end and less
+  //                  the radio clock's own error (`kRadioClockErrorPpm`), and never below 0.
+  //                  Until task p14-06 this was **0** for every such wake, and a wake a person
+  //                  asked for therefore owed a failed call's wait whole and sent nothing: that
+  //                  is 13 November 2026's *Wake it up* (meshmaster.dk job 28399), which reached
+  //                  the radio and came to nothing.
+  //   and still 0    when there is no reading, when the radio answered nothing, when its
+  //                  `boot_id` is not the reading's (it restarted too, so its seconds are not
+  //                  the same seconds) or when its `uptime_s` is below the one written down. 0
+  //                  is "no time passed", which is the behaviour this firmware had before it
+  //                  measured any, and it errs the safe way - a wait is owed a little longer,
+  //                  never less.
   std::uint32_t timeAwayMs() const;
 
   // The last ten wakes, newest first. 0 is this wake.
@@ -340,6 +426,12 @@ class WakeReason {
   // kRetainedRecordMax, and the cost is the one the paragraph below describes: the first boot of
   // the release that carries it reads no record.
   //
+  // **And by eight in task p14-06** - the radio's `boot_id` and `uptime_s` before the sleep,
+  // with the spare byte beside them saying whether there is a reading at all. 120 bytes became
+  // **128, which is kRetainedRecordMax exactly**: this record has no room left, and the next
+  // thing that has to cross a sleep needs a slot of its own or somebody's bytes back. The cost
+  // is again one wake, for the reason the paragraph below gives.
+  //
   // **It grew by four bytes in task p10-01**, and a record of another size in the same slot is
   // not the same record (interfaces/retained.h), so the first boot of 0.1.3 reads no record and
   // `recordSurvived()` is false for that one wake: the wake log, the band's hysteresis, the
@@ -364,7 +456,13 @@ class WakeReason {
     // interfaces/retained.h has none left and because what it has to do - survive a sleep, be
     // read by the wake that follows - is what this record is for.
     std::uint8_t agent_attention;
-    std::uint8_t spare;
+    // **Is there a radio reading** (task p14-06): the record's one spare byte, spent at last.
+    // 0 is none, and none is what a boot that cannot measure itself reads.
+    std::uint8_t radio_reading;
+    // The radio's `boot_id` and `uptime_s` when that reading was taken - after the agent's state
+    // was saved and before SLEEP_NOTICE. Meaningless while `radio_reading` is 0.
+    std::uint32_t radio_boot_id;
+    std::uint32_t radio_uptime_s;
     WakeEntry items[kWakesRemembered];
   };
   static_assert(sizeof(WakeEntry) == 10, "a wake entry is ten bytes");
@@ -387,6 +485,11 @@ class WakeReason {
   // Latched, because endingInSleep() overwrites the record's copy with the seconds of the sleep
   // this boot is about to begin, and a reader after that would get the wrong one.
   std::uint32_t asked_s_ = 0;
+  // What the radio's two readings came to at this boot (task p14-06), worked out once by
+  // `noteRadioAtBoot()` rather than at every read: `timeAwayMs()` is asked by the console as
+  // well as by the agent, and the radio is not asked twice for one boot's figure.
+  std::uint32_t radio_away_ms_ = 0;
+  bool radio_measured_ = false;
   std::size_t count_ = 0;
   bool begun_ = false;
   bool survived_ = false;

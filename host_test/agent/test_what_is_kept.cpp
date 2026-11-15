@@ -235,14 +235,20 @@ TEST_CASE("what did not answer is kept with how far the uplink had got, and noth
 TEST_CASE("a wake on the radio's line inside a wait says so, and how many seconds") {
   AgentBench bench(nullptr, false);
   bench.modemWorks();
-  // A failed call leaves a wait owed. The wake after it is one the radio's line asked for, and
-  // `WakeReason::timeAwayMs()` is 0 for anything but the timer, so the whole wait is still owed
-  // and nothing is sent. That is the wake of 13 November, and until this task its line in `wake`
-  // was `---` and nothing else.
+  // A failed call leaves a wait owed, and the wake after it is one the radio's line asked for.
+  // That is the wake of 13 November 2026, and until task p13-02 its line in `wake` was `---` and
+  // nothing else.
+  //
+  // **Reason 5 and not reason 4 since task p14-06**: a wake *a person asked for* owes no wait any
+  // more - it lays the wait aside and posts its heartbeat, which is what that task is for - so
+  // the wake that still sends nothing is one the radio raised for its own reasons. The scripted
+  // radio's `uptime_s` stands still in this bench, so the span across the sleep is nothing and
+  // the wait is owed whole, which is the same position a board is in when its radio restarted
+  // with it or did not answer.
   bench.server().away(true);
   (void)bench.oneWake();
   bench.server().away(false);
-  bench.world.rak.raiseAttention(core::link::attention::kPersonAsked, 0, 3);
+  bench.world.rak.raiseAttention(core::link::attention::kObsRingNearlyFull, 10, 3);
   const Pass& pass = bench.oneWake(interfaces::WokeBy::kRadioLine);
   REQUIRE(pass.reason == core::cycle::Wake::kAttention);
   REQUIRE(pass.reached == interfaces::Reached::kWait);
@@ -251,9 +257,12 @@ TEST_CASE("a wake on the radio's line inside a wait says so, and how many second
   const std::string said = bench.v().runLine("wake");
   INFO(said);
   CHECK(has(said, "nothing sent: a wait still owed, "));
-  CHECK(has(said, " s\n"));
-  // The seconds are the wait's own, not a round number this test invented.
-  CHECK(has(said, "a wait still owed, " + std::to_string(pass.owed_s) + " s"));
+  // The seconds are the wait's own, not a round number this test invented - and since task
+  // p14-06 the entry says what measured that wake's time away, which is the first thing a person
+  // looking at a wait that outlived a sleep wants to know. Here it is the radio, which answered
+  // and said no time at all had passed.
+  CHECK(has(said, "a wait still owed, " + std::to_string(pass.owed_s) +
+                      " s (the time away: the radio)\n"));
   // And the entry is that wake's: the newest of the list.
   const core::cycle::WakeEntry& newest = bench.duty().reason().at(0);
   CHECK(newest.sent == static_cast<std::uint8_t>(interfaces::Reached::kWait));
@@ -294,7 +303,8 @@ TEST_CASE("the reason crosses a sleep: a boot later the list still says why") {
   bench.server().away(true);
   (void)bench.oneWake();
   bench.server().away(false);
-  bench.world.rak.raiseAttention(core::link::attention::kPersonAsked, 0, 3);
+  // Reason 5: a wake a person asked for lays the wait aside and sends (task p14-06).
+  bench.world.rak.raiseAttention(core::link::attention::kObsRingNearlyFull, 10, 3);
   (void)bench.oneWake(interfaces::WokeBy::kRadioLine);
   const std::uint16_t owed = bench.duty().reason().at(0).owed_s;
   REQUIRE(owed > 0);
@@ -307,7 +317,8 @@ TEST_CASE("the reason crosses a sleep: a boot later the list still says why") {
   CHECK(before.owed_s == owed);
   const std::string said = bench.v().runLine("wake");
   INFO(said);
-  CHECK(has(said, "nothing sent: a wait still owed, " + std::to_string(owed) + " s"));
+  CHECK(has(said, "nothing sent: a wait still owed, " + std::to_string(owed) +
+                      " s (the time away: the radio)"));
 }
 
 // -- the four counters -----------------------------------------------------------------------------
@@ -324,10 +335,11 @@ TEST_CASE("the heartbeat carries what woke this unit, and the four survive a sle
   bench.world.rak.sendBytes({0x00, 0x00, 0x11, 0x22}, 0);
   REQUIRE(bench.oneWake(interfaces::WokeBy::kRadioLine).reason == core::cycle::Wake::kSpurious);
   // The silent one: a failed call leaves a wait, and the wake on the line inside it sends nothing.
+  // Reason 5 - a wake a person asked for lays the wait aside and sends (task p14-06).
   bench.server().away(true);
   (void)bench.oneWake();
   bench.server().away(false);
-  bench.world.rak.raiseAttention(core::link::attention::kPersonAsked, 0, 3);
+  bench.world.rak.raiseAttention(core::link::attention::kObsRingNearlyFull, 10, 3);
   const Pass& silent = bench.oneWake(interfaces::WokeBy::kRadioLine);
   REQUIRE(silent.reached == interfaces::Reached::kWait);
 
