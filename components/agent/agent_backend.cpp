@@ -677,10 +677,11 @@ void AgentBackend::jobs(interfaces::TextOut& out) {
          static_cast<unsigned long>(f.stuck), static_cast<unsigned long>(f.switches),
          static_cast<unsigned long>(f.owed_posted));
     sayf(&out, "          %lu state(s), %lu report(s) (%lu cut); %lu power cycle(s), %lu refused; "
-               "%lu progress, %lu extend(s); %lu bytes downloaded\n",
+               "%lu progress (%lu refused), %lu extend(s); %lu bytes downloaded\n",
          static_cast<unsigned long>(f.states), static_cast<unsigned long>(f.reports),
          static_cast<unsigned long>(f.reports_cut), static_cast<unsigned long>(f.power_cycles),
          static_cast<unsigned long>(f.power_cycles_refused), static_cast<unsigned long>(f.progress_posted),
+         static_cast<unsigned long>(f.progress_refused),
          static_cast<unsigned long>(f.extends), static_cast<unsigned long>(f.bytes_downloaded));
     JobEntry owed;
     if (p_.firmware->resultOwed(&owed)) {

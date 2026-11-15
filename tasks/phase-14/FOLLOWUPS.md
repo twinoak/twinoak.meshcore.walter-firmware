@@ -59,6 +59,16 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   gets through. Nothing is lost (that is what the journal is for) and no result is owed to anybody,
   which is why p14-04 left it alone; but it is the next number to move, and moving it means
   deciding what a wake that spends forty minutes **twice** costs the battery.
+- [ ] **[later] The Walter's own apply asks for 900 seconds across a restart it cannot ask again
+  after.** Task p14-04's deliverable 1 asked for the same fault to be looked for in the offer and
+  in the self apply, and said the extensions between the other steps stay, so nothing was changed.
+  The offer is clear: its longest stretch with no chance to extend is one range, three attempts of
+  two minutes and two pauses - about six minutes against the 900 s asked. The self apply is not so
+  clear. `extendLease` runs, then `switchNow()` **restarts the board**, and the next chance to say
+  anything at all is the trial boot's first wake: a trial is 300 s, and a trial that is rolled back
+  adds the restart into the old image and its own first wake. On 15 November that came to eleven
+  minutes (660 s) against the 900 s held - a third to spare on the one call that cannot be made
+  again. `kLeaseFlashSeconds` before the switch would cost nothing and would end the question.
 - [ ] **[later] `FirmwareApplyProgress.json` is this end's reading of a contract, not the
   server's.** It is in `host_test/fixtures/contracts-ahead/` with the two of task p13-01, written
   from `tasks/phase-14/04-an-apply-keeps-its-lease.md`'s *The contract*. meshmaster.dk's task 227

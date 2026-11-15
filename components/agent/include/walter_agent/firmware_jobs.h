@@ -299,10 +299,16 @@ struct FirmwareJobCounters {
   std::uint32_t power_cycles = 0;
   std::uint32_t power_cycles_refused = 0;
   std::uint32_t progress_posted = 0;
-  std::uint32_t progress_refused = 0;    // a progress call the server would not take, or did not answer
   std::uint32_t extends = 0;
   std::uint64_t bytes_downloaded = 0;
   std::uint32_t malformed = 0;           // a payload this firmware could not read
+  // **Down here and not beside `progress_posted`, where it belongs to a reader** (task p14-04):
+  // this structure has a `std::uint64_t` in the middle of it, and a nineteenth `std::uint32_t`
+  // *before* that member costs eight bytes of .bss rather than four - the padding before the
+  // 64-bit field, and the padding at the end. Eight bytes is not nothing here: rail R22 and task
+  // p11-01, where .bss that moved the agent's 20 kB scratch into another heap left the main task
+  // 216 bytes. After `malformed` it is free.
+  std::uint32_t progress_refused = 0;    // a progress call the server would not take, or did not answer
 };
 
 class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
