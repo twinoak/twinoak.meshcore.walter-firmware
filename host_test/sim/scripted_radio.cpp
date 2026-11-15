@@ -338,6 +338,12 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
         payload[11] = static_cast<std::uint8_t>(status_flags & 0xFF);
         payload[12] = static_cast<std::uint8_t>(status_flags >> 8);
       }
+      if (type == link::type::kStatus && override_status_attention && payload.size() >= 19) {
+        // §5.3's body after the status byte: uptime_s u32, reset_reason u8, time_state u8,
+        // epoch u32, flags u16, obs_pending u8, obs_dropped u16, link_errors u16 - so the
+        // attention is the last byte, at offset 18.
+        payload[18] = status_attention;
+      }
       if (override_uptime && payload.size() >= 9 &&
           (type == link::type::kPing || type == link::type::kStatus)) {
         // The uptime a radio reports (§5.2 and §5.3). PING's body after the status byte is

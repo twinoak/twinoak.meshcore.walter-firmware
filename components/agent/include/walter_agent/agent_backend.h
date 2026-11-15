@@ -178,13 +178,19 @@ struct AgentBackendCounters {
 
 class AgentBackend final : public interfaces::Backend, public core::console::AgentLoopProbe {
  public:
-  // Why a boot laid the saved wait aside instead of putting it back (task p14-05). Both are
-  // boots after a restart, and both have one thing to say that an older image's failed call must
-  // not answer for them.
+  // Why a wake laid the saved wait aside instead of putting it back (tasks p14-05 and p14-06).
+  // Each of them has one thing to say that an older image's failed call must not answer for.
   enum class LaidAside : std::uint8_t {
     kNone = 0,        // the wait was put back, less the time away: every ordinary wake
     kOnTrial = 1,     // this image is proving itself and the heartbeat is the proof
     kResultOwed = 2,  // the old image is back and the server is waiting for the apply's result
+    // **A person pressed *Wake it up*** (task p14-06; §8's attention, reason 4). The other two
+    // are boots after a restart; this one is any wake at all, because §8's attention reaches
+    // this board either on the line - which wakes it - or as a reason still pending in step 4's
+    // STATUS, which a timer wake finds. A person who asks for this unit is told something, and
+    // a wait a failed call left behind is not an answer to them. The bound on how often is the
+    // radio's and not this board's: §8 allows one new attention per reason an hour.
+    kPersonAsked = 3,
   };
 
   // Everything the loop runs over. `kept` and `state_store` may be null: a build with neither
@@ -243,20 +249,34 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   // in the store still owed before that was taken off. Both 0 when no state was restored.
   std::uint32_t timeAwayMs() const { return away_ms_; }
   std::uint32_t holdOwedBeforeSleepMs() const { return owed_before_ms_; }
-  // **How much of that wait this boot laid aside, and why** (task p14-05). A boot that is on
-  // trial, and the boot of the old image that comes back owing the server a rollback's result,
-  // each have one thing to say that a wait left by an older image's failed call must not answer
-  // for them. 0 when none was laid aside, which is every ordinary wake. One byte of state and
-  // not two figures: a wait is laid aside **whole**, so what was laid aside is what was owed,
-  // and every static byte of this object moves the heap (tools/heap_at_start.py).
+  // **How much of that wait was laid aside, and why** (tasks p14-05 and p14-06). 0 when none
+  // was, which is every ordinary wake.
+  //
+  // Worked out from the two figures above rather than kept as a third, because every four bytes
+  // of this object move the heap the kept scratch is carved out of (tools/heap_at_start.py) -
+  // and the two cases are not the same arithmetic:
+  //
+  //   a trial, a result owed   the wait is dropped **before** it is handed to the library, so
+  //                            what was laid aside is the whole of what the store held;
+  //   a person asked           the wait was handed over and the time away taken off it first, so
+  //                            what was laid aside is what this boot still owed - the remainder,
+  //                            bar the seconds the wake itself spent reaching the exchange.
   std::uint32_t holdLaidAsideMs() const {
-    return laid_aside_ == LaidAside::kNone ? 0 : owed_before_ms_;
+    switch (laid_aside_) {
+      case LaidAside::kNone: return 0;
+      case LaidAside::kOnTrial:
+      case LaidAside::kResultOwed: return owed_before_ms_;
+      case LaidAside::kPersonAsked:
+        return owed_before_ms_ > away_ms_ ? owed_before_ms_ - away_ms_ : 0;
+    }
+    return 0;
   }
   const char* holdLaidAsideWhy() const {
     switch (laid_aside_) {
       case LaidAside::kNone: return "";
       case LaidAside::kOnTrial: return "this image is on trial";
       case LaidAside::kResultOwed: return "a rollback's result is owed";
+      case LaidAside::kPersonAsked: return "a person asked for this Walter";
     }
     return "";
   }
@@ -276,6 +296,9 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   void sayRadio(bool radio_known, bool radio_up) const;
   bool saveState();
   bool loadState();
+  // §8's reason 4, wherever it was read: the wait still owed is laid aside and nothing else of
+  // the library's state moves (task p14-06).
+  void layAsideForPerson();
   // What the library counted in this wake, added to the kept totals and written down (task
   // p14-02): called where the loop's own state is saved, which is the end of every wake this
   // object runs. The addition is the difference against what has already been taken in this boot,

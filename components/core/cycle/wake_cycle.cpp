@@ -1327,8 +1327,18 @@ void WakeCycle::journalWake() {
   // The other reasons are **not** news, each for its own reason: a unit with no server
   // configured would write one entry every wake for ever, which is the log wrapped in ten days;
   // *no uplink* is already news through step 6's failure; and a halt on a 401 raises the Walter's
-  // own attention, which the record carries and `status` says. A wake on the radio's line inside
-  // a hold is expected and p10-01 documented it, so it is not news either.
+  // own attention, which the record carries and `status` says.
+  //
+  // **And a wake on the radio's line inside a wait is not news here, for a different reason
+  // since task p14-06.** p10-01 called it *expected*: the time away was 0 for every wake but the
+  // timer's, so a line wake owed its wait whole and there was nothing to be surprised at - which
+  // is exactly how 13 November 2026's *Wake it up* came to leave no trace anywhere (job 28399).
+  // It is not expected any more. The radio's uptime measures that sleep too, so the wait is spent
+  // like any other; a wake a person asked for owes none at all; and what is left - a line wake
+  // for another of §8's reasons that still owes one - is **in the wake record**, with the seconds
+  // and with what measured its time away, which is where `wake` shows it a boot later
+  // (core/cycle/wake_reason.h, kAwayBy*). A journal entry for it as well would cost one per
+  // failed call on a unit whose line is busy, and say what the record already says.
   if (pass_.reason == Wake::kTimer && pass_.reached == interfaces::Reached::kWait) news = true;
   if (!news) return;
 

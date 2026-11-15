@@ -190,6 +190,15 @@ void AgentBackend::sayRadio(bool radio_known, bool radio_up) const {
 bool AgentBackend::saveState() {
   if (p_.state_store == nullptr || !p_.state_store->ready()) return false;
   const mm::WakeState s = p_.loop->state();
+  // **The radio's reading belongs to the state it was taken after** (task p14-06). What a wait
+  // still owes is counted from *this* moment, so a reading taken before it would measure from
+  // the wrong one - and measuring from too early a moment believes more time passed than really
+  // did, which is the one thing the figure may never do. The reading written by the sleep that
+  // follows is the next one; until then there is none.
+  //
+  // Here and not after the `strcmp` below: a state that is what the store already holds is not
+  // written again, and it is still a state taken now.
+  if (p_.duty != nullptr) p_.duty->reason().forgetRadioReading();
   const std::uint8_t* bytes = reinterpret_cast<const std::uint8_t*>(&s);
   const char digits[] = "0123456789abcdef";
   for (std::size_t i = 0; i < sizeof s; ++i) {
@@ -302,6 +311,24 @@ void AgentBackend::takeFloodCounts() {
   (void)p_.floods->save();
 }
 
+// A wait a person's wake does not owe (task p14-06). The library's own state is the one place a
+// hold lives, so the way to lay one aside mid-boot is the way it was laid aside at the boot: read
+// the state, drop the hold, hand it straight back with no time away - which re-bases every
+// duration against the clock it finds now, and that clock is now.
+void AgentBackend::layAsideForPerson() {
+  if (p_.loop == nullptr) return;
+  mm::WakeState s = p_.loop->state();
+  // Nothing owed, or already laid aside by a trial or an owed result: there is nothing to do and
+  // nothing to say, and the reason already recorded is the one a person should read.
+  if (s.holdForMs == 0) return;
+  const std::uint32_t laid = s.holdForMs;
+  s.holdForMs = 0;
+  if (!p_.loop->restore(s, 0)) return;
+  laid_aside_ = LaidAside::kPersonAsked;
+  LOG_I("wake: a person asked for this Walter, so the %lu s of a wait still owed is laid aside",
+        static_cast<unsigned long>(laid / 1000u));
+}
+
 // -- the exchange ------------------------------------------------------------------------------------
 
 interfaces::Exchanged AgentBackend::exchange(const interfaces::BackendKnowledge& known, std::uint64_t deadline_ms,
@@ -317,6 +344,25 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
     return interfaces::Exchanged::kFailed;
   }
   const core::power::Band band = static_cast<core::power::Band>(known.wake.band);
+  // **A wake a person asked for owes no wait** (task p14-06; §8's attention, reason 4).
+  //
+  // On 13 November 2026 Thomas pressed *Wake it up* on meshmaster.dk (job 28399); the unit's
+  // radio answered `ok` at 18:09:02 UTC and raised the attention; the board woke on the line -
+  // and sent nothing, because the wake before it had ended in a failed call and the wait that
+  // leaves was owed whole. Nothing came from the unit until its timer woke it.
+  //
+  // Here and not in `loadState()`, where task p14-05's two lines are drawn, because the reason
+  // reaches this board two ways and only one of them is known at the boot: the event that woke
+  // it (step 1), **or** a reason still pending in step 4's STATUS, which a timer wake finds (§8:
+  // "a pending attention stays visible in STATUS until the Walter has made a request"). Both are
+  // in `known.wake.attention` by the time the exchange is run, so both are answered by one line.
+  //
+  // What is laid aside is what the wait still owed at this moment - after the time away has come
+  // off it - and nothing else of the state moves: the backoff, the run of failures, the halt on a
+  // 401, the counters and the accepted interval are handed straight back. **This board adds no
+  // limit of its own**: §8's is the radio's, one new attention per reason an hour, and a second
+  // bound here would only make a person press the button twice.
+  if (known.wake.attention == core::link::attention::kPersonAsked) layAsideForPerson();
 
   // Before the wake: who this unit is - a session opened if there is none, and the identity read
   // (a radio that got one between two wakes reports it now) - the uplink's state and deadline,
@@ -852,20 +898,39 @@ void AgentBackend::state(interfaces::TextOut& out) {
        static_cast<unsigned long>(s.holdForMs));
   if (!state_survived_) {
     say(&out, "\n");
-  } else if (laid_aside_ != LaidAside::kNone) {
-    // **A wait this boot did not put back** (task p14-05): said instead of the sleep's arithmetic,
-    // because none of it was applied - the wait was laid aside whole, and why is the whole line.
-    sayf(&out, "; %lu s owed before the sleep, laid aside: %s\n",
-         static_cast<unsigned long>(holdLaidAsideMs() / 1000u), holdLaidAsideWhy());
-  } else if (away_ms_ > 0) {
-    sayf(&out, "; %lu s owed before the sleep, %lu s slept\n",
-         static_cast<unsigned long>(owed_before_ms_ / 1000u),
-         static_cast<unsigned long>(away_ms_ / 1000u));
   } else {
-    // A state restored at a power-on, a reset, a crash or a wake on the radio's line: the hold is
-    // owed whole, because nothing here can say how much of the sleep had passed.
-    sayf(&out, "; %lu s owed before the sleep, no sleep this end could measure\n",
+    // **Where this boot's time away came from** (task p14-06). Until it, a wake that was not the
+    // timer's read *no sleep this end could measure* - and that was the whole fault: the radio
+    // never sleeps and could have been asked all along. The three answers are the timer's own
+    // figure, the radio's uptime across the sleep, and nothing at all - the last being a radio
+    // that restarted with us, or answered nothing, or had no reading written down, and no longer
+    // simply "the timer did not wake us".
+    const core::cycle::WakeReason::AwayFrom from =
+        p_.duty != nullptr ? p_.duty->reason().awayFrom()
+                           : core::cycle::WakeReason::AwayFrom::kNothing;
+    sayf(&out, "; %lu s owed before the sleep, ",
          static_cast<unsigned long>(owed_before_ms_ / 1000u));
+    switch (from) {
+      case core::cycle::WakeReason::AwayFrom::kTimer:
+        sayf(&out, "%lu s away, by the sleep timer\n",
+             static_cast<unsigned long>(away_ms_ / 1000u));
+        break;
+      case core::cycle::WakeReason::AwayFrom::kRadio:
+        sayf(&out, "%lu s away, by the radio's uptime\n",
+             static_cast<unsigned long>(away_ms_ / 1000u));
+        break;
+      case core::cycle::WakeReason::AwayFrom::kNothing:
+        say(&out, "nothing could measure how long this board was away\n");
+        break;
+    }
+  }
+  // **A wait that was not put back at all** (tasks p14-05 and p14-06): a line of its own, because
+  // the figure is not the one above - a person's wake lays aside what is left of a wait *after*
+  // the time away has come off it - and because why it was laid aside is the sentence a person
+  // who is looking for their heartbeat wants.
+  if (laid_aside_ != LaidAside::kNone) {
+    sayf(&out, "  %lu s of a wait was laid aside: %s\n",
+         static_cast<unsigned long>(holdLaidAsideMs() / 1000u), holdLaidAsideWhy());
   }
   sayf(&out, "  accepted interval %d s; budget %d/min, gap %d s; %s; %s, last heartbeat at %lu\n", s.pollIntervalS,
        s.budget.maxTransactionsPerMinute, s.budget.minGapSeconds,

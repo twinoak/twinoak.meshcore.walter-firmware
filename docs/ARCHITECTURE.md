@@ -1633,11 +1633,21 @@ that each sent nothing — the first unit woke 56 times on the night of 8 Novemb
 meshmaster.dk heard from it on about every sixth. The library cannot measure it (its only clock is
 `millis()`, which the sleep kills), so this firmware does:
 `core::cycle::WakeReason::timeAwayMs()`, which answers the seconds the last sleep asked its timer
-for — written into the duty-cycle retained record by `endingInSleep()` — less the timer's own error,
-and **0 for every wake that is not the timer's**, because a sleep cut short by the radio's line, a
-cable or a reset is a sleep of no known length. The rule is *never more than really passed*: a
-figure too small owes a sliver of a wait for one more wake, a figure too large calls a server back
-before the wait it asked for.
+for — written into the duty-cycle retained record by `endingInSleep()` — less the timer's own error.
+The rule is *never more than really passed*: a figure too small owes a sliver of a wait for one
+more wake, a figure too large calls a server back before the wait it asked for.
+
+**And every other wake is measured by the radio** (task p14-06). It was 0 for every wake that was
+not the timer's, because a sleep cut short by the radio's line, a cable or a reset is a sleep of
+no known length *to this board's own clock* — and that cost the unit the evening of 13 November
+2026, when *Wake it up* reached its radio (meshmaster.dk job 28399) and a failed call's wait,
+owed whole, sent nothing. The radio never sleeps: its `uptime_s` read before `SLEEP_NOTICE` and
+again at the boot, with the same `boot_id`, is the span, less a second for the whole seconds at
+either end and less the radio clock's own 500 ppm. `core/cycle/duty_cycle.h`'s `begin()` asks for
+it — one `HELLO` and one `PING`, only for a wake that is not the timer's and only when there is a
+reading to measure against — because the figure has to be settled **before** `backend.begin()`
+restores the agent's state. And a wake carrying §8's attention reason 4, *a person asked for the
+Walter*, owes no wait at all. `docs/cycle.md` is the whole account.
 
 ### What it costs, and what it is linked by
 

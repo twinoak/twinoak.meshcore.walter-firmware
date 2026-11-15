@@ -193,7 +193,27 @@ SleepResult Sleep::sleepFor(std::uint32_t seconds, const power::Decision& decisi
   if (w.line_just_disarmed) journal(Wrote::kLineDisarmed, r, decision, by_hand);
   if (w.line_rearmed) journal(Wrote::kLineArmed, r, decision, by_hand);
 
-  // 2. SLEEP_NOTICE, as the last request (§8). A link that is down or a radio that does not
+  // 2. **The radio's clock, written down** (task p14-06), after the agent's state was saved at
+  // the end of step 8 and before SLEEP_NOTICE, which §8 makes the last request. The radio never
+  // sleeps, so its `uptime_s` now and its `uptime_s` at the next boot are the two ends of the
+  // time this board was away - the one measure that works for a wake on the radio's line, a
+  // reset or a crash, and not only for the timer (`core/cycle/wake_reason.h`).
+  //
+  // The reading is cleared first and written only if the radio answers, so that a radio that
+  // said nothing leaves **none**: a stale reading paired with a fresh state would measure from
+  // the wrong moment, and the one rule here is *never more than really passed*. The same is true
+  // of a wake that is reset or crashes before this line - it leaves what the agent's `saveState`
+  // cleared, which is nothing.
+  wake_.forgetRadioReading();
+  if (radio_.session().up) {
+    const std::uint32_t nonce = r.awake_s ^ radio_.session().boot_id;
+    const link::client::Answer<link::PingResponse> ping = radio_.ping(nonce);
+    if (ping.ok() && ping.message.nonce == nonce) {
+      wake_.noteRadioBeforeSleep(radio_.session().boot_id, ping.message.uptime_s);
+    }
+  }
+
+  // 3. SLEEP_NOTICE, as the last request (§8). A link that is down or a radio that does not
   // advertise ATTENTION is not a reason to stay awake: the notice is a courtesy to the radio's
   // own event-sending, and the refusal is recorded and printed.
   interfaces::WallTime now{};
@@ -207,14 +227,14 @@ SleepResult Sleep::sleepFor(std::uint32_t seconds, const power::Decision& decisi
     r.journalled = journal_ != nullptr;
   }
 
-  // 3. The modem down: always safe to call, and this is the way out of every wake.
+  // 4. The modem down: always safe to call, and this is the way out of every wake.
   uplink_.takeDown();
 
-  // 4. The pins safe, and then held (§2 rules 1 and 5), with the radio's line given the chip's
+  // 5. The pins safe, and then held (§2 rules 1 and 5), with the radio's line given the chip's
   // pull-up when it is to wake us.
   r.pins_held = pins_.holdForSleep(arm_radio_line);
 
-  // 5. The wake's duration into its entry, **the seconds the timer is being asked for** for the
+  // 6. The wake's duration into its entry, **the seconds the timer is being asked for** for the
   // boot on the other side to read (task p10-01: the one measure of a sleep this board has, since
   // `esp_timer` starts again at zero), and then sleep. The record is stored *before* the sleep
   // because after it there is no "after": the next statement runs in a new boot.

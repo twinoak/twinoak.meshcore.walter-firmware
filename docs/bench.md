@@ -349,6 +349,41 @@ the same fixtures.
   this shows now is only that the event arrives and the two zero bytes before it are not mistaken
   for a frame.
 
+- [ ] **A wake a person asked for, inside a wait** (task p14-06). This is 13 November 2026's
+  *Wake it up* (meshmaster.dk job 28399), reproduced and then not reproduced, and it needs the
+  release that carries p14-06 on the unit. Three steps, in order:
+
+  1. **Leave a wait behind.** `set server.url https://127.0.0.1:1` (a host that refuses), then
+     `agent wake` — it must fail — then `set server.url` back to meshmaster.dk's. `agent state`
+     must now read a `hold … ms left` of thirty seconds or more. Do **not** wake again by hand.
+  2. **Sleep and have the radio raise reason 4.** `sleep 900`, and while the board is down press
+     *Wake it up* on the unit's page (or type the RAK's own admin command that asks for the
+     Walter). The board should come up on the line within a few seconds of the event.
+  3. **Read it at the console.** Expected in the boot's own lines and in `agent state`:
+
+     ```
+     agent state: restored across the last sleep (…)
+       version 1; backoff 30000 ms, 1 consecutive failure(s) …; 30 s owed before the sleep, 12 s away, by the radio's uptime
+       12 s of a wait was laid aside: a person asked for this Walter
+     ```
+
+     — and a heartbeat **on the wire in that same wake**: `wake`'s newest entry reading `-S-` or
+     `MS-` and not `---`, and the unit's page on meshmaster.dk showing a check-in dated then.
+     Before this release the same walk gives `no sleep this end could measure`, `---`, and
+     nothing on the page until the timer wake a quarter of an hour later.
+
+  Then the same walk with the **battery-low** attention (reason 2) instead, or any reason that is
+  not 4: the wait must be *spent by the sleep* rather than laid aside — `agent state` reading
+  `N s away, by the radio's uptime` with N near the sleep's own length — and only a sleep shorter
+  than the wait should leave `wake` saying `a wait still owed, N s (the time away: the radio)`.
+
+- [ ] **The radio restarted while the board slept: the wait is owed whole** (task p14-06). With a
+  wait owed as above, `sleep 900`, and while the board is down pull the RAK's power for a moment
+  (or let an update restart it). At the next wake `agent state` must read `nothing could measure
+  how long this board was away` and the wait must be owed whole — the radio's `boot_id` changed,
+  so its seconds are not the same seconds. **This is the honest answer and not a fault**; it is
+  the one case left where a wait outlives a sleep for want of a measure.
+
 ## 4. SWD
 
 **⚠ the protected-module item: opening one erases the radio's identity, and is a person's job.**
@@ -2094,12 +2129,14 @@ Needs §18 walked, and the unit on the battery with the cable out for the first 
 - [ ] ★ **A failed call costs one wake, not six.** Make one call fail and no more: `lte up`, then
       point `server.url` at a host that refuses (or pull the SIM's data for one wake), `agent wake`,
       and put it back. Then `agent state` on the **next** wake. Expected: the hold's line ends
-      `hold 0 ms left; 30 s owed before the sleep, 810 s slept` — the second figure is 90 % of the
-      interval the last sleep asked for (810 s of a quarter of an hour, 3 240 s of an hour) — and
-      the wake **heartbeats**. The library's own line *N s of a wait the server asked for is still
-      owed from before the sleep* must **not** appear: at any interval this unit sleeps, a 30 s to
-      120 s hold is spent whole by one sleep. If it appears, read the two figures on the hold's
-      line: *0 s slept*, or *no sleep this end could measure*, means the wake was not the timer's.
+      `hold 0 ms left; 30 s owed before the sleep, 810 s away, by the sleep timer` — the second
+      figure is 90 % of the interval the last sleep asked for (810 s of a quarter of an hour,
+      3 240 s of an hour) — and the wake **heartbeats**. The library's own line *N s of a wait the
+      server asked for is still owed from before the sleep* must **not** appear: at any interval
+      this unit sleeps, a 30 s to 120 s hold is spent whole by one sleep. If it appears, read the
+      clause after the comma: since task p14-06 it names which of three measured this boot — *by
+      the sleep timer*, *by the radio's uptime*, or *nothing could measure how long this board was
+      away*, which is the only one that leaves a wait owed whole.
 
 - [ ] ★ **And then the night.** Unplug, leave it, and read the morning: `wake` for the count of
       wakes and `agent state` for the heartbeat counter. **The two must be within a wake or two of
@@ -2107,20 +2144,20 @@ Needs §18 walked, and the unit on the battery with the cable out for the first 
       away, which the server's own page settles. This is the one item that cannot be checked any
       other way, and it is the acceptance of the whole pile.
 
-- [ ] **A wake on the radio's line still owes the whole wait.** Deliberate, and the right way
-      round: nothing on this board knows how much of a sleep had passed when the line moved, so
-      none of it is claimed. With a hold running, raise an attention on the radio (§8's
-      `EV_ATTENTION`, or `rak` on the repeater's side) so the Walter wakes on the line: `agent
-      state` must then say **no sleep this end could measure**, and the wake must send nothing
-      until the wait has really run out. A line wake that *did* clear a hold would mean the measure
-      is reading a wake it should not.
+- [ ] **A wake on the radio's line still owes the whole wait.** ~~Deliberate, and the right way
+      round~~ — **this item is superseded by task p14-06**, which is §3's *A wake a person asked
+      for, inside a wait*. It was deliberate while nothing on this board knew how much of a sleep
+      had passed when the line moved; the radio knew all along, and a line wake is measured by its
+      `uptime_s` now. Walk §3's item instead: `agent state` must read *N s away, by the radio's
+      uptime*, and **no sleep this end could measure** is a line this firmware no longer prints at
+      all.
 
 - [ ] **A `Retry-After` the server really names, across a shorter sleep.** The one case where the
       wait outlives a sleep. Provoke a 429 with a long `Retry-After` (or ask on the server side for
       one), then `sleep 900` on the console — a person's sleep, shorter than the wait. The next
       wake must come back owing **the remainder** (`agent state`: *1 800 s owed before the sleep,
-      810 s slept*, and the library's *still owed* line present) and must not call before it. The
-      wait was shortened, not forgotten.
+      810 s away, by the sleep timer*, and the library's *still owed* line present) and must not
+      call before it. The wait was shortened, not forgotten.
 
 - [ ] ★ **The read that would have been refused, priced as local.** The other half of this task
       (agent-core's p1.10-43), and the item the exit-node firmware's report asks for by name. A
@@ -2305,9 +2342,10 @@ list, which is S-6 doing its job.
 - [ ] ★ **A trial that owes a wait.** Make a call fail first — `set server.url` to a host that
       refuses, one wake, then set it back — so `agent state` shows a hold owed. Then offer and
       apply the next release from meshmaster.dk and watch the console through the restart.
-      Expected: the trial's boot line, `agent state` reading `… s owed before the sleep, laid
-      aside: this image is on trial`, a heartbeat on the wire in the trial's **first** wake, and
-      `self-update: on trial -> confirmed`. **This is the one that matters.**
+      Expected: the trial's boot line, `agent state` reading `… s owed before the sleep` and then,
+      on a line of its own since task p14-06, `… s of a wait was laid aside: this image is on
+      trial`; a heartbeat on the wire in the trial's **first** wake, and `self-update: on trial ->
+      confirmed`. **This is the one that matters.**
 
 - [ ] **A trial whose first heartbeat fails.** A Faraday bag over the LTE antenna for the first
       half-minute of a trial, then off again. Expected: `self status` during the trial reading
@@ -2322,8 +2360,9 @@ list, which is S-6 doing its job.
       the bad list.
 
 - [ ] **The owed result after a rollback.** From the same walk: the old image's **first** wake
-      after the rollback posts the result (`agent state`: `laid aside: a rollback's result is
-      owed`), not the timer wake after it. Read the result's timestamp on meshmaster.dk against
+      after the rollback posts the result (`agent state`: `N s of a wait was laid aside: a
+      rollback's result is owed`, on a line of its own since task p14-06), not the timer wake
+      after it. Read the result's timestamp on meshmaster.dk against
       the unit's `journal`.
 
 - [ ] **The heap, on the board.** `heap` at the console on the first boot of this release,

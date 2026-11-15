@@ -1,0 +1,1 @@
+Pressing *Wake it up* now gets an answer. A unit that woke on its radio's line used to send nothing whenever the wake before it had ended in a failed call; it works out how long it was away from the radio's own clock instead, and a wake somebody asked for does not wait at all. Shown on the simulated bench, not yet on a board.

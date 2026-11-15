@@ -323,8 +323,14 @@ TEST_CASE("agent state says the wait was laid aside, and what the trial asked fo
   const std::string state = bench.v().runLine("agent state");
   INFO(state);
   CHECK(has(state, "agent state: restored across the last sleep"));
-  const std::string laid = "; " + std::to_string(saved.holdForMs / 1000u) +
-                           " s owed before the sleep, laid aside: this image is on trial\n";
+  // Two lines since task p14-06: the sleep's own arithmetic, and then what was laid aside. A
+  // trial boot follows a restart, which the radio's uptime measures as well as it measures a
+  // sleep - but the whole wait is laid aside either way, so the second line is the one that says
+  // what became of it.
+  const std::string owed = "; " + std::to_string(saved.holdForMs / 1000u) + " s owed before the sleep, ";
+  CHECK(has(state, owed.c_str()));
+  const std::string laid =
+      "  " + std::to_string(saved.holdForMs / 1000u) + " s of a wait was laid aside: this image is on trial\n";
   CHECK(has(state, laid.c_str()));
   CHECK(has(state, "the trial asked for 0 heartbeat(s) of its own, held off 0 time(s)"));
 }

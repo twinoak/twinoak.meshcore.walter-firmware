@@ -26,6 +26,43 @@ void DutyCycle::begin() {
   reason_.begin(health_.thisBoot(), sleeper_.wokeBy(), host,
                 attentions_.there() ? &attentions_ : nullptr);
   guard_.usbHostIs(host);
+  measureTimeAway();
+}
+
+// **How long this board was away, for a wake that is not the timer's** (task p14-06). The radio
+// never sleeps and counts its own seconds, so the `uptime_s` written down before the sleep and
+// the one read now are the two ends of it (`core/cycle/wake_reason.h`).
+//
+// Here, in `begin()`, because the figure has to be known **before the agent's state is restored**
+// (`main/main.cpp`: `duty.begin()` is a hundred and fifty lines above `backend.begin()`, which is
+// where `mm::AgentLoop::restore(state, awayMs)` is handed it). Step 4 of a wake reads a STATUS
+// with the same `uptime_s` in it, and that is far too late: the wait would already have been put
+// back whole and the wake would already be sending nothing.
+//
+// Two frames, and only when both are worth sending:
+//
+//   a timer wake      keeps the figure it has - the seconds the last sleep asked its timer for -
+//                     so the radio is not asked at all, and the overwhelming majority of this
+//                     unit's wakes cost nothing.
+//   no reading        a power cut, a first boot, a wake that never reached the sleep, a radio
+//                     that did not answer last time: there is nothing to measure against, so
+//                     there is nothing to ask.
+//
+// A HELLO of this boot's own is not a cost either way: step 2 of the wake sends one a moment
+// later, and the second one finds the session already up. It is needed here because `boot_id`
+// comes from HELLO and nothing else (§5.1), and `boot_id` is how a radio that restarted during
+// the sleep - whose seconds are not the same seconds - is told from one that did not.
+void DutyCycle::measureTimeAway() {
+  if (reason_.wake() == Wake::kTimer) return;
+  if (!reason_.hasRadioReading()) return;
+  const link::client::Answer<link::HelloResponse> hello = radio_.hello();
+  if (!hello.ok()) return;
+  // The nonce is this boot's own wake count: it moves every wake, and a PING answered with
+  // another one is a stale frame whose `uptime_s` belongs to some other moment (§5.2).
+  const std::uint32_t nonce = reason_.info().wakes ^ hello.message.body.boot_id;
+  const link::client::Answer<link::PingResponse> ping = radio_.ping(nonce);
+  if (!ping.ok() || ping.message.nonce != nonce) return;
+  reason_.noteRadioAtBoot(hello.message.body.boot_id, ping.message.uptime_s);
 }
 
 bool DutyCycle::readPower() {
