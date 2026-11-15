@@ -191,3 +191,28 @@ TEST_CASE("thisUnit() is this build: its version and the link major it speaks") 
   CHECK_FALSE(u.speaks(core::image::kLinkMajor + 1));
   CHECK_FALSE(u.speaks(0));
 }
+
+TEST_CASE("a radio's image is chosen by the link's major alone: a 1.3 Walter takes a 1.2 image") {
+  // spec/LINK-PROTOCOL.md, *Versions*, and FIRMWARE-MANIFEST.md §5 check 3: within a major a
+  // minor only adds things, so the **major** is the whole of what `chooseImage` compares and the
+  // minor is not in `ThisUnit` at all. Task p14-01 moved this firmware's own minor to 3 while the
+  // radio on the bench runs an image built against 1.0, and the repeater firmware's own 1.3 is
+  // its pile 3.13; this says, in the one place that decides it, that the move changed nothing
+  // about which image that radio is offered.
+  REQUIRE(core::image::kLinkMinor == core::link::kProtoMinor);
+  REQUIRE(core::image::kLinkMinor == 3);
+  const std::string repeater = fixtures::asText(fixtures::readSpec("manifest-repeater.json"));
+  for (unsigned minor = 0; minor <= 4; ++minor) {
+    CAPTURE(minor);
+    // The manifest's own `link.minor`, moved under the Walter's feet: every one of the five is
+    // taken, this build's own among them and one above it, because nothing compares it.
+    const Manifest m = parsed(edited(repeater, "\"minor\": 0", "\"minor\": " + std::to_string(minor)));
+    CHECK(m.link_minor == minor);
+    CHECK(m.link_major == core::image::kLinkMajor);
+    CHECK(chooseImage(m, needs(), Use::kSwd, unit()).ok());
+  }
+  // And the major, which *is* read: an image of another major is refused, whatever its minor is.
+  const Manifest two = parsed(edited(edited(repeater, "\"major\": 1", "\"major\": 2"),
+                                     "\"minor\": 0", "\"minor\": 3"));
+  CHECK(chooseImage(two, needs(), Use::kSwd, unit()).reason == ChooseReason::kManifestLinkMajor);
+}

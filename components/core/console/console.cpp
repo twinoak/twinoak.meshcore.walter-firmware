@@ -111,6 +111,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakEnv:
     case Verb::kRakCli:
     case Verb::kRakRequest:
+    case Verb::kRakScope:
     case Verb::kRakEvents:
     case Verb::kRakText:
     case Verb::kRakSwdConnect:
@@ -566,6 +567,7 @@ void Console::runLine(const char* line) {
     case Verb::kRakRequest:
       rakRequest(p.command.req_type, p.command.bytes, p.command.bytes_size);
       return;
+    case Verb::kRakScope: rakScope(); return;
     case Verb::kRakEvents: rakEvents(); return;
     case Verb::kRakText: rakText(); return;
     case Verb::kRakSwdConnect: rakSwdConnect(); return;
@@ -1427,6 +1429,62 @@ void Console::eventCounts() {
            static_cast<unsigned long>(counted.event_gaps));
   }
   printLinkCounts();
+}
+
+// §6.5 (link 1.3). `FLOOD_SCOPE` with `mode` 0: a read, and nothing else - no job is needed,
+// nothing goes on the air, `client_tx` does not move, and the mode the next send would take is
+// left where it is. The three states a radio can be in are three sentences, and a radio that
+// cannot answer at all gets the reason rather than a status code.
+void Console::rakScope() {
+  const lc::Answer<link::FloodScopeResponse> answer = radio_.floodScope(link::flood_mode::kAsk);
+  const lc::Session& session = radio_.session();
+  if (!answer.ok()) {
+    if (answer.fault == lc::Fault::kUnsupported) {
+      // §4: the client refused the call without a byte on the wire, because HELLO did not
+      // advertise the bit. That is a radio whose mesh client cannot scope a flood at all.
+      print("flood scope: this radio speaks 1.2 - it has no 'flood-scope' capability\n");
+      print("  so every flood it sends for this unit goes out with no transport code\n");
+      return;
+    }
+    if (answer.fault == lc::Fault::kRefused && answer.status == link::status::kState) {
+      // §6.5: "In a session older than 1.3 the answer is ERR_STATE: nothing is scoped there,
+      // and there is no mode to set." The capability is in the session this end holds and the
+      // session the radio is in is older - which is what a radio that **restarted** answers
+      // until the next HELLO (§5.1: the session's version is per boot), and what a 1.3 radio
+      // answers a Walter that asked for less.
+      // Two calls, because one line of this console is at most 200 bytes and loses its
+      // newline past that (`printf` above).
+      print("flood scope: the radio answers that nothing is scoped in this session\n");
+      printf("  its own session is older than 1.3 until the next 'rak hello', and until then\n"
+             "  its floods carry no transport code (this end last agreed %u.%u)\n",
+             static_cast<unsigned>(session.proto_major),
+             static_cast<unsigned>(session.proto_minor));
+      return;
+    }
+    linkError("rak scope", answer.fault, answer.status);
+    return;
+  }
+  const link::FloodScopeResponse& r = answer.message;
+  // §6.5's `mode`, which is what the **next** send will do: 1 the default scope, 2 one send
+  // without it. A `rak scope` changes neither - it asked with 0.
+  const char* next = r.mode == link::flood_mode::kUnscopedNext
+                         ? "the next send carries no transport code (mode 2, for one send)"
+                         : "the next send takes the default scope (mode 1)";
+  if (r.scope.size == 0) {
+    print("flood scope: none - this radio holds no default scope, so every flood it sends\n");
+    printf("  for this unit carries no transport code; %s\n", next);
+    return;
+  }
+  // The unit's own radio's `region default`, not something a stranger chose, so it is printed by
+  // name like the band is. Copied first: a str8 is not terminated (codec/view.h).
+  char name[link::kMaxFloodScopeName + 1] = {};
+  std::size_t n = r.scope.size;
+  if (n > link::kMaxFloodScopeName) n = link::kMaxFloodScopeName;
+  for (std::size_t i = 0; i < n; ++i) name[i] = r.scope.data[i];
+  name[n] = 0;
+  printf("flood scope: %s - every flood this radio sends for this unit goes out in it,\n",
+         name);
+  printf("  as its own adverts do; %s\n", next);
 }
 
 void Console::rakEvents() {
@@ -4349,6 +4407,20 @@ void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
 // console is busy for up to sixteen seconds on silence.
 constexpr std::uint32_t kMeshProbeWaitMs = 16000;
 
+// §6.2 and §6.5: what a send came to, in the words `rak mesh status` prints. A session older
+// than 1.3 ends its answer at `sender_ts` and says nothing about scope, so a flood there is just
+// a flood - which is what this line said before link 1.3 and what it goes on saying against a
+// radio of 1.2.
+static const char* sendShape(const MeshProbeResult& r) {
+  if (!r.flooded) {
+    return "direct packet";  // a path has no scope
+  }
+  if (!r.scoped_said) {
+    return "flood";
+  }
+  return r.scoped ? "flood in the radio's default scope" : "flood with no transport code";
+}
+
 void Console::rakMeshStatus(const char* key) {
   if (mesh_ == nullptr) {
     print("error: rak mesh status: this build has no mesh client\n");
@@ -4370,20 +4442,20 @@ void Console::rakMeshStatus(const char* key) {
       return;
     case MeshProbeResult::Outcome::kNoReply:
       printf("  sent as a %s, tag 0x%08lx; no reply: the record says %s after %lu ms\n",
-             r.flooded ? "flood" : "direct packet", static_cast<unsigned long>(r.tag),
+             sendShape(r), static_cast<unsigned long>(r.tag),
              lc::replyStateName(r.state), static_cast<unsigned long>(r.elapsed_ms));
       if (r.fault != lc::Fault::kNone) linkError("rak mesh status: the wait", r.fault, r.status);
       break;
     case MeshProbeResult::Outcome::kUnreadable:
       printf("  sent as a %s, tag 0x%08lx; reply after %lu ms (%s, snr %d/4 dB, rssi %d dBm): "
              "not a status reply this firmware reads (%u bytes)\n",
-             r.flooded ? "flood" : "direct packet", static_cast<unsigned long>(r.tag),
+             sendShape(r), static_cast<unsigned long>(r.tag),
              static_cast<unsigned long>(r.elapsed_ms), r.via_path ? "via a returned path" : "direct",
              static_cast<int>(r.snr_q4), static_cast<int>(r.rssi), static_cast<unsigned>(r.reply_len));
       break;
     case MeshProbeResult::Outcome::kOk:
       printf("  sent as a %s, tag 0x%08lx; reply after %lu ms (%s, snr %d/4 dB, rssi %d dBm)\n",
-             r.flooded ? "flood" : "direct packet", static_cast<unsigned long>(r.tag),
+             sendShape(r), static_cast<unsigned long>(r.tag),
              static_cast<unsigned long>(r.elapsed_ms), r.via_path ? "via a returned path" : "direct",
              static_cast<int>(r.snr_q4), static_cast<int>(r.rssi));
       printf("  the repeater: battery %d mV, uptime %lu s, noise floor %d dBm, last rssi %d dBm, "

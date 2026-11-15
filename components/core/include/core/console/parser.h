@@ -61,6 +61,10 @@
 //                         air. The type is two hex digits (01 status, 05 access list, 06
 //                         neighbours, 07 owner info) and the data an even number of hex digits,
 //                         at most 32 bytes
+//   rak scope             FLOOD_SCOPE (§6.5, link 1.3): the radio's default flood scope - the
+//                         region every flood it sends for this unit goes out in - and what the
+//                         next send would do with it. A read: nothing is changed and nothing
+//                         goes on the air
 //   rak events            the events the client has queued
 //   rak text              the lines a scanner has sent (§9)
 //
@@ -235,6 +239,9 @@ enum class Verb : std::uint8_t {
   // §5.9's LOCAL_REQUEST (link 1.2, task p9-06): `rak request <type> [hex data]` - the type in
   // `req_type`, the data in `bytes`/`bytes_size`.
   kRakRequest,
+  // §6.5's FLOOD_SCOPE (link 1.3, task p14-01): `rak scope`, with `mode` 0 - a read and nothing
+  // else. Nothing goes on the air and the mode the next send would take is not changed.
+  kRakScope,
   kRakEvents,
   kRakText,
   // The debug port (task p1-03) and the nRF52 behind it (task p1-04).

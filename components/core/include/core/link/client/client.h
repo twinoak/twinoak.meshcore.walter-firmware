@@ -291,6 +291,13 @@ class Client {
   Answer<ReplyGetResponse> replyGet();
   Answer<ObsPullResponse> obsPull(std::uint8_t max);
   Answer<MeshCountersResponse> meshCounters();
+  // §6.5 (1.3): read the radio's default flood scope (`mode` kAsk) and say what the **next**
+  // send does with it - kScopedNext, or kUnscopedNext for one send without a transport code.
+  // Nothing goes on the air, no job is needed and `client_tx` does not move. Without the
+  // capability nothing is sent: kUnsupported, which is what a radio at 1.2 gives (§4, §5.1), and
+  // the gate is `localRequest`'s. A radio that *has* the bit but settled on a session older than
+  // 1.3 answers ERR_STATE, which arrives as kRefused.
+  Answer<FloodScopeResponse> floodScope(std::uint8_t mode);
 
   // ------------------------------------------------------------------ events
 

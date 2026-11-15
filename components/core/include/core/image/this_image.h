@@ -16,7 +16,7 @@
 namespace core {
 namespace image {
 
-// The box link this firmware speaks: spec/LINK-PROTOCOL.md, "protocol 1.1" since 6 November. The
+// The box link this firmware speaks: spec/LINK-PROTOCOL.md, "protocol 1.3" since 15 November. The
 // same two numbers go into the descriptor's `link_major`/`link_minor`, into the manifest's `link`
 // object (tools/release/build_release.py's LINK, which the release holds against the descriptor it
 // finds in the built image) and into the HELLO the link client sends - so they are **the codec's

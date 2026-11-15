@@ -73,6 +73,11 @@ const char* const kAgentIncludes[] = {
     "agent/IRetained.h",
     "agent/JobEnvelopes.h",
     "agent/JobRunner.h",
+    // Task p14-01: the three the kept scratch is sized from, so that the size is the library's
+    // own arithmetic and a static assert rather than a number somebody kept up to date.
+    "agent/KeptImage.h",
+    "agent/Observations.h",
+    "agent/ResultBuffer.h",
     "agent/JsonWriter.h",
     "agent/Iso8601.h",
     "agent/TextOut.h",

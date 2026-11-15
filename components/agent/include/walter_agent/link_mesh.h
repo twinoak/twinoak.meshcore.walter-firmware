@@ -51,6 +51,38 @@
 //     **before** it prices a claimed job, by `answersLocallyFor()` beside it, so the figure a
 //     refusal is measured against is the reply waits and not the gaps.
 //
+//   - **the flood scope** (15 November 2026, link 1.3; meshmaster.dk's D-47). Until 1.3 every
+//     flood this unit's radio sent for the agent - a login or a request to a repeater it holds no
+//     path for, a path discovery - left with **no transport code**, whatever the radio's own
+//     `region default` said: the unit's own adverts were scoped and the logins it sent for its
+//     Walter were not. In a session of 1.3 the radio scopes those floods unasked, and §6.5's
+//     `FLOOD_SCOPE` is how this end reads the scope's name and asks for one send without it.
+//     What this object does with that:
+//       * `floodScope()` is the name the radio answered - `*` when it holds none, and **null**
+//         when the session has no `FLOOD_SCOPE` capability or settled on less than 1.3, which is
+//         the library's *this mesh says nothing about scope* and leaves the heartbeat's `flood`
+//         object out altogether;
+//       * the name is read with `mode` 0 **once a session**, by `askFloodScope()`, where the
+//         unit's own key is read (task p4-04's `IDENTITY`, before every claim) and therefore
+//         before the heartbeat is built. A session whose ask went unanswered says null and asks
+//         again before a mesh job begins; a job whose ask fails then fails as one whose
+//         `JOB_BEGIN` failed, because the radio scopes that job's floods whether or not this end
+//         knows the name and a job run without the name would have no try without it;
+//       * `setFloodMode()` keeps the library's rule - *the scope first, then one try without it* -
+//         for the next send, and `FLOOD_SCOPE` with `mode` 2 goes **immediately before** the one
+//         flood that is to carry no code, and before no other send. One that is refused or
+//         unanswered fails the send and nothing is transmitted: a try meant to go without the
+//         scope that goes out with it is the first packet again, and airtime for nothing;
+//       * what came back is believed. A send's answer ends with `scoped` in a session of 1.3
+//         (§6.2) and that byte is kept beside `LastRecord`'s `flood`; a flood whose `scoped` is
+//         not what this end asked for makes the name be asked again, counted in
+//         `scope_surprises`;
+//       * a changed `boot_id` forgets the name with everything else. The radio is back at 1.0
+//         until the next `HELLO` and floods unscoped until then, so between the two this end
+//         tells the library **nothing** rather than a scope the radio is not using.
+//     A radio of 1.2 or older is as it was: no `FLOOD_SCOPE` is ever sent, `floodScope()` is
+//     null, and the frames are byte for byte today's.
+//
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
 
@@ -91,6 +123,11 @@ constexpr std::uint8_t kLocalLppPermissions = link::perm::kBase | link::perm::kL
 constexpr std::size_t kKeyHexLen = 64;
 constexpr std::size_t kKeyLen = link::kPubkeySize;
 
+// §6.5's `scope`: a region's name as `region default` prints it, 1 to 30 bytes, and a terminator.
+// `mm::IMesh::floodScope()` hands the library a pointer that outlives the call and **nothing
+// copies it**, so the name is a member of this object with a bound of the specification's own.
+constexpr std::size_t kFloodScopeMax = link::kMaxFloodScopeName + 1;
+
 // What this object did on the link, for the console and the tests. Saturating.
 struct LinkMeshCounters {
   std::uint32_t requests = 0;       // §6 requests that went out (every typed call that reached the link)
@@ -113,6 +150,11 @@ struct LinkMeshCounters {
   std::uint32_t local_silent = 0;   // local sends answered with silence on purpose (§5.9's ERR_RANGE,
                                     // and the access list on a radio that has no LOCAL_REQUEST)
   std::uint32_t local_unserved = 0; // local sends the link has no request for (Failed)
+  // §6.5 (link 1.3), the flood scope:
+  std::uint32_t scope_asks = 0;      // FLOOD_SCOPE with `mode` 0: what the radio's default scope is
+  std::uint32_t scope_unscoped = 0;  // FLOOD_SCOPE with `mode` 2, before the one flood that drops it
+  std::uint32_t scope_failed = 0;    // of those, ones refused or unanswered: the send was not made
+  std::uint32_t scope_surprises = 0; // a flood whose `scoped` was not what this end asked for
 };
 
 // How much of a key a line about a job shows: the first 12 hex characters, as the library's own
@@ -146,6 +188,12 @@ struct LastRecord {
   std::int16_t rssi = link::kRssiUnknown;
   std::uint32_t elapsed_ms = 0;
   bool flood = false;  // the send this record answers went as a flood
+  // §6.2 (1.3): whether that send's answer carried `scoped` at all - it does in a session of 1.3
+  // and not in an older one - and, when it did, whether the packet went out carrying a transport
+  // code of the radio's default scope (§6.5). A direct send, a flood without one and a send that
+  // put nothing on the air are all `scoped` 0.
+  bool scoped_said = false;
+  bool scoped = false;
 };
 
 class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
@@ -162,6 +210,20 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   void setOwnKey(const std::uint8_t* key);
   void clearOwnKey();
   bool hasOwnKey() const { return own_key_known_; }
+
+  // ------------------------------------------------------------------ the flood scope (§6.5)
+
+  // **Read the radio's default scope, once a session** (link 1.3). Called where the unit's own
+  // key is read - `AgentBackend::handOverIdentity`, the console's `agent id` - so that
+  // `floodScope()` has an answer *before the heartbeat is built*, which is where task 02 puts
+  // the three counts. One `FLOOD_SCOPE` with `mode` 0 and no more: it costs nothing when the
+  // name is already known, and nothing at all against a radio without the capability or a
+  // session older than 1.3, where no frame leaves. True when this end knows the name afterwards.
+  bool askFloodScope();
+  // Whether the session can scope a flood at all: the capability **and** a session of 1.3 or
+  // later (§6.5 answers the request ERR_STATE in an older one, whatever the bit said). False
+  // makes `floodScope()` null, and nothing of §6.5 is ever sent.
+  bool scopeOnTheLink() const;
 
   // ------------------------------------------------------------------ what the console reads
 
@@ -188,6 +250,9 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   std::uint8_t lastStatus() const { return last_status_; }
   const LinkMeshCounters& linkCounters() const { return link_counters_; }
   const LastRecord& lastRecord() const { return last_record_; }
+  // Whether a `FLOOD_SCOPE` has been answered in this session: what tells "the radio holds no
+  // default scope" (`floodScope()` is `*`) from "nobody has asked yet" (it is null).
+  bool floodScopeKnown() const { return scope_known_; }
   // The last ten jobs this end was asked to begin, newest first (task p9-04): what `agent jobs`
   // prints beside the library's own list. `jobBegunAt` is null past the end.
   std::size_t jobsBegun() const { return jobs_begun_; }
@@ -212,6 +277,23 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // that a wake which cannot yet tell a local job from a stranger's advertises no mesh type at
   // all (task p8-04; `setOwnKey` above).
   bool supports(const char* jobType) const override;
+
+  // §6.5 and `mm::IMesh`: the region every flood of this mesh goes out in. The radio's own
+  // default scope's name, `mm::kFloodScopeUnscoped` (`*`) when it holds none - every flood then
+  // goes out with no transport code and there is nothing for the library to drop - and
+  // **nullptr** when this end has nothing to say: no `FLOOD_SCOPE` capability, a session older
+  // than 1.3, or a session whose one ask went unanswered. Null is what every exit node said
+  // before the field existed and is what leaves the heartbeat's `flood` object out.
+  //
+  // The string outlives the call and nothing copies it (`IMesh.h`), so it is a member of this
+  // object; `*` is the library's own static string.
+  const char* floodScope() const override;
+
+  // §6.5 and `mm::IMesh`: scoped or unscoped for the **next** flood, told per send by the
+  // library's own rule (`agent/FloodScope.h`: the scope first, then one try without it). Nothing
+  // is sent here - the request that drops the scope goes immediately before the send it is for,
+  // and only for a send that will flood.
+  void setFloodMode(mm::FloodMode mode) override { next_flood_ = mode; }
 
   // **The local door, in the library's own words** (`IMesh::answersLocally`, agent-core at
   // 6290e092: the exit-node firmware's tasks p1.10-40 and p1.10-41). True from a `beginJob` for
@@ -322,6 +404,21 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   void pathSet(std::uint8_t mode);
   void cachePath(const link::Path& path);
 
+  // §6.5. Before a send that will flood: `FLOOD_SCOPE` with `mode` 2 when the library asked for
+  // the try without the scope, and nothing at all otherwise. False when that request was refused
+  // or unanswered - the send is then not made and the library sees `Failed`. Sets what this end
+  // expects the answer's `scoped` to be.
+  bool scopeTheSend(bool floods);
+  // What a send that was never made leaves behind: nothing awaited, nothing held, `Failed`.
+  mm::SendResult sendNotMade();
+  // §6.5's request, with the name it answers kept. False when the link did not answer.
+  bool readFloodScope(std::uint8_t mode);
+  void keepScope(link::Text name);
+  void forgetScope();
+  // §6.2's `scoped` against what this end asked for, after a send: a flood that came back the
+  // other way makes the name be asked again, because the radio is the one that knows.
+  void believeScoped(const link::SendResponse& answer);
+
   mm::SendResult localLogin();
   mm::SendResult localRequest(std::uint8_t reqType, const std::uint8_t* data, std::uint8_t len);
   mm::SendResult localCli(const char* text, std::size_t size, bool sensitive);
@@ -341,9 +438,20 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   Job job_;
   PathCache path_;
 
+  // §6.5's default scope, as the radio last named it: empty is a radio that holds none, which
+  // `floodScope()` answers as `*`. `scope_known_` is "a FLOOD_SCOPE was answered in this
+  // session" and is forgotten at a restart, because the radio is back at 1.0 until the next
+  // HELLO and floods unscoped until then.
+  char flood_scope_[kFloodScopeMax] = {};
+  bool scope_known_ = false;
+  mm::FloodMode next_flood_ = mm::FloodMode::Scoped;
+  bool expect_scoped_ = false;  // what the last send was asked to be, for §6.2's `scoped`
+
   Await await_ = Await::kNone;
   std::uint32_t await_tag_ = 0;
   bool await_flood_ = false;
+  bool await_scoped_ = false;       // §6.2's `scoped` of the send this wait is for
+  bool await_scoped_said_ = false;  // ... and whether the answer carried the byte at all
   bool resolved_ = false;  // a final record was taken while a wait was in progress
   bool local_held_ = false;  // the local door holds a reply for the await that follows
 

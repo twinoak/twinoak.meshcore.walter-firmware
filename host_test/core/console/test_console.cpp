@@ -380,6 +380,96 @@ TEST_CASE("rak hello prints the version, role, slot and capabilities") {
   CHECK(contains(after, "radio: repeater 0.1.0+abc1234, slot 0, band not said, link 1.0"));
 }
 
+TEST_CASE("rak hello names the flood-scope capability a 1.3 radio advertises") {
+  // §6.5, link 1.3: the bit that says the radio scopes the floods it sends for this unit. It is
+  // the ninth capability and `rak hello` names it with the other eight.
+  Rig rig;
+  rig.rak.speakLink13("dk");
+  const std::string text = rig.run("rak hello");
+  CHECK(contains(text, "hello: protocol 1.3, role 1 (repeater), slot 0, max payload 240"));
+  CHECK(contains(text, "capabilities 0x13f: cli, power, env, mesh-client, observations, attention, "
+                       "flood-scope"));
+}
+
+TEST_CASE("rak scope in its three states, and on a radio of 1.2") {
+  // §6.5 (link 1.3) as a person reads it: the region every flood this radio sends for the unit
+  // goes out in, what the next send will do with it, and - for a radio that cannot answer - the
+  // reason rather than a status code. `mode` 0 is a read: nothing is changed and nothing goes on
+  // the air, which is why the mode is still 1 after each of these.
+  SUBCASE("a radio of 1.3 whose region default is dk") {
+    Rig rig;
+    rig.rak.speakLink13("dk");
+    REQUIRE(rig.run("rak hello").find("protocol 1.3") != std::string::npos);
+    const std::string text = rig.run("rak scope");
+    CHECK(contains(text, "flood scope: dk - every flood this radio sends for this unit goes "
+                         "out in it,\n"));
+    CHECK(contains(text, "  as its own adverts do; the next send takes the default scope "
+                         "(mode 1)\n"));
+    CHECK(rig.rak.flood_scope_asks == 1u);
+    // A read changes nothing: the mode the next send would take is still 1.
+    CHECK(rig.rak.flood_mode == core::link::flood_mode::kScopedNext);
+  }
+  SUBCASE("a radio of 1.3 that holds no default scope") {
+    Rig rig;
+    rig.rak.speakLink13("");
+    REQUIRE(rig.run("rak hello").find("protocol 1.3") != std::string::npos);
+    const std::string text = rig.run("rak scope");
+    CHECK(contains(text, "flood scope: none - this radio holds no default scope, so every "
+                         "flood it sends\n"));
+    CHECK(contains(text, "  for this unit carries no transport code; the next send takes the "
+                         "default scope (mode 1)\n"));
+  }
+  SUBCASE("a radio of 1.3 that has been asked for one send without the scope") {
+    // The mode a `rak scope` prints is what the **next** send will do, and `mode` 2 is in force
+    // for one send (§6.5). Nothing of the console asks for it; the mesh client does, before the
+    // one flood that is to go without it.
+    Rig rig;
+    rig.rak.speakLink13("dk");
+    REQUIRE(rig.run("rak hello").find("protocol 1.3") != std::string::npos);
+    rig.rak.flood_mode = core::link::flood_mode::kUnscopedNext;
+    const std::string text = rig.run("rak scope");
+    CHECK(contains(text, "flood scope: dk - "));
+    CHECK(contains(text, "the next send carries no transport code (mode 2, for one send)\n"));
+  }
+  SUBCASE("a radio of 1.2") {
+    // No capability at all: the client refuses the call without a byte on the wire (§4), and the
+    // line says what that means rather than printing ERR_UNSUPPORTED.
+    Rig rig;
+    rig.rak.band = "868";
+    REQUIRE(rig.run("rak hello").find("protocol 1.1") != std::string::npos);
+    const std::string text = rig.run("rak scope");
+    CHECK(contains(text, "flood scope: this radio speaks 1.2 - it has no 'flood-scope' "
+                         "capability\n"));
+    CHECK(contains(text, "  so every flood it sends for this unit goes out with no transport "
+                         "code\n"));
+    // Nothing was sent for it: the one frame of this rig is the HELLO, and the client
+    // refused the call off the session's `caps` (§4).
+    CHECK(rig.rak.requests.size() == 1u);
+  }
+  SUBCASE("a radio of 1.3 that has restarted and not been greeted again") {
+    // §6.5: "a RAK that restarted floods unscoped until the next HELLO", and its answer to this
+    // request is then ERR_STATE - the capability is still in the session this end holds, and the
+    // session the radio is in is 1.0.
+    Rig rig;
+    rig.rak.speakLink13("dk");
+    REQUIRE(rig.run("rak hello").find("protocol 1.3") != std::string::npos);
+    rig.rak.restart(false);
+    const std::string text = rig.run("rak scope");
+    CHECK(contains(text, "flood scope: the radio answers that nothing is scoped in this session"));
+    CHECK(contains(text, "until the next 'rak hello'"));
+    // And after that HELLO it answers again.
+    REQUIRE(rig.run("rak hello").find("protocol 1.3") != std::string::npos);
+    CHECK(contains(rig.run("rak scope"), "flood scope: dk - "));
+  }
+  SUBCASE("before any HELLO: the capability is what a HELLO brings") {
+    Rig rig;
+    const std::string text = rig.run("rak scope");
+    CHECK(contains(text, "error: rak scope: "));
+    // A call that needs a capability sends nothing when there is no session to read one off.
+    CHECK(rig.rak.requests.empty());
+  }
+}
+
 TEST_CASE("rak hello and status print a 1.1 radio's band") {
   // The repeater firmware's pile 3.8 answers HELLO in 1.1, whose body ends with the band the
   // running image was built for (§5.1). It is the third of the three words an image is chosen by

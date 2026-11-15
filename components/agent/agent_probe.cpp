@@ -74,6 +74,9 @@ bool IdentityProbe::identity(core::console::AgentIdentityView* out) {
   // first appears.
   mesh_.setOwnKey(identity_.publicKey());
   observations_.useOwnKey(identity_.publicKey());
+  // And the flood scope with it (§6.5, link 1.3): `agent id` prints what the heartbeat would
+  // carry, so it reads the name the same way a wake does - once a session, where the key is read.
+  (void)mesh_.askFloodScope();
   out->known = known;
   out->session = identity_.sessionUp();
   // Three states, not two (task p10-03): the one place that decides them answered this at the

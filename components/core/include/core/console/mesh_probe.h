@@ -33,6 +33,11 @@ struct MeshProbeResult {
 
   // The send and the reply record (§6.2, §6.3).
   bool flooded = false;
+  // §6.2 (link 1.3): whether the answer carried `scoped` at all - it does in a session of 1.3
+  // and not in an older one - and, when it did, whether the packet went out as a flood carrying
+  // a transport code of the radio's default scope (§6.5).
+  bool scoped_said = false;
+  bool scoped = false;
   std::uint32_t tag = 0;
   std::uint8_t state = link::reply_state::kNone;
   bool via_path = false;

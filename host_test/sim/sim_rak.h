@@ -29,6 +29,13 @@
 //   - a password is in RAM for the length of the send: the one buffer here is wiped as soon as
 //     the repeater has been handed the login, and a sensitive CLI line the same.
 //
+// §6.5's FLOOD_SCOPE is modelled from link 1.3 (task p14-01), and the half of it that belongs
+// here is the half about a **send**: the mode this radio holds is `radio.flood_mode` (the scripted
+// radio answers the request and keeps the name), and this class applies it - `scoped` at the end
+// of a send's answer in a session of 1.3, and the mode back to 1 after every SEND_* it executes
+// and after JOB_BEGIN and JOB_END, as §6.5 says. Nothing of it goes on the air: `client_tx` moves
+// for the send and not for the request before it.
+//
 // §5.9's LOCAL_REQUEST is modelled from link 1.2 (task p9-06): the repeater's own request handler
 // behind `local_door`, answering status, the access list, neighbours and owner info with the bytes
 // a mesh admin would have been answered - nothing on the air, no job needed, `client_tx` unmoved.
@@ -152,6 +159,12 @@ class SimRak final : public interfaces::ByteStream {
     std::uint32_t timeout_ms = 0;
     std::uint32_t tag = 0;
     std::uint64_t at_ms = 0;
+    // §6.2's `scoped` (link 1.3): the packet went out as a flood carrying a transport code of
+    // this radio's default scope. False for a direct send, for a flood this radio was asked to
+    // send without it, for a radio that holds no default scope, and in a session older than 1.3 -
+    // where the answer does not carry the byte at all (`scoped_said`).
+    bool scoped = false;
+    bool scoped_said = false;
   };
   std::vector<Sent> sent;  // one per packet put on the air: §6.4's client_tx
   std::uint32_t client_tx() const { return static_cast<std::uint32_t>(sent.size()); }

@@ -150,6 +150,7 @@ constexpr Simple kSimple[] = {
     {"reset", Verb::kRakReset},   {"hello", Verb::kRakHello},  {"ping", Verb::kRakPing},
     {"status", Verb::kRakStatus}, {"id", Verb::kRakId},        {"power", Verb::kRakPower},
     {"env", Verb::kRakEnv},       {"events", Verb::kRakEvents}, {"text", Verb::kRakText},
+    {"scope", Verb::kRakScope},
     // The supervisor (task p2-05): the ladder, run now.
     {"ladder", Verb::kRakLadder},
 };

@@ -2,13 +2,15 @@
 // (host_test/CMakeLists.txt), so the tests read the specification's own copy of the fixtures and
 // not a transcription of them; the hex both ways is fixtures/hex.h.
 //
-// **Three files, because the link has three minors** (spec/LINK-PROTOCOL.md, *Versions*).
+// **Four files, because the link has four minors** (spec/LINK-PROTOCOL.md, *Versions*).
 // `link-v1.json` is 1.0's and keeps its bytes for ever; `link-v1.1.json` is every case of it plus
 // the four of 1.1; `link-v1.2.json` is every case of 1.1 plus the fourteen of 1.2 (§5.9's
-// LOCAL_REQUEST and the HELLOs that carry its bit). `linkFixture()` is 1.0's and is what the
-// scripted radio answers from - the radio on the bench runs repeater v0.1.0, which speaks 1.0 -
-// and `linkFixture11()`/`linkFixture12()` are the newer files, which the codec's own test walks
-// as well (tasks p8-05 and p9-06).
+// LOCAL_REQUEST and the HELLOs that carry its bit); `link-v1.3.json` is every case of 1.2 plus
+// the nineteen of 1.3 (§6.5's FLOOD_SCOPE, the HELLOs that carry its bit, and the send answers
+// that end with `scoped`). `linkFixture()` is 1.0's and is what the scripted radio answers from -
+// the radio on the bench runs repeater v0.1.0, which speaks 1.0 - and `linkFixture11()`,
+// `linkFixture12()` and `linkFixture13()` are the newer files, which the codec's own test walks
+// as well (tasks p8-05, p9-06 and p14-01).
 #pragma once
 
 #include <doctest.h>
@@ -64,6 +66,14 @@ inline const jsonfix::Value& linkFixture11() {
 // answers, and its two refusals).
 inline const jsonfix::Value& linkFixture12() {
   static jsonfix::Value fixture = loadLinkFixtureFrom("link-v1.2.json");
+  return fixture;
+}
+
+// 1.3's file: every case of 1.2 and the nineteen of 1.3 (the HELLO that asks for minor 3 and the
+// three answers it can get, the EV_BOOT with the bit, FLOOD_SCOPE's three requests and its six
+// answers, and the four send answers that end with `scoped`).
+inline const jsonfix::Value& linkFixture13() {
+  static jsonfix::Value fixture = loadLinkFixtureFrom("link-v1.3.json");
   return fixture;
 }
 

@@ -90,6 +90,15 @@ class FakeMesh : public FakeMeshRepeater {
   bool supports(const char* jobType) const override {
     return FakeMeshRepeater::supports(jobType) && world_.mesh.supports(jobType);
   }
+  // §6.5, link 1.3 (task p14-01): the scope the runner's rule is applied to, and the mode it asks
+  // for, are the **link's** - as every other call here is - so the library's own scenarios run
+  // over `FLOOD_SCOPE` and over §6.2's `scoped` and not over the repeater fake's idea of a scope.
+  // Against the scripted radio these scenarios use - a radio of 1.2 - `LinkMesh::floodScope()` is
+  // null and `setFloodMode` sends nothing, which is exactly what the repeater fake answered
+  // before this, so every one of them is unchanged until a test turns the radio's own switch
+  // (`radio.speakLink13`).
+  const char* floodScope() const override { return world_.mesh.floodScope(); }
+  void setFloodMode(mm::FloodMode mode) override { world_.mesh.setFloodMode(mode); }
 
   bool beginJob(const char* publicKeyHex, const uint8_t* pathHashes, uint8_t hopCount, uint8_t hashSize) override {
     return world_.mesh.beginJob(publicKeyHex, pathHashes, hopCount, hashSize);

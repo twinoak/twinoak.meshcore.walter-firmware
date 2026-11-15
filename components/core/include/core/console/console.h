@@ -259,6 +259,7 @@ class Console final : public ReportSource {
   void rakEnv();
   void rakCli(const char* line, std::size_t size);
   void rakRequest(std::uint8_t req_type, const std::uint8_t* data, std::size_t size);
+  void rakScope();
   void rakEvents();
   // The queued/seen/dropped/gaps line and the link's counters, taking nothing out of the queue:
   // the first thing `rak events` prints, and the whole of what the report's `radio` section asks

@@ -2,6 +2,16 @@
 
 Items for a later task of this phase are tagged with it. Only the reviewer ticks an item.
 
+- [ ] **[later] The library counts a flood under the scope it *asked* for, not the one it got.**
+  `FloodPolicy::sent(flooded, mode)` keeps the mode the rule chose and `answered()` files the
+  transaction under it (`components/agent-core/src/FloodScope.cpp`), so a flood asked `Scoped`
+  that §6.2's `scoped` says went out **unscoped** - a `region default` cleared under this end's
+  feet, a `mode` 2 that did not take - is counted as `answeredScoped`. This end notices (the
+  name is read again and `LinkMeshCounters::scope_surprises` counts it) and cannot correct the
+  library's figure: `agent-core` is a hash-checked copy of upstream and is not changed here.
+  The cure is in the exit-node firmware: `sent()` would take what the mesh says the send came
+  to. Until then `scope_surprises` is how often the three counts could be wrong, and on a
+  healthy unit it is 0.
 - [ ] **[later] No way to turn the unscoped try off on a unit.** The library's `flood.unscoped`
   (*retry* or *never*) has a console key on the companion exit nodes and none here: the default,
   *retry*, holds. The day `flood.max.unscoped` is nought on the Danish mesh that try is airtime

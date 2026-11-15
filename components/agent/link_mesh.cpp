@@ -73,6 +73,132 @@ void LinkMesh::clearOwnKey() {
   zeroBytes(own_key_, sizeof own_key_);
 }
 
+// ---------------------------------------------------------------------------- the flood scope
+
+// §6.5: the capability **and** a session of 1.3 or later. The bit alone is not enough - a radio
+// that has it and settled on 1.2 (because this Walter asked for less, or because it did) answers
+// the request ERR_STATE, "nothing is scoped there, and there is no mode to set" - and a session
+// of 1.3 without the bit answers ERR_UNSUPPORTED. Both are "this mesh says nothing about scope".
+bool LinkMesh::scopeOnTheLink() const {
+  return client_.hasCapability(link::cap::kFloodScope) &&
+         client_.session().proto_minor >= link::kFloodScopeMinor;
+}
+
+void LinkMesh::forgetScope() {
+  scope_known_ = false;
+  flood_scope_[0] = 0;
+}
+
+// §6.5: 1 to 30 bytes, or empty for a radio that holds no default scope. A longer one is kept
+// truncated rather than refused: the name is reported and never computed with - the radio puts
+// the transport code on the packet - so a name this end cannot hold whole is still worth more
+// to a person on meshmaster.dk than nothing.
+void LinkMesh::keepScope(link::Text name) {
+  std::size_t n = name.size;
+  if (n > link::kMaxFloodScopeName) n = link::kMaxFloodScopeName;
+  for (std::size_t i = 0; i < n; ++i) flood_scope_[i] = name.data[i];
+  flood_scope_[n] = 0;
+  scope_known_ = true;
+}
+
+bool LinkMesh::readFloodScope(std::uint8_t mode) {
+  if (mode == link::flood_mode::kAsk) {
+    link_counters_.scope_asks = saturate(link_counters_.scope_asks);
+  } else {
+    link_counters_.scope_unscoped = saturate(link_counters_.scope_unscoped);
+  }
+  const lc::Answer<link::FloodScopeResponse> answer = client_.floodScope(mode);
+  if (!note(answer)) {
+    if (mode != link::flood_mode::kAsk) {
+      link_counters_.scope_failed = saturate(link_counters_.scope_failed);
+    }
+    return false;
+  }
+  // Every answer carries the name, whichever mode was asked for (§6.5), so a `mode` 2 read keeps
+  // this end's idea of the scope fresh for nothing.
+  keepScope(answer.message.scope);
+  return true;
+}
+
+bool LinkMesh::askFloodScope() {
+  if (!scopeOnTheLink()) {
+    forgetScope();  // a session that cannot scope says nothing, and holds no name from an older one
+    return false;
+  }
+  if (scope_known_) {
+    return true;  // once a session: the radio tells this end when a send goes the other way
+  }
+  return readFloodScope(link::flood_mode::kAsk);
+}
+
+const char* LinkMesh::floodScope() const {
+  if (!scopeOnTheLink() || !scope_known_) {
+    return nullptr;  // IMesh: "a mesh that says nothing about scope"; the heartbeat has no `flood`
+  }
+  // §6.5: an empty name is a radio that holds no default scope, and its floods carry no transport
+  // code - which is exactly the library's `*`.
+  return flood_scope_[0] != 0 ? flood_scope_ : mm::kFloodScopeUnscoped;
+}
+
+// §6.5, before a send: the one request that drops the scope, and nothing else. `floods` is
+// whether this send will go out as a flood - for a login, a request and a CLI line that is "the
+// job holds no path" (§6.2 sends those direct with one), and a discovery is always flooded.
+bool LinkMesh::scopeTheSend(bool floods) {
+  expect_scoped_ = false;
+  if (job_.local) {
+    return true;  // the local door puts nothing on the air: there is no flood to scope
+  }
+  const char* scope = floodScope();
+  if (scope == nullptr || mm::floodScopeIsUnscoped(scope)) {
+    return true;  // nothing to drop: this end says nothing about scope, or the radio holds none
+  }
+  if (!floods) {
+    return true;  // a path has no scope (§6.5): the send goes direct and carries no code
+  }
+  if (next_flood_ != mm::FloodMode::Unscoped) {
+    expect_scoped_ = true;  // §6.5: the radio scopes the client's floods unasked in a 1.3 session
+    return true;
+  }
+  if (!readFloodScope(link::flood_mode::kUnscopedNext)) {
+    // Refused or unanswered: nothing is transmitted. A try meant to go without the scope that
+    // goes out with it is the first packet again, and airtime for nothing.
+    return false;
+  }
+  return true;
+}
+
+// §6.2's `scoped`, against what was asked for. The radio is the one that knows: a flood that came
+// back the other way means this end's idea of the scope is stale - a `region default` changed over
+// the mesh, a `mode` 2 that did not take - so the name is read again and `floodScope()` says what
+// the radio says now.
+void LinkMesh::believeScoped(const link::SendResponse& answer) {
+  await_scoped_said_ = answer.has_scoped;
+  await_scoped_ = answer.has_scoped && answer.scoped != link::scoped::kNo;
+  last_record_.scoped_said = await_scoped_said_;
+  last_record_.scoped = await_scoped_;
+  if (!answer.has_scoped || answer.send != link::send_result::kFlood) {
+    return;  // an older session says nothing about it, and only a flood carries a code at all
+  }
+  if (await_scoped_ == expect_scoped_) {
+    return;
+  }
+  link_counters_.scope_surprises = saturate(link_counters_.scope_surprises);
+  forgetScope();
+  (void)readFloodScope(link::flood_mode::kAsk);
+}
+
+// A send that was never made: the FLOOD_SCOPE that had to go first did not answer (§6.5), so
+// nothing is on the air, nothing is awaited and nothing is held - which is what `afterSend`
+// leaves behind for a send the radio refused.
+mm::SendResult LinkMesh::sendNotMade() {
+  clearReply();
+  await_ = Await::kNone;
+  resolved_ = false;
+  await_scoped_ = false;
+  await_scoped_said_ = false;
+  return mm::SendResult::Failed;
+}
+
 // ---------------------------------------------------------------------------- the link's answers
 
 template <typename Response>
@@ -276,6 +402,15 @@ bool LinkMesh::beginJob(const char* publicKeyHex, const std::uint8_t* pathHashes
     path.hop_count = hopCount;
     path.hashes = link::Bytes{pathHashes, static_cast<std::size_t>(hopCount) * hashSize};
   }
+  // §6.5: a session whose one ask went unanswered asks again here, before the job begins. The
+  // radio scopes this job's floods whether or not this end knows the name, and a job run without
+  // it would have no try without the scope at all - so a job that cannot learn the name fails as
+  // one whose JOB_BEGIN failed, and nothing is begun on the radio's side either.
+  if (scopeOnTheLink() && !scope_known_ && !readFloodScope(link::flood_mode::kAsk)) {
+    job_.begun = false;
+    cachePath(link::Path{});
+    return true;
+  }
   const lc::Answer<link::StatusOnly> answer = client_.jobBegin(link::Bytes{job_.peer, kKeyLen}, path);
   // A link that did not take the job is not "a key that is not 64 hex characters": the job is
   // begun as far as the library is concerned and the sends that follow are refused by the RAK
@@ -345,6 +480,8 @@ mm::SendResult LinkMesh::afterSend(const lc::Answer<link::SendResponse>& answer,
   clearReply();
   await_ = Await::kNone;
   resolved_ = false;
+  await_scoped_ = false;
+  await_scoped_said_ = false;
   if (!note(answer)) {
     return mm::SendResult::Failed;
   }
@@ -360,6 +497,10 @@ mm::SendResult LinkMesh::afterSend(const lc::Answer<link::SendResponse>& answer,
   await_tag_ = m.tag;
   await_flood_ = m.send == link::send_result::kFlood;
   last_record_.flood = await_flood_;
+  // §6.2 (1.3): what the radio says the packet went out as, kept beside `flood` and held against
+  // what this end asked for. Last, so that a re-read of the name does not disturb the wait that
+  // has just begun - §6.5 puts nothing on the air and needs no job.
+  believeScoped(m);
   return await_flood_ ? mm::SendResult::Flood : mm::SendResult::Direct;
 }
 
@@ -367,6 +508,13 @@ mm::SendResult LinkMesh::sendLogin(const char* password, std::uint32_t& tag) {
   tag = 0;  // §6.2: a login reply carries the peer's timestamp, not ours
   if (job_.local) {
     return localLogin();
+  }
+  // §6.5: the one request that drops the scope goes immediately before this send, and only when
+  // this send will flood - a job with a path goes direct, and a path has no scope. Before the
+  // password is copied anywhere, so that §6's "in RAM for the length of the send" stays the
+  // length of the send and not the length of two exchanges.
+  if (!scopeTheSend(!hasPath())) {
+    return sendNotMade();
   }
   // At most 15 bytes go (kMaxPassword: what the firmware at the other end keeps), copied into
   // the one buffer of this object that ever holds a password, and wiped before this returns. The
@@ -388,6 +536,9 @@ mm::SendResult LinkMesh::sendRequest(std::uint8_t reqType, const std::uint8_t* d
   if (job_.local) {
     return localRequest(reqType, data, len);
   }
+  if (!scopeTheSend(!hasPath())) {
+    return sendNotMade();  // §6.5: the FLOOD_SCOPE did not answer; nothing was transmitted
+  }
   const link::Bytes body{len == 0 ? nullptr : data, len};
   const lc::Answer<link::SendResponse> answer = client_.sendRequest(kSendTimeoutCeilingMs, reqType, body);
   return afterSend(answer, Await::kResponse, &tag, nullptr);
@@ -402,6 +553,9 @@ mm::SendResult LinkMesh::sendCli(const char* text, bool sensitive, std::uint32_t
   if (size < 1 || size > link::kMaxMeshCliText) {
     return mm::SendResult::Failed;  // §6.2: 1 to 148 bytes, and the RAK would say ERR_MALFORMED
   }
+  if (!scopeTheSend(!hasPath())) {
+    return sendNotMade();  // §6.5: the FLOOD_SCOPE did not answer; nothing was transmitted
+  }
   const std::uint8_t flags = sensitive ? link::send_cli_flag::kSensitive : 0;
   const lc::Answer<link::SendResponse> answer =
       client_.sendCli(kSendTimeoutCeilingMs, flags, link::Text{text, size});
@@ -415,6 +569,11 @@ mm::SendResult LinkMesh::sendDiscovery(std::uint32_t& tag) {
   if (job_.local) {
     link_counters_.local_unserved = saturate(link_counters_.local_unserved);
     return mm::SendResult::Failed;  // a flood to oneself discovers nothing
+  }
+  // §6.2: a discovery is **always flooded**, path or no path (§6.5 scopes "every
+  // SEND_DISCOVERY"), so the question the other three ask about the path is not asked here.
+  if (!scopeTheSend(true)) {
+    return sendNotMade();  // §6.5: the FLOOD_SCOPE did not answer; nothing was transmitted
   }
   const lc::Answer<link::SendResponse> answer = client_.sendDiscovery(kSendTimeoutCeilingMs);
   return afterSend(answer, Await::kResponse, &tag, nullptr);
@@ -446,6 +605,8 @@ bool LinkMesh::recordFrom(const link::ReplyRecord& record) {
   last_record_.rssi = record.rssi;
   last_record_.elapsed_ms = record.elapsed_ms;
   last_record_.flood = await_flood_;
+  last_record_.scoped_said = await_scoped_said_;
+  last_record_.scoped = await_scoped_;
   reply_.tag = record.tag;
   switch (record.state) {
     case link::reply_state::kResponse: {
@@ -606,6 +767,12 @@ bool LinkMesh::awaitText(std::uint32_t timeoutMs, void (*pump)()) { return await
 void LinkMesh::onRadioRestart(std::uint32_t boot_id, std::uint8_t reset_reason) {
   (void)boot_id;
   (void)reset_reason;
+  // §6.5: the session's version is per boot, so a radio that restarted is back at 1.0 and floods
+  // unscoped until the next HELLO. Forgotten here whether or not a job was begun - the name is
+  // the session's and not the job's - so that between the restart and that HELLO this end tells
+  // the library **nothing** rather than a scope the radio is not using.
+  forgetScope();
+  next_flood_ = mm::FloodMode::Scoped;
   if (!job_.begun || job_.local) {
     return;  // a local job is this end's own; the RAK held nothing for it
   }

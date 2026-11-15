@@ -1,4 +1,4 @@
-// The box link's numbers, protocol 1.2: spec/LINK-PROTOCOL.md §2-§8 as one header. Nothing here
+// The box link's numbers, protocol 1.3: spec/LINK-PROTOCOL.md §2-§8 as one header. Nothing here
 // is a decision - every constant is a cell of one of that document's tables, with the section it
 // comes from beside it, so that a reader can hold the two side by side. spec/tools/linkref.py is
 // the same numbers as Python and the fixtures it generates are what the tests check them against.
@@ -18,7 +18,7 @@ namespace link {
 // The version this firmware speaks (§5.1). A RAK that does not speak this major answers
 // ERR_UNSUPPORTED; within a major, a minor only adds things.
 constexpr std::uint8_t kProtoMajor = 1;
-constexpr std::uint8_t kProtoMinor = 2;
+constexpr std::uint8_t kProtoMinor = 3;
 
 // §5.1, *Versions* and *The band, and why it is here*: 1.1 added `band` at the end of HELLO's
 // response body (which EV_BOOT carries too). A body says its own minor, so this is read off the
@@ -29,6 +29,20 @@ constexpr std::uint8_t kBandMinor = 1;
 // what decides whether the request may be made is the **capability bit** the session carries
 // (cap::kLocalRequest below, `capabilityOf`), as it is for every other optional type of §4.
 constexpr std::uint8_t kLocalRequestMinor = 2;
+
+// §6.5: 1.3 added FLOOD_SCOPE, its capability bit and one byte at the end of a send's answer.
+// Two things turn on this number rather than on a capability bit, which is why it is not only
+// here for the record:
+//
+//   - **a send's `scoped`** (§6.2) is present in a session of 1.3 or later and absent in an older
+//     one, and nothing in that payload says which - the *session's version* does (§5.1). The
+//     decoder therefore tells *absent* from 0 by the payload's length and a reader asks the
+//     session which it is;
+//   - **the request itself** is ERR_STATE in a session older than 1.3 (§6.5), whatever the
+//     capability said: "nothing is scoped there, and there is no mode to set". The capability bit
+//     is still what decides whether it may be made at all (`capabilityOf`), as for every other
+//     optional type of §4.
+constexpr std::uint8_t kFloodScopeMinor = 3;
 
 // §2, the shape of a packet and of a frame.
 //
@@ -111,6 +125,7 @@ constexpr std::uint8_t kSendTrace = 0x28;     // MESH_CLIENT   §6.2
 constexpr std::uint8_t kReplyGet = 0x29;      // MESH_CLIENT   §6.3
 constexpr std::uint8_t kObsPull = 0x2A;       // OBSERVATIONS  §7
 constexpr std::uint8_t kMeshCounters = 0x2B;  // MESH_CLIENT   §6.4
+constexpr std::uint8_t kFloodScope = 0x2C;    // FLOOD_SCOPE   §6.5
 // 0x30-0x3F reserved: the bridge role
 constexpr std::uint8_t kEvBoot = 0x60;        // always        §5.1
 constexpr std::uint8_t kEvMeshReply = 0x61;   // MESH_CLIENT   §6.3
@@ -153,6 +168,7 @@ constexpr std::uint32_t kObservations = 0x10;
 constexpr std::uint32_t kAttention = 0x20;
 constexpr std::uint32_t kTimePersist = 0x40;
 constexpr std::uint32_t kLocalRequest = 0x80;  // 1.2, §5.9: a role with a request handler
+constexpr std::uint32_t kFloodScope = 0x100;  // 1.3, §6.5: a role whose client can scope a flood
 }  // namespace cap
 
 // §4's third column as code: the capability bit a message's type needs, or 0 for "always". A radio
@@ -171,6 +187,8 @@ constexpr std::uint32_t capabilityOf(std::uint8_t message_type) {
       return cap::kEnv;
     case type::kLocalRequest:  // §5.9: the capability of a role with a request handler
       return cap::kLocalRequest;
+    case type::kFloodScope:  // §6.5: the capability of a role whose mesh client can scope a flood
+      return cap::kFloodScope;
     case type::kJobBegin:
     case type::kJobEnd:
     case type::kPathSet:
@@ -276,6 +294,32 @@ constexpr std::size_t kMaxPathBytes = 64;
 // §6.2, a send response's `send`.
 namespace send_result {
 constexpr std::uint8_t kNothingSent = 0, kFlood = 1, kDirect = 2;
+}
+
+// §6.5 (1.3), FLOOD_SCOPE's `mode`, in the request and in the answer. The request takes all
+// three; the answer is `kScopedNext` or `kUnscopedNext` and says what the **next** send will be.
+// Any other value is ERR_RANGE.
+namespace flood_mode {
+constexpr std::uint8_t kAsk = 0;           // ask: nothing changes
+constexpr std::uint8_t kScopedNext = 1;    // the next send, if it floods, takes the default scope
+constexpr std::uint8_t kUnscopedNext = 2;  // the next send, if it floods, carries no transport code
+
+// Whether this is a mode the radio may answer with (§6.5: "`mode : u8`, 1 or 2").
+constexpr bool isAnswered(std::uint8_t mode) {
+  return mode == kScopedNext || mode == kUnscopedNext;
+}
+}  // namespace flood_mode
+
+// §6.5: the default scope's name as `region default` prints it, without a leading `#`, 1 to 30
+// bytes - or empty, which is a radio that holds none. The encoder of a request has no name to
+// write; this bounds what a reader of the answer keeps.
+constexpr std::size_t kMaxFloodScopeName = 30;
+
+// §6.2 (1.3), a send answer's `scoped`: 1 when the packet went out as a flood carrying a
+// transport code of the default scope. 0 for a direct send, a flood without one, and when
+// nothing was sent.
+namespace scoped {
+constexpr std::uint8_t kNo = 0, kYes = 1;
 }
 
 // §6.3, a reply record's `state`. Like path_mode this selects the layout of the rest.

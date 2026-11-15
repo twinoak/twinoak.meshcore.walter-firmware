@@ -41,6 +41,10 @@ bool LinkMeshProbe::status(const char* keyHex, std::uint32_t timeout_ms, MeshPro
   }
   out->flooded = sent == mm::SendResult::Flood;
   out->tag = tag;
+  // §6.2's `scoped`, as the send's answer carried it (link 1.3). Read here rather than off the
+  // reply record below, because a send that is never answered still went out one way or another.
+  out->scoped_said = mesh_.lastRecord().scoped_said;
+  out->scoped = mesh_.lastRecord().scoped;
 
   const bool answered = mesh_.awaitReply(tag, timeout_ms, nullptr);
   const LastRecord& record = mesh_.lastRecord();

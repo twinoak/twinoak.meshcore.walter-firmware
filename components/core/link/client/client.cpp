@@ -794,6 +794,12 @@ Answer<MeshCountersResponse> Client::meshCounters() {
   return call<MeshCountersRequest, MeshCountersResponse>(MeshCountersRequest{});
 }
 
+Answer<FloodScopeResponse> Client::floodScope(std::uint8_t mode) {
+  FloodScopeRequest request;
+  request.mode = mode;
+  return call<FloodScopeRequest, FloodScopeResponse>(request);
+}
+
 }  // namespace client
 }  // namespace link
 }  // namespace core

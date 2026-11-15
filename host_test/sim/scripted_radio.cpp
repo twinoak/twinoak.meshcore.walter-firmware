@@ -244,6 +244,42 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
     }
   }
 
+  // §6.5 (link 1.3), FLOOD_SCOPE. The fixtures hold its cases but not this radio's own scope, so
+  // the answer is built here: the default scope's name and what the next send will do with it.
+  // No job is needed, nothing goes on the air and `client_tx` does not move.
+  if (type == link::type::kFloodScope) {
+    *case_name = "flood scope";
+    if (!flood_scope_capable) {
+      // §6.5's last line: "A RAK without it answers ERR_UNSUPPORTED, and its floods carry no
+      // transport code."
+      return std::vector<std::uint8_t>{link::status::kUnsupported};
+    }
+    if (packet.payload.size < 1) {
+      return std::vector<std::uint8_t>{link::status::kMalformed};
+    }
+    const std::uint8_t mode = packet.payload.data[0];
+    if (mode != link::flood_mode::kAsk && !link::flood_mode::isAnswered(mode)) {
+      return std::vector<std::uint8_t>{link::status::kRange};  // §6.5: any other mode
+    }
+    if (session_minor_ < link::kFloodScopeMinor) {
+      // §6.5: "In a session older than 1.3 the answer is ERR_STATE: nothing is scoped there, and
+      // there is no mode to set." The bit is in `caps` and the session settled lower - which is
+      // what a 1.3 radio does for a 1.2 Walter, and what it does after a restart until the next
+      // HELLO.
+      return std::vector<std::uint8_t>{link::status::kState};
+    }
+    if (mode == link::flood_mode::kAsk) {
+      ++flood_scope_asks;
+    } else {
+      if (mode == link::flood_mode::kUnscopedNext) ++flood_scope_unscoped;
+      flood_mode = mode;  // §6.5: what the next send, if it floods, will be
+    }
+    std::vector<std::uint8_t> out{link::status::kOk, flood_mode,
+                                  static_cast<std::uint8_t>(flood_scope.size())};
+    out.insert(out.end(), flood_scope.begin(), flood_scope.end());
+    return out;
+  }
+
   // The fixtures' own response for this type: the one whose status is OK if there is one (§3's
   // happy answer), otherwise whatever the fixtures give - SEND_TRACE's only response case is its
   // ERR_RANGE refusal, and that is a true answer to a trace of three-byte hashes.
@@ -259,9 +295,15 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
       *case_name = one["name"].string();
       std::vector<std::uint8_t> payload = fixtures::fromHex(one["payload"].string());
       if (type == link::type::kHello) {
+        // §5.1, *Versions*: "A RAK that speaks the request's major answers with the highest minor
+        // both ends know." The request's minor is its second byte (proto_major, proto_minor, ...).
+        const std::uint8_t asked =
+            packet.payload.size >= 2 ? packet.payload.data[1] : 0;
+        const std::uint8_t mine = speaksMinor();
+        session_minor_ = asked < mine ? asked : mine;
         // §5.1's body, with this radio's own role, capabilities and boot_id in it. The body starts
         // after the status byte: proto_major, proto_minor, role, slot, max_payload, caps, boot_id.
-        payload = helloBody(payload, 1);
+        payload = helloBody(payload, 1, session_minor_);
       }
       // §5.4: the clock this radio holds. A TIME_SET that is answered OK sets it; STATUS and
       // TIME_GET then report it until the radio restarts (no RTC is fitted).
@@ -340,7 +382,7 @@ std::vector<std::uint8_t> ScriptedRadio::responseFor(const core::link::Packet& p
 }
 
 std::vector<std::uint8_t> ScriptedRadio::helloBody(const std::vector<std::uint8_t>& from,
-                                                   std::size_t at) {
+                                                   std::size_t at, std::uint8_t minor) {
   // §5.1: proto_major, proto_minor, role, slot, max_payload, caps (u32), boot_id (u32), then the
   // three str8s. `at` is where the body begins: 1 in a HELLO response (after the status), 1 in an
   // EV_BOOT (after the reset reason).
@@ -349,7 +391,7 @@ std::vector<std::uint8_t> ScriptedRadio::helloBody(const std::vector<std::uint8_
   out[at + 2] = role;
   putU32(out, at + 5, caps);
   putU32(out, at + 9, boot_id);
-  if (fw_version.empty() && board.empty() && band.empty()) {
+  if (minor < link::kBandMinor && fw_version.empty() && board.empty()) {
     return out;  // the fixture's own 1.0 body: a radio that speaks 1.0 and says no band
   }
   // The str8s again, with this radio's own strings where it has them. A str8 is a length and that
@@ -373,8 +415,11 @@ std::vector<std::uint8_t> ScriptedRadio::helloBody(const std::vector<std::uint8_
     strings[1] = board;
   }
   std::size_t count = 3;
-  if (!band.empty()) {
-    out[at + 1] = core::link::kBandMinor;
+  // §5.1: a body of minor 1 or more ends with `band`, and a reader looks for it off the body's
+  // own minor. So the two move together: the minor this body says, and the fourth str8.
+  out[at + 1] = minor;
+  if (minor >= core::link::kBandMinor) {
+    REQUIRE_MESSAGE(!band.empty(), "a body of minor 1 or more ends with a band (§5.1)");
     strings[3] = band;
     count = 4;
   }
@@ -426,10 +471,37 @@ std::uint32_t ScriptedRadio::clockEpoch() const {
   return clock_epoch_ + static_cast<std::uint32_t>((clock_.nowMs() - clock_at_ms_) / 1000u);
 }
 
+std::uint8_t ScriptedRadio::speaksMinor() const {
+  if (flood_scope_capable) return link::kFloodScopeMinor;
+  return band.empty() ? 0 : link::kBandMinor;
+}
+
+void ScriptedRadio::speakLink13(const std::string& default_scope) {
+  flood_scope_capable = true;
+  flood_scope = default_scope;
+  flood_mode = link::flood_mode::kScopedNext;
+  caps |= link::cap::kFloodScope;
+  // §5.1: a body of minor 1 or more ends with a band, so a radio of 1.3 has one. The fixtures'
+  // own, unless a test has already chosen.
+  if (band.empty()) band = "868";
+}
+
+void ScriptedRadio::speakLink12() {
+  flood_scope_capable = false;
+  flood_scope.clear();
+  flood_mode = link::flood_mode::kScopedNext;
+  caps &= ~link::cap::kFloodScope;
+}
+
 void ScriptedRadio::restart(bool announce) {
   boot_id = boot_id * 2654435761u + 1u;  // any new number will do
   event_seq = 0;
   remembered_ = false;
+  // §5.1: "The session's version is ... 1.0 before any HELLO of this boot", and §6.5: "a RAK that
+  // restarted floods unscoped until the next HELLO". So the session's version and the mode go
+  // with the boot; the default scope is the node's configuration and survives.
+  session_minor_ = 0;
+  flood_mode = link::flood_mode::kScopedNext;
   // §5.4: no RTC is fitted, so the clock is gone and the Walter has to set it again.
   clock_set_ = false;
   clock_epoch_ = 0;
@@ -447,7 +519,10 @@ void ScriptedRadio::sendEvent(const std::string& case_name, std::uint32_t after_
   const std::uint8_t type = static_cast<std::uint8_t>((*one)["type"].integer());
   std::vector<std::uint8_t> payload = fixtures::fromHex((*one)["payload"].string());
   if (type == link::type::kEvBoot) {
-    payload = helloBody(payload, 1);  // after the reset reason
+    // §5.1: "EV_BOOT carries the body as the RAK speaks it: a 1.1 RAK puts its band at the end
+    // whether or not the Walter knows 1.1." So the body says this radio's own highest minor and
+    // not the session's - there is no session yet, the radio has just restarted.
+    payload = helloBody(payload, 1, speaksMinor());  // after the reset reason
   }
   sendEventPayload(type, payload, after_ms);
 }
