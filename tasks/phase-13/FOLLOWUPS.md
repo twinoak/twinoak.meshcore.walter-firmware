@@ -57,3 +57,10 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   `core::update::FetchResult` carries both and the entry keeps neither: an entry is nine bytes and
   the eight have to fit one 160-character value of the settings store. If the list is ever wanted
   wider, the place to put the extra bytes is a second key, not a longer entry.
+- [ ] **[next pile] The notes' pull request says no check runs. One does.** The body the release
+  writes (`.github/workflows/release.yml` ~L439) and `docs/release.md` (~L88) say GitHub starts no
+  workflow from an event raised with the job's own token. For v0.1.5's pull request (#60) GitHub
+  started a `ci` run and held it for a maintainer's approval (*action required*); unapproved, such
+  a run expires after about an hour and is listed as failed, as the repeater's did on 13 November
+  (its run 43467131534). The run staying green and *merge by hand* are right as they are. The
+  sentence should say: approve the run and merge when it is green, or merge without waiting.

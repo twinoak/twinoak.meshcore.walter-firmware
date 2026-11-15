@@ -1,0 +1,17 @@
+# Phase 14 — follow-ups
+
+Items for a later task of this phase are tagged with it. Only the reviewer ticks an item.
+
+- [ ] **[later] No way to turn the unscoped try off on a unit.** The library's `flood.unscoped`
+  (*retry* or *never*) has a console key on the companion exit nodes and none here: the default,
+  *retry*, holds. The day `flood.max.unscoped` is nought on the Danish mesh that try is airtime
+  for nothing, and the heartbeat's `answeredUnscoped` is how the day is seen coming.
+- [ ] **[later] The radio's half is the repeater firmware's pile 3.13.** Until a radio of link 1.3
+  is on the unit this board says nothing about scope and its heartbeat has no `flood` object.
+  That is correct, and worth knowing before somebody looks for the line on meshmaster.dk.
+- [ ] **[later] The specification's source is not committed.** `spec/MANIFEST.txt` says *at commit
+  204210b plus uncommitted changes*: links 1.1, 1.2 and 1.3 are in the working tree of
+  `twinoak.meshcore.standard-repeater-design-v2/software/spec` and in no commit of it. Thomas's
+  to commit there; the copy here is byte for byte what that tree holds.
+- [ ] **[later] Phase 13's follow-ups are still open**, the first of them above all: a wake by the
+  radio's line inside a wait sends nothing.
