@@ -262,9 +262,10 @@ class TheOrder(Scratch):
 
 
 class TheCiRun(Scratch):
-    """Deliverable 7 of the task: the commit the release's own pull request makes has no ci run
-    of its own - GitHub starts no workflow from an event raised with the job's token - so the
-    release after it waits for the run of the commit below."""
+    """Deliverable 7 of task p12-02: the commit the release's own pull request makes has no ci run
+    of its own worth waiting for - GitHub holds that pull request's run for a maintainer and the
+    push run that follows a person's merge is cancelled by the next push - so the release after it
+    waits for the run of the commit below."""
 
     git = True
 
@@ -473,6 +474,91 @@ class TheCommandLine(Scratch):
         self.assertEqual(self.main("publish"), 0)
         self.assertTrue(os.path.isfile(os.path.join(self.notes, "v0.1.5.md")))
         self.assertEqual(release_notes.read_version(self.dir), "0.1.6")
+
+
+# ------------------------------------- what the notes' own pull request tells the person merging
+
+
+WORKFLOW = os.path.join(REPO, ".github", "workflows", "release.yml")
+RELEASE_DOC = os.path.join(REPO, "docs", "release.md")
+# The heredoc the publish job writes the body from. The body is a literal in the workflow, so it
+# can be read without a release: the lines between these two, de-indented by the run block's own
+# indentation and with the heredoc's backslashes taken off, are what `gh pr create` is given -
+# pull request #63's body and the rehearsal's out/notes-pr.md (task p12-02) both agree with it.
+BODY_OPENS = "cat > out/notes-pr.md <<EOF"
+BODY_ENDS = "EOF"
+# What three places said and #60 contradicts: GitHub does start a ci run for that pull request,
+# and holds it for a maintainer (docs/upstream.md says the same of the upstream bump's).
+RETIRED = ("No check runs on this pull request",
+           "GitHub starts no workflow",
+           "has no CI run of its own and never will")
+
+
+def workflow_body():
+    """The pull request's body as the job writes it, read out of the workflow itself."""
+    with open(WORKFLOW, encoding="utf-8") as fh:
+        lines = fh.read().split("\n")
+    opens = [i for i, line in enumerate(lines) if line.strip() == BODY_OPENS]
+    if len(opens) != 1:
+        raise AssertionError("%s no longer writes the body with exactly one %r"
+                             % (WORKFLOW, BODY_OPENS))
+    start = opens[0]
+    indent = " " * (len(lines[start]) - len(lines[start].lstrip()))
+    out = []
+    for line in lines[start + 1:]:
+        if line.strip() == BODY_ENDS:
+            # The heredoc is unquoted, so bash takes these two escapes off on the way to the file.
+            return "\n".join(out).replace("\\`", "`").replace("\\$", "$")
+        out.append(line[len(indent):] if line.startswith(indent) else line.lstrip())
+    raise AssertionError("the body in %s is not closed by %r" % (WORKFLOW, BODY_ENDS))
+
+
+class WhatTheNotesPullRequestSays(unittest.TestCase):
+    """Task p14-03. For v0.1.5's notes pull request (#60) GitHub did start a ci run and held it
+    for a maintainer's approval - *action required*, no job of it run, so main's required `verify`
+    never reports and the job's own merge is refused, which is what the job already expects. What
+    was wrong was the sentences: the body, the workflow's comments and docs/release.md all said no
+    check runs on that pull request at all, so a person sent to it read that it could not exist.
+    These hold the three to what #60 and #63 did."""
+
+    def test_the_body_names_the_held_run(self):
+        body = workflow_body()
+        self.assertIn("holds this pull request's `ci` run until a maintainer", body)
+        self.assertIn("action required", body)
+
+    def test_the_body_names_both_ways_out(self):
+        body = workflow_body()
+        self.assertIn("Approve the run", body)
+        self.assertIn("verify` is green", body)
+        self.assertIn("Merge without waiting", body)
+        self.assertIn("about nothing", body)
+
+    def test_the_body_no_longer_says_that_no_check_runs(self):
+        body = workflow_body()
+        for retired in RETIRED:
+            self.assertNotIn(retired, body)
+
+    def test_neither_the_workflow_nor_the_document_says_it_either(self):
+        for path in (WORKFLOW, RELEASE_DOC):
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            for retired in RETIRED:
+                self.assertNotIn(retired, text, "%s still says %r" % (path, retired))
+
+    def test_the_document_says_what_to_do_with_the_held_run(self):
+        with open(RELEASE_DOC, encoding="utf-8") as fh:
+            text = fh.read()
+        for phrase in ("holds that pull request's `ci` run", "action required",
+                       "Approve and run", "Merge without waiting", "about nothing"):
+            self.assertIn(phrase, text)
+
+    def test_the_gate_never_asks_about_the_held_run(self):
+        """Why a held or an expired run on that pull request cannot refuse a later release: the
+        gate asks for `push` runs on the commit the walk ended at, and the held run is a
+        `pull_request` run on the branch. The walk is the other half (TheCiRun above)."""
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn('--workflow ci.yml --commit "$ci_sha" --event push', text)
 
 
 if __name__ == "__main__":

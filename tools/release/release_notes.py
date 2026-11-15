@@ -163,9 +163,13 @@ def ci_commit(repo, sha, limit=10):
     """The commit whose ci run speaks for `sha`, and the commits walked past to find it.
 
     A release leaves a commit behind it: the pull request that files the lines and moves VERSION
-    on, opened and merged by the workflow's own token - and **GitHub starts no workflow from an
-    event raised with that token**, so that commit has no ci run of its own and never will. The
-    next release would then wait 80 minutes for a run that cannot come.
+    on, opened by the workflow's own token. **GitHub holds that pull request's ci run for a
+    maintainer's approval** (it is listed as `action_required` and no job of it runs), so the job
+    cannot merge it and a person does - by approving the held run, or by merging past it, which
+    concludes the held run as a failure about nothing. Either way the push run that then starts on
+    main is for a commit nothing was compiled from, and the next push to main cancels it. So that
+    commit's own run is not a run to wait for, and a release that waited for it would wait 80
+    minutes for a green that may never come.
 
     So the gate walks back along the first parents while a commit changes nothing but VERSION and
     release-notes/, and waits for the ci run of the first commit that changed anything else. That
@@ -379,7 +383,8 @@ def main(argv=None):
             commit, walked = ci_commit(args.repo, sha)
             print(commit)
             for passed in walked:
-                sys.stderr.write("      %s changes only %s and %s: it has no ci run of its own\n"
+                sys.stderr.write("      %s changes only %s and %s: its own ci run, if one ran at "
+                                 "all, is not what speaks for it\n"
                                  % (passed[:7], RELEASE_OWN_FILES[0], RELEASE_OWN_FILES[1]))
         elif args.command == "publish":
             done = publish(version, notes_dir, args.repo)

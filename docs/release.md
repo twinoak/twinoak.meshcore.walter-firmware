@@ -85,19 +85,43 @@ published, and `VERSION` on to the next patch — and offers that commit to `mai
 of its own, because `main` requires one and GitHub's bypass lists take people, teams, roles and
 GitHub Apps, never the Actions token.
 
-**Expect to merge that pull request by hand.** `main` also requires the `verify` check, and no
-check ever runs on a pull request the job's own token opened — GitHub starts no workflow from an
-event raised with it. So the merge is refused, the run's summary says *the release notes are still
-waiting for main* and names the branch, and the run stays green: **the release stands either
-way**. The backstop is the second refusal above — the next release is refused while `VERSION`
-still names a version that has been released — so this cannot be quietly forgotten.
+**Expect to merge that pull request by hand.** `main` also requires the `verify` check, and
+**GitHub holds that pull request's `ci` run until a maintainer approves it** — the same guard as
+the upstream bump's pull request, for the same reason (`docs/upstream.md`, *One click before CI
+runs*): the workflow's own token opened it, so GitHub lists the run as *action required* rather
+than starting it, no job of it runs and nothing reports `verify`. So the job's own merge is
+refused, the run's summary says *the release notes are still waiting for main* and names the
+branch, and the release run stays green: **the release stands either way**. The backstop is the
+second refusal above — the next release is refused while `VERSION` still names a version that has
+been released — so this cannot be quietly forgotten.
+
+**Two ways to land it**, and nothing of the release turns on which:
+
+- **Approve the held run** and merge when `verify` is green, 25 to 45 minutes later. *Actions* →
+  the held `ci` run → **Approve and run**, or
+  `gh api -X POST repos/twinoak/twinoak.meshcore.walter-firmware/actions/runs/<id>/approve`.
+  v0.1.5's notes (pull request #60) went that way: held at 18:13 on 13 November, approved, green
+  at 19:04, merged.
+- **Merge without waiting**, which an administrator is offered because `main` does not tick *Do
+  not allow bypassing the above settings*. GitHub then concludes the run it was holding as
+  **failed**, the second the merge lands — the repeater firmware's run 43467131534 went red at
+  18:00:58 on 13 November, one second after its notes pull request merged — and **that failure is
+  about nothing**: no job of it ever ran, and the commit is `VERSION` and `release-notes/` only.
+  A red run found an hour after a release that went well is this, and not a finding.
+
+A held run nobody touches does not go red by itself and nothing is waiting on it: v0.1.6's (#63)
+sat *action required* for hours with the release long since published.
 
 The commit it makes touches `VERSION` and `release-notes/` and nothing else, which is what lets
-the release after it read it: that commit has no CI run of its own and never will, so the gate
-walks back along the first parents while a commit changes only those two, and waits for the run of
-the first commit that changed anything else (`tools/release/release_notes.py`, `ci_commit`). The
-firmware's bytes cannot have moved in between — they come from `components/` and `main/`, and the
-version is passed into the build by the workflow.
+the release after it read it: the run of that commit is not one to wait for — a person merges the
+pull request, so the push run that starts is for a commit nothing was compiled from, and the next
+push to main cancels it anyway (v0.1.5's merge commit got run 43484073183, cancelled 19 minutes
+later). So the gate does not look at it: it walks back along the first parents while a commit
+changes only those two, and waits for the run of the first commit that changed anything else
+(`tools/release/release_notes.py`, `ci_commit`). It also asks only for `push` runs, so the held
+`pull_request` run on the branch is not a candidate either. The firmware's bytes cannot have moved
+in between — they come from `components/` and `main/`, and the version is passed into the build by
+the workflow.
 
 ## Rehearsing
 
