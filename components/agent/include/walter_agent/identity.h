@@ -34,6 +34,14 @@
 //                        radio with nothing to carry advertises nothing - which is exactly what a
 //                        unit registered before its repeater has to say.
 //   budget               the server's, kept by the library.
+//   flood                (task p14-02) the scope this unit's floods go out in and the three
+//                        counts of a flooded transaction: `scope` and `unscopedRetry` as the
+//                        library's own `buildHeartbeat` writes them - the mesh's §6.5 name and
+//                        the runner's rule - and the three as **totals kept across a sleep**
+//                        (walter_agent/flood_counters.h), because the library's are since boot
+//                        and this board boots at every wake. A radio of link 1.2 says nothing
+//                        about scope and the object is left out altogether, which is what every
+//                        heartbeat of this unit carried before this task.
 //
 // **A unit may have no radio identity at all**, and still checks in: since 20 October a unit is
 // registered at meshmaster.dk before its repeater is, and its RAK may hold no application yet.
@@ -70,6 +78,7 @@
 #include "core/link/client/client.h"
 #include "core/link/radio_identity.h"
 #include "core/power/interval_policy.h"
+#include "walter_agent/flood_counters.h"
 
 namespace agent {
 
@@ -114,6 +123,24 @@ constexpr const char kWakesSilentKey[] = "wakesSilent";
 
 int addWakeCounters(mm::ErrorCounter* out, int count, int capacity,
                     const core::cycle::WakeTotals& totals);
+
+// -- what meshmaster.dk is told about the scope its floods went out in (task p14-02) -----------
+//
+// The heartbeat's `flood` object (`mm::HeartbeatFlood`; meshmaster.dk's D-47), in **one** place:
+// the wake's own heartbeat (`ModemUplink::postHeartbeat`, which is handed the object the library
+// built) and the console's `agent heartbeat` (`Identity::fillHeartbeat`, which builds it from the
+// same two readers the library uses) both go through this, so the printed body and the posted one
+// cannot disagree about the member, its order or its numbers.
+//
+// `scope` is the mesh's (`mm::IMesh::floodScope()`) and **nullptr is no object at all**: a radio
+// of link 1.2 says nothing about scope, and then the heartbeat is byte for byte what it was
+// before this task. `unscoped_retry` is the runner's rule (`JobRunner::floodUnscopedRetry()`),
+// which is the whole of what the library writes there. The three counts are **this board's
+// totals** and not the library's since-boot counts (walter_agent/flood_counters.h).
+//
+// Returns `out`, filled, or nullptr when there is no object to write.
+const mm::HeartbeatFlood* fillFlood(mm::HeartbeatFlood* out, const char* scope,
+                                    bool unscoped_retry, const FloodTotals& totals);
 
 // -- what one wake promises the server ---------------------------------------------------------
 //
@@ -211,6 +238,14 @@ struct HeartbeatExtras {
   // console's `agent heartbeat` fills this from the duty cycle's own; the wake's heartbeat does
   // not come through here at all and takes the same four straight from that object.
   core::cycle::WakeTotals wakes;
+  // The two halves of the heartbeat's `flood` object that are not the identity's either (task
+  // p14-02): the runner's rule, and this board's three totals. The **scope** is the mesh's and
+  // `fillHeartbeat` reads it there, as the library does - so a radio of link 1.2 writes no object
+  // whatever is in here. The console's `agent heartbeat` fills both from the runner and the
+  // kept totals (`IdentityProbe::countFloodsFrom`); the wake's heartbeat does not come through
+  // here at all and `ModemUplink` swaps the totals into the object the library built.
+  bool flood_unscoped_retry = false;
+  FloodTotals flood;
 };
 
 struct IdentityCounters {
@@ -303,7 +338,8 @@ class Identity {
   // `AgentLoop::buildHeartbeat` and `doHeartbeat` build it (agent/AgentLoop.cpp). `mesh` answers
   // `supports()` for the job type list and `extension` adds its types after the thirteen, as the
   // library does; either may be null, and then the list is empty. The `const char*` fields point
-  // into this object and into `errors`, which the caller owns.
+  // into this object and into `errors`, which the caller owns; so does the `flood` object, whose
+  // `scope` points into the mesh (task p14-02).
   void fillHeartbeat(mm::Heartbeat* out, const mm::IMesh* mesh, const mm::IJobExtension* extension,
                      const HeartbeatExtras& extras, const mm::WakeIntent& intent,
                      mm::ErrorCounter* errors, int error_capacity);
@@ -345,6 +381,10 @@ class Identity {
 
   RadioBlock radio_;
   mm::HeartbeatIdentity identity_;
+  // The heartbeat's `flood` object, kept here as the library keeps its own (`AgentLoop::flood_`):
+  // `mm::Heartbeat::flood` is a pointer and nothing copies what it points at, so the object has
+  // to outlive the call that writes the body (task p14-02).
+  mm::HeartbeatFlood flood_;
   IdentityCounters counters_;
   // The job type list, as the library keeps its own: the thirteen and the extension's.
   const char* job_types_[mm::kJobTypeCount + mm::kMaxExtensionTypes] = {};

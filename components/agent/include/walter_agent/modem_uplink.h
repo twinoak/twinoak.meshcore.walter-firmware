@@ -71,6 +71,7 @@
 #include "interfaces/http.h"
 #include "interfaces/wall_clock.h"
 #include "walter_agent/call_log.h"
+#include "walter_agent/flood_counters.h"
 
 namespace agent {
 
@@ -190,6 +191,15 @@ class ModemUplink final : public mm::IUplink {
   // the object outlives this one - and null is a build with no settings store, whose heartbeat is
   // byte for byte what it was.
   void countWakesFrom(const core::cycle::WakeTotals* wakes) { wakes_ = wakes; }
+  // **The three counts of a flooded transaction** (task p14-02, walter_agent/flood_counters.h).
+  // Not an `errors` entry but the heartbeat's own `flood` object, and the same arrangement for a
+  // different reason: the library builds that object out of the mesh's scope and its own
+  // *since-boot* counts (agent/AgentLoop.cpp's `buildHeartbeat`), and this board boots at every
+  // wake - so this is where the kept totals are swapped in, leaving the member, its order and
+  // the other two fields exactly as the library wrote them. Held by pointer, so that a heartbeat
+  // carries the totals as they stand when it is built; null leaves the library's own counts,
+  // which is a build with nothing keeping them.
+  void countFloodsFrom(const FloodTotals* floods) { floods_ = floods; }
   // **Where a call that did not come back 2xx is written down** (task p13-02,
   // walter_agent/call_log.h). Every call the library asks for passes through `call()` below, so
   // this is the one place the list can be kept from. Null keeps none.
@@ -278,6 +288,7 @@ class ModemUplink final : public mm::IUplink {
   std::uint64_t deadline_ms_ = 0;
   bool radio_identity_lost_ = false;
   const core::cycle::WakeTotals* wakes_ = nullptr;
+  const FloodTotals* floods_ = nullptr;
   CallLog* calls_ = nullptr;
   core::cycle::AgentAttention* attention_ = nullptr;
   ResultGate* gate_ = nullptr;

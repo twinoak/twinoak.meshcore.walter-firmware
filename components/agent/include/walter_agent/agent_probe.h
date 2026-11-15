@@ -15,6 +15,7 @@
 #include <cstdint>
 
 #include <agent/IJobExtension.h>
+#include <agent/JobRunner.h>
 
 #include "core/console/agent_probe.h"
 #include "core/cycle/duty_cycle.h"
@@ -57,6 +58,16 @@ class IdentityProbe final : public core::console::AgentProbe {
   // build with no settings store to keep them in.
   void countWakesFrom(const core::cycle::WakeTotals* wakes) { wakes_ = wakes; }
 
+  // The heartbeat's `flood` object, so that `agent heartbeat` prints the object a wake posts
+  // (task p14-02): the **runner**, whose rule `unscopedRetry` is, and the **totals** this board
+  // keeps across a sleep (walter_agent/flood_counters.h). The scope itself is the mesh's and is
+  // read there. Either null leaves that half at its default - the rule off, the totals 0 - and a
+  // radio of link 1.2 writes no object whatever is set here.
+  void countFloodsFrom(const mm::JobRunner* jobs, const FloodTotals* floods) {
+    jobs_ = jobs;
+    floods_ = floods;
+  }
+
  private:
   Identity& identity_;
   LinkMesh& mesh_;
@@ -65,6 +76,8 @@ class IdentityProbe final : public core::console::AgentProbe {
   core::cycle::DutyCycle* duty_ = nullptr;
   const mm::IJobExtension* extension_ = nullptr;
   const core::cycle::WakeTotals* wakes_ = nullptr;
+  const mm::JobRunner* jobs_ = nullptr;
+  const FloodTotals* floods_ = nullptr;
   // The body is built here and not on the caller's stack: the main task's stack is 3584 bytes
   // (task p4-03's note on the same buffer).
   char body_[kHeartbeatBodyMax] = {};
