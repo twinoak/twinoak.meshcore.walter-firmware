@@ -94,6 +94,18 @@ constexpr std::uint64_t kWakeDownloadBytes = 1024u * 1024u;
 // waiting on. A trial that does not end in them is step 9's, as before.
 constexpr int kTrialStepsAfterHeartbeat = 50;
 
+// -- what a trial's extra heartbeat may spend (task p14-05) ------------------------------------
+//
+// `beat()` is *one heartbeat and nothing else*, and these two numbers are how that is said to a
+// library whose `wake()` runs every step it has. A transaction cap of one is below the price of
+// the cheapest job (`mm::kTransactionsPerJobAtLeast` is two), so no claim is made; a body cap of
+// one byte stops every result and every observation batch, and stops neither the heartbeat nor
+// the config call, whose bodies the library does not count (agent/AgentLoop.h, `Budget`). What
+// the trial asks about is whether this image can reach the server, and the work of the wake is
+// the next wake's - which will not be long, because the trial is about to end either way.
+constexpr int kTrialBeatTransactions = 1;
+constexpr std::size_t kTrialBeatPostBytes = 1;
+
 // The key the loop's state is kept under, and the hex it is kept as: two characters a byte and a
 // terminator, inside what the store takes (interfaces/key_value.h).
 constexpr const char kStateKey[] = "agent_state";
@@ -124,6 +136,10 @@ struct AgentBackendCounters {
   std::uint32_t trials_confirmed = 0;  // trials this object stepped to their end
   std::uint32_t longer_sleeps = 0;     // wakes where the server's interval was the longer one
   std::uint32_t holds = 0;             // wakes that carried a backoff or a Retry-After out
+  // The trial's extra heartbeats (task p14-05): the ones that went out, and the ones that were
+  // not sent because a wait of the library's own was still running.
+  std::uint32_t trial_beats = 0;
+  std::uint32_t trial_beats_held = 0;
 };
 
 class AgentBackend final : public interfaces::Backend, public core::console::AgentLoopProbe {
@@ -163,6 +179,7 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   // ------------------------------------------------------------------ interfaces::Backend
   interfaces::Exchanged exchange(const interfaces::BackendKnowledge& known, std::uint64_t deadline_ms,
                                  interfaces::BackendAnswer* out) override;
+  interfaces::Beat beat(std::uint64_t deadline_ms) override;
 
   // ------------------------------------------------------------------ core::console::AgentLoopProbe
   bool wake(interfaces::TextOut& out) override;
@@ -179,6 +196,12 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   // in the store still owed before that was taken off. Both 0 when no state was restored.
   std::uint32_t timeAwayMs() const { return away_ms_; }
   std::uint32_t holdOwedBeforeSleepMs() const { return owed_before_ms_; }
+  // **How much of that wait this boot laid aside, and why** (task p14-05). A boot that is on
+  // trial, and the boot of the old image that comes back owing the server a rollback's result,
+  // each have one thing to say that a wait left by an older image's failed call must not answer
+  // for them. 0 when none was laid aside, which is every ordinary wake.
+  std::uint32_t holdLaidAsideMs() const { return laid_aside_ms_; }
+  const char* holdLaidAsideWhy() const { return laid_aside_why_; }
   bool begun() const { return begun_; }
   // The most an offer may download in one wake (kWakeDownloadBytes by default; a test sets a
   // small one to see a wake stop mid-download and the next resume).
@@ -212,6 +235,8 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   bool state_survived_ = false;
   std::uint32_t away_ms_ = 0;         // what restore() was told the sleep lasted
   std::uint32_t owed_before_ms_ = 0;  // ... and the hold the stored state still owed before it
+  std::uint32_t laid_aside_ms_ = 0;   // ... and how much of it this boot did not put back
+  const char* laid_aside_why_ = "";   // ... and in one phrase, why (static text)
   mm::WakeReport report_;
   AgentBackendCounters counters_;
   std::uint64_t download_bytes_ = kWakeDownloadBytes;

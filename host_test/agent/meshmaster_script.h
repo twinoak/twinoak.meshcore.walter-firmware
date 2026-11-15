@@ -90,6 +90,7 @@ class MeshMasterScript {
   }
   void answerAgain() {
     fail_status_ = 0;
+    next_fail_count_ = 0;
     route_status_.clear();
     silent_routes_.clear();
   }
@@ -103,6 +104,16 @@ class MeshMasterScript {
   // The same, for a route that is taken and never answered: the call ends at its deadline with
   // no status at all.
   void silenceRoute(const std::string& suffix) { silent_routes_.push_back(suffix); }
+  // The **next `count` requests to one route** answer `status`, and the route is itself again
+  // after them: a deploy, a gateway that was restarting, an attach that was slow once. Task
+  // p14-05 needs it - a trial whose first heartbeat fails and whose second is answered is one
+  // wake, so the server cannot be told to stop failing in between.
+  void failNextOn(const std::string& suffix, int status, int count, const std::string& retry_after = "") {
+    next_fail_route_ = suffix;
+    next_fail_status_ = status;
+    next_fail_count_ = count;
+    next_fail_retry_after_ = retry_after;
+  }
   // The next `count` result posts answer `status` (a server that takes everything but results).
   void failResults(int status, int count) {
     result_fail_status_ = status;
@@ -263,6 +274,15 @@ class MeshMasterScript {
       reply->body = "{\"title\":\"scripted\"}";
       return true;
     }
+    if (next_fail_count_ > 0 && suffix == next_fail_route_) {
+      --next_fail_count_;
+      reply->status = next_fail_status_;
+      if (!next_fail_retry_after_.empty()) {
+        reply->headers.push_back("Retry-After: " + next_fail_retry_after_);
+      }
+      reply->body = "{\"title\":\"scripted\"}";
+      return true;
+    }
     reply->status = 200;
     const std::uint32_t server_time = server_epoch_ != 0 ? server_epoch_ : 1791936000u;
     if (path == "/agent/v1/config") {
@@ -372,6 +392,11 @@ class MeshMasterScript {
   int gap_seconds_ = 20;
   int fail_status_ = 0;
   std::string fail_retry_after_;
+  // failNext(): a run of failures with an end to it.
+  std::string next_fail_route_;
+  int next_fail_status_ = 0;
+  int next_fail_count_ = 0;
+  std::string next_fail_retry_after_;
   // One route's scripted answer, by the path's suffix under /agent/v1 (task p13-02).
   std::map<std::string, std::pair<int, std::string>> route_status_;
   std::vector<std::string> silent_routes_;

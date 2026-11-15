@@ -450,6 +450,11 @@ class WakeCycle {
   const Pass& last() const { return pass_; }
   bool running() const { return running_; }
 
+  // How many heartbeats the trial of this wake asked the seam for and got a word back on (task
+  // p14-05): what `interfaces::Beat` answered `kAnswered` or `kFailed`, over this boot. 0 in
+  // every wake but one that found itself on trial.
+  std::uint32_t trialBeats() const { return trial_beats_; }
+
   // What crossed the seam at the last exchange: what `cycle` prints, and what a test reads.
   const interfaces::BackendKnowledge& known() const { return known_; }
   const interfaces::BackendAnswer& answer() const { return answer_; }
@@ -501,6 +506,8 @@ class WakeCycle {
 
   // Step 9's two halves, each answering whether it did something.
   bool runTrial(std::uint64_t deadline_ms);
+  // One heartbeat more for a trial whose third condition is still open (task p14-05).
+  bool trialBeat(std::uint64_t deadline_ms);
   bool runSelfUpdate();
   bool runRadioUpdate();
   bool runFetch(std::uint64_t deadline_ms);
@@ -551,6 +558,8 @@ class WakeCycle {
   std::uint32_t radio_epoch_ = 0;
   // The time spent inside a climb, an update or a trial: outside the wake's budget.
   std::uint32_t outside_ms_ = 0;
+  // How many heartbeats the trial asked for and got a word back on, this wake (task p14-05).
+  std::uint32_t trial_beats_ = 0;
   // Whether an update step has already happened in this wake (S-7).
   bool update_ran_ = false;
 };

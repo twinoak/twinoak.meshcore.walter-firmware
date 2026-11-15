@@ -218,13 +218,51 @@ bool AgentBackend::loadState() {
   // five seconds at a time: the unit of 8 November 2026 woke 56 times in a night and
   // meshmaster.dk heard from it on about every sixth.
   const std::uint32_t away_ms = p_.duty != nullptr ? p_.duty->reason().timeAwayMs() : 0;
+  // **And the one boot that owes no wait at all** (task p14-05).
+  //
+  // The wait is real time and the time away is measured, and for every ordinary boot that is the
+  // whole rule. Two boots are not ordinary, and both of them follow a *restart*, which is a boot
+  // that was away seconds and can prove none of them:
+  //
+  //   a boot on trial            it exists to answer one question - can this image reach the
+  //                              server - and a wait an older image's failed call left behind
+  //                              must not answer it *no* before the question has been asked. On
+  //                              15 November 2026 it did: the wake that took v0.1.6's apply at
+  //                              08:41:07 UTC left a hold, v0.1.6 booted owing all of it, sent
+  //                              nothing, and five minutes later a good image was on the bad
+  //                              list (meshmaster.dk job 30474).
+  //   the old image, owing a     the rolled-back v0.1.4 of that same morning owed the server the
+  //   rollback's result          apply's result and owed the same hold, so it too sent nothing;
+  //                              the timer wake eleven minutes later is what finally told
+  //                              meshmaster.dk what had happened. A result the server is waiting
+  //                              for goes in the first wake that can.
+  //
+  // **The line is drawn here and nowhere else**: the wait is dropped from the state before it is
+  // handed over, and the time away is handed over as measured. The library is told nothing untrue
+  // - it is told there was no wait, which from this boot's point of view is the decision this
+  // firmware has taken - and everything else of the state (the backoff, the run of failures, the
+  // halt, the counters, the accepted interval) is restored exactly as it was saved.
+  laid_aside_ms_ = 0;
+  laid_aside_why_ = "";
+  // `bootIsTrial()` and not `onTrial()`: main/main.cpp restores this state (`backend.begin()`)
+  // before the console's `begin()` reaches `SelfUpdate::begin()`, so the machine has not decided
+  // yet - but the bootloader and the journal have, and that is what both read.
+  const bool on_trial = p_.self != nullptr && p_.self->bootIsTrial();
+  const bool owes_result = !on_trial && p_.firmware != nullptr && p_.firmware->owedResultDue();
+  if (s.holdForMs > 0 && (on_trial || owes_result)) {
+    laid_aside_ms_ = s.holdForMs;
+    laid_aside_why_ = on_trial ? "this image is on trial" : "a rollback's result is owed";
+    s.holdForMs = 0;
+  }
   // The library refuses a state of another version and changes nothing.
   if (!p_.loop->restore(s, away_ms)) {
     counters_.state_refused = saturate(counters_.state_refused);
     return false;
   }
   away_ms_ = away_ms;
-  owed_before_ms_ = s.holdForMs;
+  // What the store really carried across, whether it was put back or laid aside: the two figures
+  // together are the whole of what happened to the wait at this boot.
+  owed_before_ms_ = s.holdForMs + laid_aside_ms_;
   std::memcpy(last_hex_, state_hex_, sizeof last_hex_);
   counters_.state_restored = saturate(counters_.state_restored);
   return true;
@@ -319,6 +357,10 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   // this same wake rather than the next; and whatever that result is, it is posted from the
   // journal when the trial has ended.
   bool posted_owed = false;
+  // A heartbeat that went out and did not come back is news for the trial too (task p14-05):
+  // *the server was not reached* is a finding, and the one `check()` must be able to tell from
+  // *nothing was ever sent*.
+  if (report_.heartbeat == mm::StepOutcome::Failed && p_.trial != nullptr) p_.trial->heartbeatFailed();
   if (report_.heartbeat == mm::StepOutcome::Done) {
     if (p_.trial != nullptr) p_.trial->heartbeatOk();
     if (p_.self != nullptr && p_.self->onTrial()) {
@@ -378,6 +420,73 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
                              report_.batchesPosted > 0 || posted_owed ||
                              (p_.firmware != nullptr && p_.firmware->did().asks != 0);
   return did_something ? interfaces::Exchanged::kAsked : interfaces::Exchanged::kNothing;
+}
+
+// -- one heartbeat more, for a trial (task p14-05) ---------------------------------------------
+//
+// The seam's `beat()` (interfaces/backend.h): the wake cycle's trial loop asks for this while
+// the trial's third condition is open, and for nothing else, ever. What it runs is **the
+// library's own wake again** - the only thing in this firmware that posts a heartbeat - with a
+// budget that fits a heartbeat and nothing else (kTrialBeatTransactions, kTrialBeatPostBytes).
+//
+// *When* is the library's: a wake inside a wait of its own answers at once, sends nothing, and
+// comes back `kWaiting`, so the trial asking every tenth of a second costs a comparison. The
+// first heartbeat after a failure therefore goes out when the backoff is over and not before,
+// which is what *the library's own wait has run out* means.
+//
+// `report_` is not touched: it is step 8's wake, which is what `agent wake` and `agent state`
+// print and what the wake's record was written from. This is a heartbeat the trial asked for,
+// and `counters_.trial_beats` is where it is counted.
+interfaces::Beat AgentBackend::beat(std::uint64_t deadline_ms) {
+  if (!begun_ || p_.loop == nullptr) return interfaces::Beat::kNone;
+  const std::uint64_t now = clock_.nowMs();
+  if (now >= deadline_ms) return interfaces::Beat::kWaiting;
+  if (p_.server != nullptr) p_.server->setDeadline(deadline_ms);
+
+  // The interval this unit would have proposed anyway, so that a heartbeat the trial asked for
+  // says of itself exactly what the wake's own said: the duty cycle's decision when it has one.
+  core::power::Band band = core::power::Band::kUnknown;
+  std::uint32_t interval_s = 0;
+  if (p_.duty != nullptr) {
+    band = p_.duty->decided() ? p_.duty->decision().band : p_.duty->reason().band();
+    interval_s = p_.duty->decided() ? p_.duty->decision().interval_seconds
+                                    : core::power::minutesFor(band) * 60u;
+  }
+  mm::WakeIntent intent = intentFor(band, interval_s);
+  intent.maxTransactionsThisWake = kTrialBeatTransactions;
+  mm::Budget budget;
+  const std::uint32_t left_s = static_cast<std::uint32_t>((deadline_ms - now) / 1000u);
+  budget.wakeSeconds = left_s;
+  budget.uplinkSeconds = left_s;
+  budget.postBytes = kTrialBeatPostBytes;
+
+  const mm::WakeReport report = p_.loop->wake(intent, budget);
+  if (report.why[0] != 0) {
+    // The library sent nothing and said why in its own words - a wait, a halt, no uplink, not
+    // configured. None of them is this trial's business to work around: it asks again next time.
+    counters_.trial_beats_held = saturate(counters_.trial_beats_held);
+    return interfaces::Beat::kWaiting;
+  }
+  if (report.heartbeat == mm::StepOutcome::Done) {
+    counters_.trial_beats = saturate(counters_.trial_beats);
+    counters_.heartbeats_ok = saturate(counters_.heartbeats_ok);
+    if (p_.trial != nullptr) p_.trial->heartbeatOk();
+    (void)saveState();
+    if (p_.calls != nullptr) (void)p_.calls->save();
+    return interfaces::Beat::kAnswered;
+  }
+  if (report.heartbeat != mm::StepOutcome::Failed) {
+    // The wake ran and did not reach the heartbeat - no seconds left of what this call was given.
+    // Nothing went out, so the trial is told nothing.
+    counters_.trial_beats_held = saturate(counters_.trial_beats_held);
+    return interfaces::Beat::kWaiting;
+  }
+  counters_.trial_beats = saturate(counters_.trial_beats);
+  counters_.heartbeats_failed = saturate(counters_.heartbeats_failed);
+  if (p_.trial != nullptr) p_.trial->heartbeatFailed();
+  (void)saveState();
+  if (p_.calls != nullptr) (void)p_.calls->save();
+  return interfaces::Beat::kFailed;
 }
 
 // Why this wake sent nothing, or that it was answered (task p10-02).
@@ -655,6 +764,11 @@ void AgentBackend::state(interfaces::TextOut& out) {
        static_cast<unsigned long>(s.holdForMs));
   if (!state_survived_) {
     say(&out, "\n");
+  } else if (laid_aside_ms_ > 0) {
+    // **A wait this boot did not put back** (task p14-05): said instead of the sleep's arithmetic,
+    // because none of it was applied - the wait was laid aside whole, and why is the whole line.
+    sayf(&out, "; %lu s owed before the sleep, laid aside: %s\n",
+         static_cast<unsigned long>(laid_aside_ms_ / 1000u), laid_aside_why_);
   } else if (away_ms_ > 0) {
     sayf(&out, "; %lu s owed before the sleep, %lu s slept\n",
          static_cast<unsigned long>(owed_before_ms_ / 1000u),
@@ -688,6 +802,11 @@ void AgentBackend::state(interfaces::TextOut& out) {
     say(&out, "  the clock: not set in this boot, so nothing this end says is dated (a sleep "
               "loses it: there is no RTC to keep it in)\n");
   }
+  // The trial's own heartbeats (task p14-05): the ones it asked for beyond the wake's, and the
+  // times it asked and the library's wait was still running. Both 0 in every boot but a trial's.
+  sayf(&out, "  the trial asked for %lu heartbeat(s) of its own, held off %lu time(s)\n",
+       static_cast<unsigned long>(counters_.trial_beats),
+       static_cast<unsigned long>(counters_.trial_beats_held));
   sayf(&out, "  the sleep keeps: %s, %lu image(s) written, %lu read back, %lu refused whole; %lu exchange(s), %lu wake(s) run, %lu not run\n",
        p_.kept != nullptr ? (p_.kept->capacity() != 0 ? "a flash window" : "a store of no capacity") : "no store",
        static_cast<unsigned long>(counters_.kept_written), static_cast<unsigned long>(counters_.kept_restored),

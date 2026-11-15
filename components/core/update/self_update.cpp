@@ -105,6 +105,7 @@ const char* describe(UplinkVerdict verdict) {
     case UplinkVerdict::kReached: return "the server was reached";
     case UplinkVerdict::kFailed: return "the server was not reached";
     case UplinkVerdict::kNotConfigured: return "no server is configured";
+    case UplinkVerdict::kNotTried: return "nothing was sent";
   }
   return "?";
 }
@@ -185,6 +186,31 @@ bool decode(const Entry& entry, TrialEvidence* out) {
   return true;
 }
 
+// ------------------------------------------------------------- how the third condition was tried
+
+void encode(const TrialUplink& t, std::uint8_t out[kTrialUplinkPayloadBytes]) {
+  for (std::size_t i = 0; i < kTrialUplinkPayloadBytes; ++i) out[i] = 0;
+  put32(out + 0, t.tries);
+  put32(out + 4, t.elapsed_ms);
+  out[8] = static_cast<std::uint8_t>(t.last);
+}
+
+bool decode(const Entry& entry, TrialUplink* out) {
+  if (entry.kind != kind::kTrialUplink || entry.size < kTrialUplinkPayloadBytes || out == nullptr) {
+    return false;
+  }
+  *out = TrialUplink{};
+  out->tries = get32(entry.payload + 0);
+  out->elapsed_ms = get32(entry.payload + 4);
+  // A stored number this build does not know reads as *nothing was sent*, which is the value that
+  // claims the least.
+  const std::uint8_t last = entry.payload[8];
+  out->last = last <= static_cast<std::uint8_t>(UplinkVerdict::kNotTried)
+                  ? static_cast<UplinkVerdict>(last)
+                  : UplinkVerdict::kNotTried;
+  return true;
+}
+
 // ------------------------------------------------------------------------------- the machine
 
 SelfUpdate::SelfUpdate(interfaces::OwnUpdate& slots, image::Store& store, Journal& journal,
@@ -225,6 +251,23 @@ bool SelfUpdate::journal(SelfState state, SelfReason reason, std::uint8_t flags,
 
 // -- boot ---------------------------------------------------------------------------------------
 
+bool SelfUpdate::bootIsTrial() const {
+  // begin() has decided and written it down: its answer is the one. Before that, the bootloader's
+  // and the journal's - which is what begin() itself reads, through `trialFromBoot()` below.
+  if (begun_) return onTrial();
+  return trialFromBoot();
+}
+
+bool SelfUpdate::trialFromBoot() const {
+  interfaces::OwnSlot run;
+  if (!slots_.running(&run)) return false;
+  SelfPayload last;
+  const bool journalled = lastEntry(&last) &&
+                          self_update::unconfirmed(static_cast<std::uint8_t>(last.state)) &&
+                          last.slot == run.index;
+  return run.state == interfaces::OwnImageState::kPendingVerify || journalled;
+}
+
 SelfBoot SelfUpdate::begin() {
   begun_ = true;
   status_ = SelfStatus{};
@@ -239,8 +282,9 @@ SelfBoot SelfUpdate::begin() {
                                 last.slot == run.index;
 
   // This image is on trial: the bootloader marked it pending-verify (interfaces/own_update.h),
-  // or the journal says it is the one switched to. One boot, three conditions.
-  if (run.state == interfaces::OwnImageState::kPendingVerify || journalled_trial) {
+  // or the journal says it is the one switched to. One boot, three conditions. The same question
+  // is answered by `bootIsTrial()` for a caller that runs earlier in the boot than this does.
+  if (trialFromBoot()) {
     SelfPayload about;
     std::uint8_t flags = 0;
     if (journalled_trial) {
@@ -382,6 +426,18 @@ bool SelfUpdate::lastTrial(LastTrial* out) {
   return true;
 }
 
+bool SelfUpdate::lastUplink(TrialUplink* out) const {
+  if (out == nullptr) return false;
+  *out = TrialUplink{};
+  Entry entry;
+  if (!journal_.lastOf(kind::kTrialUplink, &entry) || !decode(entry, out)) return false;
+  // The same rule the evidence is read under: a self-update entry newer than this belongs to a
+  // story that has moved on, and these figures are an older trial's.
+  Entry newest;
+  if (journal_.lastOf(kind::kSelfUpdate, &newest) && newest.seq > entry.seq) return false;
+  return true;
+}
+
 void SelfUpdate::mainLoopReached() {
   main_loop_ = true;
   if (onTrial()) status_.main_loop = Condition::kMet;
@@ -428,6 +484,19 @@ SelfStep SelfUpdate::reject(SelfReason reason, std::uint8_t flags) {
   s.changed = true;
   s.after = SelfState::kRolledBack;
   s.note = describe(reason);
+  // **How hard the backend was asked**, beside the rollback it explains and only for the reason
+  // it explains (task p14-05). Written after the *rolled back* entry, as the evidence entry is,
+  // so that a reader finds it by the same rule; and if the append fails the story is still
+  // honest - it simply cannot say whether nothing was reached or nothing was asked.
+  if (reason == SelfReason::kNoUplink) {
+    TrialUplink tried;
+    tried.tries = status_.uplink_tries;
+    tried.elapsed_ms = status_.trial_elapsed_ms;
+    tried.last = status_.uplink_last;
+    std::uint8_t bytes[kTrialUplinkPayloadBytes];
+    encode(tried, bytes);
+    (void)journal_.append(kind::kTrialUplink, bytes, sizeof bytes);
+  }
   health_.noteRestart(health::Restart::kSelfUpdateRollback);
   if (!slots_.rejectAndRestart()) {
     // The platform would not roll back: the other slot holds nothing bootable. The image stays
@@ -486,16 +555,28 @@ SelfStep SelfUpdate::step() {
     if (hello.ok() || radio_.mode() == link::client::Mode::kText) status_.radio = Condition::kMet;
   }
 
-  // 3. The uplink, once 1 and 2 are settled: one attempt, another after kTrialUplinkRetryMs.
+  // 3. The uplink, once 1 and 2 are settled: one attempt, another after kTrialUplinkRetryMs -
+  // **and again for as long as the window lasts** (task p14-05), because one slow attach is not
+  // an image that cannot reach the server.
   const bool radio_settled = status_.radio == Condition::kMet || status_.radio == Condition::kNotApplicable;
   if (main_loop_ && radio_settled && status_.uplink != Condition::kMet &&
       status_.uplink != Condition::kNotApplicable && now >= next_uplink_ms_) {
-    next_uplink_ms_ = now + kTrialUplinkRetryMs;
-    ++status_.uplink_tries;
-    switch (uplink_.check()) {
-      case UplinkVerdict::kReached: status_.uplink = Condition::kMet; break;
-      case UplinkVerdict::kNotConfigured: status_.uplink = Condition::kNotApplicable; break;
-      case UplinkVerdict::kFailed: status_.uplink = Condition::kFailed; break;
+    const UplinkVerdict verdict = uplink_.check();
+    // **Nothing went out, so nothing is counted and nothing is paced.** Where the attempt is a
+    // call somebody else makes - the agent's heartbeat, which the wake posts and nothing else may
+    // - this is the reading that found no news, and it costs neither an attach nor a try (task
+    // p14-05). Pacing it would hold the condition shut for half a minute after the heartbeat it
+    // was waiting for had already been answered.
+    if (verdict != UplinkVerdict::kNotTried) {
+      next_uplink_ms_ = now + kTrialUplinkRetryMs;
+      ++status_.uplink_tries;
+      status_.uplink_last = verdict;
+      switch (verdict) {
+        case UplinkVerdict::kReached: status_.uplink = Condition::kMet; break;
+        case UplinkVerdict::kNotConfigured: status_.uplink = Condition::kNotApplicable; break;
+        case UplinkVerdict::kFailed: status_.uplink = Condition::kFailed; break;
+        case UplinkVerdict::kNotTried: break;  // handled above; here for the compiler
+      }
     }
   }
 

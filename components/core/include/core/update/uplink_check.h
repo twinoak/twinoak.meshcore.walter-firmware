@@ -43,6 +43,13 @@ enum class UplinkVerdict : std::uint8_t {
   kReached = 0,        // the exchange completed: the third condition is met
   kFailed,             // the attempt failed (no attach, no route, no handshake); try again later
   kNotConfigured,      // no server is configured: the condition does not apply
+  // **Nothing was sent.** An implementation that does not make the attempt itself - the agent's,
+  // where the attempt is a heartbeat the wake posts and this is a reading of what it came to
+  // (walter_agent/agent_uplink_check.h) - answers this while there is nothing new to report. It
+  // is not a failure: *the server was not reached* and *nothing was ever asked* are two findings
+  // and v0.1.6 was condemned by the second (task p14-05). The trial leaves the condition where it
+  // was, counts no attempt, and looks again.
+  kNotTried,
 };
 
 const char* describe(UplinkVerdict verdict);
