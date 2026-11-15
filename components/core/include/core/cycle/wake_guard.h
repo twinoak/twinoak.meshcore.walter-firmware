@@ -55,15 +55,25 @@ constexpr std::uint32_t kWakeBoundMs = 5u * 60 * 1000;
 // ladder and an update. A climb waits out thirty, sixty and a hundred and twenty seconds between
 // its rungs (`core/supervisor/supervisor.h`) and the state of a climb does not survive a sleep,
 // so a climb either finishes inside its wake or starts again at rung 1 in the next one; and a
-// flash of a megabyte over a 100 kHz debug port, a boot window and a three-minute proving period
-// (`core/update/radio_update.h`) is "several wakes' worth of time", which task p3-05's own words
-// allow a wake to be held open for. So `allow()` raises this wake's bound to what the machine in
-// hand needs, and `core/cycle/wake_cycle.h` is the only caller.
+// flash, a boot window and a three-minute proving period (`core/update/radio_update.h`) is
+// "several wakes' worth of time", which task p3-05's own words allow a wake to be held open for.
+// So `allow()` raises this wake's bound to what the machine in hand needs, and
+// `core/cycle/wake_cycle.h` and the agent's apply are the callers.
+//
+// **Thirty minutes was read off a flash of a megabyte over a 100 kHz debug port, and the unit has
+// since said what a flash really costs** (task p14-04): 14 min 44 s on 13 November and 14 min
+// 51 s on 14 November, and a run that rolls back is a flash and a proof **twice** -
+// `core::update::kWholeRunMs`, 38 min 40 s. At thirty minutes a rollback was cut off in its second
+// flash: no result could be posted, the lease was left to lapse, and the server failed a job whose
+// radio was in fact being put back. So the ceiling is three quarters of an hour, which is that run
+// with the rest of a wake - the radio's question, the modem's attach, a heartbeat and a claim -
+// around it. It is not an allowance anything spends by default: `arm()` is five minutes and only a
+// machine that says what it needs raises it.
 //
 // A raised bound is still a bound: a wake that overruns *it* is reset, the work is in the
 // journal, and the next boot resumes it (`core/update/journal.h`). That is the whole reason the
 // reset is safe.
-constexpr std::uint32_t kRaisedBoundMax = 30u * 60 * 1000;
+constexpr std::uint32_t kRaisedBoundMax = 45u * 60 * 1000;
 static_assert(kRaisedBoundMax > kWakeBoundMs, "a raised bound is longer than the ordinary one");
 
 // How long `stay` keeps the Walter awake without a cable. Twelve hours: a bench day, and not a
@@ -128,6 +138,12 @@ class WakeGuard {
   // re-bounded by a command that was still on the stack.
   std::uint32_t raiseFor(std::uint32_t bound_ms);
   void putBack(std::uint32_t bound_ms);
+
+  // How long this wake has been awake **now**, and 0 while disarmed. `status().awake_ms` is only
+  // as new as the last `tick()`; a caller that raises the bound for a machine of its own has to
+  // add what the wake has already spent to what the machine needs, because the bound is counted
+  // from `arm()` and the machine is not (task p14-04, the agent's apply).
+  std::uint32_t awakeMs() const;
 
   // How long after the cable goes **now** this wake would last, in milliseconds: the later of
   // the USB grace and what is left of the bound. It is what the console tells a person who is

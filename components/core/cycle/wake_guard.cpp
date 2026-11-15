@@ -48,6 +48,10 @@ void WakeGuard::putBack(std::uint32_t bound_ms) {
   refresh();
 }
 
+std::uint32_t WakeGuard::awakeMs() const {
+  return armed_ ? static_cast<std::uint32_t>(clock_.nowMs() - armed_at_ms_) : 0;
+}
+
 std::uint32_t WakeGuard::endsAfterCableMs() const {
   // `stay` and a disarmed guard are the two states nothing would end.
   if (!armed_ || staying_ || overrun_) return 0;

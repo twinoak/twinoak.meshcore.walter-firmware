@@ -15,6 +15,8 @@ soon as that file exists.
 |---|---|---|---|
 | `UnitReportPayload.json` | `twinoak.report`'s payload | meshmaster.dk's 216 | written here from `tasks/phase-13/01-what-the-unit-says.md`'s *The contract* |
 | `UnitReportResult.json` | `twinoak.report`'s result | meshmaster.dk's 216 | the same |
+| `FirmwareApplyProgress.json` | `twinoak.fw.apply`'s progress report — the journal as it is written | meshmaster.dk's 227 | written here from `tasks/phase-14/04-an-apply-keeps-its-lease.md`'s *The contract* |
 
-`tasks/phase-13/FOLLOWUPS.md` carries the item that compares the two byte for byte once task 216
-is deployed, and moves them into the copied tree where every other fixture is.
+`tasks/phase-13/FOLLOWUPS.md` carries the item that compares the first two byte for byte once task
+216 is deployed, and `tasks/phase-14/FOLLOWUPS.md` the same for the third once task 227 is; both
+move the files into the copied tree where every other fixture is.

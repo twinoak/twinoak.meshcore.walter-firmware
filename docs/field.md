@@ -121,7 +121,13 @@ at once, which is what the repeater uses when something is wrong.
    (the two paragraphs below the four steps). Either way nothing is reported until the file is
    whole, and the job's own message says which of the two happens next.
 2. **applied** — the server asks for the candidate it named. The unit flashes it, resets the radio,
-   waits for it to come back as itself, and journals every transition.
+   waits for it to come back as itself, and journals every transition. **The page fills in as it
+   goes**: every line of that journal is posted the moment it is written, so what a person watching
+   sees is *flashing-candidate*, then *booting*, then *proving*, with the time each was reached —
+   and not *nothing has come back yet* for the quarter of an hour the flash takes. (It does take a
+   quarter of an hour: 14 min 44 s on 13 November and 14 min 51 s on the 14th, with three more
+   minutes of proving after it. A whole apply is about eighteen minutes, and one that rolls back
+   about thirty-seven.)
 3. **committed** — the new image passed its health check and is now the golden one. The page says
    so, and `rak hello` at the cable says the new version.
 4. **rolled back** — it did not. The golden image goes back, proves itself, and the broken
@@ -140,8 +146,8 @@ window — the bootloader runs the image that worked and the next wake reports *
 A radio image's download **resumes**: the store keeps a progress record, the job is left leased, and
 the next wake continues the file where this one stopped. The LTE box's own does **not** — a write on
 its other application slot erases it — so its roughly 750 kB has to finish inside one wake, which
-it is given a megabyte and up to twenty minutes for, in twelve 64 kB ranges. A wake that runs out
-starts the file again at the next one, and the plan pays twice. And **one wake updates one box,
+it is given a megabyte and the whole of the exchange's own deadline for, in twelve 64 kB ranges.
+A wake that runs out starts the file again at the next one, and the plan pays twice. And **one wake updates one box,
 never both** (`spec/SYSTEM.md` S-7), which is also why the server will not offer the radio an image
 while an apply of the Walter is still out there. [`flashing.md`](flashing.md) walks both presses,
 with what the console and the unit's page say at each step.
