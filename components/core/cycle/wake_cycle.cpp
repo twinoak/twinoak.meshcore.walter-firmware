@@ -1060,7 +1060,9 @@ bool WakeCycle::trialBeat(std::uint64_t deadline_ms) {
   const interfaces::Beat beat = backend_.beat(deadline_ms);
   if (beat == interfaces::Beat::kNone) return false;  // this build's backend has no heartbeat
   if (beat == interfaces::Beat::kWaiting) return true;
-  ++trial_beats_;
+  // How many went out is the seam's own count to keep (components/agent/agent_backend.h,
+  // `trial_beats`): a counter here would be a second one, and every static byte of this object
+  // moves the heap the main task's stack comes out of (tools/heap_at_start.py).
   if (out_ != nullptr) {
     sayf("cycle: the trial asked the backend again: %s\n", interfaces::describe(beat));
   }

@@ -137,13 +137,25 @@ struct AgentBackendCounters {
   std::uint32_t longer_sleeps = 0;     // wakes where the server's interval was the longer one
   std::uint32_t holds = 0;             // wakes that carried a backoff or a Retry-After out
   // The trial's extra heartbeats (task p14-05): the ones that went out, and the ones that were
-  // not sent because a wait of the library's own was still running.
-  std::uint32_t trial_beats = 0;
-  std::uint32_t trial_beats_held = 0;
+  // not sent because a wait of the library's own was still running. **Two 16-bit counters and
+  // not two 32-bit ones**, in one four-byte slot: a trial is five minutes and cannot ask more
+  // than a few hundred times, and this structure is a member of an object in static storage
+  // whose every four bytes move the heap (tools/heap_at_start.py).
+  std::uint16_t trial_beats = 0;
+  std::uint16_t trial_beats_held = 0;
 };
 
 class AgentBackend final : public interfaces::Backend, public core::console::AgentLoopProbe {
  public:
+  // Why a boot laid the saved wait aside instead of putting it back (task p14-05). Both are
+  // boots after a restart, and both have one thing to say that an older image's failed call must
+  // not answer for them.
+  enum class LaidAside : std::uint8_t {
+    kNone = 0,        // the wait was put back, less the time away: every ordinary wake
+    kOnTrial = 1,     // this image is proving itself and the heartbeat is the proof
+    kResultOwed = 2,  // the old image is back and the server is waiting for the apply's result
+  };
+
   // Everything the loop runs over. `kept` and `state_store` may be null: a build with neither
   // keeps nothing across a sleep, which is the library's own behaviour on a board that does not
   // sleep. `duty` is where the band and the wake's guard are; null in a test that has neither.
@@ -199,9 +211,20 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   // **How much of that wait this boot laid aside, and why** (task p14-05). A boot that is on
   // trial, and the boot of the old image that comes back owing the server a rollback's result,
   // each have one thing to say that a wait left by an older image's failed call must not answer
-  // for them. 0 when none was laid aside, which is every ordinary wake.
-  std::uint32_t holdLaidAsideMs() const { return laid_aside_ms_; }
-  const char* holdLaidAsideWhy() const { return laid_aside_why_; }
+  // for them. 0 when none was laid aside, which is every ordinary wake. One byte of state and
+  // not two figures: a wait is laid aside **whole**, so what was laid aside is what was owed,
+  // and every static byte of this object moves the heap (tools/heap_at_start.py).
+  std::uint32_t holdLaidAsideMs() const {
+    return laid_aside_ == LaidAside::kNone ? 0 : owed_before_ms_;
+  }
+  const char* holdLaidAsideWhy() const {
+    switch (laid_aside_) {
+      case LaidAside::kNone: return "";
+      case LaidAside::kOnTrial: return "this image is on trial";
+      case LaidAside::kResultOwed: return "a rollback's result is owed";
+    }
+    return "";
+  }
   bool begun() const { return begun_; }
   // The most an offer may download in one wake (kWakeDownloadBytes by default; a test sets a
   // small one to see a wake stop mid-download and the next resume).
@@ -233,10 +256,12 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   void (*pump_)() = nullptr;
   bool begun_ = false;
   bool state_survived_ = false;
+  // Beside the two bools and not beside the two figures it belongs to: it costs nothing in the
+  // padding here and four bytes there, and four bytes of .bss move the heap the 20 kB scratch
+  // is carved out of (tools/heap_at_start.py, `the tightest is N bytes`).
+  LaidAside laid_aside_ = LaidAside::kNone;
   std::uint32_t away_ms_ = 0;         // what restore() was told the sleep lasted
   std::uint32_t owed_before_ms_ = 0;  // ... and the hold the stored state still owed before it
-  std::uint32_t laid_aside_ms_ = 0;   // ... and how much of it this boot did not put back
-  const char* laid_aside_why_ = "";   // ... and in one phrase, why (static text)
   mm::WakeReport report_;
   AgentBackendCounters counters_;
   std::uint64_t download_bytes_ = kWakeDownloadBytes;

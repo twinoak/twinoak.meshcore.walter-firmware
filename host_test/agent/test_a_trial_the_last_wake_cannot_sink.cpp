@@ -205,9 +205,8 @@ TEST_CASE("a trial whose first heartbeat fails: the second is the one that confi
   const Pass& pass = bench.v().run();
   CHECK_FALSE(bench.v().self.onTrial());
   CHECK(bench.v().self.status().state == upd::SelfState::kConfirmed);
-  CHECK(heartbeatsSent(bench) == 2);          // two on the wire
-  CHECK(bench.v().cycle->trialBeats() == 1);  // one of them the trial's
-  CHECK(bench.half().backend.counters().trial_beats == 1);
+  CHECK(heartbeatsSent(bench) == 2);                            // two on the wire
+  CHECK(bench.half().backend.counters().trial_beats == 1);      // one of them the trial's
   CHECK(bench.half().backend.counters().trial_beats_held > 0);  // and the asks the wait held off
   CHECK(bench.v().self.status().uplink_tries == 2);
   CHECK(bench.v().self.status().uplink_last == upd::UplinkVerdict::kReached);
@@ -241,7 +240,7 @@ TEST_CASE("a trial in which every heartbeat fails: rolled back, and the journal 
   // the library's growing backoff had run out, and not one before it.
   const int sent = heartbeatsSent(bench);
   CHECK(sent > 1);
-  CHECK(bench.v().cycle->trialBeats() == sent - 1);
+  CHECK(bench.half().backend.counters().trial_beats == static_cast<std::uint32_t>(sent - 1));
 
   upd::TrialUplink tried;
   REQUIRE(bench.v().self.lastUplink(&tried));

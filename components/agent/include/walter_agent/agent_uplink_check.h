@@ -44,20 +44,14 @@ class AgentUplinkCheck final : public core::update::UplinkCheck {
   // boot. Said by AgentBackend after each wake of the loop.
   void heartbeatOk() {
     reached_ = true;
-    ++beats_;
     fresh_ = true;
   }
   // ... and one that went out and did not come back (task p14-05). Not the condition failing -
   // the window is not over - but news, so that the next `check()` says *the server was not
   // reached* rather than *nothing was sent*.
-  void heartbeatFailed() {
-    ++beats_;
-    fresh_ = true;
-  }
+  void heartbeatFailed() { fresh_ = true; }
   bool reached() const { return reached_; }
   std::uint32_t checks() const { return checks_; }
-  // How many heartbeats have gone out in this boot, answered or not.
-  std::uint32_t beats() const { return beats_; }
 
   core::update::UplinkVerdict check() override {
     ++checks_;
@@ -85,7 +79,6 @@ class AgentUplinkCheck final : public core::update::UplinkCheck {
   // every turn of the trial's loop (task p14-05).
   bool fresh_ = false;
   std::uint32_t checks_ = 0;
-  std::uint32_t beats_ = 0;
 };
 
 }  // namespace agent

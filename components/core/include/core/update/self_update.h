@@ -293,13 +293,16 @@ struct SelfStatus {
   Condition main_loop = Condition::kPending;
   Condition radio = Condition::kPending;
   Condition uplink = Condition::kPending;
-  std::uint32_t hello_tries = 0;
-  // How many attempts at condition 3 **went out** in this window, and what the last of them came
-  // to (task p14-05). A reading that found nothing sent is neither. `uplink_tries == 0` at a
-  // rollback by kNoUplink is *nothing was ever asked*, which is not the same finding as a server
-  // that would not answer - and is the one v0.1.6 was condemned by.
-  std::uint32_t uplink_tries = 0;
+  // What the last attempt at condition 3 that **went out** came to (task p14-05); beside the
+  // three conditions because the byte is free there, and this structure is a member of an object
+  // in static storage whose every byte moves the heap (tools/heap_at_start.py).
   UplinkVerdict uplink_last = UplinkVerdict::kNotTried;
+  std::uint32_t hello_tries = 0;
+  // How many attempts at condition 3 **went out** in this window. A reading that found nothing
+  // sent is not one. `uplink_tries == 0` at a rollback by kNoUplink is *nothing was ever asked*,
+  // which is not the same finding as a server that would not answer - and is the one v0.1.6 was
+  // condemned by.
+  std::uint32_t uplink_tries = 0;
   SelfPayload trial;  // the on-trial entry's payload: the image's slot, size, hash, versions
 };
 

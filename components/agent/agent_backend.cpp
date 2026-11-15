@@ -16,6 +16,7 @@ namespace agent {
 namespace {
 
 std::uint32_t saturate(std::uint32_t value) { return value == 0xFFFFFFFFu ? value : value + 1; }
+std::uint16_t saturate16(std::uint16_t value) { return value == 0xFFFFu ? value : static_cast<std::uint16_t>(value + 1); }
 
 int hexValue(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -242,16 +243,15 @@ bool AgentBackend::loadState() {
   // - it is told there was no wait, which from this boot's point of view is the decision this
   // firmware has taken - and everything else of the state (the backoff, the run of failures, the
   // halt, the counters, the accepted interval) is restored exactly as it was saved.
-  laid_aside_ms_ = 0;
-  laid_aside_why_ = "";
+  laid_aside_ = LaidAside::kNone;
   // `bootIsTrial()` and not `onTrial()`: main/main.cpp restores this state (`backend.begin()`)
   // before the console's `begin()` reaches `SelfUpdate::begin()`, so the machine has not decided
   // yet - but the bootloader and the journal have, and that is what both read.
   const bool on_trial = p_.self != nullptr && p_.self->bootIsTrial();
   const bool owes_result = !on_trial && p_.firmware != nullptr && p_.firmware->owedResultDue();
-  if (s.holdForMs > 0 && (on_trial || owes_result)) {
-    laid_aside_ms_ = s.holdForMs;
-    laid_aside_why_ = on_trial ? "this image is on trial" : "a rollback's result is owed";
+  const std::uint32_t laid_aside_ms = s.holdForMs > 0 && (on_trial || owes_result) ? s.holdForMs : 0;
+  if (laid_aside_ms > 0) {
+    laid_aside_ = on_trial ? LaidAside::kOnTrial : LaidAside::kResultOwed;
     s.holdForMs = 0;
   }
   // The library refuses a state of another version and changes nothing.
@@ -262,7 +262,7 @@ bool AgentBackend::loadState() {
   away_ms_ = away_ms;
   // What the store really carried across, whether it was put back or laid aside: the two figures
   // together are the whole of what happened to the wait at this boot.
-  owed_before_ms_ = s.holdForMs + laid_aside_ms_;
+  owed_before_ms_ = s.holdForMs + laid_aside_ms;
   std::memcpy(last_hex_, state_hex_, sizeof last_hex_);
   counters_.state_restored = saturate(counters_.state_restored);
   return true;
@@ -464,11 +464,11 @@ interfaces::Beat AgentBackend::beat(std::uint64_t deadline_ms) {
   if (report.why[0] != 0) {
     // The library sent nothing and said why in its own words - a wait, a halt, no uplink, not
     // configured. None of them is this trial's business to work around: it asks again next time.
-    counters_.trial_beats_held = saturate(counters_.trial_beats_held);
+    counters_.trial_beats_held = saturate16(counters_.trial_beats_held);
     return interfaces::Beat::kWaiting;
   }
   if (report.heartbeat == mm::StepOutcome::Done) {
-    counters_.trial_beats = saturate(counters_.trial_beats);
+    counters_.trial_beats = saturate16(counters_.trial_beats);
     counters_.heartbeats_ok = saturate(counters_.heartbeats_ok);
     if (p_.trial != nullptr) p_.trial->heartbeatOk();
     (void)saveState();
@@ -478,10 +478,10 @@ interfaces::Beat AgentBackend::beat(std::uint64_t deadline_ms) {
   if (report.heartbeat != mm::StepOutcome::Failed) {
     // The wake ran and did not reach the heartbeat - no seconds left of what this call was given.
     // Nothing went out, so the trial is told nothing.
-    counters_.trial_beats_held = saturate(counters_.trial_beats_held);
+    counters_.trial_beats_held = saturate16(counters_.trial_beats_held);
     return interfaces::Beat::kWaiting;
   }
-  counters_.trial_beats = saturate(counters_.trial_beats);
+  counters_.trial_beats = saturate16(counters_.trial_beats);
   counters_.heartbeats_failed = saturate(counters_.heartbeats_failed);
   if (p_.trial != nullptr) p_.trial->heartbeatFailed();
   (void)saveState();
@@ -764,11 +764,11 @@ void AgentBackend::state(interfaces::TextOut& out) {
        static_cast<unsigned long>(s.holdForMs));
   if (!state_survived_) {
     say(&out, "\n");
-  } else if (laid_aside_ms_ > 0) {
+  } else if (laid_aside_ != LaidAside::kNone) {
     // **A wait this boot did not put back** (task p14-05): said instead of the sleep's arithmetic,
     // because none of it was applied - the wait was laid aside whole, and why is the whole line.
     sayf(&out, "; %lu s owed before the sleep, laid aside: %s\n",
-         static_cast<unsigned long>(laid_aside_ms_ / 1000u), laid_aside_why_);
+         static_cast<unsigned long>(holdLaidAsideMs() / 1000u), holdLaidAsideWhy());
   } else if (away_ms_ > 0) {
     sayf(&out, "; %lu s owed before the sleep, %lu s slept\n",
          static_cast<unsigned long>(owed_before_ms_ / 1000u),

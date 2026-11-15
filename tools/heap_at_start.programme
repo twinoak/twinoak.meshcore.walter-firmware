@@ -86,6 +86,6 @@ free 63
 free 60
 free 59
 alloc 20      0x1800
-free 59
+free 74
 alloc 20      0x1800
-free 59
+free 76
