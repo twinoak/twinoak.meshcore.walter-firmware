@@ -282,10 +282,10 @@ void FirmwareJobs::wipeBearer() { zeroBytes(secret_, sizeof secret_); }
 
 // -- the lease and the progress ------------------------------------------------------------------
 
-void FirmwareJobs::extendLease(long long job_id, mm::JobContext& ctx) {
+void FirmwareJobs::extendLease(long long job_id, mm::JobContext& ctx, int seconds) {
   std::uint32_t until = 0;
   counters_.extends = saturate(counters_.extends);
-  if (server_.extendLease(job_id, kLeaseExtendSeconds, until)) {
+  if (server_.extendLease(job_id, seconds, until)) {
     ctx.log("lease extended");
   } else {
     // A 409 is "not the lease holder any more": the job goes on all the same - the machine it
@@ -575,6 +575,63 @@ std::size_t FirmwareJobs::writeOfferResult(bool stored, const char* image_id, co
 
 // -- twinoak.fw.apply ------------------------------------------------------------------------------
 
+// The `journal` array, in one place: the result carries it at the end of a run and a progress
+// report carries it as it is written (task p14-04), and the two must be the same shape or a reader
+// who followed the job live would see the story change when it finished.
+void FirmwareJobs::writeJournal(mm::JsonWriter& w) {
+  if (line_count_ == 0) return;
+  w.key("journal");
+  w.beginArray();
+  for (int i = 0; i < line_count_; ++i) {
+    char at[24];
+    isoOf(lines_[i].at_epoch, at);
+    w.comma();
+    w.beginObject();
+    w.key("at");
+    w.string(at);
+    w.key("step");
+    w.string(lines_[i].step);
+    if (lines_[i].note[0] != 0) {
+      w.key("note");
+      w.string(lines_[i].note);
+    }
+    w.endObject();
+  }
+  w.endArray();
+}
+
+// `{"data":{"journal":[...]},"note":"<the newest line's step>"}`, straight into the envelope half
+// of this object's one buffer - which is free for the whole of an apply: `data_` is not written
+// until the result is, and an owed result is posted after the heartbeat, outside any job. The
+// whole body is written by one JsonWriter rather than through `mm::writeProgressReport`, which
+// would want a second buffer the size of the first (kResultBufferBytes is counted to the byte;
+// rail R22).
+void FirmwareJobs::postApplyProgress(long long job_id) {
+  if (line_count_ == 0) return;
+  mm::JsonWriter w(body_, kEnvelopeBytes);
+  w.beginObject();
+  w.key("data");
+  w.beginObject();
+  writeJournal(w);
+  w.endObject();
+  w.key("note");
+  w.string(lines_[line_count_ - 1].step);
+  w.endObject();
+  if (w.overflowed()) {
+    // The journal at its bound would not fit the envelope. Nothing about the apply changes: the
+    // result is written into its own buffer at the end and is the one that matters.
+    counters_.progress_refused = saturate(counters_.progress_refused);
+    return;
+  }
+  if (server_.postProgress(job_id, body_, w.length())) {
+    counters_.progress_posted = saturate(counters_.progress_posted);
+  } else {
+    // A 4xx, a 5xx or a call that never came back. Counted, and that is all: an update machine is
+    // not something to stop halfway for a server's bookkeeping.
+    counters_.progress_refused = saturate(counters_.progress_refused);
+  }
+}
+
 void FirmwareJobs::line(const char* step, const char* note) {
   const std::size_t cost = std::strlen(step) + (note != nullptr ? std::strlen(note) : 0);
   if (line_count_ >= kJournalMaxEntries || line_chars_ + cost > kJournalMaxChars) {
@@ -635,26 +692,7 @@ std::size_t FirmwareJobs::writeApplyResult(ApplyOutcome outcome, const char* fro
     w.key("toVersion");
     w.string(to);
   }
-  if (line_count_ > 0) {
-    w.key("journal");
-    w.beginArray();
-    for (int i = 0; i < line_count_; ++i) {
-      char at[24];
-      isoOf(lines_[i].at_epoch, at);
-      w.comma();
-      w.beginObject();
-      w.key("at");
-      w.string(at);
-      w.key("step");
-      w.string(lines_[i].step);
-      if (lines_[i].note[0] != 0) {
-        w.key("note");
-        w.string(lines_[i].note);
-      }
-      w.endObject();
-    }
-    w.endArray();
-  }
+  writeJournal(w);
   if (refusal != Refusal::kNone) {
     w.key("refusal");
     w.string(name(refusal));
@@ -753,17 +791,31 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
   }
 
   // The machine runs to its end inside this job: the lease ahead of it, the bound on the wake
-  // raised to what an update may hold it open for, the uplink's deadline with it.
+  // raised to what a whole run of the machine may hold it open for, the uplink's deadline with it.
+  // The guard counts from the **boot** and this machine from here, so what the wake has already
+  // spent is asked for too (`allow()` caps it at kRaisedBoundMax and never lowers a bound).
   extendLease(job.id, ctx);
-  if (parts_.guard != nullptr) parts_.guard->allow(kApplyBoundMs);
   const std::uint64_t began = clock_.nowMs();
   const std::uint64_t bound = began + kApplyBoundMs;
+  if (parts_.guard != nullptr) parts_.guard->allow(parts_.guard->awakeMs() + kApplyBoundMs);
   server_.setDeadline(bound);
   did_.asks = static_cast<std::uint8_t>(did_.asks | interfaces::askBit(interfaces::Ask::kUpdateRadio));
   did_.carried = interfaces::Ask::kUpdateRadio;
   line("check", "the machine's preconditions hold");
+  postApplyProgress(job.id);
   bool bounded = false;
   while (parts_.update->active()) {
+    // **Before the step, not after it** (task p14-04). A flash is one call of the flasher and a
+    // quarter of an hour: the machine cannot come back to ask for more lease in the middle of it,
+    // so what it may need is asked for here, whatever the five-minute timer says. `kFlashing` is
+    // the candidate's, `kRollingBack` the golden image's on a rollback - the two steps that
+    // cannot stop.
+    const upd::State at = parts_.update->state();
+    if (at == upd::State::kFlashing || at == upd::State::kRollingBack) {
+      extendLease(job.id, ctx, kLeaseFlashSeconds);
+    } else if (clock_.nowMs() >= extend_due_ms_) {
+      extendLease(job.id, ctx);
+    }
     const upd::StepResult s = parts_.update->step();
     if (s.changed) {
       char note[kJournalNoteBytes];
@@ -775,13 +827,15 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
         std::snprintf(note, sizeof note, "%.70s", s.note);
       }
       line(stepWord(s.after), note);
+      // The line is written: the job's page gets it now rather than in a quarter of an hour.
+      // Between two steps of the machine and never inside one.
+      postApplyProgress(job.id);
     }
     if (!parts_.update->active()) break;
     if (clock_.nowMs() >= bound) {
       bounded = true;
       break;
     }
-    if (clock_.nowMs() >= extend_due_ms_) extendLease(job.id, ctx);
     if (s.waited) ctx.platform().delayMs(kApplyIdleMs);
   }
   did_.outside_ms += static_cast<std::uint32_t>(clock_.nowMs() - began);

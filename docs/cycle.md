@@ -24,7 +24,7 @@ the console are how that person sees what the mast does by itself (`docs/console
 | 5 | `band` | the interval policy with the fresh reading: what the rest of this wake may do (`core/power/interval_policy.h`) | — | 1 s |
 | 6 | `uplink` | the modem, inside this wake's budget; the network's time (`core/uplink/policy.h`) | `band` | the budget |
 | 7 | `clock` | the radio's clock from the network's time, when it is unset, restored, or out by more than a minute (`spec/LINK-PROTOCOL.md` §5.4) | `state`, `uplink` | 10 s |
-| 8 | `backend` | one exchange over the seam, and the settings it asked for (`interfaces/backend.h`) | `uplink` | 20 min |
+| 8 | `backend` | one exchange over the seam, and the settings it asked for (`interfaces/backend.h`) | `uplink` | 38 min 40 s + 1 min |
 | 9 | `update` | **at most one update step**, of one MCU (S-7); a fetch; the ladder when one was asked for | `band` | 20 min |
 | 10 | `sleep` | task p3-04's one way out: the journal, `SLEEP_NOTICE`, the modem down, the pads held, deep sleep | — | 15 s |
 
@@ -283,9 +283,10 @@ one of them **raises the bound on the wake** rather than removing it:
 | | Why | Up to |
 |---|---|---:|
 | a climb | the ladder waits 30, 60 and 120 s between rungs, and **the state of a climb does not survive a sleep** — only its counts and a stop do. So a climb runs to its end inside its wake or starts again at rung 1 in the next one, and the caps are what keep that from becoming a loop | 6 min |
-| an update | "a flash may take several wakes' worth of time and is allowed to hold the wake open up to its own bound" (the task). A megabyte over a 100 kHz debug port, a 20 s boot window and a three-minute proving period do not fit in five minutes | 20 min |
+| an update **resumed from the journal** (steps 3 and 9) | "a flash may take several wakes' worth of time and is allowed to hold the wake open up to its own bound" (the task). A flash, a 20 s boot window and a three-minute proving period do not fit in five minutes | 20 min |
+| an **apply** claimed from the server | the same machine, run to its end inside step 8 — and that end may be a **rollback**, which is the flash and the proof twice. The unit's own journal says a flash is 14 min 51 s, so a whole run is `core::update::kWholeRunMs` (task p14-04). At the thirty minutes this used to be, the bound fell in the middle of the second flash: no result could be posted and the lease was left to lapse | 38 min 40 s |
 | a trial | this firmware proving itself (S-6) has to finish before the wake may sleep: a deep sleep during a trial is a rollback of the image being tried. Its loop also asks the backend seam for **one more heartbeat and nothing else** while the third condition is open (task p14-05, `interfaces::Beat`): step 8's one exchange is not enough to condemn an image on, and the implementation's own wait is what paces it | 6 min |
-| a backend exchange | step 8's `exchange()` is given an update's own deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 20 min |
+| a backend exchange | step 8's `exchange()` is given a whole update's deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. It is a minute longer than the apply above, for the heartbeat and the claim that come first — and it is not only the guard's business: the library is given what is left to this deadline as its wake's **budget**, and a result made after that budget has run out is kept rather than posted (task p14-04). The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 39 min 40 s |
 
 The time those take is **outside** the budget, because both machines are already bounded and
 capped by their own rules — and because a wake that spent six minutes on a ladder must still be

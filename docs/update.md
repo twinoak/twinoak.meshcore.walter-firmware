@@ -262,6 +262,26 @@ with a sentence beside it; none has been held against a real radio yet (`docs/be
 | `kStepIdleMs` | 100 ms | what `rak update` sleeps between steps that only waited |
 | `kEntriesPerRunMax` | 48 | more journal entries than this in one run means something is looping, and the machine stops writing |
 
+### And three that are **not** guesses
+
+`kFlashWindowMs`, `kOnePassMs` and `kWholeRunMs`, in the same file, are what the unit's own journal
+says a run costs. meshmaster.dk has driven two updates of the radio at Bellevue:
+
+| | 13 Nov, 0.1.2 → 0.1.4 (job 28560) | 14 Nov, 0.1.4 → 0.1.5 (job 29475) |
+|---|---|---|
+| flashing the candidate | 14 min 44 s | 14 min 51 s |
+| booting | 3 s | 3 s |
+| proving | 3 min 03 s | 3 min 03 s |
+| `check` to `done` | 17 min 51 s | 17 min 58 s |
+
+So **a flash is a quarter of an hour**, an apply that commits is about eighteen minutes, and one
+that **rolls back** — the flash and the proof twice — is about thirty-seven. `kFlashWindowMs` is
+sixteen minutes, those runs with room for an image that grows again (the two were seven seconds
+apart for seven seconds more image); `kOnePassMs` and `kWholeRunMs` are arithmetic over it and the
+windows above. They exist because a caller that runs this machine inside something bounded — the
+wake cycle's step, an apply claimed from the server — needs one number to bound it by, and until
+task p14-04 those callers used numbers that were shorter than a rollback.
+
 ## What is not here (the radio's half)
 
 Deciding *when* to update (phase 3's wake cycle; later the server), fetching a candidate (phase

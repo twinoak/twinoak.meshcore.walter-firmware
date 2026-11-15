@@ -1746,6 +1746,26 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       then `agent wake`. It flashes the candidate through §9's machine, health-checks it, and the
       result is `committed`; `rak status` shows the radio on the new version. One update step this
       wake, and no second — S-7, which the wake record's letters show.
+- [ ] **The page fills in while it flashes, and the lease outlasts the flash** (task p14-04).
+      From the same apply, **watch the job's page while the quarter of an hour goes by**: a
+      progress line must appear for every journal line as it is written — `check`,
+      `flashing-candidate`, then `booting`, `proving`, `committing`, `done` — each with the time it
+      was reached, and *nothing has come back yet* must never be what the page says for more than a
+      few seconds. **Write down the wall-clock of the flash** (`flashing-candidate` to `booting` on
+      the page) and of the whole apply: `core/update/radio_update.h`'s `kFlashWindowMs` is sixteen
+      minutes from two runs of 14 min 44 s and 14 min 51 s, and a release that flashes slower than
+      sixteen is the day that number has to move. And **read the lease on the job's page against
+      the flash**: the extension before the flash asks for 1 800 s, so the lease must stand some
+      twenty-five minutes past the end of the flash and the result must arrive inside it, marked
+      neither `late` nor `failed`.
+- [ ] **An apply that rolls back, timed end to end** (task p14-04). From the rollback item below,
+      with a stopwatch: a whole run is two flashes and two proofs and should land near 37 minutes,
+      against the 38 min 40 s this firmware now allows one wake (`core::update::kWholeRunMs`). The
+      three things to bring back: that the **result arrives in that same wake** (and not at the
+      wake after, which is what a bound too short looks like from the server); that the unit
+      **slept** at the end of it rather than being reset by its own guard (`reboots` at the next
+      cable shows a `wake-overrun` if it was); and the figure itself, which is the one that says
+      whether 38 min 40 s is enough or generous.
 - [ ] ★ **An apply that rolls back on a bad candidate.** The same again with a release that is
       **signed and valid but broken on purpose** (§9's deliberate bad image, offered by the server
       instead of pushed over the cable): offer it, then apply it. The flash goes in, the radio does
@@ -1991,8 +2011,8 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       in 14 requests, and that line is the only place the repeat is said at all.
       **Write down the wall-clock seconds of the download and the wake's own elapsed time**: the
       Walter's slot does **not** resume across wakes (`SelfUpdate::beginWrite` erases it), so the
-      whole file has to fit one wake's twenty minutes. The field says it fits — the whole file was
-      stored inside one wake on 10 November — but the only bound it gives is *at most 10 min 15 s*,
+      whole file has to fit one wake's exchange (twenty minutes until task p14-04, 39 min 40 s
+      since). The field says it fits — the whole file was stored inside one wake on 10 November — but the only bound it gives is *at most 10 min 15 s*,
       which is not a measurement. If the wake's budget cuts it short, the job's message now says
       so (task p10-04): the result's reason is *this slot keeps no progress, so the next wake starts
       the file again from zero* and the console's line ends the same way — note the bytes that were

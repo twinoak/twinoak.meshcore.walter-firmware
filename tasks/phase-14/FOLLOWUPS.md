@@ -44,3 +44,29 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   code besides: a release is refused with no waiting line, so main's head is never a
   release-notes-only commit when one runs, and this branch of the step does not print.
   `tools/release/release_notes.py`'s own sentence beside it was corrected.
+- [ ] **[Thomas to decide] Is 3.7 V still the right floor for a unit awake for thirty-seven
+  minutes?** `core/update/radio_update.h`'s `kBatteryMinMv` reasons 3 700 mV from *two MCUs awake
+  for ten minutes of flashing and proving*. The unit's own journal says a flash is 14 min 51 s and
+  an apply that **rolls back** is near forty minutes with both MCUs awake and the modem attached -
+  near four times the load the number was argued from. Task p14-04 wrote the measured runs beside
+  the constant and changed nothing: whether the floor rises (and whether a unit should refuse an
+  apply it cannot finish rather than start one it cannot) is a decision with a meter on the pack,
+  not a host test. The same question for `core/supervisor/supervisor.h`'s own thresholds.
+- [ ] **[later] A **resumed** update is still bounded at twenty minutes.** `kUpdateBoundMs`
+  (`core/cycle/wake_cycle.h`) bounds steps 3 and 9, and a run resumed from the journal that goes on
+  to roll back is a flash and a proof twice - the same 38 min 40 s task p14-04 gave an apply. So a
+  resume that has to roll back is cut off and carried to the wake after, once per wake until it
+  gets through. Nothing is lost (that is what the journal is for) and no result is owed to anybody,
+  which is why p14-04 left it alone; but it is the next number to move, and moving it means
+  deciding what a wake that spends forty minutes **twice** costs the battery.
+- [ ] **[later] `FirmwareApplyProgress.json` is this end's reading of a contract, not the
+  server's.** It is in `host_test/fixtures/contracts-ahead/` with the two of task p13-01, written
+  from `tasks/phase-14/04-an-apply-keeps-its-lease.md`'s *The contract*. meshmaster.dk's task 227
+  has the same text; when it is deployed, compare the two **byte for byte** and move the file into
+  the copied tree where every other fixture is.
+- [ ] **[later] The last progress line of an apply that overruns never reaches the server.** The
+  uplink's deadline for the job is the apply's own bound, so a line written after that bound has
+  passed - which is exactly the `rollback-booting` of a run that was cut off - is refused before it
+  goes out (`host_test/agent/test_an_apply_keeps_its_lease.cpp`, the last-but-one case). A person
+  watching sees `rolling-back` and then silence. It is honest and it is not wrong, and the cure is
+  the one above: a bound long enough that nothing is written after it.

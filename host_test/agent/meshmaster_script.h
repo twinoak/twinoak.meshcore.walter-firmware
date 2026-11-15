@@ -50,10 +50,29 @@ inline std::string contractFixture(const char* name) {
   return text;
 }
 
+// What the server holds a job's lease at, as meshmaster.dk holds it today (task p14-04): a claim
+// gives thirty minutes, and an extension sets the lease to **now plus what was asked** - even
+// when it held more, which is how the thirty minutes a claim gave became the fifteen an apply
+// asked for. More than the ceiling is refused as invalid.
+constexpr int kMaxExtendSeconds = 1800;
+constexpr int kClaimLeaseSeconds = 1800;
+
 struct PostedResult {
   long long job_id = 0;
   std::string body;
   std::uint64_t at_ms = 0;
+  // Where the lease stood when this result came in, and whether it had lapsed: the server fails a
+  // job whose lease ran out, so a result posted after this is a person told the wrong thing.
+  std::uint64_t lease_until_ms = 0;
+  bool late = false;
+};
+
+// One `extend`, as the server saw it.
+struct SeenExtend {
+  int seconds = 0;
+  std::uint64_t at_ms = 0;
+  std::uint64_t until_ms = 0;  // where the lease stood afterwards; 0 when the ask was refused
+  bool refused = false;        // more than the ceiling: 400, and the lease is left where it was
 };
 
 class MeshMasterScript {
@@ -138,7 +157,10 @@ class MeshMasterScript {
   std::vector<int> claim_maxes;                   // every claim's `max`
   std::map<long long, std::vector<PostedResult>> results;  // by job id, in order
   std::map<long long, std::vector<std::string>> extends;
+  std::map<long long, std::vector<SeenExtend>> extensions;    // the same calls, read (task p14-04)
+  std::map<long long, std::uint64_t> lease_until_ms;          // what the server holds now
   std::map<long long, std::vector<std::string>> progress;
+  std::map<long long, std::vector<std::uint64_t>> progress_at_ms;
   std::vector<std::string> batches;               // observation batches, the bodies
   std::vector<std::string> calls;                 // every agent route reached, in order
   int configs = 0;
@@ -216,6 +238,11 @@ class MeshMasterScript {
       i = end + 1;
     }
     return types;
+  }
+  // One job's `id`, as the claim's JSON carries it.
+  static long long idOf(const std::string& job) {
+    const std::size_t at = job.find("\"id\":");
+    return at == std::string::npos ? 0 : std::strtoll(job.c_str() + at + 5, nullptr, 10);
   }
   // One job's `type`, as the claim's JSON carries it.
   static std::string typeOf(const std::string& job) {
@@ -342,6 +369,9 @@ class MeshMasterScript {
       for (std::size_t i = 0; i < batch.size(); ++i) {
         if (i > 0) response += ",";
         response += batch[i];
+        // The lease the claim gives, which is the one an extension replaces rather than adds to.
+        lease_until_ms[idOf(batch[i])] =
+            clock_.nowMs() + static_cast<std::uint64_t>(kClaimLeaseSeconds) * 1000u;
       }
       response += "]}";
       reply->body = response;
@@ -359,17 +389,40 @@ class MeshMasterScript {
           reply->body = "{\"title\":\"scripted\"}";
           return true;
         }
-        results[job_id].push_back(PostedResult{job_id, request.body, clock_.nowMs()});
-        reply->body = "{\"jobId\":" + std::to_string(job_id) + ",\"state\":\"succeeded\",\"duplicate\":false,\"late\":false}";
+        const std::uint64_t now = clock_.nowMs();
+        const std::uint64_t lease = lease_until_ms.count(job_id) != 0 ? lease_until_ms[job_id] : 0;
+        const bool late = lease != 0 && now > lease;
+        results[job_id].push_back(PostedResult{job_id, request.body, now, lease, late});
+        reply->body = "{\"jobId\":" + std::to_string(job_id) + ",\"state\":\"succeeded\",\"duplicate\":false,\"late\":" +
+                      (late ? "true" : "false") + "}";
         return true;
       }
       if (what == "extend") {
         extends[job_id].push_back(request.body);
-        reply->body = "{\"jobId\":" + std::to_string(job_id) + ",\"leaseUntil\":\"" + iso(server_time + 900) + "\"}";
+        const int seconds = static_cast<int>(numberAfter(request.body, "seconds"));
+        SeenExtend seen;
+        seen.seconds = seconds;
+        seen.at_ms = clock_.nowMs();
+        if (seconds < 1 || seconds > kMaxExtendSeconds) {
+          // `MaxExtendSeconds`: more than the ceiling is not a longer lease, it is a bad request.
+          seen.refused = true;
+          extensions[job_id].push_back(seen);
+          reply->status = 400;
+          reply->body = "{\"title\":\"seconds must be between 1 and 1800.\"}";
+          return true;
+        }
+        // **Now plus what was asked**, even when the lease held more.
+        const std::uint64_t until = clock_.nowMs() + static_cast<std::uint64_t>(seconds) * 1000u;
+        lease_until_ms[job_id] = until;
+        seen.until_ms = until;
+        extensions[job_id].push_back(seen);
+        reply->body = "{\"jobId\":" + std::to_string(job_id) + ",\"leaseUntil\":\"" +
+                      iso(server_time + static_cast<std::uint32_t>(seconds)) + "\"}";
         return true;
       }
       if (what == "progress") {
         progress[job_id].push_back(request.body);
+        progress_at_ms[job_id].push_back(clock_.nowMs());
         reply->body = "{\"jobId\":" + std::to_string(job_id) + ",\"recordedAt\":\"" + iso(server_time) + "\"}";
         return true;
       }

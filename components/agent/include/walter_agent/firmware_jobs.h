@@ -106,6 +106,19 @@ constexpr const char kFilesDir[] = "files";
 constexpr int kLeaseExtendSeconds = 900;
 constexpr std::uint32_t kExtendEveryMs = 300000;
 
+// **And what is asked before a step that cannot stop to ask again** (task p14-04): the server's
+// ceiling on one extension, `MaxExtendSeconds`; more is refused as invalid. The radio's flash is
+// one call of the flasher and takes a quarter of an hour - 14 min 44 s on 13 November and 14 min
+// 51 s on 14 November by the unit's own journal - and meshmaster.dk sets a lease to *now plus what
+// was asked*, even when it held more, so the thirty minutes the claim gave became the 900 above
+// and the flash ended 15 seconds, then 8 seconds, before the lease. One image bigger again and the
+// server fails the job while the unit is still flashing: the update goes through, the result
+// arrives late, and a person has been told it failed. So before the candidate's flash, and before
+// the golden image's flash on a rollback, the lease is extended whatever kExtendEveryMs says and
+// for the whole of what the server allows. (meshmaster.dk stops shortening leases in its task 227.
+// A unit must not depend on that.)
+constexpr int kLeaseFlashSeconds = 1800;
+
 // A progress report every two of the download's 64 KB ranges: the job's page prints *412 kB of
 // 1.2 MB*, and a report per range would be a request per range on a metered link.
 constexpr std::uint32_t kProgressEveryBytes = 2 * 64 * 1024;
@@ -153,11 +166,22 @@ static_assert(kResultBufferBytes > kReportDataBytes, "a report's result has to f
 constexpr std::uint32_t kPowerCycleHelloWindowMs = core::update::kBootWindowMs;
 constexpr std::uint32_t kPowerCycleHelloIntervalMs = core::update::kBootHelloIntervalMs;
 
-// The slices an apply is driven in: the machine's own idle, and the bound a wake may be held
-// open to for it (core/cycle/wake_guard.h: thirty minutes, the most a wake may ask for, because
-// an apply inside an exchange sits behind a heartbeat and a claim that have already spent some).
+// The slices an apply is driven in: the machine's own idle, and **what the machine may take**,
+// which is what this wake is held open for.
+//
+// It was `kRaisedBoundMax` - the most a wake could ask for, thirty minutes - until task p14-04.
+// A whole run of the radio's machine is a flash and a proof **twice**, because a rollback is the
+// path it exists for, and the unit's own journal says that is 38 min 40 s
+// (`core::update::kWholeRunMs`). At thirty minutes the loop below broke out in the middle of the
+// second flash: no result could be posted, the lease was left, and the next boot's resume put the
+// radio right while meshmaster.dk failed the job. The bound is the machine's own number now, and
+// `core/cycle/wake_guard.h`'s ceiling was raised to three quarters of an hour to leave room for
+// it - because the guard counts from the **boot** and this machine from here, which is why
+// `allow()` below is asked for what this wake has already spent as well.
 constexpr std::uint32_t kApplyIdleMs = core::update::kStepIdleMs;
-constexpr std::uint32_t kApplyBoundMs = core::cycle::kRaisedBoundMax;
+constexpr std::uint32_t kApplyBoundMs = core::update::kWholeRunMs;
+static_assert(kApplyBoundMs <= core::cycle::kRaisedBoundMax,
+              "an apply's bound has to be one a wake may ask for");
 
 // -- the words of the result shapes --------------------------------------------------------------
 
@@ -275,6 +299,7 @@ struct FirmwareJobCounters {
   std::uint32_t power_cycles = 0;
   std::uint32_t power_cycles_refused = 0;
   std::uint32_t progress_posted = 0;
+  std::uint32_t progress_refused = 0;    // a progress call the server would not take, or did not answer
   std::uint32_t extends = 0;
   std::uint64_t bytes_downloaded = 0;
   std::uint32_t malformed = 0;           // a payload this firmware could not read
@@ -370,14 +395,25 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   void writeTrial(mm::JsonWriter& w, const core::update::SelfUpdate::LastTrial& trial);
   std::size_t writePowerCycleResult(std::uint32_t off_ms, bool radio_back, bool has_boot_id, std::uint32_t boot_id);
   std::size_t writeStateResult();
+  // The journal array of an apply, as both the result and the progress report carry it: the same
+  // lines, the same bounds, written once (task p14-04).
+  void writeJournal(mm::JsonWriter& w);
   // One line of the apply's journal, bounded to the shape.
   void line(const char* step, const char* note);
+  // **The journal as it is written** (task p14-04, the contract in tasks/phase-14/04): one
+  // `POST /agent/v1/jobs/{id}/progress` per journal line of a radio's apply, carrying the lines
+  // written so far and the newest one's step as the note - so that the job's page says *flashing
+  // since 15:03* instead of *nothing has come back yet* for a quarter of an hour. Called between
+  // two steps of the machine and never inside one; a call that fails is counted and changes
+  // nothing about the apply.
+  void postApplyProgress(long long job_id);
   void clearLines() { line_count_ = 0; line_chars_ = 0; }
   // A `refused` apply with its one `check` line, written and reported.
   bool refuseApply(mm::ResultWriter& out, Refusal refusal, const char* note, const char* from);
 
-  // The lease and the token (the progress is the download listener's, in the .cpp).
-  void extendLease(long long job_id, mm::JobContext& ctx);
+  // The lease and the token (an offer's progress is the download listener's, in the .cpp).
+  // `seconds` is kLeaseExtendSeconds everywhere but before a flash, which asks for the ceiling.
+  void extendLease(long long job_id, mm::JobContext& ctx, int seconds = kLeaseExtendSeconds);
   const char* bearer();
   void wipeBearer();
   // The journal entries this object writes.

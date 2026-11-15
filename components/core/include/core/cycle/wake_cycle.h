@@ -175,10 +175,14 @@ constexpr std::uint32_t kRadioBoundMs = 40000;
 // between them. A climb that reaches rung 4's flash raises the bound again, to an update's.
 constexpr std::uint32_t kLadderBoundMs = 360000;
 
-// Steps 3 and 9, an update. The flasher's whole pass over the radio's application region at the
-// debug port's clock, plus kBootWindowMs and kProvingPeriodMs (core/update/radio_update.h), plus
-// the store's read-back. Twenty minutes is a guess with the right shape and is the number
-// docs/bench.md §9 will replace.
+// Steps 3 and 9, an update **resumed from the journal**. The flasher's whole pass over the
+// radio's application region at the debug port's clock, plus kBootWindowMs and kProvingPeriodMs
+// (core/update/radio_update.h), plus the store's read-back. Twenty minutes is a guess with the
+// right shape and is the number docs/bench.md §9 will replace - and a measured flash is now
+// 14 min 51 s (task p14-04, `update::kFlashWindowMs`), so a resumed run that goes on to roll back
+// is cut off by this bound exactly as an apply was. Nothing of this task changed it: a resume is
+// not an apply, it posts no result to anybody, and the journal carries it to the wake after. It
+// is the next number to move, and tasks/phase-14/FOLLOWUPS.md carries the item.
 constexpr std::uint32_t kUpdateBoundMs = 1200000;
 static_assert(kUpdateBoundMs <= kRaisedBoundMax, "an update's bound has to be one a wake may ask for");
 
@@ -210,7 +214,7 @@ constexpr std::uint32_t kClockBoundMs = 10000;
 // claim and the jobs the claim handed over - a `config.read` of a neighbour is twenty-one
 // transactions at the airtime budget's two a minute, which is eleven minutes, and a
 // `twinoak.fw.apply` is the radio's whole update machine with its three-minute proving period.
-// So the exchange is given an update's own deadline (kUpdateBoundMs, twenty minutes), and what it
+// So the exchange is given a whole update's own deadline, and what it
 // spent inside a bounded machine of its own is reported back as outside the budget
 // (interfaces/backend.h, BackendAnswer::outside_ms), as a climb's and an update's time are. That
 // outside time still counts against the guard's wall-clock ceiling, so the step **raises the bound
@@ -221,9 +225,20 @@ constexpr std::uint32_t kClockBoundMs = 10000;
 // beginning one for is unchanged: the unit is on LTE-M at a few kilobytes a second
 // (spec/proposals/02, *Serving*), so an exchange given ten seconds would be an exchange cut off
 // halfway, and half an exchange is worse than none.
-constexpr std::uint32_t kBackendBoundMs = kUpdateBoundMs;
+//
+// **The number is a whole run of the radio's update machine and a minute** (task p14-04), and it
+// was twenty minutes - `kUpdateBoundMs` - until the unit said what a flash costs. It is not only
+// the guard's business: the library is given what is left to this deadline as its wake's budget
+// (`mm::Budget::wakeSeconds`, `agent/UplinkMeter.h`), and a result made after that budget has run
+// out is **kept** rather than posted. So an apply that takes longer than this deadline is an apply
+// whose outcome the server is not told this wake, however well the lease was held - which is the
+// one thing task p14-04 exists to stop. The minute is the heartbeat and the claim that come before
+// the apply inside the same exchange.
+constexpr std::uint32_t kBackendBoundMs = update::kWholeRunMs + 60000;
 constexpr std::uint32_t kBackendLeastMs = 30000;
 static_assert(kBackendBoundMs <= kRaisedBoundMax, "the exchange's bound has to be one a wake may ask for");
+static_assert(kBackendBoundMs > update::kWholeRunMs,
+              "the exchange has to outlast the longest machine it may run inside it");
 
 // Step 10. SLEEP_NOTICE, the modem down, the pads held (core/cycle/sleep.h). Fifteen seconds,
 // and it is **never refused for want of time**: `kSteps`'s least for this step is zero.

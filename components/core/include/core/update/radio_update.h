@@ -95,6 +95,14 @@ constexpr std::uint32_t kScannerWindowMs = 20000;
 // hardware repository's CURRENT-SENSE.md: CV 4.200 V, precharge below 3.1 V): 3.7 V is a cell
 // with more than half its charge, enough that two MCUs awake for ten minutes of flashing and
 // proving cannot brown it out. The battery is read over the link (POWER_GET, channel 2).
+//
+// **Ten minutes was a guess, and the unit has since said what it really is** (task p14-04): the
+// two updates meshmaster.dk has driven took `check` to `done` in 17 min 51 s (13 November,
+// 0.1.2 -> 0.1.4, job 28560) and 17 min 58 s (14 November, 0.1.4 -> 0.1.5, job 29475), of which
+// the flash alone was 14 min 44 s and 14 min 51 s - and a run that rolls back is that twice, near
+// forty minutes with both MCUs awake. Whether 3.7 V is still the right floor for a unit awake
+// that long is Thomas's to decide with a meter on the pack (tasks/phase-14/FOLLOWUPS.md); the
+// number is unchanged here. kFlashWindowMs below is where those runs are written down.
 constexpr std::uint16_t kBatteryMinMv = 3700;
 
 // "Not falling fast": a reported trend steeper than this refuses the update. 100 mV per hour on a
@@ -113,6 +121,39 @@ constexpr std::uint32_t kStepIdleMs = 100;
 // rolling-back, its booting, its proving, restored); each resume adds one. Measured by
 // host_test/core/update/test_radio_update_power_loss.cpp.
 constexpr std::uint32_t kEntriesPerRunMax = 48;
+
+// -- what a run takes, from two measured runs: the bound a caller has to give one ----------------
+//
+// **These are measurements and not guesses** (task p14-04), which is why they are not in the
+// section above and have no row in docs/bench.md's *What to bring back*. The unit at Bellevue has
+// been updated from meshmaster.dk twice and its own journal says what it cost:
+//
+//   | | 13 Nov, 0.1.2 -> 0.1.4 (job 28560) | 14 Nov, 0.1.4 -> 0.1.5 (job 29475) |
+//   | flashing the candidate | 14 min 44 s | 14 min 51 s |
+//   | booting                | 3 s         | 3 s         |
+//   | proving                | 3 min 03 s  | 3 min 03 s  |
+//   | `check` to `done`      | 17 min 51 s | 17 min 58 s |
+//
+// The three windows above were written before anybody knew that, and a caller that runs this
+// machine inside something bounded - the wake cycle's step, an apply claimed from the server -
+// needs one number to bound it by. These are it, and they are arithmetic over the windows: change
+// a window and they follow.
+
+// What one flash of the radio's application region costs, end to end. The two runs were seven
+// seconds apart for an image seven seconds bigger, so the figure is not the debug port's clock
+// alone and the next image will be longer again: sixteen minutes is those runs with room for the
+// growth, and it is the number to raise when a release flashes slower than this.
+constexpr std::uint32_t kFlashWindowMs = 16u * 60 * 1000;
+
+// One pass of the machine: a flash, the boot window after the reset, and the proving period.
+// `check` and `committing` are a store read and seven flash operations and cost nothing beside it.
+constexpr std::uint32_t kOnePassMs = kFlashWindowMs + kBootWindowMs + kProvingPeriodMs;
+
+// **And a whole run, which is a rollback**: the candidate flashed, booted and failed at the end of
+// its proving period, then the golden image flashed, booted and proved by the same check. Two
+// passes, 38 min 40 s - and *that*, not one pass, is what a caller must allow an apply, because a
+// rollback is the path this machine exists for.
+constexpr std::uint32_t kWholeRunMs = 2u * kOnePassMs;
 
 // -- the states ---------------------------------------------------------------------------------
 
