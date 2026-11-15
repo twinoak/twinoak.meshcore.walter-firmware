@@ -1009,7 +1009,15 @@ void WakeCycle::stepUpdate() {
 
 bool WakeCycle::runTrial(std::uint64_t deadline_ms) {
   std::uint32_t slices = 0;
+  // How often the seam is **asked whether it is ready** - the same clock the trial reads its
+  // third condition on (`kTrialUplinkRetryMs`), so that the ask and the reading of its answer
+  // fall together and neither waits half a minute for the other. It is not how often a heartbeat
+  // goes out: that is the library's own wait, and most of these asks are answered `kWaiting`.
+  std::uint64_t next_beat_ms = clock_.nowMs();
   while (self_->onTrial()) {
+    if (clock_.nowMs() >= next_beat_ms && trialBeat(deadline_ms)) {
+      next_beat_ms = clock_.nowMs() + update::kTrialUplinkRetryMs;
+    }
     const update::SelfStep s = self_->step();
     if (s.changed) {
       if (out_ != nullptr) sayf("cycle: the trial %s\n", s.note);
@@ -1022,6 +1030,50 @@ bool WakeCycle::runTrial(std::uint64_t deadline_ms) {
       return false;
     }
     clock_.delayMs(update::kStepIdleMs);
+  }
+  return true;
+}
+
+// **The trial's third condition, asked again** (task p14-05; interfaces/backend.h, `Beat`).
+//
+// Step 8's exchange is one heartbeat and until this it was the only one a trial ever got: the
+// wake of 15 November 2026 that took v0.1.6's apply left a hold, the trial's wake sent nothing,
+// and five minutes later a perfectly good image rolled itself back for a server it had never
+// asked. One slow attach would have done the same.
+//
+// So the trial's own loop asks for one more, and **only** while the condition is open: the window
+// is what bounds it, the implementation's own wait is what paces it (a backend with one answers
+// `kWaiting` and sends nothing), and nothing but the heartbeat is repeated. A heartbeat that is
+// answered settles condition 3 through the same `UplinkCheck` the wake's own does - this tells
+// nothing to the trial that the seam has not said.
+bool WakeCycle::trialBeat(std::uint64_t deadline_ms) {
+  if (self_ == nullptr) return false;
+  const update::Condition uplink = self_->status().uplink;
+  if (uplink == update::Condition::kMet || uplink == update::Condition::kNotApplicable) return false;
+  // Conditions 1 and 2 first, in the machine's own order: an image whose main loop or whose radio
+  // has not settled is not one to spend a call on, and `step()` would not read condition 3 yet.
+  if (self_->status().main_loop != update::Condition::kMet) return false;
+  const update::Condition radio = self_->status().radio;
+  if (radio != update::Condition::kMet && radio != update::Condition::kNotApplicable) return false;
+  if (!pass_.ok(Step::kUplink)) return false;  // no modem this wake: nothing to send it over
+  if (clock_.nowMs() >= deadline_ms) return false;
+  const interfaces::Beat beat = backend_.beat(deadline_ms);
+  if (beat == interfaces::Beat::kNone) return false;  // this build's backend has no heartbeat
+  if (beat == interfaces::Beat::kWaiting) return true;
+  // How many went out is the seam's own count to keep (components/agent/agent_backend.h,
+  // `trial_beats`): a counter here would be a second one, and every static byte of this object
+  // moves the heap the main task's stack comes out of (tools/heap_at_start.py).
+  if (out_ != nullptr) {
+    sayf("cycle: the trial asked the backend again: %s\n", interfaces::describe(beat));
+  }
+  if (beat != interfaces::Beat::kAnswered) return true;
+  // **And the record says so.** Step 8 wrote why *it* sent nothing - a wait still owed, or the
+  // exchange failing - and a heartbeat this wake got through afterwards is this wake reaching the
+  // server. Without this the wake that saved a trial would read like the wake that sank one
+  // (task p10-02's whole point).
+  if (pass_.reached != interfaces::Reached::kAnswered) {
+    sentNothing(interfaces::Reached::kAnswered, 0);
+    duty_.reason().didThisWake(kDidAnswered);
   }
   return true;
 }

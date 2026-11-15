@@ -90,6 +90,12 @@ constexpr std::uint16_t kAgentJob = 0x0007;
 // the *rolled back* entry, whose 48 are full, and written immediately after it - so an evidence
 // entry is the last trial's when no self-update entry is newer than it.
 constexpr std::uint16_t kTrialEvidence = 0x0008;
+// How hard a trial of the Walter's own image asked the backend (task p14-05,
+// core/update/self_update.h): how many heartbeats went out inside the window and what the last
+// one came to, so that a rollback by *the backend was not reached* can be told from one where
+// nothing was ever sent. Its own kind for the same reason as the evidence above - the *rolled
+// back* entry's 48 bytes are full - and written immediately after it.
+constexpr std::uint16_t kTrialUplink = 0x0009;
 }  // namespace kind
 
 struct Entry {

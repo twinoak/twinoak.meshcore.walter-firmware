@@ -938,6 +938,28 @@ bool FirmwareJobs::resultOwed(JobEntry* out) const {
   return true;
 }
 
+bool FirmwareJobs::owedResultDue() const {
+  if (parts_.journal == nullptr || !resultOwed()) return false;
+  upd::Entry owed_entry;
+  if (!parts_.journal->lastOf(upd::kind::kAgentJob, &owed_entry)) return false;
+  // The self-update's own last word since the switch. `postOwedResult` walks the whole story to
+  // build the lines; this only asks the one question the wait turns on, which is whether there is
+  // an outcome to report at all.
+  upd::Entry e;
+  upd::SelfPayload p;
+  if (!parts_.journal->lastOf(upd::kind::kSelfUpdate, &e) || !upd::decode(e, &p)) return false;
+  if (e.seq <= owed_entry.seq) return false;  // nothing has happened since the apply was journalled
+  if (p.state == upd::SelfState::kConfirmed || p.state == upd::SelfState::kRolledBack) return true;
+  // **The trial is over and nobody has written it down yet.** The journal says a new image was in
+  // the air and *this boot is not it*: the bootloader gave up on the trial and the old image is
+  // back, which `SelfUpdate::begin()` is about to journal as a rollback. This is asked before
+  // that happens (main/main.cpp's boot order; task p14-05), so it makes the same finding rather
+  // than waiting a wake for it.
+  interfaces::OwnSlot running;
+  if (parts_.self == nullptr || !parts_.self->runningSlot(&running)) return false;
+  return p.slot != running.index;
+}
+
 bool FirmwareJobs::lastEnded(JobEntry* out) const {
   if (parts_.journal == nullptr || out == nullptr) return false;
   upd::Cursor c;
@@ -1006,9 +1028,40 @@ bool FirmwareJobs::postOwedResult() {
   if (outcome == ApplyOutcome::kRolledBack && parts_.self != nullptr) {
     have_trial = parts_.self->lastTrial(&trial);
   }
+  // **How hard the backend was asked**, when that is what the trial was rolled back for (task
+  // p14-05). The sentence v0.1.6 was condemned with on 15 November 2026 - *the backend was not
+  // reached inside the trial window* - was true of a trial that never sent one heartbeat, and
+  // read exactly like a unit that cannot attach. These are the figures that tell the two apart,
+  // and they are written by the image that rejected itself (core/update/self_update.h,
+  // kind::kTrialUplink). No entry means this rollback was for another reason.
+  upd::TrialUplink tried;
+  bool have_tried = false;
+  if (outcome == ApplyOutcome::kRolledBack && parts_.self != nullptr) {
+    have_tried = parts_.self->lastUplink(&tried);
+  }
+  char asked[128] = {};
+  if (have_tried) {
+    if (tried.nothingAsked()) {
+      std::snprintf(asked, sizeof asked, "no heartbeat was sent in the %lu s the window lasted",
+                    static_cast<unsigned long>(tried.elapsed_ms / 1000u));
+    } else {
+      std::snprintf(asked, sizeof asked, "%lu heartbeat(s) tried in %lu s; the last: %s",
+                    static_cast<unsigned long>(tried.tries),
+                    static_cast<unsigned long>(tried.elapsed_ms / 1000u), upd::describe(tried.last));
+    }
+    line("uplink", asked);
+  }
+  // The sentence a person reads on the job page, one clause at a time: the rollback's reason,
+  // then what ended the trial and how hard the backend was asked - whichever of the two the
+  // journal kept.
+  if (have_trial || have_tried) {
+    joinText(reason, sizeof reason, "rolled back: ", upd::describe(last.reason), "", "");
+  }
   if (have_trial) {
-    joinText(reason, sizeof reason, "rolled back: ", upd::describe(last.reason),
-             " - the reset that ended it: ", core::health::name(trial.reason));
+    char with_reset[sizeof reason];
+    joinText(with_reset, sizeof with_reset, reason, " - the reset that ended it: ",
+             core::health::name(trial.reason), "");
+    copyText(reason, sizeof reason, with_reset);
     if (trial.attributed && trial.panic[0] != 0) {
       char with_panic[sizeof reason];
       joinText(with_panic, sizeof with_panic, reason, " - panic: ", trial.panic,
@@ -1026,11 +1079,16 @@ bool FirmwareJobs::postOwedResult() {
       if (trial.task[0] != 0) line("task", trial.task);
     }
   }
+  if (have_tried) {
+    char with_asked[sizeof reason];
+    joinText(with_asked, sizeof with_asked, reason, " - ", asked, "");
+    copyText(reason, sizeof reason, with_asked);
+  }
   // The versions as the trial's entries carry them: `from` is the image that was running, `to`
   // the one switched to when confirmed and the one that ran before when rolled back.
   const char* to = outcome == ApplyOutcome::kCommitted ? last.to : last.from;
   const std::size_t n = writeApplyResult(outcome, last.from, to, Refusal::kNone,
-                                         have_trial ? reason : nullptr,
+                                         reason[0] != 0 ? reason : nullptr,
                                          have_trial ? &trial : nullptr);
   if (n == 0) return false;
 

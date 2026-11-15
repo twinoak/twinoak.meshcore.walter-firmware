@@ -2582,11 +2582,22 @@ void Console::selfStatus() {
   printSlot("other:  ", other);
   const update::SelfStatus& st = self_->status();
   if (st.on_trial) {
-    printf("on trial for %lu s of %lu: main loop %s; radio %s (%lu HELLO%s); uplink %s (%lu attempt%s)\n",
+    // The uplink's clause says how many attempts **went out** and what the last one came to
+    // (task p14-05): *not reached* and *not asked* are two findings, and a trial with no attempt
+    // behind it is the second. The attempts are heartbeats the wake posts, not calls this
+    // machine makes (walter_agent/agent_uplink_check.h).
+    char tried[72];
+    if (st.uplink_tries == 0) {
+      std::snprintf(tried, sizeof tried, "nothing sent yet");
+    } else {
+      std::snprintf(tried, sizeof tried, "%lu sent, the last: %s",
+                    static_cast<unsigned long>(st.uplink_tries), update::describe(st.uplink_last));
+    }
+    printf("on trial for %lu s of %lu: main loop %s; radio %s (%lu HELLO%s); uplink %s (%s)\n",
            static_cast<unsigned long>(st.trial_elapsed_ms / 1000),
            static_cast<unsigned long>(update::kTrialWindowMs / 1000), update::describe(st.main_loop),
            update::describe(st.radio), static_cast<unsigned long>(st.hello_tries), st.hello_tries == 1 ? "" : "s",
-           update::describe(st.uplink), static_cast<unsigned long>(st.uplink_tries), st.uplink_tries == 1 ? "" : "s");
+           update::describe(st.uplink), tried);
   } else {
     printf("the running image is %s%s\n",
            running.state == interfaces::OwnImageState::kValid ? "confirmed"
@@ -2630,6 +2641,21 @@ void Console::selfStatus() {
   // p11-03): the reset that ended the trial, and the panic line when the dump was that image's.
   update::SelfUpdate::LastTrial trial;
   if (self_->lastTrial(&trial)) printTrialEvidence(trial);
+  // ... and how hard the backend was asked, when *that* is what it was rolled back for (task
+  // p14-05). The figures are the trial image's own, written beside its rollback, and they are
+  // what tells a server that would not answer from a trial that never got to ask.
+  update::TrialUplink tried;
+  if (self_->lastUplink(&tried)) {
+    if (tried.nothingAsked()) {
+      printf("  no heartbeat was sent in the %lu s the window lasted: *nothing was asked*, not "
+             "*nothing answered*\n",
+             static_cast<unsigned long>(tried.elapsed_ms / 1000));
+    } else {
+      printf("  %lu heartbeat(s) tried in %lu s; the last: %s\n",
+             static_cast<unsigned long>(tried.tries),
+             static_cast<unsigned long>(tried.elapsed_ms / 1000), update::describe(tried.last));
+    }
+  }
 }
 
 void Console::selfReceive() {

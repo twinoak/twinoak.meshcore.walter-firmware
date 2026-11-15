@@ -443,6 +443,43 @@ inline bool wasAnswered(Exchanged how, const BackendAnswer& answer) {
   return how != Exchanged::kFailed && answer.reached == Reached::kAnswered;
 }
 
+// -- one heartbeat more, for a trial (task p14-05) ----------------------------------------------
+//
+// A new image of this firmware is confirmed only after it has reached the server (S-6), and the
+// exchange of its one wake is where that is proved. **One exchange is not enough.** On 15
+// November 2026 v0.1.6 booted on trial, its wake sent nothing - a wait an older image's failed
+// call had left - and five minutes later the image rolled itself back for a server it had never
+// been asked about. A slow attach would have done the same.
+//
+// So while the firmware is on trial, and only then, the wake cycle's trial loop asks for **one
+// heartbeat and nothing else** each time it comes round (core/cycle/wake_cycle.cpp, `runTrial`).
+// Two rules hold it:
+//
+//   *When* is still the implementation's. A backend with a wait of its own answers `kWaiting`
+//   and sends nothing, so the trial does not become a second thing deciding when the modem
+//   speaks - it only asks whether the one thing is ready.
+//   *What* is one heartbeat. Nothing else of a wake is repeated for the trial's sake: the trial
+//   asks one question and nothing but the answer to it is owed.
+//
+// A backend with no heartbeat - this repository's own (core/cycle/null_backend.h) - leaves the
+// default and the trial waits on nothing, as before.
+enum class Beat : std::uint8_t {
+  kNone = 0,      // this implementation has nothing of the sort: the trial is told nothing
+  kWaiting = 1,   // nothing was sent: a wait of the implementation's own is still running
+  kAnswered = 2,  // a heartbeat went out and the backend answered it
+  kFailed = 3,    // a heartbeat went out and nothing came back
+};
+
+inline const char* describe(Beat beat) {
+  switch (beat) {
+    case Beat::kNone: return "no heartbeat of its own";
+    case Beat::kWaiting: return "a wait of its own is still running";
+    case Beat::kAnswered: return "the backend answered";
+    case Beat::kFailed: return "nothing came back";
+  }
+  return "?";
+}
+
 class Backend {
  public:
   virtual ~Backend() = default;
@@ -458,6 +495,14 @@ class Backend {
   // that sits on a modem is a unit that does not wake again (docs/cycle.md, *the budget*).
   virtual Exchanged exchange(const BackendKnowledge& known, std::uint64_t deadline_ms,
                              BackendAnswer* out) = 0;
+
+  // One heartbeat and nothing else, asked for by a trial of this firmware's own image and by
+  // nothing else (`Beat` above). Must return by `deadline_ms`, on the same clock `exchange()`
+  // uses. The default sends nothing, which is what a backend with no heartbeat does.
+  virtual Beat beat(std::uint64_t deadline_ms) {
+    (void)deadline_ms;
+    return Beat::kNone;
+  }
 };
 
 }  // namespace interfaces

@@ -450,6 +450,7 @@ class WakeCycle {
   const Pass& last() const { return pass_; }
   bool running() const { return running_; }
 
+
   // What crossed the seam at the last exchange: what `cycle` prints, and what a test reads.
   const interfaces::BackendKnowledge& known() const { return known_; }
   const interfaces::BackendAnswer& answer() const { return answer_; }
@@ -501,6 +502,8 @@ class WakeCycle {
 
   // Step 9's two halves, each answering whether it did something.
   bool runTrial(std::uint64_t deadline_ms);
+  // One heartbeat more for a trial whose third condition is still open (task p14-05).
+  bool trialBeat(std::uint64_t deadline_ms);
   bool runSelfUpdate();
   bool runRadioUpdate();
   bool runFetch(std::uint64_t deadline_ms);

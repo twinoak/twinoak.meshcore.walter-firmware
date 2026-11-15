@@ -129,7 +129,11 @@ TEST_CASE("self status during a trial, and self confirm ends it") {
   INFO(status);
   CHECK(has(status, "running: slot 1 at 0x310000 (64 KB): pending-verify (on trial"));
   CHECK(has(status, "on trial for "));
-  CHECK(has(status, " s of 300: main loop met; radio met (1 HELLO); uplink failed, trying again (2 attempts)"));
+  // The uplink's clause says what went out and what the last of it came to (task p14-05): this
+  // unit's `FakeUplink` makes the attempt in `check()` itself, so every look is an attempt, and
+  // the clause reads the same either way for it.
+  CHECK(has(status, " s of 300: main loop met; radio met (1 HELLO); uplink failed, trying again "
+                    "(2 sent, the last: the server was not reached)"));
   CHECK(has(status, "3. seq 3: on trial: 0.4.0 in slot 1"));
   CHECK(has(unit.walter->runLine("self confirm"), "self confirm: the running image is confirmed (valid); the trial is over"));
   CHECK_FALSE(unit.walter->self.onTrial());
@@ -158,6 +162,52 @@ TEST_CASE("the trial fails on the console: the rollback line, and the old image'
   const std::string status = unit.walter->runLine("self status");
   INFO(status);
   CHECK(has(status, "4. seq 4: rolled back: the radio answered before the update and not after it"));
+}
+
+TEST_CASE("the trial runs out of uplink: how many heartbeats were tried, and what the last came to") {
+  // Task p14-05. *The backend was not reached inside the trial window* was the sentence v0.1.6
+  // was condemned with on 15 November 2026, and it was true of a trial that had never sent one
+  // heartbeat. These are the figures that tell the two apart, kept in the journal beside the
+  // rollback by the image that rejected itself, and read back here by the old image.
+  SelfUnit unit;
+  unit.walter->console.begin();
+  REQUIRE(unit.receiveAndSwitch(Candidate("self-a")));
+  unit.reboot();
+  // This unit's check makes the attempt itself (`FakeUplink`), so every one of them went out.
+  unit.walter->uplink.verdict = upd::UplinkVerdict::kFailed;
+  const std::string text = bootAndTick(unit, upd::kTrialWindowMs + 10000);
+  INFO(text);
+  CHECK(has(text, "self-update: on trial -> rolled back: the backend was not reached inside the trial window"));
+  const std::uint32_t tried = unit.walter->self.status().uplink_tries;
+  CHECK(tried > 1);
+  unit.reboot();
+  unit.walter->console.begin();
+  const std::string status = unit.walter->runLine("self status");
+  INFO(status);
+  CHECK(has(status, "rolled back: the backend was not reached inside the trial window"));
+  CHECK(has(status, (std::to_string(tried) + " heartbeat(s) tried in ").c_str()));
+  CHECK(has(status, "the last: the server was not reached"));
+}
+
+TEST_CASE("a trial that never got to ask: the line says *nothing was asked*, not *nothing answered*") {
+  SelfUnit unit;
+  unit.walter->console.begin();
+  REQUIRE(unit.receiveAndSwitch(Candidate("self-a")));
+  unit.reboot();
+  // Nothing of the condition ever goes out: the check answers *nothing was sent* at every look,
+  // which is what the agent's does while a wait of the library's own is still running
+  // (walter_agent/agent_uplink_check.h). The window passes with the condition never asked.
+  unit.walter->uplink.verdict = upd::UplinkVerdict::kNotTried;
+  const std::string text = bootAndTick(unit, upd::kTrialWindowMs + 10000);
+  INFO(text);
+  CHECK(has(text, "self-update: on trial -> rolled back: the backend was not reached inside the trial window"));
+  CHECK(unit.walter->self.status().uplink_tries == 0);
+  unit.reboot();
+  unit.walter->console.begin();
+  const std::string status = unit.walter->runLine("self status");
+  INFO(status);
+  CHECK(has(status, "no heartbeat was sent in the "));
+  CHECK(has(status, "*nothing was asked*, not *nothing answered*"));
 }
 
 TEST_CASE("a reset during the trial: the old image's boot line records the rollback") {

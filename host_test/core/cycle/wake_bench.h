@@ -520,6 +520,14 @@ struct WakeWalter {
   // loop so that the trial's first condition is met.
   void begin() {
     (void)self.begin();
+#if WALTER_AGENT
+    // What main.cpp's `console.begin()` does for the trial's third condition (console.cpp,
+    // `settingsChanged`): `server.url` handed to the check. Without it the agent's check answers
+    // *not configured*, the condition does not apply, and a trial confirms on its first two -
+    // which is not what a provisioned unit does, and is not the unit of 15 November 2026
+    // (task p14-05).
+    if (w.agent) trial.setServer(settings.serverHost(), settings.serverPort());
+#endif
     if (!duty->begun()) duty->begin();  // the constructor did it: main.cpp's order (see there)
     duty->guard().arm();
     self.mainLoopReached();

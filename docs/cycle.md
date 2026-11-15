@@ -284,7 +284,7 @@ one of them **raises the bound on the wake** rather than removing it:
 |---|---|---:|
 | a climb | the ladder waits 30, 60 and 120 s between rungs, and **the state of a climb does not survive a sleep** — only its counts and a stop do. So a climb runs to its end inside its wake or starts again at rung 1 in the next one, and the caps are what keep that from becoming a loop | 6 min |
 | an update | "a flash may take several wakes' worth of time and is allowed to hold the wake open up to its own bound" (the task). A megabyte over a 100 kHz debug port, a 20 s boot window and a three-minute proving period do not fit in five minutes | 20 min |
-| a trial | this firmware proving itself (S-6) has to finish before the wake may sleep: a deep sleep during a trial is a rollback of the image being tried | 6 min |
+| a trial | this firmware proving itself (S-6) has to finish before the wake may sleep: a deep sleep during a trial is a rollback of the image being tried. Its loop also asks the backend seam for **one more heartbeat and nothing else** while the third condition is open (task p14-05, `interfaces::Beat`): step 8's one exchange is not enough to condemn an image on, and the implementation's own wait is what paces it | 6 min |
 | a backend exchange | step 8's `exchange()` is given an update's own deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 20 min |
 
 The time those take is **outside** the budget, because both machines are already bounded and

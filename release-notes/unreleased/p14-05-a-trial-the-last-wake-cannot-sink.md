@@ -1,0 +1,1 @@
+A new firmware on trial now gets its check-in through even when the wake before it ended badly, and tries again for the whole five minutes rather than once — so a slow attach no longer sends a good release back and bans it. When one is sent back, the unit says how many times it tried. Seen in the simulated tests only; not yet on a board.

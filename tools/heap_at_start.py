@@ -604,8 +604,16 @@ def write_programme(record: str, cfg: dict, sym: dict, sizes: dict, version: str
             m = RECORD_FREE.match(raw.strip())
             if m:
                 ptr = int(m.group(1), 16)
+                # **Backwards**: the most recent live allocation at that address. The model
+                # hands the same Block object back when a freed block is reused, so a forward
+                # scan credits the free to the *first* operation that ever used the address -
+                # and the programme then frees an operation whose block is long gone. On the
+                # build of 15 November 2026 that wrote `free 59` three times, which only
+                # replayed because every one of those allocations landed on the same block;
+                # 24 bytes of .bss moved one of them and the replay asserted (task p14-05).
                 hit = None
-                for i, item in enumerate(live):
+                for i in range(len(live) - 1, -1, -1):
+                    item = live[i]
                     if item is not None and item[1].ptr == ptr and not item[1].free:
                         hit = i
                         break

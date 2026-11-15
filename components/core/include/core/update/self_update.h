@@ -34,6 +34,10 @@
 //      the uplink is an interface whose firmware implementation says no server is configured, and
 //      the condition is then *not applicable*: that is the rule that keeps a factory image, or
 //      any unit that has never been given a server, from rejecting itself for want of one.
+//      **And it is asked again while the window lasts** (task p14-05): one slow attach is not an
+//      image that cannot reach the server, so a trial whose first attempt failed tries once more
+//      each time whoever makes the attempt is ready - and an attempt that never went out is
+//      written down as such, because *not reached* and *not asked* are two findings.
 //
 // -- what the platform gives ---------------------------------------------------------------------
 //
@@ -81,7 +85,10 @@ constexpr std::uint32_t kTrialWindowMs = 300000;
 constexpr std::uint32_t kTrialHelloIntervalMs = 2000;
 
 // How long after a failed uplink attempt the next is made. An attach that failed is not retried
-// at once; half a minute lets the modem's own backoff run.
+// at once; half a minute lets the modem's own backoff run. **Only an attempt is paced by this**
+// (task p14-05): where the attempt is somebody else's call and `check()` is a reading of what it
+// came to - the agent's - a reading that found nothing sent (`kNotTried`) costs nothing, is not
+// an attempt, and is looked for again at the next step.
 constexpr std::uint32_t kTrialUplinkRetryMs = 30000;
 
 // What SLEEP_NOTICE tells the radio before the restart into the new image (spec/LINK-PROTOCOL.md
@@ -231,6 +238,34 @@ struct TrialEvidence {
 void encode(const TrialEvidence& evidence, std::uint8_t out[kEvidencePayloadBytes]);
 bool decode(const Entry& entry, TrialEvidence* out);  // false unless the entry is an evidence entry
 
+// -- how hard the third condition was tried: a kind::kTrialUplink entry's payload, 12 bytes -----
+//
+// The *rolled back* entry says the backend was **not reached**. This says **how often it was
+// asked**, because *not reached* and *not asked* are two findings and the second is what v0.1.6
+// was condemned by (task p14-05): on 15 November 2026 the trial's one heartbeat was never sent -
+// a wait an older image's failed call had left was put back at the trial's boot - and the line
+// the server was given read exactly like a unit that cannot attach. Its own kind and not more
+// bytes in the *rolled back* entry, whose 48 are full (journal.h says the same of kTrialEvidence),
+// written immediately **after** it by the image that rejected itself, so a reader finds it the
+// way the evidence is found: the last trial's when no self-update entry is newer than it.
+//
+//     0  tries     u32: attempts that went out inside the window (SelfStatus::uplink_tries)
+//     4  elapsed   u32: milliseconds of the window that had passed
+//     8  last      u8 : UplinkVerdict of the last attempt that went out; kNotTried when none did
+constexpr std::size_t kTrialUplinkPayloadBytes = 12;
+
+struct TrialUplink {
+  std::uint32_t tries = 0;
+  std::uint32_t elapsed_ms = 0;
+  UplinkVerdict last = UplinkVerdict::kNotTried;
+
+  // Nothing went out at all: the window passed without one heartbeat on the wire.
+  bool nothingAsked() const { return tries == 0; }
+};
+
+void encode(const TrialUplink& tried, std::uint8_t out[kTrialUplinkPayloadBytes]);
+bool decode(const Entry& entry, TrialUplink* out);  // false unless the entry is a trial-uplink entry
+
 // -- the machine's answers --------------------------------------------------------------------
 
 // What begin() found this boot to be.
@@ -258,7 +293,15 @@ struct SelfStatus {
   Condition main_loop = Condition::kPending;
   Condition radio = Condition::kPending;
   Condition uplink = Condition::kPending;
+  // What the last attempt at condition 3 that **went out** came to (task p14-05); beside the
+  // three conditions because the byte is free there, and this structure is a member of an object
+  // in static storage whose every byte moves the heap (tools/heap_at_start.py).
+  UplinkVerdict uplink_last = UplinkVerdict::kNotTried;
   std::uint32_t hello_tries = 0;
+  // How many attempts at condition 3 **went out** in this window. A reading that found nothing
+  // sent is not one. `uplink_tries == 0` at a rollback by kNoUplink is *nothing was ever asked*,
+  // which is not the same finding as a server that would not answer - and is the one v0.1.6 was
+  // condemned by.
   std::uint32_t uplink_tries = 0;
   SelfPayload trial;  // the on-trial entry's payload: the image's slot, size, hash, versions
 };
@@ -283,6 +326,12 @@ class SelfUpdate final : public image::TransferTarget {
   // At boot, after the pins are safe and the journal is read: is this boot a trial, or does the
   // journal say one was in the air and did not end? Journals what it finds.
   SelfBoot begin();
+  // **Is this boot the new image's trial?**, answered without writing anything and **before**
+  // `begin()` has run (task p14-05). The boot order of main/main.cpp restores the agent's state
+  // before the console's `begin()` reaches this machine, and what that state does with a wait it
+  // still owes turns on this one fact (components/agent/agent_backend.cpp, `loadState`). After
+  // `begin()` it is simply `onTrial()`: begin() decides from exactly this and writes it down.
+  bool bootIsTrial() const;
   // Condition 1: main/ says its loop is turning (the console's first tick).
   void mainLoopReached();
   // One step of the trial: a HELLO when due, the uplink when due, the confirmation or the
@@ -330,6 +379,10 @@ class SelfUpdate final : public image::TransferTarget {
     char panic[health::kPanicMax + 1] = {};
   };
   bool lastTrial(LastTrial* out);
+  // How hard the last trial asked the backend (task p14-05): the kind::kTrialUplink entry the
+  // image that rejected itself wrote beside its rollback. False when the last trial left none -
+  // a trial that confirmed, one the old image found at boot, or a rollback for another reason.
+  bool lastUplink(TrialUplink* out) const;
   // The `coredump` partition itself, for `coredump` on the console: nullptr in a build without
   // one. The console reads and erases through it; nothing else erases it, ever.
   health::CoreDump* dumps() { return dumps_; }
@@ -368,6 +421,9 @@ class SelfUpdate final : public image::TransferTarget {
     std::uint32_t size_ = 0;
   };
 
+  // What the bootloader and the journal make this boot, read and nothing else: `begin()` decides
+  // from it and `bootIsTrial()` answers from it until `begin()` has.
+  bool trialFromBoot() const;
   bool journal(SelfState state, SelfReason reason, std::uint8_t flags, const SelfPayload& about);
   bool lastEntry(SelfPayload* out) const;
   // Written straight after the *rolled back* entry begin() just made, and only there.

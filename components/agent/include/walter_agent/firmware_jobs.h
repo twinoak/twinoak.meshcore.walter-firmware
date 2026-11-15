@@ -318,6 +318,12 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   bool postOwedResult();
   // Whether a result is owed at all (a Walter apply switched and not yet reported).
   bool resultOwed(JobEntry* out = nullptr) const;
+  // ... and whether the trial it belongs to has **ended**, so the next answered heartbeat can
+  // carry it (task p14-05). True at the boot of the old image after a rollback and at the boot
+  // that confirmed, until the result has gone; false while a trial is still in the air. It is
+  // what makes that boot's first wake one this firmware will not hold a wait against: a result
+  // the server is waiting for is the one thing a boot after a restart has to say.
+  bool owedResultDue() const;
   // The last apply that ended, for `state`'s lastUpdate; false when none has.
   bool lastEnded(JobEntry* out) const;
 

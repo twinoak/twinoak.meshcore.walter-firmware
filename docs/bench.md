@@ -2220,6 +2220,43 @@ items are them against the cable and a real network.
       `agent_wakes` as well as `agent_state`, and `agent_calls` only when a call failed. Watch
       that a unit with a healthy server writes exactly two values a wake and no more.
 
+## 23. A trial the wake before it cannot sink
+
+From task p14-05 (`core/update/self_update.h`, `components/agent/agent_backend.cpp`,
+`core/cycle/wake_cycle.cpp`). On 15 November 2026 v0.1.6 went on trial owing a wait an older
+image's failed call had left, sent nothing for five minutes, and rolled itself back for a server
+it had never asked. These items are that fault reproduced on silicon and then not reproduced.
+Walk them with a release that is **not** wanted on the unit: item 3 puts an image on the bad
+list, which is S-6 doing its job.
+
+- [ ] ★ **A trial that owes a wait.** Make a call fail first — `set server.url` to a host that
+      refuses, one wake, then set it back — so `agent state` shows a hold owed. Then offer and
+      apply the next release from meshmaster.dk and watch the console through the restart.
+      Expected: the trial's boot line, `agent state` reading `… s owed before the sleep, laid
+      aside: this image is on trial`, a heartbeat on the wire in the trial's **first** wake, and
+      `self-update: on trial -> confirmed`. **This is the one that matters.**
+
+- [ ] **A trial whose first heartbeat fails.** A Faraday bag over the LTE antenna for the first
+      half-minute of a trial, then off again. Expected: `self status` during the trial reading
+      `uplink failed, trying again (1 sent, the last: the server was not reached)`, then a second
+      heartbeat and a confirmation; `agent state`'s last line counting the trial's own heartbeat
+      and the asks its wait held off.
+
+- [ ] **A trial rolled back for want of an uplink.** The same, with the coverage away for the
+      whole five minutes. Expected: a rollback at the window's end, and after the restart
+      `self status` saying `N heartbeat(s) tried in 300 s; the last: the server was not reached`,
+      with the same sentence in the apply's result on meshmaster.dk. Then check the image is on
+      the bad list.
+
+- [ ] **The owed result after a rollback.** From the same walk: the old image's **first** wake
+      after the rollback posts the result (`agent state`: `laid aside: a rollback's result is
+      owed`), not the timer wake after it. Read the result's timestamp on meshmaster.dk against
+      the unit's `journal`.
+
+- [ ] **The heap, on the board.** `heap` at the console on the first boot of this release,
+      against `tools/heap_at_start.py`: the model says the main task is created with 11 512 bytes
+      to spare and that the tightest big allocation has 116. The model is a model.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the

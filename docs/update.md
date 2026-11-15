@@ -320,6 +320,32 @@ the trial window*, *the radio answered before the update and not after it*, *the
 reached inside the trial window*; the hash goes on the bad list, the journal says *rolled back*,
 and `esp_ota_mark_app_invalid_rollback_and_reboot()` restarts into the previous image.
 
+### A trial exists to ask one question, and nothing may answer it for the trial
+
+With the agent built, condition 3 is **one `POST /agent/v1/heartbeat` answered `ok`**, posted by
+the wake and by nothing else (`walter_agent/agent_uplink_check.h`). Three rules, all of them
+task p14-05's and all of them written on 15 November 2026, when v0.1.6 rolled itself back for a
+server it had never asked:
+
+- **A trial boot owes no wait.** A failed call leaves the agent's library a hold — thirty
+  seconds, then more — and the hold is saved across a sleep and put back at the next boot less
+  the time the board was away, which is 0 for every boot that is not a timer wake. A restart into
+  a trial is not a timer wake, so the whole hold used to come back and the trial's wake sent
+  nothing. The wait is now **laid aside** before the state is handed to the library
+  (`components/agent/agent_backend.cpp`, `loadState`), and nothing else of the state moves. The
+  boot of the **old image after a rollback** lays it aside too while it still owes the server the
+  apply's result: that result goes in the first wake that can.
+- **A heartbeat that fails is tried again while the window lasts.** The trial's own loop asks the
+  backend seam for one more heartbeat — `interfaces::Beat`, and nothing else of a wake — each
+  time the library's own wait has run out (`core/cycle/wake_cycle.cpp`, `trialBeat`). One slow
+  attach is not an image that cannot reach the server. The library still decides *when*: a wake
+  inside its own wait answers `waiting` and sends nothing.
+- **Not reached and not asked are two findings.** The image that rejects itself for want of an
+  uplink writes a `kind::kTrialUplink` entry beside its *rolled back* entry: how many heartbeats
+  went out inside the window and what the last came to. `self status` prints it, and so does the
+  apply's result on meshmaster.dk — *3 heartbeat(s) tried in 300 s; the last: the server was not
+  reached*, or *no heartbeat was sent in the 300 s the window lasted*.
+
 **A trial is one boot.** The bootloader aborts any slot still *pending-verify* when it runs
 (`bootloader_utility.c`, ESP-IDF v5.5.5), so a reset during the trial - a panic, a watchdog, a
 power cut, a person's finger - is a rollback whatever its reason. The old image boots, finds *on
@@ -462,6 +488,26 @@ rolled back: the image never reached its main loop (the bootloader gave up on it
 (one line; broken here to fit). `coredump` on the console says the same about the partition itself,
 and names which of the two slots holds the image that wrote it.
 
+### How hard the backend was asked (task p14-05)
+
+A rollback by *the backend was not reached inside the trial window* gets a second entry of its
+own in the same way - `kind::kTrialUplink`, written by the image that **rejected itself**, right
+after its *rolled back* entry and read back under the same rule (the last trial's when no
+self-update entry is newer than it). It carries three figures: how many heartbeats went out
+inside the window, how long the window had lasted, and the verdict of the last one that went.
+
+It is there because *not reached* and *not asked* are two findings and read the same without it.
+On 15 November 2026 the server was told *the backend was not reached inside the trial window*
+about a unit whose trial never sent a heartbeat at all, and the image was bad-listed for it. The
+same rollback now reads, on `self status` and in the apply's result:
+
+```
+rolled back: the backend was not reached inside the trial window
+ - 3 heartbeat(s) tried in 300 s; the last: the server was not reached
+```
+
+or, when nothing went out, `no heartbeat was sent in the 300 s the window lasted`.
+
 ## The console
 
 ```
@@ -495,7 +541,8 @@ trial), because a trial image that rejected itself has closed the story already.
 
 - `self status`: `running: slot 1 at 0x310000 (3072 KB): valid (confirmed), version 0.4.0+w1`,
   `other: slot 0 …`, then `on trial for 42 s of 300: main loop met; radio met (1 HELLO); uplink
-  failed, trying again (2 attempts)` while one runs, or `the running image is confirmed` (or
+  failed, trying again (2 sent, the last: the server was not reached)` while one runs — `nothing
+  sent yet` where no heartbeat has gone out at all — or `the running image is confirmed` (or
   *pending-verify*, *aborted* … in the bootloader's words), then `received: 0.4.1 in slot 0 (…),
   waiting for 'self switch'` when one is, then the last self-update's story, oldest entry first.
 - `self switch [radio-down]`: the preconditions, the entry, the boot pointer, `SLEEP_NOTICE`
@@ -513,7 +560,7 @@ manifest's `ota` file and says `self receive`.
 |---|---:|---|
 | `kTrialWindowMs` | 300 000 ms | from the trial image's main loop until all three conditions must hold; long enough for a cold LTE attach, short enough that a bad image is gone before the wake is over |
 | `kTrialHelloIntervalMs` | 2 000 ms | between `HELLO` tries during the trial |
-| `kTrialUplinkRetryMs` | 30 000 ms | between uplink attempts after a failure |
+| `kTrialUplinkRetryMs` | 30 000 ms | between uplink attempts after a failure, and how often the trial asks the backend seam whether it is ready for another heartbeat. A look that finds nothing sent costs nothing and is neither paced nor counted |
 | `kSwitchExpectBackS` | 60 s | what `SLEEP_NOTICE` tells the radio before the restart |
 | `kUplinkCondition` | TLS handshake | what condition 3 is when a server exists (`uplink_check.h`); phase 3 implements it |
 | `kSelfUpdateServerHost` / `Port` | "" / 443 | the server to reach; empty = not configured, condition 3 not applicable |
