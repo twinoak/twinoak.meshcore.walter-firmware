@@ -250,12 +250,27 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   std::uint32_t timeAwayMs() const { return away_ms_; }
   std::uint32_t holdOwedBeforeSleepMs() const { return owed_before_ms_; }
   // **How much of that wait was laid aside, and why** (tasks p14-05 and p14-06). 0 when none
-  // was, which is every ordinary wake. The figure is kept rather than read off
-  // `owed_before_ms_`, as task p14-05 had it: a wait a person's wake lays aside is laid aside
-  // **after** the time away has come off it, so what was laid aside and what was owed before the
-  // sleep are two different numbers now, and a line that said one and meant the other would be
-  // the sort of thing this whole task exists to stop.
-  std::uint32_t holdLaidAsideMs() const { return laid_aside_ms_; }
+  // was, which is every ordinary wake.
+  //
+  // Worked out from the two figures above rather than kept as a third, because every four bytes
+  // of this object move the heap the kept scratch is carved out of (tools/heap_at_start.py) -
+  // and the two cases are not the same arithmetic:
+  //
+  //   a trial, a result owed   the wait is dropped **before** it is handed to the library, so
+  //                            what was laid aside is the whole of what the store held;
+  //   a person asked           the wait was handed over and the time away taken off it first, so
+  //                            what was laid aside is what this boot still owed - the remainder,
+  //                            bar the seconds the wake itself spent reaching the exchange.
+  std::uint32_t holdLaidAsideMs() const {
+    switch (laid_aside_) {
+      case LaidAside::kNone: return 0;
+      case LaidAside::kOnTrial:
+      case LaidAside::kResultOwed: return owed_before_ms_;
+      case LaidAside::kPersonAsked:
+        return owed_before_ms_ > away_ms_ ? owed_before_ms_ - away_ms_ : 0;
+    }
+    return 0;
+  }
   const char* holdLaidAsideWhy() const {
     switch (laid_aside_) {
       case LaidAside::kNone: return "";
@@ -313,7 +328,6 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   LaidAside laid_aside_ = LaidAside::kNone;
   std::uint32_t away_ms_ = 0;         // what restore() was told the sleep lasted
   std::uint32_t owed_before_ms_ = 0;  // ... and the hold the stored state still owed before it
-  std::uint32_t laid_aside_ms_ = 0;   // ... and how much of a wait was not put back at all
   mm::WakeReport report_;
   AgentBackendCounters counters_;
   std::uint64_t download_bytes_ = kWakeDownloadBytes;

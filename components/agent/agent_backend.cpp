@@ -267,7 +267,6 @@ bool AgentBackend::loadState() {
   // firmware has taken - and everything else of the state (the backoff, the run of failures, the
   // halt, the counters, the accepted interval) is restored exactly as it was saved.
   laid_aside_ = LaidAside::kNone;
-  laid_aside_ms_ = 0;
   // `bootIsTrial()` and not `onTrial()`: main/main.cpp restores this state (`backend.begin()`)
   // before the console's `begin()` reaches `SelfUpdate::begin()`, so the machine has not decided
   // yet - but the bootloader and the journal have, and that is what both read.
@@ -276,7 +275,6 @@ bool AgentBackend::loadState() {
   const std::uint32_t laid_aside_ms = s.holdForMs > 0 && (on_trial || owes_result) ? s.holdForMs : 0;
   if (laid_aside_ms > 0) {
     laid_aside_ = on_trial ? LaidAside::kOnTrial : LaidAside::kResultOwed;
-    laid_aside_ms_ = laid_aside_ms;
     s.holdForMs = 0;
   }
   // The library refuses a state of another version and changes nothing.
@@ -327,7 +325,6 @@ void AgentBackend::layAsideForPerson() {
   s.holdForMs = 0;
   if (!p_.loop->restore(s, 0)) return;
   laid_aside_ = LaidAside::kPersonAsked;
-  laid_aside_ms_ = laid;
   LOG_I("wake: a person asked for this Walter, so the %lu s of a wait still owed is laid aside",
         static_cast<unsigned long>(laid / 1000u));
 }

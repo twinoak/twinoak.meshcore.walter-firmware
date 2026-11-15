@@ -245,21 +245,27 @@ struct WakeEntry {
 // The ceiling `lasted_s` is clamped to, said once so that the console and the tests can name it.
 constexpr std::uint32_t kLastedAtMostS = 0xFFFFu;
 
+// **Eight bytes smaller since task p14-06**, and it cost nothing to say: the two counters below
+// that are **one byte** are one byte in the record this is read out of too, capped there at 255
+// (`Record` below), so a 32-bit field here only ever claimed a precision nothing kept. They sit
+// with the bools and the two enums, in a word that was padding - and the eight bytes are what
+// pays for the radio reading that record grew by, which is why they were looked for
+// (tools/heap_at_start.py: every byte of this object moves `_heap_start`).
 struct WakeInfo {
   Wake wake = Wake::kUnknown;
+  std::uint8_t spurious_in_window = 0;
   Attention attention{};        // when `wake` is kAttention
   bool usb_host = false;        // a host was on the port when begin() looked
   bool radio_may_be_booting = false;  // our own reset went to the radio: wait before judging it
   bool line_disarmed = false;   // the radio's line is not to be armed for the next sleep
   bool line_just_disarmed = false;  // ...and this wake is what disarmed it
   bool line_rearmed = false;    // ...and this wake is what armed it again (a timer wake)
-  std::uint32_t spurious_in_window = 0;
-  std::uint32_t spurious_total = 0;
-  std::uint32_t faults_in_a_row = 0;
-  std::uint32_t wakes = 0;      // wakes counted since the record began (a power cut)
-  std::uint32_t listened_ms = 0;  // how much of the attention window was spent listening
+  std::uint8_t faults_in_a_row = 0;
   interfaces::WokeBy woke_by = interfaces::WokeBy::kNotFromSleep;
   health::ResetReason reset = health::ResetReason::kUnknown;
+  std::uint32_t spurious_total = 0;
+  std::uint32_t wakes = 0;      // wakes counted since the record began (a power cut)
+  std::uint32_t listened_ms = 0;  // how much of the attention window was spent listening
 };
 
 class WakeReason {
@@ -479,7 +485,6 @@ class WakeReason {
   interfaces::Clock& clock_;
   Record record_{};
   WakeInfo info_{};
-  power::Band band_ = power::Band::kUnknown;
   std::uint32_t wakes_in_saving_ = 0;
   // The record's `asked_s` as `load()` found it: what the sleep *this boot followed* asked for.
   // Latched, because endingInSleep() overwrites the record's copy with the seconds of the sleep
@@ -489,8 +494,14 @@ class WakeReason {
   // `noteRadioAtBoot()` rather than at every read: `timeAwayMs()` is asked by the console as
   // well as by the agent, and the radio is not asked twice for one boot's figure.
   std::uint32_t radio_away_ms_ = 0;
-  bool radio_measured_ = false;
   std::size_t count_ = 0;
+  // **The four one-byte members together, and the four-byte ones above them.** This object is a
+  // member of the `DutyCycle` in `main/app_main`'s static storage, so every byte of it moves
+  // `_heap_start` and with it the heap the 20 kB kept scratch is carved out of
+  // (tools/heap_at_start.py). Laid out this way the word they share was padding before, so the
+  // flag task p14-06 added costs nothing at all.
+  power::Band band_ = power::Band::kUnknown;
+  bool radio_measured_ = false;
   bool begun_ = false;
   bool survived_ = false;
 };
