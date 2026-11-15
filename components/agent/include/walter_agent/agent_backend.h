@@ -204,6 +204,10 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
     // The last eight failed calls (task p13-02). Null keeps none; the uplink is given it here so
     // that `call()` is the one place a failure is written down.
     CallLog* calls = nullptr;
+    // The three counts of a flooded transaction, kept across a sleep (task p14-02). Null keeps
+    // none, and then the heartbeat carries the library's own counts since boot - which on a board
+    // that boots at every wake is what this task exists to stop sending.
+    FloodCounters* floods = nullptr;
     mm::IRetained* kept = nullptr;
     std::uint8_t* kept_scratch = nullptr;
     std::size_t kept_scratch_len = 0;
@@ -272,6 +276,14 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   void sayRadio(bool radio_known, bool radio_up) const;
   bool saveState();
   bool loadState();
+  // What the library counted in this wake, added to the kept totals and written down (task
+  // p14-02): called where the loop's own state is saved, which is the end of every wake this
+  // object runs. The addition is the difference against what has already been taken in this boot,
+  // so a wake adds its counts once (walter_agent/flood_counters.h).
+  void takeFloodCounts();
+  // `agent state`'s flood line: the scope and the rule in the **library's** words
+  // (`JobRunner::describeFlood`) and the three **totals** where that line has the wake's counts.
+  void sayFlood(interfaces::TextOut& out) const;
   // Whether this wake was answered, and when it was not, why nothing was sent (task p10-02):
   // the seam's `interfaces::Reached`, named from the library's own chain. Reads `report_`, which
   // is the wake just run.

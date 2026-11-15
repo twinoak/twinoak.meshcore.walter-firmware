@@ -22,6 +22,9 @@ idf_component_register(
        # and what the report's `calls` section is.
        "call_log.cpp"
        "firmware_jobs.cpp"
+       # The three counts of a flooded transaction, kept across a sleep (task p14-02): what the
+       # heartbeat's `flood` object carries and what `agent state` prints.
+       "flood_counters.cpp"
        "identity.cpp"
        "json_scan.cpp"
        "link_mesh.cpp"

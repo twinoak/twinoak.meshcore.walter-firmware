@@ -114,6 +114,10 @@ const char* const kAgentIncludes[] = {
     // Task p13-02: the last eight failed calls, and the four wake counters a heartbeat carries.
     "core/cycle/wake_counters.h",
     "walter_agent/call_log.h",
+    // Task p14-02: the three counts of a flooded transaction, kept across a sleep, and the
+    // library's own rule and counts they are added to.
+    "agent/FloodScope.h",
+    "walter_agent/flood_counters.h",
 };
 
 }  // namespace

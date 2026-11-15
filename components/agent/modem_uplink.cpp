@@ -441,6 +441,17 @@ bool ModemUplink::postHeartbeat(const mm::Heartbeat& hb, mm::HeartbeatReply& rep
     }
     sending.errorCount = written;
   }
+  // And the heartbeat's own `flood` object with **this board's totals** in it (task p14-02): the
+  // library built the object out of the mesh's §6.5 scope, the runner's rule and its own counts
+  // since boot, and a board that boots at every wake would send 0 / 0 / 0 with a 1 now and then.
+  // The member, its order and the other two fields are the library's; only the three numbers are
+  // swapped, and nothing at all happens for a radio of link 1.2 (no object) or a build that keeps
+  // no totals. The object is a local because `mm::Heartbeat::flood` is a pointer and nothing
+  // copies it: it has to outlive the writer below, and it does.
+  mm::HeartbeatFlood flood;
+  if (hb.flood != nullptr && floods_ != nullptr) {
+    sending.flood = fillFlood(&flood, hb.flood->scope, hb.flood->unscopedRetry, *floods_);
+  }
   const std::size_t body_len = mm::writeHeartbeat(sending, request_, sizeof request_);
   if (body_len == 0) {
     last_call_ = Call();

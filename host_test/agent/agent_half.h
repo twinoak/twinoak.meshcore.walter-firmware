@@ -40,6 +40,7 @@
 #include "walter_agent/agent_uplink_check.h"
 #include "walter_agent/call_log.h"
 #include "walter_agent/firmware_jobs.h"
+#include "walter_agent/flood_counters.h"
 #include "walter_agent/identity.h"
 #include "walter_agent/link_mesh.h"
 #include "walter_agent/mesh_probe.h"
@@ -91,6 +92,10 @@ struct AgentHalf {
   // The last eight calls that did not come back 2xx (task p13-02): the life's object over the
   // world's key-value store, as main.cpp builds it.
   agent::CallLog calls{p.state_store};
+  // The three counts of a flooded transaction (task p14-02): the life's object over the world's
+  // key-value store, as main.cpp builds it - so the totals cross a sleep, a restart and a power
+  // cut on this bench exactly as they do on a board.
+  agent::FloodCounters floods{p.state_store};
   mm::JobRunner jobs;
   mm::AgentLoop loop;
   std::uint8_t kept_scratch[agent::kKeptScratchBytes];
@@ -111,6 +116,9 @@ struct AgentHalf {
         kept(*parts.kept_flash, 0, parts.kept_flash->size()),
         backend(backendParts(), *parts.clock, *parts.wall) {
     server.raiseAttentionThrough(&attention);
+    // The console's `agent heartbeat` carries the same `flood` object a wake posts (task p14-02):
+    // the runner's rule and the kept totals, as main.cpp hands them over.
+    identity_probe.countFloodsFrom(&jobs, &floods.totals());
     current_ = this;
     backend.begin(&pumpAll);
   }
@@ -151,6 +159,7 @@ struct AgentHalf {
     b.trial = p.trial;
     b.state_store = p.state_store;
     b.calls = &calls;
+    b.floods = &floods;
     b.kept = kept.usable() ? &kept : nullptr;
     b.kept_scratch = kept_scratch;
     b.kept_scratch_len = sizeof kept_scratch;

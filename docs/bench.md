@@ -1904,6 +1904,32 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       session, because its own session is back at 1.0 until the next `HELLO`. One `rak hello` and
       `rak scope` must be `dk` again. This is the window in which this unit must tell the server
       nothing rather than a scope the radio is not using.
+- [ ] **The three counts move, and by one** (task p14-02). **Needs the radio at 1.3 too.** Before
+      the flooded login of the item above, `agent state`'s flood line — `flood: scope dk, answered
+      scoped A / unscoped B / none C in all; the second flood of a transaction goes unscoped`.
+      After it, the same line with **exactly one** of the three up by one, and the job's own line
+      says which it should be: a reply to the first try (*flood in the radio's default scope*) is
+      `scoped`, a reply only to the second (*flood with no transport code*) is `unscoped`, and a
+      transaction that got neither is `none`. A job whose sends went **direct** must move none of
+      them. On a radio of 1.2 the line reads `scope none` and the counts never move.
+- [ ] **They outlive a sleep and a power cut** (task p14-02). Note the three, then let the unit
+      sleep and wake (or `sleep 60`), and read them again: the same three or more, never 0 / 0 / 0.
+      Then **pull the power** for ten seconds, let it boot, and read them once more: still there.
+      That is the whole reason they are in the settings store and not in RTC memory, and it is the
+      one thing a host test cannot show on this board.
+- [ ] **The line on meshmaster.dk** (task p14-02). **Needs the radio at 1.3 too.** After the next
+      check-in, the unit's exit node page must carry the companion's own sentence — *Floods scoped
+      dk; one unscoped retry; answered N scoped, M unscoped, K not at all* — with the same three
+      numbers `agent state` printed, and `agent heartbeat` at the console must show the `flood`
+      object they came out of. If the page shows no flood line at all, the radio is still at 1.2:
+      that is correct, and the item above it is the one to read.
+- [ ] **And the counts can be trusted** (task p14-02). `agent state` after a day of flooded jobs
+      must carry **no second flood line**. The one that would appear — *N flood(s) went out in a
+      scope this end had not asked for* — is the floods whose answer said they went out in a scope
+      this end had not asked for, a `region default` changed under the unit's feet, and each of
+      those is a count the agent library may have filed under the wrong one of the three
+      (`tasks/phase-14/FOLLOWUPS.md`). On a healthy unit it is not printed; a unit that prints it
+      has a flood line worth less than it looks.
 - [ ] **And a radio at 0.1.1 is exactly what it was** (task p9-06). Worth doing **before** the
       radio is updated, which is the state the unit is in the moment v0.1.2 of the Walter lands: a
       scheduled `status` or `neighbours` of the unit's own repeater must come back **`failed`**

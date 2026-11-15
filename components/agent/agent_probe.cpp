@@ -56,6 +56,11 @@ HeartbeatExtras IdentityProbe::extras() const {
   out.observations_dropped = ring == nullptr ? 0 : static_cast<long long>(ring->dropped());
   out.reboots = static_cast<long long>(platform_.selfReboots());
   if (wakes_ != nullptr) out.wakes = *wakes_;
+  // The heartbeat's `flood` object, as the wake's own carries it (task p14-02): the runner's rule
+  // and the totals this board keeps. The scope is the mesh's and `fillHeartbeat` reads it there,
+  // so a radio of link 1.2 writes no object at all.
+  out.flood_unscoped_retry = jobs_ != nullptr && jobs_->floodUnscopedRetry();
+  if (floods_ != nullptr) out.flood = *floods_;
   // The other three - the reconnect count, the HTTP failures and the results the offline buffer
   // had to drop - are the loop's own counters and there is no loop until task p4-05
   // (walter_agent/identity.h, HeartbeatExtras).
@@ -163,6 +168,11 @@ const char* IdentityProbe::heartbeat(std::size_t* length) {
   // and one §5.7 line at most, and none when nothing has changed. `agent heartbeat` typed
   // without `agent id` before it must not print a body with no key in it.
   (void)identity_.refresh();
+  // And the flood scope with it, for the same reason (§6.5, task p14-02): the `flood` object is
+  // written when the mesh has a scope to report, a wake reads the name where it reads the key, and
+  // `agent heartbeat` typed first on a fresh boot must not print a body without the object a wake
+  // would post. One `FLOOD_SCOPE` once a session, and not a frame against a radio of 1.2.
+  (void)mesh_.askFloodScope();
   const std::size_t n =
       identity_.writeHeartbeat(&mesh_, extension_, extras(), intent(), body_, sizeof body_);
   if (length != nullptr) *length = n;

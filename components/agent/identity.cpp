@@ -138,6 +138,21 @@ int addRadioIdentityLost(mm::ErrorCounter* out, int count, int capacity, bool lo
   return count + 1;
 }
 
+const mm::HeartbeatFlood* fillFlood(mm::HeartbeatFlood* out, const char* scope,
+                                    bool unscoped_retry, const FloodTotals& totals) {
+  // §6.5's name, or **no object at all**: a mesh that says nothing about scope is what the
+  // library writes nothing for (agent/AgentLoop.cpp's `buildHeartbeat`), and a radio of link 1.2
+  // is one. The string is the mesh's and outlives the heartbeat; nothing here copies it.
+  if (out == nullptr || scope == nullptr) return nullptr;
+  *out = mm::HeartbeatFlood();
+  out->scope = scope;
+  out->unscopedRetry = unscoped_retry;
+  out->answeredScoped = static_cast<long long>(totals.answered_scoped);
+  out->answeredUnscoped = static_cast<long long>(totals.answered_unscoped);
+  out->unanswered = static_cast<long long>(totals.unanswered);
+  return out;
+}
+
 int addWakeCounters(mm::ErrorCounter* out, int count, int capacity,
                     const core::cycle::WakeTotals& totals) {
   // All four or none: a body with three of them would read on the page as a counter that had
@@ -344,6 +359,13 @@ void Identity::fillHeartbeat(mm::Heartbeat* out, const mm::IMesh* mesh,
   out->nextCheckInS = static_cast<int>(intent.nextCheckInS);
   out->hasMaxTransactionsThisWake = intent.maxTransactionsThisWake > 0;
   out->maxTransactionsThisWake = intent.maxTransactionsThisWake;
+
+  // The flood scope and its three counts, last as the record has them (task p14-02): the mesh's
+  // §6.5 name, which is null for a radio of link 1.2 and leaves the object out, the runner's rule
+  // and this board's totals. The object is a member of this one, because `mm::Heartbeat::flood`
+  // is a pointer and nothing copies what it points at.
+  out->flood = fillFlood(&flood_, mesh == nullptr ? nullptr : mesh->floodScope(),
+                         extras.flood_unscoped_retry, extras.flood);
 }
 
 std::size_t Identity::writeHeartbeat(const mm::IMesh* mesh, const mm::IJobExtension* extension,

@@ -89,6 +89,15 @@ void AgentBackend::begin(void (*pump)()) {
     p_.calls->begin();
     p_.server->recordFailuresIn(p_.calls);
   }
+  // And the three counts of a flooded transaction, the same way (task p14-02): read back from the
+  // store here, and handed to the uplink - which is the one seam the heartbeat's bytes pass
+  // through, and therefore the one place the kept totals can replace the library's own counts
+  // since boot. Handed over **by pointer**, so that every heartbeat carries the totals as they
+  // stand when it is built.
+  if (p_.floods != nullptr) {
+    p_.floods->begin();
+    p_.server->countFloodsFrom(&p_.floods->totals());
+  }
   refreshIdentity();
   if (p_.kept != nullptr && p_.kept_scratch != nullptr) {
     p_.loop->setRetained(p_.kept, p_.kept_scratch, p_.kept_scratch_len);
@@ -273,6 +282,26 @@ bool AgentBackend::loadState() {
   return true;
 }
 
+// -- the three counts of a flooded transaction, kept (task p14-02) -----------------------------
+//
+// The library counts one of the three per flooded transaction, **since boot**
+// (`JobRunner::floodCounts()`, agent/FloodScope.h), it cannot be seeded, and `components/agent-core`
+// is a hash-checked copy that is not changed here. A board that boots at every wake would
+// therefore tell meshmaster.dk 0 / 0 / 0 with a 1 now and then, which answers nothing about
+// whether the unscoped try still earns its airtime - so the totals are this board's, beside the
+// library's, and this is where a wake's counts are added to them.
+//
+// `take()` adds the **difference** against what it has already taken in this boot, so calling it
+// twice in a wake moves the totals once; `save()` writes the value only when a total moved. What
+// crosses a boot is the store alone: a wake that dies between a transaction and here leaves the
+// store as it was before that wake - its own counts are lost, at most one wake's - and the next
+// boot starts with the library's counter at 0, so nothing is ever added twice.
+void AgentBackend::takeFloodCounts() {
+  if (p_.floods == nullptr || p_.jobs == nullptr) return;
+  p_.floods->take(p_.jobs->floodCounts());
+  (void)p_.floods->save();
+}
+
 // -- the exchange ------------------------------------------------------------------------------------
 
 interfaces::Exchanged AgentBackend::exchange(const interfaces::BackendKnowledge& known, std::uint64_t deadline_ms,
@@ -379,8 +408,10 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
     if (p_.firmware != nullptr) posted_owed = p_.firmware->postOwedResult();
   }
   (void)saveState();
-  // ... and the failed calls of this wake, **only when one failed** (task p13-02): a wake in which
+  // ... the three counts of what flooded in this wake, added to the kept totals (task p14-02),
+  // and the failed calls of this wake, **only when one failed** (task p13-02): a wake in which
   // nothing failed writes nothing here, which is the fourth deliverable of that task.
+  takeFloodCounts();
   if (p_.calls != nullptr) (void)p_.calls->save();
 
   // The answer: what the jobs did, and how long to sleep at least.
@@ -477,6 +508,7 @@ interfaces::Beat AgentBackend::beat(std::uint64_t deadline_ms) {
     counters_.heartbeats_ok = saturate(counters_.heartbeats_ok);
     if (p_.trial != nullptr) p_.trial->heartbeatOk();
     (void)saveState();
+    takeFloodCounts();
     if (p_.calls != nullptr) (void)p_.calls->save();
     return interfaces::Beat::kAnswered;
   }
@@ -490,6 +522,7 @@ interfaces::Beat AgentBackend::beat(std::uint64_t deadline_ms) {
   counters_.heartbeats_failed = saturate(counters_.heartbeats_failed);
   if (p_.trial != nullptr) p_.trial->heartbeatFailed();
   (void)saveState();
+  takeFloodCounts();
   if (p_.calls != nullptr) (void)p_.calls->save();
   return interfaces::Beat::kFailed;
 }
@@ -750,6 +783,55 @@ void AgentBackend::calls(interfaces::TextOut& out) {
   }
 }
 
+// `agent state`'s flood line, and the report's `agent` section with it (task p14-02): the scope
+// and the rule in the **library's own words** and the three counts as **this board's totals**.
+//
+// The words are read back out of `JobRunner::describeFlood`, which is the one place the four
+// readings of the rule are written - this mesh says nothing about scope, every flood goes out with
+// no transport code, the second flood of a transaction goes unscoped, every flood is scoped - and
+// which this task may not change (`components/agent-core` is a hash-checked copy). That line is
+// `scope <name>, answered scoped A / unscoped B / none C since boot; <the rule>`, so the clause
+// after the **last** `; ` is the rule and nothing else: not one of the four carries a semicolon,
+// and a host test holds all four to it. A library whose line changed shape would put its whole
+// line where the rule goes - nothing invented and nothing lost - and that test would say so
+// first.
+//
+// Why the totals and not the library's counts: the library's are since boot and this board boots
+// at every wake, so its own line would read 0 / 0 / 0 on a unit that has been flooding for a
+// month (walter_agent/flood_counters.h).
+void AgentBackend::sayFlood(interfaces::TextOut& out) const {
+  if (p_.jobs == nullptr) return;
+  char line[200] = {};
+  p_.jobs->describeFlood(line, sizeof line);
+  const char* rule = line;
+  for (const char* at = line; *at != 0; ++at) {
+    if (at[0] == ';' && at[1] == ' ') rule = at + 2;
+  }
+  const FloodTotals kept = p_.floods != nullptr ? p_.floods->totals() : FloodTotals();
+  const char* scope = p_.mesh != nullptr ? p_.mesh->floodScope() : nullptr;
+  // Two writes of one line, as the hold's two halves are: a 30-byte scope name, three totals and
+  // the longest of the library's four rules are more together than the 200 bytes one line of this
+  // console may be, and a line that truncated would lose its newline with its words.
+  sayf(&out, "  flood: scope %s, answered scoped %lu / unscoped %lu / none %lu in all",
+       scope == nullptr ? "none" : scope, static_cast<unsigned long>(kept.answered_scoped),
+       static_cast<unsigned long>(kept.answered_unscoped),
+       static_cast<unsigned long>(kept.unanswered));
+  sayf(&out, "; %s\n", rule);
+  // **And how often the three could be wrong** - a line only on a unit that has had one. The
+  // library files a transaction under the mode its rule *asked* for, and a flood whose answer said
+  // it went out in another one (a `region default` cleared under this end's feet) is counted under
+  // the wrong of the three. This end is the only one that notices, and it cannot correct the
+  // library's figure (`components/agent-core` is a copy): `LinkMeshCounters::scope_surprises` is
+  // therefore how far the three above can be trusted, and on a healthy unit it is 0 and this line
+  // is not printed at all (tasks/phase-14/FOLLOWUPS.md).
+  const std::uint32_t surprises = p_.mesh != nullptr ? p_.mesh->linkCounters().scope_surprises : 0;
+  if (surprises != 0) {
+    sayf(&out, "         %lu flood(s) went out in a scope this end had not asked for, so that "
+               "many of the three above may be under the wrong one\n",
+         static_cast<unsigned long>(surprises));
+  }
+}
+
 void AgentBackend::state(interfaces::TextOut& out) {
   if (!begun_ || p_.loop == nullptr) {
     say(&out, "error: agent state: the loop has not begun\n");
@@ -795,6 +877,10 @@ void AgentBackend::state(interfaces::TextOut& out) {
        static_cast<unsigned long>(s.counters.observationsPosted),
        static_cast<unsigned long>(s.counters.observationsRefused),
        static_cast<unsigned long>(s.counters.claimFailures), static_cast<unsigned long>(s.counters.resultsPosted));
+  // The scope this unit's floods go out in, the rule, and the three totals (task p14-02): the one
+  // line a person reads to know whether the unscoped try still earns its airtime, and the same
+  // three numbers the heartbeat's `flood` object carries.
+  sayFlood(out);
   // **Is this unit's clock set, and from where** (task p13-01). Every figure above that is an
   // epoch - the last heartbeat, a result's timestamps - is this clock's, and a unit that never
   // attached has none at all: `lastHeartbeatAtEpoch 0` then means *no clock*, not *never*. The
