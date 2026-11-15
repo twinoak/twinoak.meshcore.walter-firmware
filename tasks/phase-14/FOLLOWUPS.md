@@ -15,3 +15,12 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   to commit there; the copy here is byte for byte what that tree holds.
 - [ ] **[later] Phase 13's follow-ups are still open**, the first of them above all: a wake by the
   radio's line inside a wait sends nothing.
+  The first is task 06 of this pile, written on 15 November.
+- [ ] **[later] The radio says `ok` to `walter.wake 1` whether or not it raised an attention.**
+  Refused inside the hourly limit, or with one already pending, the answer is the same `ok`
+  (`Settings.cpp`, repeater firmware). `sensor get walter.wake` is where the truth is read, and
+  meshmaster.dk's wake job does not read it. The repeater firmware's and meshmaster.dk's to
+  settle, not this board's.
+- [ ] **[later] After a power cut the wait is owed whole.** The saved state is in flash and
+  survives; the radio restarted with the board, so nothing measures the time away. The epoch
+  beside the saved state, once the board has a clock again, would.

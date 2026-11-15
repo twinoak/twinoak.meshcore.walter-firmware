@@ -41,6 +41,13 @@ be installed at all:
 .\tasks\run-all.ps1 -Phase '14' -From 05 -To 05
 ```
 
+**And the same root, where it was first met.** On 13 November *Wake it up* reached the unit's
+radio and nothing came of it (meshmaster.dk job 28399). A wait is put back whole at every boot
+that is not a timer wake, so a wake a person asks for sends nothing whenever the wake before it
+ended in a failed call. Phase 13's first follow-up named the cure: the radio never sleeps, and
+its uptime before the sleep and after it is the time away (06). Written on 15 November, after
+05 had been started and stopped. It runs with the rest, last.
+
 **Not on the board.** No session opens a port. No release: Thomas presses the button.
 
 ## Order and dependencies
@@ -52,6 +59,7 @@ be installed at all:
 | 03 | [the-notes-say-what-is-true](03-the-notes-say-what-is-true.md) | — | the notes' pull request and `docs/release.md` say what GitHub does with its check: a run held for approval, to approve or to merge past |
 | 04 | [an-apply-keeps-its-lease](04-an-apply-keeps-its-lease.md) | — | a radio's update extends its lease before each flash and posts its journal as it is written; what a rollback longer than the wake's bound does, shown and settled |
 | 05 | [a-trial-the-last-wake-cannot-sink](05-a-trial-the-last-wake-cannot-sink.md) | — | a trial boot owes no wait from the wake before it; its heartbeat is tried again while the window lasts; a rollback's result goes in the first wake that can; the journal says how many heartbeats were tried |
+| 06 | [a-wake-a-person-asked-for](06-a-wake-a-person-asked-for.md) | 05 | the time away is measured by the radio's uptime for every kind of wake; a wake a person asked for owes no wait; `agent state` says where the figure came from |
 
 ```powershell
 .\tasks\run-all.ps1 -Phase '14'
@@ -59,14 +67,17 @@ be installed at all:
 
 ## Models
 
-- **Opus**: 01, 02, 03, 04, 05.
+- **Opus**: 01, 02, 03, 04, 05, 06.
 
 ## Afterwards (Thomas)
 
 - **After 05 alone: release** with the button (v0.1.7: phase 13's lines and 05's), merge its
   notes pull request, then offer and apply the Walter's own firmware to the unit from
   meshmaster.dk. The Diagnostics tab of its exit node appears after its next check-in.
-- **After the rest** (01 to 04): release again, offer and apply.
+- **After the rest** (01 to 04, and 06): release again, offer and apply.
+- **Then a wake**, with that release on the unit: press *Wake it up*, and *Fetch now* on the
+  Diagnostics tab. `agent state` in the report says where the time away came from and whether
+  a wait was set aside.
 - **The radio's half**: the repeater firmware's pile 3.13, released, offered and applied to the
   unit's radio. Until both are on the unit nothing changes on the air.
 - **Then look** at the unit's exit node on meshmaster.dk: *Floods scoped dk; one unscoped retry;
