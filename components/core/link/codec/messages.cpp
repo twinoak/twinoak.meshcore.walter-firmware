@@ -1,6 +1,6 @@
-// The payloads of protocol 1.2, spec/LINK-PROTOCOL.md §5-§8. spec/tools/linkref.py's encode()
+// The payloads of protocol 1.3, spec/LINK-PROTOCOL.md §5-§8. spec/tools/linkref.py's encode()
 // and decode() are the reference and every case of spec/fixtures/link/link-v1.json,
-// link-v1.1.json and link-v1.2.json is held against this file by
+// link-v1.1.json, link-v1.2.json and link-v1.3.json is held against this file by
 // host_test/core/link/codec/test_link_fixtures.cpp - in both directions it
 // implements: a request's fields become its payload, a response's or an event's payload becomes
 // its fields.
@@ -298,6 +298,18 @@ Encoded encode(const SendTraceRequest& request, std::uint8_t* out, std::size_t o
   return done(w);
 }
 
+Encoded encode(const FloodScopeRequest& request, std::uint8_t* out, std::size_t out_size) {
+  Writer w(out, out_size);
+  // §6.5: "Any other `mode` is ERR_RANGE." Refused here rather than sent: a mode the radio
+  // cannot act on is a frame that teaches this end nothing.
+  if (request.mode != flood_mode::kAsk && !flood_mode::isAnswered(request.mode)) {
+    w.fail();
+    return done(w);
+  }
+  w.u8(request.mode);
+  return done(w);
+}
+
 Encoded encode(const ObsPullRequest& request, std::uint8_t* out, std::size_t out_size) {
   Writer w(out, out_size);
   w.u8(request.max);
@@ -441,7 +453,31 @@ bool decode(Bytes payload, SendResponse* out) {
   if (!takeStatus(r, &out->status, &body) || !body) {
     return r.ok();
   }
-  return r.u8(&out->send) && r.u32(&out->tag) && r.u32(&out->sender_ts);
+  if (!r.u8(&out->send) || !r.u32(&out->tag) || !r.u32(&out->sender_ts)) {
+    return false;
+  }
+  // §6.2, 1.3: `scoped` is there in a session of 1.3 or later and not in an older one, and the
+  // payload does not say which - the session does (§5.1). So the byte is read when it is there
+  // and *absent* is reported when it is not: an answer that ends at `sender_ts` is a 1.2 answer
+  // and not a malformed one, and a `scoped` of 0 from a 1.3 radio is a true 0.
+  if (r.remaining() == 0) {
+    out->has_scoped = false;
+    return r.ok();
+  }
+  out->has_scoped = r.u8(&out->scoped);
+  return r.ok();
+}
+
+bool decode(Bytes payload, FloodScopeResponse* out) {
+  Reader r(payload);
+  bool body = false;
+  if (!takeStatus(r, &out->status, &body) || !body) {
+    return r.ok();
+  }
+  // §6.5: `mode` is 1 or 2 and `scope` is 0 to 30 bytes. Neither selects the layout of what
+  // follows it, so both are handed over as they arrived (the file's second rule) - a reader that
+  // refused a mode it did not know would learn less than one that passed the number on.
+  return r.u8(&out->mode) && r.str8(&out->scope);
 }
 
 bool decode(Bytes payload, ReplyGetResponse* out) {

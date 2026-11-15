@@ -18,6 +18,7 @@ constexpr Bit kCapabilities[] = {
     {cap::kEnv, "env"},                   {cap::kMeshClient, "mesh-client"},
     {cap::kObservations, "observations"}, {cap::kAttention, "attention"},
     {cap::kTimePersist, "time-persist"}, {cap::kLocalRequest, "local-request"},
+    {cap::kFloodScope, "flood-scope"},
 };
 
 // §5.3's STATUS flags.

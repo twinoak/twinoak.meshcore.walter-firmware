@@ -1,4 +1,4 @@
-// One struct per payload of protocol 1.2, and the functions the Walter's end needs: an encoder
+// One struct per payload of protocol 1.3, and the functions the Walter's end needs: an encoder
 // for every request it sends, a decoder for every response and every event it receives
 // (spec/LINK-PROTOCOL.md §5-§8). The other two directions - decoding a request, encoding a
 // response - are the radio firmware's and are not here; the fixtures are the only thing the two
@@ -244,6 +244,13 @@ struct SendTraceRequest {
   Bytes hashes;                // the round-trip path
 };
 
+// §6.5 (1.3). Reads the radio's default flood scope and sets what the **next** send does with
+// it. Nothing goes on the air and no job is needed; `client_tx` does not move.
+struct FloodScopeRequest {
+  static constexpr std::uint8_t kType = type::kFloodScope;
+  std::uint8_t mode = flood_mode::kAsk;  // kAsk, kScopedNext, kUnscopedNext; any other is ERR_RANGE
+};
+
 // §7. The most records wanted; the radio returns as many as fit in one payload.
 struct ObsPullRequest {
   static constexpr std::uint8_t kType = type::kObsPull;
@@ -265,6 +272,7 @@ Encoded encode(const SendRequestRequest& request, std::uint8_t* out, std::size_t
 Encoded encode(const SendCliRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const SendDiscoveryRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const SendTraceRequest& request, std::uint8_t* out, std::size_t out_size);
+Encoded encode(const FloodScopeRequest& request, std::uint8_t* out, std::size_t out_size);
 Encoded encode(const ObsPullRequest& request, std::uint8_t* out, std::size_t out_size);
 
 // ---------------------------------------------------------------------------- responses
@@ -376,6 +384,24 @@ struct SendResponse {  // §6.2, the answer to all five sends
   std::uint8_t send = send_result::kNothingSent;
   std::uint32_t tag = 0;        // what the reply will be matched by; 0 = the next reply from the peer
   std::uint32_t sender_ts = 0;  // the timestamp the radio put in the packet
+  // 1.3 (§6.2): 1 when the packet went out as a flood carrying a transport code of the default
+  // scope (§6.5). **Absent is not 0**: a session of 1.2 or older ends the answer at `sender_ts`,
+  // and an answer without the byte is a 1.2 answer and not a malformed one. Nothing in the
+  // payload says which it is - the session's version does (§5.1, *The session's version*) - so
+  // the decoder reports whether the byte was there and the reader decides what that means. A
+  // session of 1.4 that added a field after it would still have `scoped` here, which is why the
+  // byte is read and the rest ignored rather than the length being compared.
+  bool has_scoped = false;
+  std::uint8_t scoped = scoped::kNo;
+};
+
+struct FloodScopeResponse {  // §6.5 (1.3)
+  std::uint8_t status = status::kOk;
+  std::uint8_t mode = flood_mode::kScopedNext;  // what the next send will be: 1 or 2
+  // The default scope's name as `region default` prints it, without a leading `#`, 1 to 30
+  // bytes - or **empty**, which is a radio that holds no default scope and whose floods
+  // therefore carry no transport code. A view, like every str8 here: whoever keeps it copies it.
+  Text scope;
 };
 
 struct ReplyGetResponse {  // §6.3
@@ -418,6 +444,7 @@ bool decode(Bytes payload, LppGetResponse* out);
 bool decode(Bytes payload, LocalRequestResponse* out);
 bool decode(Bytes payload, PathGetResponse* out);
 bool decode(Bytes payload, SendResponse* out);
+bool decode(Bytes payload, FloodScopeResponse* out);
 bool decode(Bytes payload, ReplyGetResponse* out);
 bool decode(Bytes payload, ObsPullResponse* out);
 bool decode(Bytes payload, MeshCountersResponse* out);

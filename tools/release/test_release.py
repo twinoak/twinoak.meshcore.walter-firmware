@@ -175,7 +175,7 @@ class TheManifest(ReleaseCase):
         self.assertEqual(manifest["tag"], "v0.0.0-dryrun")
         self.assertEqual(manifest["commit"], COMMIT)
         self.assertEqual(manifest["built_at"], BUILT_AT)
-        self.assertEqual(manifest["link"], {"major": 1, "minor": 2})  # spec/LINK-PROTOCOL.md
+        self.assertEqual(manifest["link"], {"major": 1, "minor": 3})  # spec/LINK-PROTOCOL.md
         self.assertEqual([i["id"] for i in manifest["images"]], ["manager.walter.lte-m"])
         self.assertEqual(sorted(result["written"]),
                          sorted(["NOTES.md", "SHA256SUMS", "manifest.json",

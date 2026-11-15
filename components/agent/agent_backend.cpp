@@ -120,6 +120,11 @@ void AgentBackend::handOverIdentity() {
   p_.loop->setIdentity(p_.identity->publicKeyHex());
   p_.mesh->setOwnKey(p_.identity->publicKey());
   if (p_.observations != nullptr) p_.observations->useOwnKey(p_.identity->publicKey());
+  // §6.5 (link 1.3): the radio's default flood scope, read once a session, **here** - where the
+  // unit's own key is read and therefore before the heartbeat is built, which is where the scope
+  // and its three counts go. One FLOOD_SCOPE when the session can scope a flood and the name is
+  // not known yet, and not a frame otherwise; a radio of 1.2 is untouched.
+  (void)p_.mesh->askFloodScope();
 }
 
 // **One line says which of the two this wake is, and why** (task p8-04). It goes to the library's

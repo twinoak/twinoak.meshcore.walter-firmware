@@ -92,6 +92,35 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // two against each other).
   std::string band;
 
+  // ---------------------------------------------------------------- §6.5, the flood scope (1.3)
+  //
+  // **The switch** this phase's tests turn. Off, this radio is what it was: the body says the
+  // minor its `band` implies (1.1, or 1.0 with no band), `caps` has no FLOOD_SCOPE bit and
+  // §6.5's request is answered ERR_UNSUPPORTED - a radio of 1.2, which is every radio until the
+  // repeater firmware's pile 3.13. On, it speaks 1.3: `speakLink13("dk")` puts the bit in
+  // `caps`, makes the body say minor 3 (and gives it a band, because a body of minor 1 or more
+  // ends with one, §5.1), answers FLOOD_SCOPE out of `flood_scope` and `flood_mode`, and ends a
+  // send's answer with `scoped` - but only in a **session** of 1.3, which is what the last
+  // HELLO's answer named (§5.1, *The session's version*). So a 1.3 radio whose Walter asked for
+  // 1.2, or one that has restarted and not been greeted again, answers as 1.2 does.
+  void speakLink13(const std::string& default_scope);
+  void speakLink12();
+
+  bool flood_scope_capable = false;  // the bit in `caps` and minor 3 in the body
+  std::string flood_scope;           // `region default`'s name; empty: this radio holds none
+  // §6.5: what the next send will do with it. A FLOOD_SCOPE of mode 1 or 2 sets it; the RAK puts
+  // it back to 1 after the next SEND_* it executes, and after JOB_BEGIN and JOB_END (sim/sim_rak
+  // does that, because it is the one that executes a send).
+  std::uint8_t flood_mode = core::link::flood_mode::kScopedNext;
+  std::uint32_t flood_scope_asks = 0;      // FLOOD_SCOPE requests executed, by mode
+  std::uint32_t flood_scope_unscoped = 0;
+  // §5.1: the minor the last HELLO's answer named - the session's version - and 0 before any
+  // HELLO of this boot. What decides whether a send's answer carries `scoped`.
+  std::uint8_t sessionMinor() const { return session_minor_; }
+  // The highest minor this radio speaks at all, which is what EV_BOOT's body says whatever the
+  // Walter knows (§5.1).
+  std::uint8_t speaksMinor() const;
+
   // The event seq the next event carries (§3: the radio counts from 0 and wraps). Public so that a
   // test can skip one and make a gap.
   std::uint8_t event_seq = 0;
@@ -226,7 +255,10 @@ class ScriptedRadio final : public interfaces::ByteStream {
   void onFrame(const core::link::Packet& packet, const std::vector<std::uint8_t>& frame);
   void onCommand(const std::string& line);
   std::vector<std::uint8_t> responseFor(const core::link::Packet& packet, std::string* case_name);
-  std::vector<std::uint8_t> helloBody(const std::vector<std::uint8_t>& from, std::size_t at);
+  // `minor` is the one the body is to say: the negotiated one for a HELLO answer, this radio's
+  // own highest for an EV_BOOT (§5.1).
+  std::vector<std::uint8_t> helloBody(const std::vector<std::uint8_t>& from, std::size_t at,
+                                      std::uint8_t minor);
   void queue(const std::vector<std::uint8_t>& bytes, std::uint32_t after_ms, bool attention = false);
   void answer(std::uint8_t type, std::uint8_t seq, const std::vector<std::uint8_t>& payload);
   void ripen();  // move what is due into the readable buffer
@@ -260,6 +292,7 @@ class ScriptedRadio final : public interfaces::ByteStream {
   std::uint8_t ignore_type_ = 0;
   int ignore_type_times_ = 0;
   bool identity_lost_ = false;
+  std::uint8_t session_minor_ = 0;
 };
 
 }  // namespace sim

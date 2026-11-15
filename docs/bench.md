@@ -106,7 +106,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   `twinoak-walter 0.0.0-dev` on its own line, then the `heap:` line (the item below), then
   `running from ota_0 at 0x010000 (3072 KB), ota state undefined (...)`, then
   `image descriptor at <address>: role manager, board walter, band
-  lte-m, version 0.0.0-dev, link 1.2` (task p0-02), then `boot 1: power-on reset`, `the boot
+  lte-m, version 0.0.0-dev, link 1.3` (task p0-02), then `boot 1: power-on reset`, `the boot
   record starts here (a power cut, or the first boot)`, `type 'help' for the commands` and a `> `
   prompt (task p0-03; until it, the last line was `console on USB; nothing to do yet - idling`).
   `--flash-mode dio` is esptool's way in; the image's header says QIO and the bootloader
@@ -191,7 +191,7 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   ```
 
   The console's third line is `image descriptor at <address>: role manager, board walter, band
-  lte-m, version <the manifest's version>, link 1.2` — the same role, board, band and version the
+  lte-m, version <the manifest's version>, link 1.3` — the same role, board, band and version the
   descriptor and `manifest.json` give. Everything here is checked on every build except that a
   board flashed with the released file boots and prints it: that is what only a Walter on a desk
   shows.
@@ -1877,6 +1877,33 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       still says *Its own unit answers no status over the box link until its Walter and radio are
       at 0.1.2*, read which half it names: that sentence is the server's version gate
       (`LocalDoor.OlderHalf`) and not this change.
+- [ ] ★ **The link at 1.3, and the flood scope** (task p14-01). **Needs the radio at the repeater
+      firmware's own 1.3 too** (its pile 3.13, offered over LTE like the Walter's); until then
+      every item here reads as the 1.2 line and is not a finding. `rak hello`: the `capabilities`
+      line must carry **`flood-scope`** (bit `0x100`) and the `protocol` line must say **1.3** —
+      the session's minor is the highest both ends know, so this Walter against a radio of 1.2
+      still says 1.2 and no `flood-scope`. Then `rak scope`, which must print the region the radio
+      floods in — `dk` on a unit that follows the Danish standard, the same word `rak cli region
+      default` answers — and *the next send takes the default scope (mode 1)*. Nothing on the air
+      for it, and `rak status` right after must show `client_tx` unmoved.
+- [ ] **And a radio of 1.2 says so, in words** (task p14-01). Worth doing **before** the radio is
+      updated, which is the state the unit is in the moment this release lands: `rak scope` must
+      say *this radio speaks 1.2 — it has no 'flood-scope' capability*, and the unit's exit node on
+      meshmaster.dk must carry **no flood line at all**. That is correct and is what every unit
+      says until both halves are on it.
+- [ ] **A scoped login on the air** (task p14-01). With both 1.3s on the unit, a `status` or a
+      `cli` job for a repeater the server knows **no path to** (or `rak mesh status <key>` of a
+      neighbour the unit holds no path for): the line must say *flood in the radio's default
+      scope*, and a second try of the same transaction — one the first flood got no answer to —
+      *flood with no transport code*. Read the radio's own `rak cli stats-core` before and after if
+      the scope is in doubt: a scoped flood and an unscoped one are the same packet but for the
+      transport code, and what tells them apart on the air is whether a repeater that holds the
+      region forwards it.
+- [ ] **A restarted radio says nothing about scope** (task p14-01). `rak reset`, then `rak scope`
+      **without** a `rak hello` first: the radio must answer that nothing is scoped in this
+      session, because its own session is back at 1.0 until the next `HELLO`. One `rak hello` and
+      `rak scope` must be `dk` again. This is the window in which this unit must tell the server
+      nothing rather than a scope the radio is not using.
 - [ ] **And a radio at 0.1.1 is exactly what it was** (task p9-06). Worth doing **before** the
       radio is updated, which is the state the unit is in the moment v0.1.2 of the Walter lands: a
       scheduled `status` or `neighbours` of the unit's own repeater must come back **`failed`**

@@ -49,7 +49,7 @@ After a reset the port prints a dozen lines and a `>` prompt
 ```
 twinoak-walter 0.1.4+<sha7>
 running from ota_0 at 0x010000 (3072 KB), ota state valid
-image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.4+<sha7>, link 1.2
+image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.1.4+<sha7>, link 1.3
 ...
 type 'help' for the commands
 >

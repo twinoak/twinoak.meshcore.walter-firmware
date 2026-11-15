@@ -73,6 +73,9 @@ const CommandDef kCommands[kCommandCount] = {
      "ask the radio's own request handler one question, as it answers an admin over the mesh and "
      "with nothing on the air: 01 status, 05 access list, 06 neighbours, 07 owner info. The "
      "answer is printed as hex, and a status also field by field"},
+    {"rak scope", "rak scope", Group::kRadio,
+     "the radio's default flood scope - the region every flood it sends for this unit goes out "
+     "in - and what the next send would do with it. A read: nothing goes on the air"},
     {"rak events", "rak events", Group::kRadio, "the events the radio has sent"},
     {"rak text", "rak text", Group::kRadio,
      "the lines a scanner has sent instead of frames; they are printed and not logged (S-12)"},

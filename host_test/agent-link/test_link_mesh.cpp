@@ -28,7 +28,9 @@
 #include <support/Fixtures.h>
 #include <support/Jobs.h>
 
+#include "core/link/codec/messages.h"
 #include "core/link/codec/wire.h"
+#include "core/version.h"
 #include "sim/local_door.h"
 #include "sim/mesh_world.h"
 #include "walter_agent/link_mesh.h"
@@ -243,6 +245,51 @@ class LinkMeshTest : public ::testing::Test {
     ASSERT_TRUE(world().client.hello().ok());
     ASSERT_TRUE(link().answersRequestsLocally());
   }
+
+  // ... and the radio is one at **link 1.3** (task p14-01, §6.5): the `FLOOD_SCOPE` capability in
+  // the session, a body that says minor 3, and `default_scope` as its `region default` - empty
+  // for a radio that holds none. `makeIt13()` alone leaves the job a mesh job; call it before
+  // `makeItLocal()` or after, the two are about different things.
+  void makeIt13(const std::string& default_scope) {
+    rak().radio.speakLink13(default_scope);
+    world().client.radioWasReset();
+    ASSERT_TRUE(world().client.hello().ok());
+    ASSERT_EQ(world().client.session().proto_minor, link::kFloodScopeMinor);
+    ASSERT_TRUE(world().client.hasCapability(link::cap::kFloodScope));
+  }
+
+  // The radio of 1.2 this file has always used, said out loud: the bit is not in `caps`, the
+  // body says what its band implies, and §6.5's request is `ERR_UNSUPPORTED`.
+  void makeIt12Link() {
+    rak().radio.speakLink12();
+    world().client.radioWasReset();
+    ASSERT_TRUE(world().client.hello().ok());
+    ASSERT_LT(world().client.session().proto_minor, link::kFloodScopeMinor);
+    ASSERT_FALSE(world().client.hasCapability(link::cap::kFloodScope));
+  }
+
+  // The frames the Walter sent since `from`, of the types §6.5 is about: every `SEND_*` and every
+  // `FLOOD_SCOPE`, in order, each as `type` and - for a FLOOD_SCOPE - the `mode` it asked for.
+  // Retries are included, because §3 says a retry is the same frame and the order is the point.
+  struct Frame {
+    uint8_t type = 0;
+    uint8_t mode = 0;  // FLOOD_SCOPE's `mode`; 0 for a send
+  };
+  std::vector<Frame> scopeAndSendFrames(size_t from = 0) {
+    std::vector<Frame> out;
+    const std::vector<sim::ScriptedRadio::Seen>& seen = rak().radio.requests;
+    for (size_t i = from; i < seen.size(); i++) {
+      const uint8_t type = seen[i].type;
+      const bool send = type >= link::type::kSendLogin && type <= link::type::kSendTrace;
+      if (!send && type != link::type::kFloodScope) continue;
+      Frame one;
+      one.type = type;
+      if (type == link::type::kFloodScope && !seen[i].payload.empty()) one.mode = seen[i].payload[0];
+      out.push_back(one);
+    }
+    return out;
+  }
+  size_t framesSoFar() { return rak().radio.requests.size(); }
 
   sim::FixtureLocalDoor door;
 
@@ -1045,6 +1092,426 @@ TEST_F(LinkMeshTest, TheLastTenJobsRememberTheKeyTheyNamedAndWhetherTheDoorAnswe
     EXPECT_FALSE(link().jobBegunAt(i)->local) << i;  // the local one is twelve jobs ago
   }
   EXPECT_EQ(link().jobBegunAt(agent::kJobsRemembered), nullptr);
+}
+
+// ---------------------------------------------------------------------------------------------
+// §6.5, the flood scope (task p14-01)
+//
+// Every one of these is written twice over: once against a scripted radio of 1.2, where this end
+// must say nothing about scope and send nothing, and once against one of 1.3, where it reads the
+// name, scopes by default and drops the scope for exactly one send. The frames are what is
+// asserted, in order, because the order *is* the rule: `FLOOD_SCOPE` with `mode` 2 goes
+// immediately before the one send that is to go without the scope, and before no other.
+
+// A flooded login with two tries, by hand: the library's own rule is *the scope first, then one
+// try without it* (`agent/FloodScope.h`), and it tells the mesh which is which per send. Driving
+// the two sends here rather than through a job is what makes the frame order readable.
+TEST_F(LinkMeshTest, With12NothingIsEverSaidAboutScopeAndTheFramesAreTodaysButForHellosMinor) {
+  makeIt12Link();
+  EXPECT_EQ(link().floodScope(), nullptr) << "no capability: the mesh says nothing about scope";
+  EXPECT_FALSE(link().floodScopeKnown());
+  EXPECT_FALSE(link().askFloodScope()) << "and nothing is asked";
+  EXPECT_EQ(world().requestsOf(link::type::kFloodScope), 0u);
+
+  const size_t mark = framesSoFar();
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  ASSERT_FALSE(mesh.hasPath()) << "no path: the sends flood";
+  uint32_t tag = 0;
+  mesh.setFloodMode(mm::FloodMode::Scoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Flood);
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Flood);
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  mesh.endJob();
+
+  // Two tries, two SEND_LOGIN frames, and nothing between them.
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 2u);
+  EXPECT_EQ(frames[0].type, link::type::kSendLogin);
+  EXPECT_EQ(frames[1].type, link::type::kSendLogin);
+  EXPECT_EQ(world().requestsOf(link::type::kFloodScope), 0u) << "no FLOOD_SCOPE is ever sent";
+  EXPECT_EQ(rak().radio.flood_scope_asks, 0u);
+  EXPECT_EQ(rak().radio.flood_scope_unscoped, 0u);
+  // §6.2: an older session does not carry `scoped` at all, which is not the same as a 0.
+  EXPECT_FALSE(link().lastRecord().scoped_said);
+  EXPECT_FALSE(link().lastRecord().scoped);
+  ASSERT_EQ(rak().sent.size(), 2u);
+  EXPECT_FALSE(rak().sent[0].scoped_said);
+  EXPECT_FALSE(rak().sent[1].scoped_said);
+
+  // And the HELLO: byte for byte what a 1.2 Walter sent, but for its `proto_minor`. Built here
+  // from this firmware's own encoder at minor 2, so the comparison is of the whole payload and
+  // not of a transcription of it.
+  const sim::ScriptedRadio::Seen* hello = nullptr;
+  for (const sim::ScriptedRadio::Seen& one : rak().radio.requests) {
+    if (one.type == link::type::kHello) hello = &one;
+  }
+  ASSERT_NE(hello, nullptr);
+  link::HelloRequest at12;
+  at12.proto_minor = 2;
+  at12.fw_version = link::text(core::version(), std::strlen(core::version()));
+  uint8_t buffer[link::kMaxPayload] = {};
+  const link::Encoded encoded = link::encode(at12, buffer, sizeof buffer);
+  ASSERT_TRUE(encoded.ok);
+  ASSERT_EQ(hello->payload.size(), encoded.size);
+  EXPECT_EQ(hello->payload[1], link::kProtoMinor) << "this end asks for 3 (§5.1)";
+  for (size_t i = 0; i < encoded.size; i++) {
+    if (i == 1) continue;  // the one byte that moved
+    EXPECT_EQ(hello->payload[i], buffer[i]) << "byte " << i << " of the HELLO";
+  }
+}
+
+TEST_F(LinkMeshTest, With13TheNameIsReadOnceAndTheOneTryWithoutItIsFloodScope2ThenTheSend) {
+  makeIt13("dk");
+  // §6.5 read where the unit's own key is read, which is before the heartbeat is built: one
+  // request, and the name is the radio's own.
+  EXPECT_EQ(link().floodScope(), nullptr) << "nobody has asked yet";
+  ASSERT_TRUE(link().askFloodScope());
+  ASSERT_NE(link().floodScope(), nullptr);
+  EXPECT_STREQ(link().floodScope(), "dk");
+  EXPECT_TRUE(link().floodScopeKnown());
+  EXPECT_EQ(rak().radio.flood_scope_asks, 1u);
+  // Once a session: a second ask costs no frame.
+  EXPECT_TRUE(link().askFloodScope());
+  EXPECT_EQ(rak().radio.flood_scope_asks, 1u);
+
+  const size_t mark = framesSoFar();
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  uint32_t tag = 0;
+  // The first try: scoped, which is what the radio does unasked. One frame.
+  mesh.setFloodMode(mm::FloodMode::Scoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Flood);
+  EXPECT_TRUE(link().lastRecord().scoped_said);
+  EXPECT_TRUE(link().lastRecord().scoped) << "§6.2: it went out carrying the scope";
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  EXPECT_TRUE(link().lastRecord().scoped) << "and the reply record keeps it";
+  // The second: FLOOD_SCOPE 2, then the send.
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Flood);
+  EXPECT_TRUE(link().lastRecord().scoped_said);
+  EXPECT_FALSE(link().lastRecord().scoped) << "this one carried no transport code";
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  // The third: one SEND_* again - §6.5 puts the radio back at mode 1 after the send, and the
+  // library asks for the scope again.
+  mesh.setFloodMode(mm::FloodMode::Scoped);
+  ASSERT_EQ(mesh.sendRequest(mm::kReqTypeGetStatus, nullptr, 0, tag), mm::SendResult::Flood);
+  ASSERT_TRUE(mesh.awaitReply(tag, 16000, nullptr));
+  mesh.endJob();
+
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 4u) << "one, then two, then one";
+  EXPECT_EQ(frames[0].type, link::type::kSendLogin);
+  EXPECT_EQ(frames[1].type, link::type::kFloodScope);
+  EXPECT_EQ(frames[1].mode, link::flood_mode::kUnscopedNext);
+  EXPECT_EQ(frames[2].type, link::type::kSendLogin);
+  EXPECT_EQ(frames[3].type, link::type::kSendRequest);
+  EXPECT_EQ(rak().radio.flood_scope_unscoped, 1u) << "one mode 2, for one send";
+  // And nothing of §6.5 moved client_tx: the request puts nothing on the air.
+  ASSERT_EQ(rak().sent.size(), 3u);
+  EXPECT_TRUE(rak().sent[0].scoped);
+  EXPECT_FALSE(rak().sent[1].scoped);
+  EXPECT_TRUE(rak().sent[2].scoped);
+  EXPECT_EQ(rak().client_tx(), 3u);
+  EXPECT_EQ(link().linkCounters().scope_asks, 1u);
+  EXPECT_EQ(link().linkCounters().scope_unscoped, 1u);
+  EXPECT_EQ(link().linkCounters().scope_surprises, 0u);
+  EXPECT_EQ(link().linkCounters().scope_failed, 0u);
+}
+
+TEST_F(LinkMeshTest, With13AJobThatHoldsAPathSendsNoFloodScopeAtAll) {
+  makeIt13("dk");
+  ASSERT_TRUE(link().askFloodScope());
+  const size_t mark = framesSoFar();
+  const uint8_t hashes[] = {0xa1, 0x7f};
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), hashes, 2, 1));
+  ASSERT_TRUE(mesh.hasPath());
+  uint32_t tag = 0;
+  // The library asks for the try without the scope all the same; the send goes direct, and a
+  // path has no scope (§6.5), so there is nothing to drop and no request to make.
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Direct);
+  EXPECT_TRUE(link().lastRecord().scoped_said);
+  EXPECT_FALSE(link().lastRecord().scoped) << "§6.2: 0 for a direct send";
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  ASSERT_EQ(mesh.sendRequest(mm::kReqTypeGetStatus, nullptr, 0, tag), mm::SendResult::Direct);
+  ASSERT_TRUE(mesh.awaitReply(tag, 16000, nullptr));
+  mesh.endJob();
+
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 2u);
+  EXPECT_EQ(frames[0].type, link::type::kSendLogin);
+  EXPECT_EQ(frames[1].type, link::type::kSendRequest);
+  EXPECT_EQ(rak().radio.flood_scope_unscoped, 0u);
+  EXPECT_EQ(link().linkCounters().scope_unscoped, 0u);
+}
+
+TEST_F(LinkMeshTest, With13TheOwnRepeatersJobSendsNoFloodScopeAndNothingGoesOnTheAir) {
+  makeIt13("dk");
+  makeItLocal();
+  ASSERT_TRUE(link().askFloodScope());
+  const uint32_t asks = rak().radio.flood_scope_asks;
+  const size_t mark = framesSoFar();
+
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  ASSERT_TRUE(link().answersLocally()) << "the local door";
+  uint32_t tag = 0;
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Direct);
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  uint32_t stamp = 0;
+  ASSERT_EQ(mesh.sendCli("get tx", false, stamp), mm::SendResult::Direct);
+  ASSERT_TRUE(mesh.awaitText(16000, nullptr));
+  mesh.endJob();
+
+  EXPECT_TRUE(scopeAndSendFrames(mark).empty()) << "nothing of §6 and nothing of §6.5";
+  EXPECT_EQ(rak().radio.flood_scope_asks, asks) << "the door needs no scope";
+  EXPECT_EQ(rak().radio.flood_scope_unscoped, 0u);
+  EXPECT_EQ(rak().client_tx(), 0u) << "the local door puts nothing on the air";
+  EXPECT_EQ(link().linkCounters().scope_unscoped, 0u);
+}
+
+TEST_F(LinkMeshTest, With13AndNoDefaultScopeTheMeshSaysStarAndSendsNoFloodScope2) {
+  makeIt13("");  // a radio that holds no `region default`
+  ASSERT_TRUE(link().askFloodScope());
+  ASSERT_NE(link().floodScope(), nullptr);
+  EXPECT_STREQ(link().floodScope(), mm::kFloodScopeUnscoped) << "the library's `*`";
+  EXPECT_TRUE(mm::floodScopeIsUnscoped(link().floodScope()));
+  EXPECT_EQ(rak().radio.flood_scope_asks, 1u);
+
+  const size_t mark = framesSoFar();
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  uint32_t tag = 0;
+  // The library's own rule answers `Unscoped` for a `*` mesh at every flood - there is nothing
+  // to drop - and this end sends nothing for it.
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Flood);
+  EXPECT_TRUE(link().lastRecord().scoped_said);
+  EXPECT_FALSE(link().lastRecord().scoped) << "a radio with no default scope scopes nothing";
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  mesh.endJob();
+
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].type, link::type::kSendLogin);
+  EXPECT_EQ(rak().radio.flood_scope_unscoped, 0u) << "no mode 2: there is nothing to drop";
+  EXPECT_EQ(link().linkCounters().scope_surprises, 0u) << "0 was what this end expected";
+}
+
+TEST_F(LinkMeshTest, With13AFloodScope2ThatIsNotAnsweredMakesTheSendFailAndSendsNothing) {
+  makeIt13("dk");
+  ASSERT_TRUE(link().askFloodScope());
+  const size_t mark = framesSoFar();
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+
+  // §3: three silences and the link is down. The request that had to go first did not answer,
+  // so the send is not made at all.
+  rak().radio.ignoreType(link::type::kFloodScope, link::kRequestAttempts);
+  uint32_t tag = 0;
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  EXPECT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Failed);
+  EXPECT_EQ(link().lastFault(), lc::Fault::kLinkDown);
+  EXPECT_EQ(link().linkCounters().scope_failed, 1u);
+  EXPECT_FALSE(link().awaiting()) << "nothing is awaited for a send that was never made";
+  EXPECT_FALSE(rak().awaiting());
+
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 3u) << "three attempts at the one request (§3)";
+  for (const Frame& one : frames) {
+    EXPECT_EQ(one.type, link::type::kFloodScope);
+    EXPECT_EQ(one.mode, link::flood_mode::kUnscopedNext);
+  }
+  EXPECT_EQ(rak().client_tx(), 0u) << "nothing was transmitted";
+  EXPECT_EQ(mesh.repeater().sendCount(), 0);
+  mesh.endJob();
+}
+
+TEST_F(LinkMeshTest, With13AFloodScope2ThatIsRefusedMakesTheSendFailAndSendsNothing) {
+  makeIt13("dk");
+  ASSERT_TRUE(link().askFloodScope());
+  const size_t mark = framesSoFar();
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+
+  rak().radio.refuseType(link::type::kFloodScope, link::status::kFailed, 1);
+  uint32_t tag = 0;
+  mesh.setFloodMode(mm::FloodMode::Unscoped);
+  EXPECT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Failed);
+  EXPECT_EQ(link().lastFault(), lc::Fault::kRefused);
+  EXPECT_EQ(link().lastStatus(), link::status::kFailed);
+  EXPECT_EQ(link().linkCounters().scope_failed, 1u);
+
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].type, link::type::kFloodScope);
+  EXPECT_EQ(rak().client_tx(), 0u);
+  mesh.endJob();
+}
+
+TEST_F(LinkMeshTest, With13AFloodAnsweredScopedZeroMakesTheNameBeAskedAgain) {
+  makeIt13("dk");
+  ASSERT_TRUE(link().askFloodScope());
+  EXPECT_STREQ(link().floodScope(), "dk");
+  ASSERT_EQ(rak().radio.flood_scope_asks, 1u);
+
+  // The radio's `region default` is cleared under this end's feet - a `region default` over the
+  // mesh, or a CLI line on this link (§6.5). The next flood this end asks to be scoped comes
+  // back `scoped` 0.
+  rak().radio.flood_scope.clear();
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  uint32_t tag = 0;
+  mesh.setFloodMode(mm::FloodMode::Scoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Flood);
+  EXPECT_TRUE(link().lastRecord().scoped_said);
+  EXPECT_FALSE(link().lastRecord().scoped) << "it went out with no transport code";
+  EXPECT_EQ(link().linkCounters().scope_surprises, 1u);
+  // The name was asked again, and `floodScope()` says what the radio says now.
+  EXPECT_EQ(rak().radio.flood_scope_asks, 2u);
+  ASSERT_NE(link().floodScope(), nullptr);
+  EXPECT_STREQ(link().floodScope(), mm::kFloodScopeUnscoped);
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  mesh.endJob();
+
+  // And with the scope back, the next flood is scoped again and nothing is surprising.
+  rak().radio.flood_scope = "dk";
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  mesh.setFloodMode(mm::FloodMode::Scoped);
+  ASSERT_EQ(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Flood);
+  EXPECT_TRUE(link().lastRecord().scoped);
+  EXPECT_EQ(link().linkCounters().scope_surprises, 2u) << "`*` was asked for and `dk` came back";
+  EXPECT_STREQ(link().floodScope(), "dk");
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+  mesh.endJob();
+}
+
+TEST_F(LinkMeshTest, With13ARestartUnderAJobTellsTheLibraryNoScopeUntilTheNextHello) {
+  makeIt13("dk");
+  ASSERT_TRUE(link().askFloodScope());
+  EXPECT_STREQ(link().floodScope(), "dk");
+
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  uint32_t tag = 0;
+  mesh.setFloodMode(mm::FloodMode::Scoped);
+  ASSERT_NE(mesh.sendLogin("adm1n-pass", tag), mm::SendResult::Failed);
+  ASSERT_TRUE(mesh.awaitReply(0, 16000, nullptr));
+
+  rak().restart(true);  // a new boot_id and an EV_BOOT (§5.1)
+  mesh.loop();
+  ASSERT_EQ(link().linkCounters().restarts, 1u);
+  // §6.5: the radio is back at 1.0 until the next HELLO and floods unscoped until then. So this
+  // end says **nothing** - not `dk`, which the radio is not using, and not `*` either.
+  EXPECT_EQ(link().floodScope(), nullptr);
+  EXPECT_FALSE(link().floodScopeKnown());
+  // And the radio proves it: §6.5's request is ERR_STATE in a session older than 1.3, which is
+  // what the next job's ask gets - so the job fails as one whose JOB_BEGIN failed, at no send.
+  const size_t mark = framesSoFar();
+  const uint32_t client_tx = rak().client_tx();
+  EXPECT_TRUE(link().beginJob(repeater().c_str(), nullptr, 0, 0)) << "the key is addressable";
+  EXPECT_FALSE(link().jobBegun());
+  EXPECT_EQ(link().lastStatus(), link::status::kState);
+  EXPECT_EQ(world().requestsOf(link::type::kJobBegin), 1u) << "no JOB_BEGIN for a job that failed here";
+  EXPECT_EQ(rak().client_tx(), client_tx) << "nothing on the air";
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].type, link::type::kFloodScope);
+  EXPECT_EQ(frames[0].mode, link::flood_mode::kAsk);
+  link().endJob();
+
+  // The next HELLO settles on 1.3 again, and the name comes back.
+  ASSERT_TRUE(world().client.hello().ok());
+  ASSERT_EQ(world().client.session().proto_minor, link::kFloodScopeMinor);
+  ASSERT_TRUE(link().askFloodScope());
+  EXPECT_STREQ(link().floodScope(), "dk");
+}
+
+TEST_F(LinkMeshTest, With13AnUnansweredAskSaysNullToTheHeartbeatAndIsAskedAgainBeforeAJob) {
+  makeIt13("dk");
+  // The one ask of the session goes unanswered: the heartbeat is told nothing about scope, which
+  // is what leaves its `flood` object out altogether.
+  rak().radio.ignoreType(link::type::kFloodScope, link::kRequestAttempts);
+  EXPECT_FALSE(link().askFloodScope());
+  EXPECT_EQ(link().floodScope(), nullptr);
+  EXPECT_FALSE(link().floodScopeKnown());
+  EXPECT_EQ(link().linkCounters().scope_asks, 1u);
+
+  // And asked again before a mesh job begins - this time answered, so the job is begun.
+  const size_t mark = framesSoFar();
+  ASSERT_TRUE(mesh.beginJob(repeater().c_str(), nullptr, 0, 0));
+  EXPECT_TRUE(link().jobBegun());
+  EXPECT_STREQ(link().floodScope(), "dk");
+  EXPECT_EQ(link().linkCounters().scope_asks, 2u);
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].type, link::type::kFloodScope);
+  EXPECT_EQ(frames[0].mode, link::flood_mode::kAsk);
+  mesh.endJob();
+}
+
+// The road as a job, not by hand: the library's own rule applied to a real `status` job through
+// the framing, against each radio in turn. A `status` logs in and asks, both flooded, and the
+// library's rule makes the second flood of the transaction the unscoped one. One job a test,
+// because a session the server opened is reused across jobs (EXIT-NODES §5) and the second job of
+// a rig does not log in again.
+TEST_F(LinkMeshTest, AStatusJobOn12IsNeverAskedAboutScope) {
+  mesh.grant(self(), mm::kPermReadOnly);
+  makeIt12Link();
+  const size_t mark = framesSoFar();
+  const std::string body = run(fake::Job(300, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .withNoPath()  // so both sends flood: the strongest case
+                                   .withPayload("{\"version\":false}"));
+  EXPECT_EQ(outcomeOf(body), "ok") << body;
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_EQ(frames.size(), 2u) << "a login and a request, and nothing between them";
+  EXPECT_EQ(frames[0].type, link::type::kSendLogin);
+  EXPECT_EQ(frames[1].type, link::type::kSendRequest);
+  EXPECT_EQ(world().requestsOf(link::type::kFloodScope), 0u);
+  EXPECT_EQ(link().floodScope(), nullptr);
+  ASSERT_EQ(rak().sent.size(), 2u);
+  EXPECT_FALSE(rak().sent[0].scoped_said) << "§6.2: an older session carries no `scoped` byte";
+}
+
+TEST_F(LinkMeshTest, AStatusJobOn13FloodsScopedThenOnceWithoutIt) {
+  // The library's rule is per **transaction** - one retry loop of the runner's - and the first
+  // flood of a transaction is the scoped one (`agent/FloodScope.h`). So the send that goes
+  // without the scope is a *second try*: here the repeater is silent to the first login, the
+  // runner tries again, and that second flood is the one §6.5's `mode` 2 goes before.
+  mesh.grant(self(), mm::kPermReadOnly);
+  makeIt13("dk");
+  ASSERT_TRUE(link().askFloodScope());
+  mesh.beSilent(1);  // the first flooded login gets no reply
+  const size_t mark = framesSoFar();
+  const std::string body = run(fake::Job(301, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .withNoPath()  // a path has no scope (§6.5)
+                                   .withPayload("{\"version\":false}"));
+  EXPECT_EQ(outcomeOf(body), "ok") << body;
+
+  const std::vector<Frame> frames = scopeAndSendFrames(mark);
+  ASSERT_GE(frames.size(), 3u) << "two login tries and the request";
+  EXPECT_EQ(frames[0].type, link::type::kSendLogin) << "the first try: scoped, unasked";
+  EXPECT_EQ(frames[1].type, link::type::kFloodScope) << "then the one request that drops it";
+  EXPECT_EQ(frames[1].mode, link::flood_mode::kUnscopedNext);
+  EXPECT_EQ(frames[2].type, link::type::kSendLogin) << "and the try that goes without the scope";
+  // One mode 2, for one send: the request after it floods in the scope again.
+  EXPECT_EQ(rak().radio.flood_scope_unscoped, 1u);
+  EXPECT_EQ(link().linkCounters().scope_unscoped, 1u);
+  EXPECT_EQ(link().linkCounters().scope_surprises, 0u);
+  for (size_t i = 3; i < frames.size(); i++) {
+    EXPECT_NE(frames[i].type, link::type::kFloodScope) << "frame " << i;
+  }
+  // And what went out: the first login carrying the scope, the second without it.
+  ASSERT_GE(rak().sent.size(), 3u);
+  EXPECT_TRUE(rak().sent[0].scoped);
+  EXPECT_FALSE(rak().sent[1].scoped);
+  EXPECT_TRUE(rak().sent[2].scoped) << "the request after the one send is scoped again";
+  // §6.5 puts nothing on the air: client_tx is the runner's transactions and no more.
+  EXPECT_EQ(rak().client_tx(), static_cast<uint32_t>(transactionsOf(body)));
 }
 
 }  // namespace

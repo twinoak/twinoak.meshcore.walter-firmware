@@ -269,12 +269,15 @@ bool SimRak::onRequest(const link::Packet& packet, std::vector<std::uint8_t>* pa
       if (begun && mode == link::path_mode::kDirect) repeater_.setDirectPath();
       job_ = begun;
       ++jobs_begun;
+      // §6.5: "`mode` 2 is for one send ... So do JOB_BEGIN and JOB_END."
+      radio.flood_mode = link::flood_mode::kScopedNext;
       *payload = statusOnly(begun ? link::status::kOk : link::status::kFailed);
       return true;
     }
     case link::type::kJobEnd:
       forgetJob();
       ++jobs_ended;
+      radio.flood_mode = link::flood_mode::kScopedNext;  // §6.5, as JOB_BEGIN
       *payload = statusOnly(link::status::kOk);
       return true;
     case link::type::kPathSet: {
@@ -462,6 +465,14 @@ std::vector<std::uint8_t> SimRak::send(const link::Packet& packet) {
   const std::uint8_t type = packet.type;
   const std::uint8_t* at = packet.payload.data;
   const std::size_t size = packet.payload.size;
+  // §6.5: the mode held for one send, read here and put back to 1 whatever this send comes to -
+  // "a flood, a direct send, nothing sent, or a refusal". A link-level retry of the same request
+  // is not executed again (§3) and never reaches this function, so it changes nothing.
+  const bool unscoped_next = radio.flood_mode == link::flood_mode::kUnscopedNext;
+  radio.flood_mode = link::flood_mode::kScopedNext;
+  // §6.2's `scoped` is present in a session of 1.3 or later and absent in an older one, and
+  // §6.5 says a session of 1.2 or older floods with no transport code at all.
+  const bool says_scoped = radio.sessionMinor() >= link::kFloodScopeMinor;
   if (size < 4) {
     ++refused_other;
     return statusOnly(link::status::kMalformed);
@@ -554,12 +565,18 @@ std::vector<std::uint8_t> SimRak::send(const link::Packet& packet) {
     return statusOnly(link::status::kFailed);  // tried and failed: nothing on the air
   }
   const bool flood = flood_only || result == mm::SendResult::Flood;
+  // §6.5: in a session of 1.3 every flood the client originates goes out through upstream's
+  // `sendFloodScoped` with upstream's own default scope - so in that scope when this radio holds
+  // one, and with no transport code when it holds none or when the mode said so for this one send.
+  const bool scoped = says_scoped && flood && !unscoped_next && !radio.flood_scope.empty();
   Sent one;
   one.type = type;
   one.flood = flood;
   one.timeout_ms = timeout_ms;
   one.tag = tag;
   one.at_ms = clock_.nowMs();
+  one.scoped = scoped;
+  one.scoped_said = says_scoped;
   sent.push_back(one);
 
   record_ = Record{};
@@ -579,6 +596,9 @@ std::vector<std::uint8_t> SimRak::send(const link::Packet& packet) {
   put8(out, flood ? link::send_result::kFlood : link::send_result::kDirect);
   put32(out, tag);
   put32(out, sender_ts);
+  if (says_scoped) {
+    put8(out, scoped ? link::scoped::kYes : link::scoped::kNo);  // §6.2, 1.3
+  }
   return out;
 }
 

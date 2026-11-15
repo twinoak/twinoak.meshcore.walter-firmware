@@ -54,6 +54,9 @@
 #include <agent/AgentLoop.h>
 #include <agent/IRetained.h>
 #include <agent/JobRunner.h>
+#include <agent/KeptImage.h>
+#include <agent/Observations.h>
+#include <agent/ResultBuffer.h>
 
 #include "core/console/agent_loop_probe.h"
 #include "core/cycle/duty_cycle.h"
@@ -114,7 +117,35 @@ static_assert(kStateHexBytes <= interfaces::kKeyValueMax, "the loop's state has 
 
 // The scratch a kept image is built in (agent/IRetained.h): the whole of what the loop may keep,
 // `ResultBuffer::kCapacityBytes` of results and the ring's adverts with their headers.
-constexpr std::size_t kKeptScratchBytes = 20480;
+//
+// **19 456 and not 20 480** (task p14-01). This allocation is the one the heap margin is measured
+// against: it is the last big block taken before `app_main` and it lands in what is left of the
+// internal heap, so `tools/heap_at_start.py`'s *tightest* figure is the free block there less
+// this number, and 117 more bytes of `.data` or `.bss` used to move it into another heap - which
+// is what v0.1.3 died of (rail R22, phase 11's task 01). Phase 13's follow-up says the next task
+// that adds static storage **makes room here first**, and link 1.3 adds a 31-byte scope name and
+// a little state beside it.
+//
+// The room is free, because the number was never the bound: 20 480 was a round figure and the
+// largest image `agent/KeptImage.h` can ever write is the static assert below - 19 328 bytes -
+// so a scratch of 19 456 still holds **everything the loop may keep**, with 128 bytes over, and
+// nothing is dropped that was not dropped before. 19 456 and not 19 328 because the allocator
+// rounds a block of this size up to a multiple of 1 024 (TLSF's `mapping_search`, 16
+// subdivisions of a power of two): anything from 18 433 to 19 456 takes the same block, so the
+// largest of them is the one to ask for.
+constexpr std::size_t kKeptScratchBytes = 19456;
+
+// The largest image the library can write, from the library's own numbers: the header, then at
+// most `kMaxResults` result headers over `kCapacityBytes` of bodies, then the ring full of
+// adverts (agent/KeptImage.h's layout). A copy of agent-core that made any of them bigger would
+// fail here rather than quietly dropping the tail of what a sleep keeps.
+constexpr std::size_t kLargestKeptImage =
+    mm::kKeptImageHeaderLen + mm::ResultBuffer::kMaxResults * mm::kKeptResultHeaderLen +
+    mm::ResultBuffer::kCapacityBytes + mm::ObservationRing::kCapacity * mm::kKeptAdvertLen;
+static_assert(kLargestKeptImage == 19328, "agent-core's kept image changed size: see above");
+static_assert(kKeptScratchBytes >= kLargestKeptImage,
+              "the scratch must hold the largest image the loop can write, or a sleep drops "
+              "adverts a bigger one would have kept");
 
 struct AgentBackendCounters {
   std::uint32_t exchanges = 0;
