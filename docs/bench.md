@@ -2369,6 +2369,31 @@ list, which is S-6 doing its job.
       against `tools/heap_at_start.py`: the model says the main task is created with 11 512 bytes
       to spare and that the tightest big allocation has 116. The model is a model.
 
+## 24. The sleep after an update
+
+From task p15-01 (`core/image/store.cpp`, `core/cycle/wake_cycle.cpp`). The unit in service woke
+140 times in the 13 hours after its radio update of 15 November 2026 - every 5 minutes 40 seconds
+against the 15 minutes it was set to - because a promotion leaves the candidate area's record void
+with the markers of its own download still above it, and those read as a download half done. These
+items are that, read off a unit that has taken an update. **No port is opened by a session**: this
+is the walk after the release.
+
+- [ ] ★ **A wake after a radio update sleeps for the interval.** On a unit whose radio has been
+      updated by this firmware (so its candidate area is the old golden image's), read `journal`
+      at the console or *Fetch now* on meshmaster.dk's Diagnostics tab. Expected: every wake line
+      saying `next 15 min` - the interval `wake.interval` is set to - and **none** of them saying
+      `the sleep was shortened`; the wakes in an hour about a third of what they were before the release (four, not eleven).
+
+- [ ] **The candidate slot says plainly empty.** `image list` on the same unit: `candidate  empty`,
+      and not `empty; a transfer of sha256 … stopped at N of M bytes (it can be resumed)`. The same
+      slot on meshmaster.dk's page for the unit: nothing held, and no download part done.
+
+- [ ] **And a download that really is half done still shortens it.** Offer a release, let one wake
+      take part of it (the wake's download budget stops it at a 64 KB boundary), and read `journal`:
+      that wake's line says `the sleep was shortened` and `next 5 min`, and `image list` says
+      `empty; a transfer of sha256 … stopped at N of M bytes`. The next wake resumes from N and the
+      wake after the download finishes is back to `next 15 min`.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
