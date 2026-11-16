@@ -448,7 +448,7 @@ struct WakeWalter {
       // The world's transport, and so the world's record of what the modem said (task p15-02):
       // the socket that writes its receiving side is the world's and outlives a life of the
       // Walter, exactly as the modem does on a board.
-      parts.receiving = &w.http.http.record();
+      parts.receiving = &w.http.call_record;
       parts.clock = &clock;
       parts.wall = &wall;
       parts.duty = duty.get();

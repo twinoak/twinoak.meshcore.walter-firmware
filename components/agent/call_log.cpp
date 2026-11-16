@@ -153,7 +153,7 @@ void CallLog::record(CallKind what, std::uint16_t status, interfaces::HttpOutcom
   // whose calls all come back 2xx writes nothing here either, which is the flash discipline of
   // this whole object.
   if (receiving_ != nullptr && receiving_->keep(static_cast<std::uint8_t>(what), store_)) {
-    counters_.receiving = saturate(counters_.receiving);
+    counters_.writes = saturate(counters_.writes);
   }
 }
 

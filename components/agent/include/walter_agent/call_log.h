@@ -118,9 +118,12 @@ constexpr std::uint32_t kWakeAtMost = 0xFFFFu;
 struct CallLogCounters {
   std::uint16_t recorded = 0;    // calls put in the list
   std::uint16_t pushed_out = 0;  // ... and the oldest ones they pushed out
-  std::uint16_t writes = 0;      // values written to the store
+  // Values written to the store: the list, and since task p15-02 the record of what the modem
+  // said in the newest failed call, which is a second value written in the same moment. One
+  // counter for both, because a counter of its own would be two more bytes of static storage and
+  // the two writes always happen together (rail R22).
+  std::uint16_t writes = 0;
   std::uint16_t refused = 0;     // a stored value of another version or shape
-  std::uint16_t receiving = 0;   // records of a call's receiving side written (task p15-02)
 };
 
 class CallLog {

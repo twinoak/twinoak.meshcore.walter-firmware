@@ -16,8 +16,13 @@ static_assert(std::atomic<CloseState>::is_always_lock_free,
               "task both write it");
 
 void SocketRotation::useIds(int first, int second) {
-  id_[0] = first;
-  id_[1] = (second == first) ? 0 : second;
+  // The modem has six sockets, so an id is a byte; anything else is a caller's mistake and is
+  // taken as "no id" rather than truncated into one that names another socket.
+  const auto narrow = [](int id) {
+    return static_cast<std::uint8_t>(id > 0 && id < 256 ? id : 0);
+  };
+  id_[0] = narrow(first);
+  id_[1] = (second == first) ? 0 : narrow(second);
   slot_ = -1;
   live_ = false;
   for (int i = 0; i < kRotationIds; ++i) {
@@ -95,7 +100,7 @@ int SocketRotation::begin(int id, std::uint64_t deadline_ms) {
 
   ring_[slot].store(false, std::memory_order_relaxed);
   recent_[connections_ % kRecentConnections] = static_cast<std::uint8_t>(id);
-  slot_ = slot;
+  slot_ = static_cast<std::int8_t>(slot);
   live_ = true;
   ++connections_;
   return id;

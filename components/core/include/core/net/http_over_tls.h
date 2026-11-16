@@ -58,14 +58,20 @@ class HttpOverTls final : public interfaces::Http {
   std::uint32_t requests() const { return requests_; }
   std::uint32_t connects() const { return connects_; }
 
-  // What the modem said in the request now running, or in the last one (task p15-02,
-  // core/net/call_record.h). This object fills in what it knows itself - the request going out,
-  // its bytes, and how the call ended - and the socket layer below fills in the receiving side,
-  // which is why the socket is handed this same object (`recordInto`, in main/ and in
-  // host_test/sim/fake_http.h). One record, overwritten by every request: the one that is kept
-  // over a sleep is written to the store the moment a call failed (walter_agent/call_log.h).
-  CallRecord& record() { return record_; }
-  const CallRecord& record() const { return record_; }
+  // Where what the modem said in the request now running is written down (task p15-02,
+  // core/net/call_record.h), or nullptr - the default - to write nothing. This object fills in
+  // what it knows itself: the request going out, its bytes, and how the call ended. The socket
+  // layer below fills in the receiving side and is handed **the same object**, which is the whole
+  // of the wiring (main/main.cpp, and host_test/sim/fake_http.h for the tests).
+  //
+  // **Not a member.** The record is a hundred bytes, and a hundred bytes of `.bss` move
+  // `_heap_start` and with it the heap the kept scratch is carved out of - the margin rail R22
+  // holds, which has 988 bytes in it (docs/ARCHITECTURE.md §14; phase 13's follow-up says the
+  // next task that adds static storage makes room first, and task p14-01 had already spent the
+  // room in the scratch). So the firmware takes it from the heap at boot, as it does the
+  // library's runner, and this object holds the pointer.
+  void recordInto(CallRecord* record) { record_ = record; }
+  CallRecord* record() const { return record_; }
 
  private:
   // The head's bytes to zero, through a volatile so the write is not elided (a sensitive
@@ -76,7 +82,7 @@ class HttpOverTls final : public interfaces::Http {
   TrustLoader* trust_;
   interfaces::Clock& clock_;
   ResponseParser parser_;
-  CallRecord record_;
+  CallRecord* record_ = nullptr;
   char head_[kRequestHeadBytes];
   std::uint8_t rx_[kReceiveBytes];
   std::uint32_t requests_ = 0;

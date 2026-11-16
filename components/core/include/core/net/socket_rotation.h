@@ -218,8 +218,16 @@ class SocketRotation {
   CloseState apply(int slot, CloseStep step);
 
   interfaces::Clock& clock_;
-  int id_[kRotationIds] = {0, 0};
-  int slot_ = -1;   // the slot of the current (or last) connection, -1 before the first
+  // **A byte each, and not a word** (task p15-02). A socket id is 1 to 6 - the modem has six
+  // sockets and the library's WALTER_MODEM_MAX_SOCKETS is 6 (components/modem/walter_tls.h) - 0
+  // is "no second id", and a slot is one of the two or -1 before the first connection. A word
+  // apiece claimed a range nothing can reach and cost twelve bytes of static storage, which is
+  // what the record this task adds had to find: the heap the kept scratch is carved out of has
+  // 988 bytes of margin and every byte of `.bss` comes out of it (docs/ARCHITECTURE.md §14,
+  // rail R22; `call_log.h`'s counters are 16-bit for the same reason). Everything above still
+  // speaks in `int`: the accessors widen, so no caller changed.
+  std::uint8_t id_[kRotationIds] = {0, 0};
+  std::int8_t slot_ = -1;  // the slot of the current (or last) connection, -1 before the first
   bool live_ = false;
   // The accounting, written by the event task as well as by this one: one value per id and one
   // atomic transition per step (the header's last paragraph).

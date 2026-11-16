@@ -98,7 +98,7 @@ TEST_CASE("the 30-second stall, written down: the not-yets, the failed receive, 
   CHECK(r.status == 0);
   CHECK(r.outcome == HttpOutcome::kSocketFailed);
 
-  const CallRecord& record = b.http.http.record();
+  const CallRecord& record = b.http.call_record;
   REQUIRE(record.held());
 
   // Once for the call: the socket it was on, the bytes that went out, and how it ended.
@@ -151,7 +151,7 @@ TEST_CASE("no byte of a body, a header or a token is in the record or in its lin
   NetBench b;
   std::string sent;
   (void)theStall(b, &sent);
-  CallRecord& record = b.http.http.record();
+  CallRecord& record = b.http.call_record;
   const std::string said = wordsOf(record);
   INFO(said);
   // The token, the host, the path and the body: S-12, and what the whole list beside this one
@@ -185,7 +185,7 @@ TEST_CASE("a call with more moments than the record holds: the first dozen and a
   const Result r = b.client.get("https://server.example/many", Options{}, sink);
   CHECK(r.status == 200);
 
-  const CallRecord& record = b.http.http.record();
+  const CallRecord& record = b.http.call_record;
   REQUIRE(record.held());
   // Exactly a dozen kept ...
   CHECK(record.steps() == core::net::kCallMoments);
@@ -203,7 +203,7 @@ TEST_CASE("a call with more moments than the record holds: the first dozen and a
 TEST_CASE("the record round-trips through one value of the store, and a value of another shape is refused") {
   NetBench b;
   (void)theStall(b, nullptr);
-  CallRecord& made = b.http.http.record();
+  CallRecord& made = b.http.call_record;
 
   fakes::SimKeyValue kv;
   REQUIRE(made.keep(3, &kv));
@@ -254,7 +254,7 @@ TEST_CASE("a receive the modem answered with a code keeps the code, and a ring w
   const Result r = b.client.get("https://server.example/agent/v1/heartbeat", Options{}, sink);
   CHECK(r.outcome == HttpOutcome::kSocketFailed);
 
-  const CallRecord& record = b.http.http.record();
+  const CallRecord& record = b.http.call_record;
   const CallStep failed = firstOf(record, CallMoment::kReceiveFailed);
   REQUIRE(failed.what == CallMoment::kReceiveFailed);
   CHECK(failed.had_cme);
@@ -286,7 +286,7 @@ TEST_CASE("a call that never got its request out is still the record, with no mo
   const Result r = b.client.get("https://nowhere.example/agent/v1/config", Options{}, sink);
   CHECK(r.status == 0);
 
-  const CallRecord& record = b.http.http.record();
+  const CallRecord& record = b.http.call_record;
   // Held, so that the record kept beside `agent calls`'s newest entry is always that call's and
   // never an older call's.
   REQUIRE(record.held());

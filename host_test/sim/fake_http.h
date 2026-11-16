@@ -23,14 +23,18 @@ class FakeHttp final : public interfaces::Http {
  public:
   explicit FakeHttp(fakes::FakeClock& clock, core::net::TrustLoader* trust = nullptr)
       : socket(server, clock), http(socket, trust, clock) {
-    // The transport's one record of what the modem said, which the socket below writes the
-    // receiving side of - the same wiring main/main.cpp does (task p15-02).
-    socket.recordInto(&http.record());
+    // One record of what the modem said, the transport and the socket both writing into it - the
+    // same wiring main/main.cpp does, where the record is taken from the heap at boot because a
+    // hundred bytes of `.bss` move the heap margin (task p15-02, core/net/call_record.h). A test
+    // reads it as `bench.http.call_record`.
+    http.recordInto(&call_record);
+    socket.recordInto(&call_record);
   }
 
   ScriptedServer server;
   FakeTlsSocket socket;
   core::net::HttpOverTls http;
+  core::net::CallRecord call_record;
 
   void request(const interfaces::HttpRequest& request, interfaces::HttpWantedHeader* wanted,
                std::size_t wanted_count, interfaces::HttpResponse* response,

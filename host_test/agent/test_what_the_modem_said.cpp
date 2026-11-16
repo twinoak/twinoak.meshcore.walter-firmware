@@ -92,9 +92,8 @@ TEST_CASE("agent calls says what the modem said in the newest failed call") {
   CHECK_FALSE(has(record, "{"));
   CHECK_FALSE(has(record, "\"ok\""));
 
-  // One value of the store, and the list's own counter says it was written.
+  // One value of the store, under a key of its own.
   CHECK(bench.world.kv.has(core::net::kCallRecordKey));
-  CHECK(bench.half().calls.counters().receiving > 0);
 
   // **A sleep.** The next boot reads it back out of the store, with nothing of its own recorded.
   bench.boot();
@@ -122,7 +121,8 @@ TEST_CASE("a call answered 2xx after a failed one leaves the kept record the fai
   (void)bench.oneWake();
   const std::string failed = receivingOf(bench.v().runLine("agent calls"));
   REQUIRE_FALSE(failed.empty());
-  const int writes_then = bench.world.kv.writes;
+  const std::string stored_then = bench.world.kv.raw(core::net::kCallRecordKey);
+  REQUIRE_FALSE(stored_then.empty());
 
   // The modem answers again, and a wake goes through.
   theModemBehavesAgain(bench);
@@ -132,11 +132,9 @@ TEST_CASE("a call answered 2xx after a failed one leaves the kept record the fai
   // Nothing of the good wake is in the record: it is the failed call's, to the character.
   CHECK(receivingOf(said) == failed);
   CHECK(has(failed, "a receive failed after 30000 ms"));
-  // And no value was written for the calls that succeeded (the store is written for other
-  // reasons - the loop's own state - so this is the record's own counter).
-  CHECK(bench.half().calls.counters().receiving == 0);
-  CHECK(bench.world.kv.writes >= writes_then);
-  CHECK(bench.world.kv.has(core::net::kCallRecordKey));
+  // And the value itself was not rewritten: byte for byte what the failed call left there, so a
+  // wake whose calls all came back 2xx spent no flash on this key.
+  CHECK(bench.world.kv.raw(core::net::kCallRecordKey) == stored_then);
 }
 
 TEST_CASE("the report's `calls` section carries the record, inside the section's bytes") {
