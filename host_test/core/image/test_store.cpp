@@ -276,6 +276,121 @@ TEST_CASE("the candidate becomes golden by moving a pointer, and the old golden 
   CHECK(std::string(b.read(Which::kGolden).version) == next.version);
 }
 
+// ---------------------------------------------------------- a voided slot is no download
+//
+// Task p15-01. A download writes a progress record every 64 KB into the area's header sector,
+// above where the record goes; the commit that makes those bytes an image does not take them
+// away, and only the erase at the start of the next write into that area does. So every
+// promotion leaves a header sector holding a **voided record with a whole download's markers
+// above it** - and read as a transfer, those markers say "stopped at X of Y" for ever, which is
+// what tripled a unit's wakes between 13 and 16 November (tasks/phase-15/README.md).
+
+namespace {
+
+// The word at `at`, as flash holds it.
+std::uint32_t wordAt(const sim::SimFlash& flash, std::uint32_t at) {
+  return static_cast<std::uint32_t>(flash.at(at)) |
+         (static_cast<std::uint32_t>(flash.at(at + 1)) << 8) |
+         (static_cast<std::uint32_t>(flash.at(at + 2)) << 16) |
+         (static_cast<std::uint32_t>(flash.at(at + 3)) << 24);
+}
+
+// The flash of a unit that has taken two radio updates: an image downloaded into the candidate
+// slot and promoted, then another. `downloaded` is large enough to leave markers behind, so the
+// area it went into - which the second promotion makes the candidate area - has them.
+void twoUpdates(StoreBench& b, const Candidate& downloaded, const Candidate& next) {
+  REQUIRE(downloaded.file.size() > 2 * core::image::kResumeStep);
+  REQUIRE(b.put(Which::kCandidate, Slot{0}, downloaded) == StoreError::kNone);
+  REQUIRE(b.store.promote(Slot{0}) == StoreError::kNone);
+  REQUIRE(b.put(Which::kCandidate, Slot{0}, next) == StoreError::kNone);
+  REQUIRE(b.store.promote(Slot{0}) == StoreError::kNone);
+}
+
+std::uint32_t candidateHeader(const StoreBench& b) {
+  return core::image::areaOffset(0, b.store.areaOf(Which::kCandidate, Slot{0}));
+}
+
+}  // namespace
+
+TEST_CASE("a candidate downloaded and promoted leaves a void slot, not a transfer half done") {
+  StoreBench b;
+  const Candidate downloaded("store-resume");  // 150 000 bytes: two resume points inside it
+  const Candidate next("store-a");
+  twoUpdates(b, downloaded, next);
+
+  // What is in flash, before anything is asked of the store: the candidate area is the one the
+  // first image was downloaded into, its record is void - zeros over the magic word, and no
+  // erase - and the markers of its own download are still above it.
+  const std::uint32_t header = candidateHeader(b);
+  CHECK(wordAt(b.flash, header) == 0u);
+  CHECK(wordAt(b.flash, header + core::image::kRecordBytes) == core::image::kProgressMagic);
+
+  // And what the store makes of it: a slot with nothing in it and nothing on its way in.
+  const Record candidate = b.read(Which::kCandidate);
+  CHECK_FALSE(candidate.present);
+  CHECK_FALSE(candidate.transfer);
+  CHECK(candidate.transferred == 0);
+  CHECK(candidate.transfer_size == 0);
+  CHECK(b.store.verify(Which::kCandidate, Slot{0}) == StoreError::kEmpty);
+  // The promotion itself is untouched: the second image is golden and whole.
+  CHECK(std::string(b.read(Which::kGolden).version) == next.version);
+  CHECK(b.store.verify(Which::kGolden, Slot{0}) == StoreError::kNone);
+}
+
+TEST_CASE("markers already under a voided record: begin() reads no transfer, and a new download still resumes") {
+  // The unit in service on 16 November: the state is in its flash before this firmware starts,
+  // so nothing may be asked of a person at a console to cure it.
+  StoreBench b;
+  const Candidate downloaded("store-resume");
+  const Candidate next("store-a");
+  twoUpdates(b, downloaded, next);
+
+  b.reboot();  // the image that carries the rule, booting on that flash
+  const Record candidate = b.read(Which::kCandidate);
+  CHECK_FALSE(candidate.present);
+  CHECK_FALSE(candidate.transfer);
+  // Over and over: nothing about it depends on having watched the promotion happen.
+  b.reboot();
+  CHECK_FALSE(b.read(Which::kCandidate).transfer);
+
+  // A download into that very area is still a download: the write erases the header sector, and
+  // the markers it then writes are read as what they are.
+  REQUIRE(b.open(Which::kCandidate, Slot{0}, downloaded) == StoreError::kNone);
+  CHECK(b.store.written() == 0);  // nothing of the old markers was taken for a resume
+  const std::uint32_t part = core::image::kResumeStep + 4096;
+  REQUIRE(b.store.write(downloaded.file.data(), part) == StoreError::kNone);
+  b.reboot();
+  const Record half = b.read(Which::kCandidate);
+  CHECK_FALSE(half.present);
+  CHECK(half.transfer);
+  CHECK(half.transferred == core::image::kResumeStep);
+  CHECK(half.transfer_size == downloaded.file.size());
+  // ... and it resumes from there, which is the behaviour the rule must not cost.
+  REQUIRE(b.open(Which::kCandidate, Slot{0}, downloaded) == StoreError::kNone);
+  CHECK(b.store.written() == core::image::kResumeStep);
+  REQUIRE(b.stream(downloaded, 240, b.store.written()) == StoreError::kNone);
+  REQUIRE(b.commit() == StoreError::kNone);
+  CHECK(b.store.verify(Which::kCandidate, Slot{0}) == StoreError::kNone);
+}
+
+TEST_CASE("a record destroyed without the header sector going with it is not a transfer either") {
+  // The other way a record's magic word stops being all ones: the invalidation at the head of a
+  // fresh write, torn or caught by a reset before the erase that follows it. Neither may leave
+  // the markers of the image that was there readable.
+  StoreBench b;
+  const Candidate downloaded("store-resume");
+  REQUIRE(b.put(Which::kCandidate, Slot{0}, downloaded) == StoreError::kNone);
+  const std::uint32_t header = candidateHeader(b);
+  REQUIRE(wordAt(b.flash, header + core::image::kRecordBytes) == core::image::kProgressMagic);
+
+  const std::uint8_t zeros[4] = {0, 0, 0, 0};
+  b.flash.poke(header, zeros, 4);
+  b.reboot();
+  const Record record = b.read(Which::kCandidate);
+  CHECK_FALSE(record.present);
+  CHECK_FALSE(record.transfer);
+}
+
 TEST_CASE("the bad list refuses an image at the door, survives a restart, and drops the oldest") {
   StoreBench b;
   const Candidate a("store-a");

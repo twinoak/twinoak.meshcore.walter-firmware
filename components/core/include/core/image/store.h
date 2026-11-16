@@ -59,6 +59,12 @@
 // the last thing written and the first thing destroyed, and the body it belongs to was written
 // after the bytes it describes were read back.
 //
+// The same word says the other thing a reader needs: **whether the markers above it are a
+// transfer**. A download's progress records stay in the header sector after the commit that made
+// them an image, and only the erase at the start of the next write takes them - so "empty" and
+// "empty, with a download half done" are told apart by whether the record's magic word is still
+// the all-ones an erase left (task p15-01; store.cpp's readProgress has the table).
+//
 // -- what may enter -----------------------------------------------------------------------------
 //
 // Nothing enters without task p2-01's verdict. beginWrite() takes an `ExpectedFile` - what an
@@ -266,6 +272,12 @@ struct Record {
 
   // When !present: a transfer that was interrupted, and how far it got. The bytes are in flash
   // but nothing says they are whole, so they are not an image.
+  //
+  // **Only a slot no record has ever stood in says this** (task p15-01). A download's markers
+  // outlive the commit that made them an image - they are above the record in the same sector,
+  // and only the next write's erase takes them - so a slot whose record was voided, by a
+  // promotion or by anything else, would otherwise read as a transfer half done for ever.
+  // store.cpp's readProgress() has the fact in flash that tells the two apart.
   bool transfer = false;
   std::uint32_t transferred = 0;
   std::uint32_t transfer_size = 0;

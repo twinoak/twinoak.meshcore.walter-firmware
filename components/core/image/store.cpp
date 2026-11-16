@@ -145,6 +145,13 @@ std::uint32_t bodyCrc(const std::uint8_t* record, std::uint32_t crc_offset) {
 
 constexpr std::uint8_t kNoArea = 0xFF;
 
+// What the record's magic word reads as where **nothing has been written since the sector was
+// erased**. NOR flash erases to all ones and a write only clears bits (sim/sim_flash.h says the
+// same of the simulated one), so this word is all ones in exactly one case: no record has ever
+// been written at the head of that header sector since the last erase. It is the fact the rule in
+// readProgress() stands on (task p15-01).
+constexpr std::uint32_t kErasedWord = 0xFFFFFFFFu;
+
 }  // namespace
 
 // -- StoredImage --------------------------------------------------------------------------------
@@ -361,6 +368,33 @@ bool Store::readRecord(std::uint32_t header, Record* out) const {
 }
 
 bool Store::readProgress(std::uint32_t header, Record* out) const {
+  // **A transfer's markers are a transfer only while no record has ever stood over them**
+  // (task p15-01). The markers a download leaves are not taken away when it succeeds: the record
+  // is written into the same sector above them, and the sector is erased only when the *next*
+  // write opens. So a header sector whose record is gone can still be full of the markers of the
+  // image that was committed there - and that is the state a promotion leaves behind, every time:
+  // the area that held the old golden image becomes the candidate area and invalidate() writes
+  // zeros over its record's magic without erasing anything. Read on its own, those markers say
+  // "a transfer stopped at X of Y", the wake cycle shortens every sleep for a download that
+  // finished days ago, and `image` and the heartbeat say the slot holds half a file.
+  //
+  // The one fact in flash that tells the two apart is the record's own magic word: all ones where
+  // nothing has been written since the erase, and anything else - the magic itself, the zeros of
+  // a voiding, the half word a torn write of either leaves - once a record has stood there. A
+  // write only clears bits, so no sequence of writes can put the all-ones back; only an erase
+  // can, and an erase takes the markers with it. So:
+  //
+  //   the record's magic word | what the header sector is        | the markers below it
+  //   ------------------------|----------------------------------|----------------------
+  //   all ones                | erased, a write may be under way | a transfer, as far as it got
+  //   anything else           | a record stood here              | an old download's; not read
+  //
+  // A fresh write erases the header sector before its first marker (beginWrite), so a transfer
+  // that is really under way always reads from an all-ones word; a resumed one never touches it.
+  std::uint8_t magic[4];
+  if (!region_.read(header, magic, 4)) return false;
+  if (get32(magic) != kErasedWord) return false;
+
   bool found = false;
   for (std::uint32_t i = 0; i < kProgressSlots; ++i) {
     std::uint8_t bytes[kProgUsed];
@@ -720,6 +754,14 @@ StoreError Store::promote(board::Slot slot) {
   // The area that held it is now the candidate area, and what is in it is an image nobody asked
   // to try: its record goes. Until it does, `stale` keeps the candidate slot reading as empty,
   // and begin() finishes this if a reset lands in the middle.
+  //
+  // What stays behind is the header sector the voided record sat at the head of, with the
+  // markers that image's own download left above it. They are **not erased here**: an erase is a
+  // flash operation in a path whose every interruption is held by a test, and it would have to
+  // happen on every unit that has already promoted anyway. They are instead never read again -
+  // readProgress() asks the record's magic word first - which costs nothing and cures a unit
+  // whose flash is already in this state at the first boot of the image that carries the rule
+  // (task p15-01). The next write into the area erases them, as it always did.
   return repair();
 }
 
