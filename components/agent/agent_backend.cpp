@@ -795,6 +795,11 @@ void AgentBackend::sayLocalDoor(interfaces::TextOut& out) const {
 // Since task p15-02 the list is followed by **what the modem said in the newest of them** - the
 // receiving side of that call, event by event, from a key of its own (core/net/call_record.h).
 // That record is numbers too: times, counts, a socket id, the modem's own codes.
+//
+// And since task p15-03, above the list, **how often the modem was asked a second time after a
+// receive that failed, and how often that brought the answer back** (core/net/read_again.h).
+// Those two are printed whatever the list says, including on a unit where nothing has failed,
+// because the question they answer is whether that rule is worth keeping.
 void AgentBackend::calls(interfaces::TextOut& out) {
   if (p_.calls == nullptr) {
     say(&out, "agent calls: this build keeps no list of failed calls\n");
@@ -810,6 +815,11 @@ void AgentBackend::calls(interfaces::TextOut& out) {
        static_cast<unsigned long>(c.recorded), static_cast<unsigned long>(c.pushed_out),
        static_cast<unsigned long>(c.writes), static_cast<unsigned long>(c.refused),
        log.survived() ? "was read back at" : "starts at");
+  // **The one more ask** (task p15-03, core/net/read_again.h), above the list and whatever the
+  // list says: a receive that failed with the close seen is now asked once more, and these two
+  // totals are the only way a unit nobody has a cable to can say whether that ever does
+  // anything. They are the unit's and not this boot's - one value of the store, as the list is.
+  if (log.readAgain() != nullptr) log.readAgain()->describe(out);
   if (log.count() == 0) {
     say(&out, "  no call has failed since the list began\n");
     return;

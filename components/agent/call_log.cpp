@@ -56,6 +56,11 @@ void CallLog::begin() {
   count_ = 0;
   survived_ = false;
   dirty_ = false;
+  // The two totals of the one more ask, read back here too (task p15-03,
+  // core/net/read_again.h). They are not part of either value this object writes: a recovered
+  // answer is a call that came back 2xx and so is in no list of failures, which is why the rule
+  // has a key of its own and moves on its own. A null store is the rule's own to handle.
+  if (receiving_ != nullptr) receiving_->again().begin(store_);
   if (store_ == nullptr || !store_->ready()) return;
   // The hex is a local and not a member: it is 147 bytes, it is wanted twice a boot at most, and
   // this object is one of main/'s namespace-scope objects whose every byte is .bss that the main
@@ -162,9 +167,21 @@ bool CallLog::keptReceiving(core::net::CallRecord& into) const {
 }
 
 bool CallLog::save() {
+  // The one more ask's totals first, under their own key and on their own flag (task p15-03):
+  // they move when a receive failed with the close seen, which is not the same wake as a call
+  // that failed - an ask that recovered the answer made the call succeed - so a wake in which
+  // the list did not move may still have one of these to write, and the other way about.
+  bool ok = true;
+  if (receiving_ != nullptr && receiving_->again().moved()) {
+    if (receiving_->again().save(store_)) {
+      counters_.writes = saturate(counters_.writes);
+    } else {
+      ok = false;
+    }
+  }
   // **Nothing moved, nothing is written.** A wake in which no call failed spends no flash here,
   // which is the task's fourth deliverable and the only reason this is a flag and not a compare.
-  if (!dirty_) return true;
+  if (!dirty_) return ok;
   if (store_ == nullptr || !store_->ready()) return false;
   std::uint8_t bytes[kCallsBytes] = {};
   bytes[0] = kCallsVersion;
@@ -180,7 +197,7 @@ bool CallLog::save() {
   if (!store_->write(kCallsKey, hex)) return false;
   counters_.writes = saturate(counters_.writes);
   dirty_ = false;
-  return true;
+  return ok;
 }
 
 FailedCall CallLog::at(std::size_t index) const {
@@ -198,6 +215,10 @@ void CallLog::forget() {
     // thing in two values (task p15-02).
     (void)core::net::CallRecord::forget(store_);
   }
+  // ... and the two totals of the one more ask (task p15-03), so that a unit after `agent forget`
+  // says what a new unit says. Outside the `ready()` check above because the rule forgets its own
+  // figures whether there is a store to erase or not.
+  if (receiving_ != nullptr) receiving_->again().forget(store_);
 }
 
 }  // namespace agent

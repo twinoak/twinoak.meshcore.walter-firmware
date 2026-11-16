@@ -22,6 +22,8 @@
 //   a ring                            with the length the modem announced, as the library hands
 //                                     it over (`+SQNSRING: <id>,<n>`)
 //   the close                         `+SQNSH: <id>`, when the library hands it over
+//   the one more ask                  what it came back with, and the bytes when it came back
+//                                     with some (task p15-03, `core/net/read_again.h`)
 //
 // and, once for the call: the socket id, the bytes sent, and how it ended.
 //
@@ -58,12 +60,19 @@
 // storage, which a board whose heap margin is counted in hundreds of bytes does not have
 // (`docs/ARCHITECTURE.md` §14, rail R22). A call that succeeds writes nothing, so the kept record
 // stays the failed one's.
+//
+// **And one more value beside it, since task p15-03**: the two totals of the one more ask
+// (`core/net/read_again.h`), under a key of their own. They are the unit's and not this call's -
+// a recovered answer is a call that came back 2xx and is therefore in no list of failures - so
+// they are written when they moved and not when a call failed. `walter_agent/call_log.h` reads
+// and writes them with this record, which is the one place both are reachable.
 #pragma once
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 
+#include "core/net/read_again.h"
 #include "interfaces/http.h"
 #include "interfaces/key_value.h"
 #include "interfaces/text_out.h"
@@ -79,6 +88,10 @@ enum class CallMoment : std::uint8_t {
   kReceiveFailed = 2,  // a receive failed; `value` is how long the command took, in ms
   kRing = 3,           // the library handed over a ring; `value` is the length the modem announced
   kClose = 4,          // the library handed over the close
+  // The one more ask the rule of `core/net/read_again.h` makes after a receive that failed with
+  // the close seen (task p15-03): `state` is the `ReadAgainFound` it came back with and, when
+  // that is kBytes, `value` is how many.
+  kReadAgain = 5,
   kCount,
 };
 
@@ -92,12 +105,14 @@ constexpr std::size_t kCallMoments = 12;
 //   0-1  at_ms  u16  milliseconds after the request went out, capped
 //   2    what   u8   low nibble: CallMoment; high nibble: for kReceiveFailed, the modem library's
 //                    own `WalterModemState` (0 ok, 1 error, 2 its command timeout, ...), capped
-//                    at 15; 0 for every other kind
+//                    at 15; for kReadAgain, the `ReadAgainFound` the one more ask came back with;
+//                    0 for every other kind
 //   3-4  value  u16  kData: the bytes; kRing: the length announced; kReceiveFailed: how long the
-//                    command took, in ms, capped
-//   5    cme    u8   kReceiveFailed and the modem answered `+CME ERROR: n`: **n + 1**, capped at
-//                    255 - the bias is because `+CME ERROR: 0` is a real code (equipment failure),
-//                    so 0 has to mean *the modem answered no CME error at all*
+//                    command took, in ms, capped; kReadAgain: the bytes it came back with
+//   5    cme    u8   kReceiveFailed, and kReadAgain that failed, and the modem answered
+//                    `+CME ERROR: n`: **n + 1**, capped at 255 - the bias is because
+//                    `+CME ERROR: 0` is a real code (equipment failure), so 0 has to mean *the
+//                    modem answered no CME error at all*
 constexpr std::size_t kCallMomentBytes = 6;
 
 // The once-per-call bytes in front of them:
@@ -179,6 +194,20 @@ class CallRecord {
   // The library handed over the close.
   void wasClosed(std::uint64_t now_ms);
 
+  // **The one more ask** the rule of `core/net/read_again.h` made after a receive that failed
+  // with the close seen (task p15-03): what it came back with, how many bytes when it came back
+  // with some, and the `+CME ERROR` number when the ask failed with one - `cme` below zero when
+  // there was none. The rule's own count moves here too, in the same breath, so that what is
+  // printed and what is counted can never disagree.
+  void readAgain(std::uint64_t now_ms, ReadAgainFound what, std::size_t bytes, int cme);
+
+  // The rule itself, which the socket layer asks and `walter_agent/call_log.h` keeps and prints.
+  // It lives here because this is the one object of its concern both of them already hold a
+  // pointer to, and this one is on the heap (`core/net/read_again.h`, *why it lives inside the
+  // record*).
+  ReadAgain& again() { return again_; }
+  const ReadAgain& again() const { return again_; }
+
   // The call is over and this is how it ended. Recording stops here: the close this end asks for
   // afterwards is not the other end's, and is not in the record.
   void ended(interfaces::HttpOutcome outcome);
@@ -247,6 +276,11 @@ class CallRecord {
   std::atomic<bool> recording_{false};
   std::uint64_t origin_ms_ = 0;
   bool held_ = false;
+  // The one more ask, and the two totals it keeps across a sleep. **Not part of `bytes_`**: it is
+  // a key of its own and a lifetime of its own - the record is one call's and these are the
+  // unit's - and it is a member here only because this object is the one both the socket layer
+  // and the call log reach, and is on the heap (`core/net/read_again.h`).
+  ReadAgain again_;
 };
 
 }  // namespace net

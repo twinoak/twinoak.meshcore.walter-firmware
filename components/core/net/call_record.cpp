@@ -52,6 +52,9 @@ void CallRecord::clear() {
 void CallRecord::begin() {
   clear();
   held_ = true;
+  // The one more ask is unspent again (task p15-03): this is the one place a call begins, so the
+  // ask cannot be left spent by the call before it. The rule's totals are not touched.
+  again_.newCall();
 }
 
 void CallRecord::onSocket(int id) {
@@ -118,6 +121,16 @@ void CallRecord::rang(std::uint64_t now_ms, std::uint32_t announced) {
 void CallRecord::wasClosed(std::uint64_t now_ms) {
   if (!recording()) return;
   put(take(), CallMoment::kClose, now_ms, 0, 0, -1);
+}
+
+void CallRecord::readAgain(std::uint64_t now_ms, ReadAgainFound what, std::size_t bytes, int cme) {
+  // Counted whatever this record is doing: the totals are the unit's and the moment is this
+  // call's, and a record that has stopped recording must not cost the rule its figure.
+  again_.found(what);
+  if (!recording()) return;
+  put(take(), CallMoment::kReadAgain, now_ms,
+      what == ReadAgainFound::kBytes ? cap16(bytes) : static_cast<std::uint16_t>(0),
+      static_cast<std::uint8_t>(what), cme);
 }
 
 void CallRecord::ended(interfaces::HttpOutcome outcome) {
@@ -303,6 +316,28 @@ void CallRecord::describe(interfaces::TextOut& out, const char* what) const {
       case CallMoment::kClose:
         say(std::snprintf(line, sizeof line, "    +%u ms%s: the other end closed\n",
                           static_cast<unsigned>(s.at_ms), later));
+        break;
+      case CallMoment::kReadAgain:
+        // The one more ask, and what came of it (task p15-03): the line a person reads to know
+        // whether the modem still held the answer the failed command never brought back.
+        if (s.state == static_cast<std::uint8_t>(ReadAgainFound::kBytes)) {
+          say(std::snprintf(line, sizeof line,
+                            "    +%u ms%s: asked again after that: the modem still held %u%s bytes\n",
+                            static_cast<unsigned>(s.at_ms), later, static_cast<unsigned>(s.value),
+                            orMore(s.value, kCallBytesAtMost)));
+        } else if (s.state != static_cast<std::uint8_t>(ReadAgainFound::kFailed)) {
+          say(std::snprintf(line, sizeof line,
+                            "    +%u ms%s: asked again after that: the modem held nothing\n",
+                            static_cast<unsigned>(s.at_ms), later));
+        } else if (s.had_cme) {
+          say(std::snprintf(line, sizeof line,
+                            "    +%u ms%s: asked again after that: it failed too, +CME ERROR: %u\n",
+                            static_cast<unsigned>(s.at_ms), later, static_cast<unsigned>(s.cme)));
+        } else {
+          say(std::snprintf(line, sizeof line,
+                            "    +%u ms%s: asked again after that: it failed too, nothing answered\n",
+                            static_cast<unsigned>(s.at_ms), later));
+        }
         break;
       case CallMoment::kNothing:
       case CallMoment::kCount:
