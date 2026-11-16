@@ -460,6 +460,11 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
   // knows. Every verdict but a stored image is a range that did not come back 2xx - a 401, a 429,
   // a 5xx, a connection that never opened - and the budget ending a download is the one exception,
   // because that is this firmware stopping, not the server refusing.
+  //
+  // What the modem said in it (task p15-02) goes with it, because `CallLog::record` writes both
+  // values in the same moment. A fetch is many range requests and there is one record, so the
+  // record kept for a download range is **the last range of the fetch** - which is the one that
+  // failed, since a fetch stops at the range that did not come back.
   if (r.verdict != upd::FetchVerdict::kStored && r.verdict != upd::FetchVerdict::kBudget) {
     CallLog* calls = server_.callLog();
     if (calls != nullptr) {

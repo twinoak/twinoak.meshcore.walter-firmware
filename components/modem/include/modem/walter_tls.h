@@ -59,6 +59,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/net/call_record.h"
 #include "core/net/socket_rotation.h"
 #include "interfaces/clock.h"
 #include "interfaces/tls_socket.h"
@@ -117,6 +118,19 @@ class WalterTlsSocket final : public interfaces::TlsSocket {
   core::net::SocketRotation& rotation() { return rotation_; }
   const core::net::SocketRotation& rotation() const { return rotation_; }
 
+  // Where this socket writes down what the modem said in the call now running (task p15-02,
+  // core/net/call_record.h). The transport above owns the record and fills in the request going
+  // out and how the call ended; this layer fills in the receiving side, because that is where it
+  // happens. nullptr - the default - records nothing, which is what `core/update/tls_check.h`'s
+  // handshake on its own and any build without the record wants.
+  void recordInto(core::net::CallRecord* record) { record_ = record; }
+
+  // -- from the task that delivers the modem's socket events ---------------------------------
+  // The ring and the close, into the record, for the id the connection in progress is on. An
+  // event for another id is the rotation's business and not this record's (socket_rotation.h).
+  void noteRing(int id, std::uint16_t announced);
+  void noteClose(int id);
+
  private:
   bool before(std::uint64_t deadline_ms) const { return clock_.nowMs() < deadline_ms; }
 
@@ -131,6 +145,7 @@ class WalterTlsSocket final : public interfaces::TlsSocket {
   const WalterUplink& uplink_;
   interfaces::Clock& clock_;
   core::net::SocketRotation rotation_;
+  core::net::CallRecord* record_ = nullptr;
   bool handler_set_ = false;
   bool asked_for_a_second_ = false;
   bool open_ = false;

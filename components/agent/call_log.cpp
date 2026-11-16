@@ -146,6 +146,19 @@ void CallLog::record(CallKind what, std::uint16_t status, interfaces::HttpOutcom
   for (std::size_t i = count_ * kCallEntryBytes; i < sizeof items_; ++i) items_[i] = 0;
   counters_.recorded = saturate(counters_.recorded);
   dirty_ = true;
+  // ... and what the modem said in it, under a key of its own (task p15-02,
+  // core/net/call_record.h). **Now, and not at save():** there is one live record in RAM and the
+  // next call overwrites it, so the alternative was a second copy of it in static storage, which
+  // a board whose heap margin is counted in hundreds of bytes has not got (rail R22). A wake
+  // whose calls all come back 2xx writes nothing here either, which is the flash discipline of
+  // this whole object.
+  if (receiving_ != nullptr && receiving_->keep(static_cast<std::uint8_t>(what), store_)) {
+    counters_.writes = saturate(counters_.writes);
+  }
+}
+
+bool CallLog::keptReceiving(core::net::CallRecord& into) const {
+  return into.load(store_);
 }
 
 bool CallLog::save() {
@@ -179,7 +192,12 @@ void CallLog::forget() {
   count_ = 0;
   dirty_ = false;
   survived_ = false;
-  if (store_ != nullptr && store_->ready()) (void)store_->erase(kCallsKey);
+  if (store_ != nullptr && store_->ready()) {
+    (void)store_->erase(kCallsKey);
+    // The receiving side of the newest of them goes with them: the list and that record are one
+    // thing in two values (task p15-02).
+    (void)core::net::CallRecord::forget(store_);
+  }
 }
 
 }  // namespace agent

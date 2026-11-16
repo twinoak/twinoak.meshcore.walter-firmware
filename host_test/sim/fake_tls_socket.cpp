@@ -39,6 +39,10 @@ bool FakeTlsSocket::closedNow() const {
 }
 
 void FakeTlsSocket::deliverClose(int id) {
+  // Into the record too, as the board does from the library's event task
+  // (components/modem/walter_tls.cpp, noteClose): only for the id this connection is on, and only
+  // once the request has gone out, which the record itself decides.
+  if (record_ != nullptr && id == socket_id_) record_->wasClosed(clock_.nowMs());
   if (as_v0_1_0) {
     v010_closed_ = true;  // one flag, whatever the id named
     return;
@@ -47,6 +51,13 @@ void FakeTlsSocket::deliverClose(int id) {
 }
 
 void FakeTlsSocket::theServerClosed() {
+  // The script may say when it is handed over instead (task p15-02): in the 8 November stall the
+  // server answered and its close arrived while the receive was hanging, so it cannot be
+  // delivered the moment the response was built.
+  if (close_after_ms != 0) {
+    close_scripted_ = true;
+    return;
+  }
   // A drop in the middle of a body is the close arriving while the body is being read, not the
   // race between a Content-Length and a FIN: it is never held back, and never lost.
   if (close_event_lost && !dropped_) return;
@@ -72,6 +83,41 @@ void FakeTlsSocket::deliverDueCloses() {
     }
   }
   kept_count_ = kept;
+}
+
+// -- the scripted modem (task p15-02) ----------------------------------------------------------
+// What the library's event task would bring in while a receive is running: the ring with the
+// length the modem announced, and the close. Both are counted from the moment the request was
+// whole on the wire, which is what the record counts from too.
+
+void FakeTlsSocket::deliverScripted() {
+  if (went_out_ms_ == 0) return;
+  const std::uint64_t since = clock_.nowMs() - went_out_ms_;
+  if (!ring_done_ && since >= ring_after_ms) {
+    ring_done_ = true;
+    rotation_.onRing(socket_id_);
+    if (record_ != nullptr) record_->rang(clock_.nowMs(), ring_bytes);
+  }
+  if (!close_done_ && close_scripted_ && since >= close_after_ms) {
+    close_done_ = true;
+    deliverClose(socket_id_);
+  }
+}
+
+void FakeTlsSocket::hang(std::uint32_t cost) {
+  // In steps, so that the ring and the close land inside the hang and not after it. Once there is
+  // nothing left to deliver the rest of it is one wait: a 30-second stall is 3 000 steps
+  // otherwise, and the host suite pays for every one of them.
+  constexpr std::uint32_t kStepMs = 10;
+  std::uint32_t spent = 0;
+  while (spent < cost) {
+    std::uint32_t one = cost - spent;
+    const bool nothing_left = ring_done_ && (close_done_ || !close_scripted_);
+    if (!nothing_left && one > kStepMs) one = kStepMs;
+    clock_.delayMs(one);
+    spent += one;
+    deliverScripted();
+  }
 }
 
 void FakeTlsSocket::endConnection() {
@@ -111,6 +157,15 @@ interfaces::TlsOpen FakeTlsSocket::open(const char* host, std::uint16_t, std::ui
   }
   socket_id_ = beginConnection(deadline_ms);
   socket_ids.push_back(socket_id_);
+  // Which socket this call is on, into the record (task p15-02), and the script for this
+  // connection back to its beginning.
+  if (record_ != nullptr) record_->onSocket(socket_id_);
+  went_out_ms_ = 0;
+  not_yet_left_ = not_yet_receives;
+  receive_hung_ = false;
+  ring_done_ = ring_bytes == 0;
+  close_scripted_ = false;
+  close_done_ = false;
   // And now the events the library had not got round to: *after* the flags were cleared, which
   // is the board's race and the harshest moment for them to land.
   deliverDueCloses();
@@ -130,7 +185,12 @@ bool FakeTlsSocket::send(const std::uint8_t* data, std::size_t size, std::uint64
   if (closedNow()) return false;
   if (!spend(piece_ms, deadline_ms)) return false;
   request_.append(reinterpret_cast<const char*>(data), size);
-  if (!answered_ && requestComplete()) answer();
+  if (!answered_ && requestComplete()) {
+    // The moment the request is whole on the wire, which is what the script's own times and the
+    // record's `at_ms` are both counted from (task p15-02).
+    went_out_ms_ = clock_.nowMs();
+    answer();
+  }
   return true;
 }
 
@@ -183,6 +243,31 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
                                            std::uint64_t deadline_ms) {
   if (got != nullptr) *got = 0;
   if (!open_ || out == nullptr || got == nullptr) return interfaces::TlsRecv::kError;
+  // -- the scripted modem first (task p15-02) ------------------------------------------------
+  // The asks the board's own receive loop makes and answers before a byte of the response is
+  // handed over: the polls that say *nothing buffered yet*, and then the one command the modem
+  // leaves unanswered. Nothing of this can be reached through this fake's loop - the loop is the
+  // board's - so the fake says the same things to the same record (fake_tls_socket.h).
+  deliverScripted();
+  while (not_yet_left_ > 0) {
+    --not_yet_left_;
+    if (record_ != nullptr) record_->notYet();
+    if (!spend(not_yet_ms, deadline_ms)) return interfaces::TlsRecv::kTimeout;
+    deliverScripted();
+  }
+  if (receive_hangs_ms != 0 && !receive_hung_) {
+    receive_hung_ = true;
+    const std::uint64_t asked = clock_.nowMs();
+    // Past the deadline if the script says so, which is what the library's blocking call does:
+    // the wall is read before a receive and not during it (interfaces/tls_socket.h), so a 30 s
+    // stall happens under a 15 s piece deadline and comes out as kError and not as a timeout.
+    hang(receive_hangs_ms);
+    if (record_ != nullptr) {
+      record_->receiveFailed(clock_.nowMs(), static_cast<std::uint32_t>(clock_.nowMs() - asked),
+                             receive_state, receive_cme);
+    }
+    return interfaces::TlsRecv::kError;
+  }
   if (stall || server_.no_response || !answered_) {
     // Nothing will come: the deadline.
     spend(0xFFFFFFFFu, deadline_ms);
@@ -207,6 +292,7 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
   read_ += n;
   bytes_out += n;
   *got = n;
+  if (record_ != nullptr) record_->gotData(clock_.nowMs(), n);
   return interfaces::TlsRecv::kData;
 }
 

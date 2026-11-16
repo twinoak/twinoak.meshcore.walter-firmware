@@ -791,6 +791,10 @@ void AgentBackend::sayLocalDoor(interfaces::TextOut& out) const {
 //
 // **No token, no password and no byte of a body** is in a line here: an entry is a call's name, a
 // status or an `interfaces::HttpOutcome`, a wake number and an epoch, and nothing else is kept.
+//
+// Since task p15-02 the list is followed by **what the modem said in the newest of them** - the
+// receiving side of that call, event by event, from a key of its own (core/net/call_record.h).
+// That record is numbers too: times, counts, a socket id, the modem's own codes.
 void AgentBackend::calls(interfaces::TextOut& out) {
   if (p_.calls == nullptr) {
     say(&out, "agent calls: this build keeps no list of failed calls\n");
@@ -828,6 +832,25 @@ void AgentBackend::calls(interfaces::TextOut& out) {
            static_cast<unsigned long>(call.wake), when, interfaces::describe(call.outcome));
     }
   }
+  // And under the list, **what the modem said in the newest of them** (task p15-02,
+  // core/net/call_record.h): the receiving side of the newest call that did not come back 2xx,
+  // read back out of a value of its own in the settings store. It is the same call as entry 1
+  // above - the list and that record are written in the same moment - so the two are read
+  // together, and this is the half the 8 November stall could not be read without.
+  //
+  // The record is a local and not a member: 79 bytes and a 159-byte local for the hex, wanted
+  // when a person asks, against the same bytes of .bss that the main task's stack would have to
+  // be found around (docs/ARCHITECTURE.md §14, rail R22).
+  core::net::CallRecord receiving;
+  if (!log.keptReceiving(receiving)) {
+    say(&out, "  what the modem said in it: nothing kept yet - no call has failed since the "
+              "firmware that writes it down was flashed\n");
+    return;
+  }
+  const std::uint8_t which = receiving.callWas();
+  receiving.describe(out, callKindName(which < static_cast<std::uint8_t>(CallKind::kCount)
+                                           ? static_cast<CallKind>(which)
+                                           : CallKind::kUnknown));
 }
 
 // `agent state`'s flood line, and the report's `agent` section with it (task p14-02): the scope

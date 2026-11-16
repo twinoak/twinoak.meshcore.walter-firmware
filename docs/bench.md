@@ -1357,6 +1357,34 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
      Heltec exit nodes over WiFi without trouble, so the length matters to the modem, not to the
      route.)
 
+  **Read the firmware's own record beside it.** Since task p15-02 a *release* build writes down
+  the receiving side of a failed call itself, and `agent calls` prints it under its list — on the
+  trace build too, so the two can be read side by side in the same minute:
+
+  ```
+  agent calls
+  ```
+  ```
+    1. observations, wake 1214, at 1792022430: nothing answered, the modem stopped answering for this socket before the body was complete
+    what the modem said in it (observations), on socket 6: 1158 bytes sent, 612 receives answered "nothing buffered yet"
+      it ended as: the modem stopped answering for this socket before the body was complete
+      +102 ms: a ring: the modem announced 878 bytes
+      +514 ms: the other end closed
+      +30150 ms: a receive failed after 30000 ms: nothing answered, the library gave up on the command
+  ```
+
+  Four of the five things above have an answer in those lines, and that is what to check the trace
+  against: the **ring and its length** is item 5's `+SQNSRING: <id>,<n>` (so the record alone
+  already says whether a lost answer was announced at 877 or 878, and at a unit on a mast it is
+  the only thing that does); the **failed receive and its duration** is item 1's gap; the **close
+  and its time** is item 4; and the count of *nothing buffered yet* is how many `AT+SQNSRECV`
+  commands item 2 should show before the gap. What the record **cannot** say, and the trace can,
+  is **which** AT command went unanswered and what the `+SQNSRECV` that came back declared against
+  the ring — item 3, the reading that would explain the stall. So: take the paste, then run `agent
+  calls`, and write the two down together. If they disagree — a ring in the trace that the record
+  has not got, or the other way about — that disagreement is itself the finding, and it is about
+  `socketEvent` in `components/modem/walter_tls.cpp`.
+
   Two things to check about the trace itself while it is on, because they are this task's own rails
   and no host test can see them on silicon:
   - **no secret in any line.** With `lte.pin` and `server.token` both set, the trace must show
@@ -1367,6 +1395,19 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
   - **it ends at the next boot.** `trace modem on`, then `reboot`; after the boot, `trace` says
     *are off* and `status` has no `trace:` line. It is not a setting and `get`/`set` know no key
     for it.
+- [ ] **The record on a unit with no cable** (task p15-02). The point of writing the receiving
+  side down is that it survives a deep sleep and reaches a person who is nowhere near the board,
+  so this is the item that proves it does. On a **release** build, with the unit left to its own
+  wakes for half an hour: *Fetch now* on meshmaster.dk's Diagnostics tab, and read the report's
+  `calls` section. Expected: the list's first entry and, under it, `what the modem said in it
+  (observations)` with a socket id, the bytes sent, the count of *nothing buffered yet*, and the
+  moments — a ring with a length, a receive that failed with its duration, the close. **Write the
+  block down**, and with it: whether a ring came at all for the lost answer and what length it
+  announced (the 876-against-878 reading of `tasks/phase-10/FOLLOWUPS.md` is settled by this
+  alone), and whether the close arrived before or after the failed receive. Then `reboot` the
+  unit, or pull its power, and fetch again: the same block, to the character — it is one value of
+  the settings store and nothing of it is in RTC memory. If the section says *nothing kept yet*
+  after a wake whose call failed, the write is not happening and that is the finding.
 - [ ] **A dial refused on an id the modem may still hold** (task p9-02, the third shape of
   7 November: a result's `POST` refused at the dial after 12 532 ms, on the third connection of the
   wake, with the next connection going through in 3.7 s). Watch for

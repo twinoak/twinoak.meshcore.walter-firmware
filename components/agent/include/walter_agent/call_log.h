@@ -37,12 +37,20 @@
 // when the ring moved, which is only when a call failed. A wake in which nothing failed makes no
 // write here at all - not a shorter one, none - and `save()` is what holds that true.
 //
+// **And a second value beside it, since task p15-02**: what the modem said in the newest of these
+// calls, on its receiving side (`core/net/call_record.h`). Phase 13's follow-up asked for the
+// extra bytes to go in *a second key, not a longer entry*, and they do - an entry here is still
+// nine bytes. `record()` writes that key at the same moment it moves this list, so the two values
+// can never name different calls, and `keptReceiving()` reads it back for `agent calls` and the
+// report's `calls` section.
+//
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
+#include "core/net/call_record.h"
 #include "interfaces/http.h"
 #include "interfaces/key_value.h"
 
@@ -110,7 +118,11 @@ constexpr std::uint32_t kWakeAtMost = 0xFFFFu;
 struct CallLogCounters {
   std::uint16_t recorded = 0;    // calls put in the list
   std::uint16_t pushed_out = 0;  // ... and the oldest ones they pushed out
-  std::uint16_t writes = 0;      // values written to the store
+  // Values written to the store: the list, and since task p15-02 the record of what the modem
+  // said in the newest failed call, which is a second value written in the same moment. One
+  // counter for both, because a counter of its own would be two more bytes of static storage and
+  // the two writes always happen together (rail R22).
+  std::uint16_t writes = 0;
   std::uint16_t refused = 0;     // a stored value of another version or shape
 };
 
@@ -129,6 +141,18 @@ class CallLog {
 
   // The wake's number the next records are stamped with. Called at every wake.
   void atWake(std::uint32_t wakes);
+
+  // **What the modem said in the newest of these calls** (task p15-02,
+  // core/net/call_record.h). The transport's one live record, which `record()` below writes to a
+  // key of its own at the moment a call fails - so that the receiving side of the newest failed
+  // call is kept beside the list and the two can never name different calls. nullptr - a build
+  // or a test without it - keeps the list and nothing else, which is what this firmware did
+  // before task p15-02.
+  void keepReceivingOf(core::net::CallRecord* record) { receiving_ = record; }
+
+  // The kept record back out of the store, into `into`. False - and `into` holding nothing -
+  // when none has been kept, or it is of another version or shape.
+  bool keptReceiving(core::net::CallRecord& into) const;
 
   // One call that did not come back 2xx. `status` 0 is "nothing answered", and then `outcome` is
   // how far the uplink had got. `at_epoch` 0 is a unit with no clock yet.
@@ -158,6 +182,7 @@ class CallLog {
   static FailedCall unpack(const std::uint8_t* at);
 
   interfaces::KeyValue* store_;
+  core::net::CallRecord* receiving_ = nullptr;
   // The ring, newest first, in the form it is written in: the value's bytes without its version
   // byte. A record is a memmove of this and nine bytes written over the front, and saving it is
   // the hex of one byte and this.

@@ -375,6 +375,21 @@ extern "C" void app_main() {
   static core::net::TrustLoader trust(tls_store, g_retained, g_clock);
   trust.begin();
   static core::net::HttpOverTls https(tls_socket, &trust, g_clock);
+  // What the modem said in the call now running (task p15-02, core/net/call_record.h): one
+  // record, which the transport writes the request's side of and the socket layer below the
+  // receiving side of, and which the list of failed calls writes to the store when a call fails.
+  //
+  // **From the heap, here in app_main, and not a static.** It is a hundred bytes, and a hundred
+  // bytes of `.bss` move `_heap_start` and with it the heap the 19 kB kept scratch is carved out
+  // of - which has 988 bytes of margin and is what rail R22 holds (tools/heap_at_start.py; phase
+  // 13's follow-up says the next task that adds static storage makes room first, and task p14-01
+  // had already spent the room in the scratch). Taken **after** the main task exists, unlike the
+  // runner above: the block is tiny, the heap has tens of kilobytes free by now, and an
+  // allocation in a static initialiser would be one the recorded heap programme does not have.
+  // Never freed, so the pointers below are good for the life of the firmware.
+  core::net::CallRecord* call_record = new core::net::CallRecord();
+  https.recordInto(call_record);
+  tls_socket.recordInto(call_record);
   static core::net::Client http_client(https, g_clock);
   static core::net::Download download(http_client, g_clock);
   // The trial's third condition (S-6), which is `server.url` (task p3-03) - the console's
@@ -592,6 +607,10 @@ extern "C" void app_main() {
   // the backend does for the list and the line below does for the counters.
   static agent::CallLog g_calls(g_nvs.ready() ? &g_nvs : nullptr);
   server.recordFailuresIn(&g_calls);
+  // ... and, under a key of its own, what the modem said in the newest of them (task p15-02):
+  // the list moves and that record is written in the same moment, so the two always name the
+  // same call. `agent calls` and the report's `calls` section read them together.
+  g_calls.keepReceivingOf(call_record);
   server.countWakesFrom(&g_wake_counters.totals());
   // And the three counts of a flooded transaction (task p14-02, walter_agent/flood_counters.h):
   // one more value of the store, written only when one of the three moved, read back at the
