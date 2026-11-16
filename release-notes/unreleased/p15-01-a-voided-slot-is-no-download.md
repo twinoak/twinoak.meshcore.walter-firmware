@@ -1,0 +1,1 @@
+A unit that has taken a radio update goes back to sleeping for the interval it was set to: since its first update it had been waking about every five and a half minutes instead, because the slot the update emptied still read as a download half finished. The console's image list says that slot is empty too. Seen on the simulated bench, not yet on a board.

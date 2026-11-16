@@ -845,10 +845,20 @@ test that reads the `rakfw` line of `partitions.csv`.
 - **A promotion moves a pointer, not megabytes**: the index's role-to-area map is rewritten (two
   copies, sequence numbers, the newer valid one wins) and the area that held the old golden image
   becomes the candidate area, its record destroyed afterwards. Seven flash operations, whatever the
-  image's size, and **there is never a moment with no golden image once there has been one**.
+  image's size, and **there is never a moment with no golden image once there has been one**. The
+  header sector of that area is **not** erased — that would be an eighth operation in a path whose
+  every interruption is held by a test, and it would do nothing for a unit that has already
+  promoted — so what it still holds is read for what it is, by the rule below.
 - **A write resumes.** A progress record goes down every 64 KB, so a transfer an interruption cut
   short continues from the last of them rather than starting over; a resume whose hash is another
-  file's starts at zero.
+  file's starts at zero. Those markers **outlive the commit that makes the bytes an image** — they
+  are above the record in the same header sector, and only the erase at the start of the next
+  write into that area takes them — so they are read as a transfer **only while no record has ever
+  stood over them**, which the record's own magic word says: all ones where nothing has been
+  written since the erase, and anything else (the magic, the zeros of a voiding, a torn word) once
+  one has. Without that rule every promotion left a candidate slot reading as a download half
+  done, and the wake cycle shortened every sleep after the first radio update a unit committed
+  (task p15-01).
 - **The bad list**: up to eight hashes of candidates that failed a health check (task p2-03), in
   the index record; an image on it is refused at the door, before a sector is erased. It is about
   images: a base is not health-checked, so it is not held to the list.
