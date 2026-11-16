@@ -36,6 +36,15 @@ is written.
     **877 or 878**. The Heltec exit nodes receive 877-byte answers of the same route without
     trouble, over WiFi. It may be chance, but it is the first thing to look for in the trace: the
     `+SQNSRING`/`+SQNSRECV` lengths of an 876-byte answer against an 878-byte one.
+  - **Task p15-02 makes the firmware write the receiving side of a failed call down itself**, in a
+    release image and over a deep sleep: `agent calls` and the report's `calls` section now say the
+    socket, the bytes sent, how many asks the modem answered *nothing buffered yet*, the ring with
+    the length it announced, the receive that failed with its duration and the modem's own code,
+    and the close with its time. So the ring's length for a lost answer — the first thing to look
+    for, above — can be read on a unit with no cable, and the trace build is needed only for
+    **which** AT command went unanswered and what a `+SQNSRECV` declared against its ring.
+    **The box stays unticked: none of it cures the stall and the cause is still not known**
+    (`docs/bench.md` §13, the ★ line and the item under it).
 
 ## From the reports of 01–07 (placed by the reviewer, 9 November)
 

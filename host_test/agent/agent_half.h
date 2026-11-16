@@ -69,6 +69,9 @@ struct AgentHalfParts {
   core::board::RadioPins* pins = nullptr;
   core::board::SlotLock* slots = nullptr;
   interfaces::KeyValue* state_store = nullptr;   // the world's: NVS
+  // What the modem said in the call now running (task p15-02): the world's transport owns it,
+  // because the socket that writes its receiving side is the world's too and outlives a life.
+  core::net::CallRecord* receiving = nullptr;
   interfaces::FlashRegion* kept_flash = nullptr; // the world's: the rakfw partition's tail
   fakes::FakeEntropy* entropy = nullptr;         // the world's: so two lives draw different numbers
   fakes::FakeHeap* heap = nullptr;
@@ -116,6 +119,9 @@ struct AgentHalf {
         kept(*parts.kept_flash, 0, parts.kept_flash->size()),
         backend(backendParts(), *parts.clock, *parts.wall) {
     server.raiseAttentionThrough(&attention);
+    // The receiving side of the newest failed call, written to a key of its own in the same
+    // moment the list moves (task p15-02), as main.cpp wires it.
+    calls.keepReceivingOf(parts.receiving);
     // The console's `agent heartbeat` carries the same `flood` object a wake posts (task p14-02):
     // the runner's rule and the kept totals, as main.cpp hands them over.
     identity_probe.countFloodsFrom(&jobs, &floods.totals());

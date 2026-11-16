@@ -26,6 +26,10 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
                           interfaces::HttpBodySink& sink) {
   if (response == nullptr) return;
   *response = interfaces::HttpResponse{};
+  // What the modem said in this one, from the beginning (task p15-02): the record belongs to the
+  // request now starting whatever becomes of it, so that a call that never got its bytes out is
+  // still the record a person reads beside its entry in `agent calls`.
+  record_.begin();
   ++requests_;
   const std::uint64_t started = clock_.nowMs();
   const std::uint32_t total_ms = request.total_ms != 0 ? request.total_ms : kDefaultTotalMs;
@@ -42,6 +46,9 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
     response->chunked = parser_.chunked();
     response->body_bytes = parser_.bodyBytes();
     response->elapsed_ms = static_cast<std::uint32_t>(clock_.nowMs() - started);
+    // Before the close this end asks for: `+SQNSH` for our own AT+SQNSH is not the other end
+    // hanging up, and the record is the receiving side of the call and not of the close.
+    record_.ended(outcome);
     socket_.close();
   };
 
@@ -105,6 +112,10 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
       return;
     }
   }
+  // The request is whole on the wire. Everything the modem says from here is counted from this
+  // moment, which is the moment the 8 November stall begins (core/net/call_record.h).
+  record_.wentOut(clock_.nowMs(),
+                  head_len + (request.method == interfaces::HttpMethod::kPost ? request.body_size : 0));
 
   // The response, piece by piece. The status and the framing headers are written into the
   // response **before the first body piece** reaches the sink (interfaces/http.h's promise: a sink

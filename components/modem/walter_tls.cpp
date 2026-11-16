@@ -18,13 +18,38 @@ namespace {
 void socketEvent(WMSocketEventType event, const WMSocketEventData* data, void* args) {
   WalterTlsSocket* self = static_cast<WalterTlsSocket*>(args);
   if (self == nullptr || data == nullptr) return;
-  if (event == WALTER_MODEM_SOCKET_EVENT_RING) self->rotation().onRing(data->conn_id);
-  if (event == WALTER_MODEM_SOCKET_EVENT_DISCONNECTED) self->rotation().onClose(data->conn_id);
+  if (event == WALTER_MODEM_SOCKET_EVENT_RING) {
+    self->rotation().onRing(data->conn_id);
+    // ... and into the record of this call, with the length the modem announced (task p15-02).
+    // `data_len` is the `<n>` of `+SQNSRING: <id>,<n>`, which the ring mode this firmware asks
+    // for always carries (WALTER_MODEM_SOCKET_RING_MODE_DATA_AMOUNT, open() below; the parser is
+    // WalterModem.cpp's `+SQNSRING: ` case). This is the only place in this firmware that reads
+    // it, and the one figure the 8 November stall is to be read against (docs/bench.md §13).
+    self->noteRing(data->conn_id, data->data_len);
+  }
+  if (event == WALTER_MODEM_SOCKET_EVENT_DISCONNECTED) {
+    self->rotation().onClose(data->conn_id);
+    self->noteClose(data->conn_id);
+  }
 }
 
 }  // namespace
 
 // ------------------------------------------------------------------------------------ the socket
+
+// The two the event task brings. Both run on the library's event task, not on the one making the
+// request, which is what core/net/call_record.h's lock-free append is for. An event for an id
+// this connection is not on says nothing about this call: the rotation counts it and the record
+// ignores it, exactly as task p8-03 decided for the flags.
+void WalterTlsSocket::noteRing(int id, std::uint16_t announced) {
+  if (record_ == nullptr || id != rotation_.currentId()) return;
+  record_->rang(clock_.nowMs(), announced);
+}
+
+void WalterTlsSocket::noteClose(int id) {
+  if (record_ == nullptr || id != rotation_.currentId()) return;
+  record_->wasClosed(clock_.nowMs());
+}
 
 bool WalterTlsSocket::configure(int id) {
   // The socket's parameters, every time: a previous life of the modem may have left others.
@@ -96,6 +121,9 @@ interfaces::TlsOpen WalterTlsSocket::open(const char* host, std::uint16_t port, 
   if (!before(deadline_ms)) return interfaces::TlsOpen::kTimeout;
   // The rule: wait out a close this id still owes, then start with its flags clear.
   if (rotation_.begin(id, deadline_ms) != id) return interfaces::TlsOpen::kConnectFailed;
+  // Which socket this call is on, into its record (task p15-02): the one figure of the stall that
+  // `lte`'s rotation block could only be counted forward through by hand.
+  if (record_ != nullptr) record_->onSocket(id);
   if (!before(deadline_ms)) return interfaces::TlsOpen::kTimeout;
   // Rings that say how much arrived, bytes as bytes, no listening, bytes sent as bytes.
   if (!WalterModem::socketConfigExtended(id, WALTER_MODEM_SOCKET_RING_MODE_DATA_AMOUNT,
@@ -161,10 +189,27 @@ interfaces::TlsRecv WalterTlsSocket::receive(std::uint8_t* out, std::size_t max,
     // read is the end.
     rotation_.clearRing();
     WalterModemRsp rsp = {};
-    if (!WalterModem::socketReceive(id, out, want, &rsp)) {
-      if (rotation_.closedSeen()) return interfaces::TlsRecv::kClosed;
+    // How long the command took, for the record: the library blocks until the modem answers or
+    // its own command timeout ends it, and on this board one of these takes 30 seconds and that
+    // is the whole fault (task p15-02, core/net/call_record.h).
+    const std::uint64_t asked_at = clock_.nowMs();
+    const bool answered = WalterModem::socketReceive(id, out, want, &rsp);
+    const std::uint64_t came_back = clock_.nowMs();
+    const std::uint32_t took_ms = static_cast<std::uint32_t>(came_back - asked_at);
+    if (!answered) {
       const bool not_yet = rsp.type == WALTER_MODEM_RSP_DATA_TYPE_CME_ERROR &&
                            rsp.data.cmeError == WALTER_MODEM_CME_OPERATION_NOT_SUPPORTED;
+      if (!not_yet && record_ != nullptr) {
+        // What the modem said, and what the library made of it: its own state for the command
+        // (WALTER_MODEM_STATE_TIMEOUT when nothing came back at all) and the `+CME ERROR` number
+        // when there was one. This is the line `agent calls` prints for the 8 November stall.
+        record_->receiveFailed(came_back, took_ms, static_cast<std::uint8_t>(rsp.result),
+                               rsp.type == WALTER_MODEM_RSP_DATA_TYPE_CME_ERROR
+                                   ? static_cast<int>(rsp.data.cmeError)
+                                   : -1);
+      }
+      if (not_yet && record_ != nullptr) record_->notYet();
+      if (rotation_.closedSeen()) return interfaces::TlsRecv::kClosed;
       if (!not_yet) return interfaces::TlsRecv::kError;
     } else if (rsp.type == WALTER_MODEM_RSP_DATA_TYPE_SOCKET &&
                rsp.data.socketResponse.bytesReceived > 0) {
@@ -172,7 +217,12 @@ interfaces::TlsRecv WalterTlsSocket::receive(std::uint8_t* out, std::size_t max,
       if (n > want) n = want;  // the library copies what the modem said; never more than asked
       *got = n;
       received_ = true;
+      if (record_ != nullptr) record_->gotData(came_back, n);
       return interfaces::TlsRecv::kData;
+    } else if (record_ != nullptr) {
+      // `+SQNSRECV: <id>,0`: the other way the modem says *nothing buffered yet*, and counted
+      // with the first.
+      record_->notYet();
     }
     // Nothing buffered. The other end closed, and everything it sent has been read: the end.
     if (rotation_.closedSeen()) return interfaces::TlsRecv::kClosed;

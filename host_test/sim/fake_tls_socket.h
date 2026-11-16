@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "core/net/call_record.h"
 #include "core/net/socket_rotation.h"
 #include "fakes/fake_clock.h"
 #include "interfaces/tls_socket.h"
@@ -81,6 +82,34 @@ class FakeTlsSocket final : public interfaces::TlsSocket {
   // the connection ending, not this race.
   bool close_event_lost = false;
 
+  // -- what the modem does to a receive (task p15-02) ----------------------------------------
+  // The 8 November stall, scripted. On the board the firmware asks the modem for bytes every
+  // kReceivePollMs and is answered *nothing buffered yet* until the first byte is there
+  // (`+CME ERROR: 4`, or `+SQNSRECV: <id>,0`), and in a stalled call one of those commands goes
+  // **unanswered for the library's whole 30 s** and the answer the server sent is never read.
+  // None of that can be reached through this fake's own receive loop, because the loop that reads
+  // those answers is the board's (components/modem/walter_tls.cpp, receive) and this class is its
+  // peer - so these four knobs make the fake say the same things to the same record, and the
+  // record is the thing under test (core/net/call_record.h).
+  int not_yet_receives = 0;             // receives answered *nothing buffered yet* first
+  std::uint32_t not_yet_ms = 50;        // what one of them costs (the board's kReceivePollMs)
+  // The receive after them goes unanswered for this long and then fails. **It overruns the
+  // deadline**, as the library's blocking call does: the firmware checks the wall before a
+  // receive and not during it (interfaces/tls_socket.h), which is why a 30 s stall happens under
+  // a 15 s piece deadline and comes out as kSocketFailed and not as a timeout. 0 is never.
+  std::uint32_t receive_hangs_ms = 0;
+  std::uint8_t receive_state = 2;       // ... with this WalterModemState (2 is its own timeout)
+  int receive_cme = -1;                 // ... and this `+CME ERROR: n`, or -1 for none
+  // A ring, and the close, handed over this long after the request went out instead of with the
+  // response: what the stall needs, because on the board both arrive while the receive hangs.
+  std::uint32_t ring_after_ms = 0;
+  std::uint16_t ring_bytes = 0;         // 0 is no ring at all
+  std::uint32_t close_after_ms = 0;     // 0 keeps the behaviour every other test has
+
+  // Where this socket writes what the modem said, as the board's does (`recordInto` of
+  // components/modem/walter_tls.h). sim/fake_http.h hands it the transport's own record.
+  void recordInto(core::net::CallRecord* record) { record_ = record; }
+
   // -- what happened -------------------------------------------------------------------------
   int opens = 0;
   int tls_failures = 0;
@@ -124,9 +153,24 @@ class FakeTlsSocket final : public interfaces::TlsSocket {
   void deliverClose(int id);
   void endConnection();
 
+  // -- the scripted modem (task p15-02) -------------------------------------------------------
+  // The ring and the close whose moment has come, into the rotation and the record, as the
+  // library's event task hands them over.
+  void deliverScripted();
+  // The clock forward by `cost`, in steps, delivering those as they fall due - and **past the
+  // deadline** if that is what the script says, which is what the library's blocking call does.
+  void hang(std::uint32_t cost);
+
   ScriptedServer& server_;
   fakes::FakeClock& clock_;
   core::net::SocketRotation rotation_;
+  core::net::CallRecord* record_ = nullptr;
+  std::uint64_t went_out_ms_ = 0;    // when the request was whole on the wire
+  int not_yet_left_ = 0;             // of not_yet_receives, how many are still to be answered
+  bool receive_hung_ = false;        // the one unanswered command of this connection is spent
+  bool ring_done_ = false;
+  bool close_scripted_ = false;      // the server's close is waiting for close_after_ms
+  bool close_done_ = false;
   bool open_ = false;
   std::string request_;
   std::vector<std::uint8_t> response_;

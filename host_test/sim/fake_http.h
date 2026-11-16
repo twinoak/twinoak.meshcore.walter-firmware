@@ -22,7 +22,11 @@ namespace sim {
 class FakeHttp final : public interfaces::Http {
  public:
   explicit FakeHttp(fakes::FakeClock& clock, core::net::TrustLoader* trust = nullptr)
-      : socket(server, clock), http(socket, trust, clock) {}
+      : socket(server, clock), http(socket, trust, clock) {
+    // The transport's one record of what the modem said, which the socket below writes the
+    // receiving side of - the same wiring main/main.cpp does (task p15-02).
+    socket.recordInto(&http.record());
+  }
 
   ScriptedServer server;
   FakeTlsSocket socket;

@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/net/call_record.h"
 #include "core/net/http1.h"
 #include "core/net/trust.h"
 #include "interfaces/clock.h"
@@ -57,6 +58,15 @@ class HttpOverTls final : public interfaces::Http {
   std::uint32_t requests() const { return requests_; }
   std::uint32_t connects() const { return connects_; }
 
+  // What the modem said in the request now running, or in the last one (task p15-02,
+  // core/net/call_record.h). This object fills in what it knows itself - the request going out,
+  // its bytes, and how the call ended - and the socket layer below fills in the receiving side,
+  // which is why the socket is handed this same object (`recordInto`, in main/ and in
+  // host_test/sim/fake_http.h). One record, overwritten by every request: the one that is kept
+  // over a sleep is written to the store the moment a call failed (walter_agent/call_log.h).
+  CallRecord& record() { return record_; }
+  const CallRecord& record() const { return record_; }
+
  private:
   // The head's bytes to zero, through a volatile so the write is not elided (a sensitive
   // request's credential, task p4-03).
@@ -66,6 +76,7 @@ class HttpOverTls final : public interfaces::Http {
   TrustLoader* trust_;
   interfaces::Clock& clock_;
   ResponseParser parser_;
+  CallRecord record_;
   char head_[kRequestHeadBytes];
   std::uint8_t rx_[kReceiveBytes];
   std::uint32_t requests_ = 0;
