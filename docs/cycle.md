@@ -376,6 +376,14 @@ The interval is step 5's (`docs/power.md`). It is **shortened to five minutes wh
 half done and the band is `plenty`**, so that a release arrives in a morning rather than in a day —
 and **never in `saving` or `critical`**, where the wakes are what the pack can pay for.
 
+*Half done* is the candidate slot answering **a transfer at X of Y with X neither 0 nor Y** — the
+store's own progress markers, and only where no record has ever stood over them
+(`ARCHITECTURE.md` §6). Until task p15-01 a committed radio update left those markers readable in
+the area the old golden image had been in, so a unit shortened **every** sleep from its first
+update on: 15 minutes became 5 minutes 40 seconds, and three wakes a quarter-hour where there
+should have been one. The journal's wake line says `the sleep was shortened` when it happens, and
+a unit with no download under way must not be saying it.
+
 A sleep is refused when the radio's update has a step in the air, when a transfer into the other
 application slot is open, or when this firmware is on trial. The wake then ends in
 `the sleep was refused`, the bound on the wake is what ends it, and the next boot resumes.

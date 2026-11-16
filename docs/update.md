@@ -45,7 +45,7 @@ runs it to the end inside the command.
 | **booting** | waiting for the radio to come up: an `EV_BOOT` or a `HELLO` answer, inside the boot window | the wait |
 | **proving** | the health check, below | the check |
 | **committing** | the store's promotion: the golden pointer moves to the candidate's area (seven flash operations, whatever the size) | the promotion |
-| **done** | the candidate is the golden image; the candidate slot is empty | terminal |
+| **done** | the candidate is the golden image; the candidate slot is empty — plainly empty, not a download half done: the area it now points at is the old golden image's, and the markers that image's own download left there are not read as a transfer (`ARCHITECTURE.md` §6, task p15-01) | terminal |
 | **rolling-back** | the candidate's hash is put on the bad list, then the golden image is flashed back and the radio reset | the rollback, with why and at which step of the check |
 | **rolling-back (booting the golden image)** | as booting, for the golden image | the wait |
 | **rolling-back (proving the golden image)** | the same health check, held against the golden image's own descriptor | the check |

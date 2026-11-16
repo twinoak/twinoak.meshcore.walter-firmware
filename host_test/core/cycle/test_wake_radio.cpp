@@ -206,6 +206,40 @@ TEST_CASE("a download half done shortens the next sleep in `plenty`, and in no o
   }
 }
 
+TEST_CASE("a committed radio update does not shorten every sleep after it") {
+  // Task p15-01, and the fault it is named for: a promotion voids the record of the area the old
+  // golden image was in, and that area's header sector still holds the markers of the download
+  // that put it there. Read as a transfer they said "a download is half done" at every wake from
+  // 13 November on, and the unit woke every 5 minutes 40 seconds instead of every 15 minutes.
+  WakeBench bench;
+  bench.modemWorks();
+  const bench::Candidate downloaded{"store-resume"};  // 150 000 bytes: it leaves markers
+  const bench::Candidate next{"store-a"};
+  REQUIRE(downloaded.file.size() > 2 * core::image::kResumeStep);
+  REQUIRE(bench.world.images.put(core::image::Which::kCandidate, core::board::Slot{0},
+                                 downloaded) == core::image::StoreError::kNone);
+  REQUIRE(bench.world.images.store.promote(core::board::Slot{0}) == core::image::StoreError::kNone);
+  REQUIRE(bench.world.images.put(core::image::Which::kCandidate, core::board::Slot{0}, next) ==
+          core::image::StoreError::kNone);
+  REQUIRE(bench.world.images.store.promote(core::board::Slot{0}) == core::image::StoreError::kNone);
+
+  core::image::Record record{};
+  REQUIRE(bench.world.images.store.read(core::image::Which::kCandidate, core::board::Slot{0},
+                                        &record) == core::image::StoreError::kNone);
+  REQUIRE_FALSE(record.present);
+  REQUIRE_FALSE(record.transfer);
+
+  bench.world.rak.battery_mv = 4150;  // `plenty`: the one band a download would shorten
+  const Pass& pass = bench.oneWake();
+  CHECK(pass.band == core::power::Band::kPlenty);
+  CHECK_FALSE(pass.shortened);
+  CHECK(pass.interval_s == core::power::kPlentyMinutes * 60u);
+  CHECK(pass.ending == Ending::kSlept);
+  // And the backend is told of a candidate slot with nothing in it and nothing on its way in.
+  CHECK_FALSE(bench.v().cycle->known().candidate.present);
+  CHECK_FALSE(bench.v().cycle->known().candidate.transfer);
+}
+
 TEST_CASE("the first wake of a unit that has just been powered up does not judge the radio") {
   // §2 rule 5: our own power-up glitches nRESET, so the radio was reset with us and is still
   // booting. The supervisor knows it and the wake says the same thing.
