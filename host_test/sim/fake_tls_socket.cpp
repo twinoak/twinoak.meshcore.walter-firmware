@@ -255,7 +255,7 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
     if (!spend(not_yet_ms, deadline_ms)) return interfaces::TlsRecv::kTimeout;
     deliverScripted();
   }
-  if (receive_hangs_ms != 0 && !receive_hung_) {
+  if (receive_hangs_ms != 0 && !receive_hung_ && read_ >= hang_after_bytes) {
     receive_hung_ = true;
     const std::uint64_t asked = clock_.nowMs();
     // Past the deadline if the script says so, which is what the library's blocking call does:
@@ -266,7 +266,34 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
       record_->receiveFailed(clock_.nowMs(), static_cast<std::uint32_t>(clock_.nowMs() - asked),
                              receive_state, receive_cme);
     }
-    return interfaces::TlsRecv::kError;
+    // **The board's rule from here, and not a habit of this fake's** (task p15-03,
+    // core/net/read_again.h): the same object the board's socket asks, reached the same way,
+    // through the record. Until that task this returned kError whether the close had been
+    // delivered or not, which the board does not do - with the close seen it answers *closed* -
+    // and that is exactly the decision the rule now owns.
+    const core::net::AfterFailure next =
+        record_ != nullptr ? record_->again().onFailedReceive(closedNow())
+                           : core::net::after(closedNow(), true);
+    if (next == core::net::AfterFailure::kFailed) return interfaces::TlsRecv::kError;
+    if (next == core::net::AfterFailure::kClosed) return interfaces::TlsRecv::kClosed;
+    // One more ask, and what the script says it finds.
+    if (second_ask == SecondAsk::kHeld && read_ < cut_at_) {
+      std::size_t n = cut_at_ - read_;
+      if (n > max) n = max;
+      if (n > piece_bytes) n = piece_bytes;
+      std::memcpy(out, response_.data() + read_, n);
+      read_ += n;
+      bytes_out += n;
+      *got = n;
+      record_->readAgain(clock_.nowMs(), core::net::ReadAgainFound::kBytes, n, -1);
+      return interfaces::TlsRecv::kData;
+    }
+    const core::net::ReadAgainFound found = second_ask == SecondAsk::kFailed
+                                                ? core::net::ReadAgainFound::kFailed
+                                                : core::net::ReadAgainFound::kNothing;
+    record_->readAgain(clock_.nowMs(), found, 0,
+                       second_ask == SecondAsk::kFailed ? receive_cme : -1);
+    return interfaces::TlsRecv::kClosed;
   }
   if (stall || server_.no_response || !answered_) {
     // Nothing will come: the deadline.

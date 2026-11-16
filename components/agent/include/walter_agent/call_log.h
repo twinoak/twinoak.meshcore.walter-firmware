@@ -44,6 +44,13 @@
 // can never name different calls, and `keptReceiving()` reads it back for `agent calls` and the
 // report's `calls` section.
 //
+// **And a third value, since task p15-03**: the two totals of the one more ask a receive that
+// failed with the close seen now gets (`core/net/read_again.h`). They are read back at `begin()`
+// and written by `save()` when one of them moved - which is **not** when a call failed: an ask
+// that recovered the answer made that call come back 2xx, so it is in no list of failures. The
+// rule itself lives inside the record this object already holds, which is why it needs no pointer
+// of its own here (that header says why, and it is about bytes of `.bss`).
+//
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
 
@@ -119,9 +126,10 @@ struct CallLogCounters {
   std::uint16_t recorded = 0;    // calls put in the list
   std::uint16_t pushed_out = 0;  // ... and the oldest ones they pushed out
   // Values written to the store: the list, and since task p15-02 the record of what the modem
-  // said in the newest failed call, which is a second value written in the same moment. One
-  // counter for both, because a counter of its own would be two more bytes of static storage and
-  // the two writes always happen together (rail R22).
+  // said in the newest failed call, which is a second value written in the same moment, and
+  // since task p15-03 the two totals of the one more ask, which is a third. One counter for all
+  // of them, because a counter apiece would be two more bytes of static storage each and what a
+  // person asks is how much flash this whole thing has spent (rail R22).
   std::uint16_t writes = 0;
   std::uint16_t refused = 0;     // a stored value of another version or shape
 };
@@ -153,6 +161,14 @@ class CallLog {
   // The kept record back out of the store, into `into`. False - and `into` holding nothing -
   // when none has been kept, or it is of another version or shape.
   bool keptReceiving(core::net::CallRecord& into) const;
+
+  // **The one more ask after a receive that failed** (task p15-03, core/net/read_again.h): the
+  // live rule, whose two totals this object reads back at begin() and writes when they move.
+  // nullptr when this build keeps no record - and then there is no rule either, because the rule
+  // is reached through the record and nothing else. `agent calls` prints its one line.
+  const core::net::ReadAgain* readAgain() const {
+    return receiving_ == nullptr ? nullptr : &receiving_->again();
+  }
 
   // One call that did not come back 2xx. `status` 0 is "nothing answered", and then `outcome` is
   // how far the uplink had got. `at_epoch` 0 is a unit with no clock yet.

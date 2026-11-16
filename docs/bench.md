@@ -1408,6 +1408,24 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
   unit, or pull its power, and fetch again: the same block, to the character — it is one value of
   the settings store and nothing of it is in RTC memory. If the section says *nothing kept yet*
   after a wake whose call failed, the write is not happening and that is the finding.
+- [ ] **Did the one more ask ever find anything** (task p15-03). The question this rule exists to
+  answer, and the whole of what the bench has to bring back about it: on a **release** build after
+  half an hour of the unit's own wakes, read `agent calls`'s own line — *asked again after a failed
+  receive: N since this unit was made, M of them answered* — from the console, or from the report's
+  `calls` section after *Fetch now*. **Write N and M down.** Three readings and three findings:
+  - **N is 0 after wakes whose calls failed** → the receives are failing with **no close seen**
+    (the list says *the modem stopped answering for this socket*), which the rule leaves alone on
+    purpose, and the cure is somewhere else.
+  - **N > 0 and M is 0** → the modem does not hold the answer when the failed command gives up.
+    The data is not recoverable this way and the rule's one command a call is all it costs; the
+    record's own line says which of *the modem held nothing* and *it failed too* it was.
+  - **N > 0 and M > 0** → **the answers are being recovered.** Then meshmaster.dk should stop
+    seeing the same batch twice (`tasks/phase-15/FOLLOWUPS.md`), the list of failed calls should
+    thin out, and the record beside entry 1 should say *asked again after that: the modem still
+    held … bytes*. The 30 seconds are still spent: that is the follow-up, not this.
+  Also worth one line: whether a wake that recovered an answer is **longer** than 30 s and not
+  60 s — a second ask that hangs as well is the one cost this rule can add, and the wake's own
+  uplink deadline is what bounds it.
 - [ ] **A dial refused on an id the modem may still hold** (task p9-02, the third shape of
   7 November: a result's `POST` refused at the dial after 12 532 ms, on the third connection of the
   wake, with the next connection going through in 3.7 s). Watch for

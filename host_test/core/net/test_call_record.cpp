@@ -93,10 +93,14 @@ TEST_CASE("the 30-second stall, written down: the not-yets, the failed receive, 
   std::string sent;
   const Result r = theStall(b, &sent);
 
-  // What the console said on the board, and says here: the modem stopped answering for this
-  // socket before the body was complete (task p9-02 told this apart from a close).
+  // What the console said on 8 November and says here: *the connection closed before the body
+  // was complete* (`tasks/phase-10/FOLLOWUPS.md`'s first item quotes that sentence). The close
+  // is handed over while the receive hangs, so that is what the socket layer answers - and
+  // since task p15-03 one more ask is made first, which this script lets find nothing. Until
+  // that task this read as kSocketFailed here, because the bench's socket answered a failed
+  // receive without looking at the close; the board looks (`core/net/read_again.h`).
   CHECK(r.status == 0);
-  CHECK(r.outcome == HttpOutcome::kSocketFailed);
+  CHECK(r.outcome == HttpOutcome::kClosed);
 
   const CallRecord& record = b.http.call_record;
   REQUIRE(record.held());
@@ -105,7 +109,7 @@ TEST_CASE("the 30-second stall, written down: the not-yets, the failed receive, 
   CHECK(record.socketId() == b.socket().socket_ids.back());
   CHECK(record.socketId() != 0);
   CHECK(record.bytesSent() > sent.size());  // the head and the body
-  CHECK(record.outcome() == HttpOutcome::kSocketFailed);
+  CHECK(record.outcome() == HttpOutcome::kClosed);
 
   // The asks that said *nothing buffered yet*: counted, not listed.
   CHECK(record.notYets() == 4);
@@ -144,7 +148,10 @@ TEST_CASE("the 30-second stall, written down: the not-yets, the failed receive, 
   CHECK(has(said, "a receive failed after 30"));
   CHECK(has(said, "nothing answered, the library gave up on the command"));
   CHECK(has(said, "the other end closed"));
-  CHECK(has(said, "the modem stopped answering for this socket"));
+  CHECK(has(said, "the connection closed before the body was complete"));
+  // ... and, since task p15-03, the one more ask that was made before it was given up, which
+  // this script lets find nothing (host_test/core/net/test_read_again.cpp is the rule's own).
+  CHECK(has(said, "asked again after that: the modem held nothing"));
 }
 
 TEST_CASE("no byte of a body, a header or a token is in the record or in its lines") {
@@ -252,7 +259,10 @@ TEST_CASE("a receive the modem answered with a code keeps the code, and a ring w
   b.socket().receive_cme = 4;     // `+CME ERROR: 4`, the one this firmware reads as *not yet*
   MemorySink sink;
   const Result r = b.client.get("https://server.example/agent/v1/heartbeat", Options{}, sink);
-  CHECK(r.outcome == HttpOutcome::kSocketFailed);
+  // The close of this scripted answer is handed over with the response, so the socket layer
+  // answers *closed* after the one more ask of task p15-03 has found nothing - which is what
+  // this case is not about: it is about the `+CME ERROR` number of the receive that failed.
+  CHECK(r.outcome == HttpOutcome::kClosed);
 
   const CallRecord& record = b.http.call_record;
   const CallStep failed = firstOf(record, CallMoment::kReceiveFailed);
