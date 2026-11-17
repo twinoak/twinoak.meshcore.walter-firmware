@@ -111,6 +111,9 @@ idf_component_register(
        "cycle/wake_guard.cpp"
        "cycle/sleep.cpp"
        "cycle/duty_cycle.cpp"
+       # Where a wake was when it was ended (task p15-06): one retained line, written as the wake
+       # goes and read by the boot after.
+       "cycle/wake_progress.cpp"
        # The wake cycle (task p3-05): the time of day once the network has given one, the
        # readings kept until somebody takes them, and the one pass over everything above.
        "cycle/network_clock.cpp"

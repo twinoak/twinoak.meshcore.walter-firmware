@@ -21,6 +21,7 @@
 #include "core/cycle/attention_source.h"
 #include "core/cycle/sleep.h"
 #include "core/cycle/wake_guard.h"
+#include "core/cycle/wake_progress.h"
 #include "core/cycle/wake_reason.h"
 #include "core/health/health.h"
 #include "core/link/client/client.h"
@@ -62,6 +63,10 @@ class DutyCycle {
   const WakeInfo& wake() const { return reason_.info(); }
   WakeReason& reason() { return reason_; }
   const WakeReason& reason() const { return reason_; }
+  // Where this wake is, and where the wake before it was when it was ended (task p15-06,
+  // core/cycle/wake_progress.h). `begin()` reads the one and starts the other.
+  WakeProgress& progress() { return progress_; }
+  const WakeProgress& progress() const { return progress_; }
   power::IntervalPolicy& battery() { return battery_; }
   const power::IntervalPolicy& battery() const { return battery_; }
   WakeGuard& guard() { return guard_; }
@@ -115,6 +120,7 @@ class DutyCycle {
   health::Health& health_;
   settings::Settings* settings_ = nullptr;
   WakeReason reason_;
+  WakeProgress progress_;
   power::IntervalPolicy battery_;
   WakeGuard guard_;
   Sleep sleep_;

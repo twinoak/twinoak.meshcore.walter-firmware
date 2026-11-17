@@ -23,7 +23,9 @@ class FakeRetained final : public interfaces::Retained {
   }
 
   bool store(interfaces::RetainedSlot slot, const void* data, std::size_t size) override {
-    if (size > interfaces::kRetainedRecordMax) return false;
+    // Each slot's own room, as platform/retained.cpp gives it (task p15-06): a record that would
+    // not fit RTC memory on a board must not fit here either.
+    if (size > interfaces::retainedSlotBytes(slot)) return false;
     const auto* bytes = static_cast<const std::uint8_t*>(data);
     records_[slot] = std::vector<std::uint8_t>(bytes, bytes + size);
     stores++;

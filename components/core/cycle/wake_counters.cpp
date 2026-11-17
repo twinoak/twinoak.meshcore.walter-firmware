@@ -39,6 +39,7 @@ void WakeCounters::begin() {
   dirty_ = false;
   wake_counted_ = false;
   sent_counted_ = false;
+  midway_counted_ = false;
   if (store_ == nullptr || !store_->ready()) return;
   // A local and not a member: 35 bytes, wanted once a boot, and every byte of this object is
   // .bss the main task's stack has to be found around afterwards (docs/ARCHITECTURE.md §14).
@@ -47,13 +48,22 @@ void WakeCounters::begin() {
   decode(hex);
 }
 
+// **Either shape** (task p15-06): the five of version 2, or the four a unit that ran 0.1.8 has
+// under this key. The length says which before the version byte confirms it, and anything else is
+// refused and counted - a value of another version is not this one's bytes.
 void WakeCounters::decode(const char* hex) {
-  if (std::strlen(hex) != kWakeCountersHexBytes - 1) {
+  const std::size_t length = std::strlen(hex);
+  std::size_t want = 0;
+  if (length == kWakeCountersHexBytes - 1) {
+    want = kWakeCountersBytes;
+  } else if (length == kWakeCountersHexBytesV1 - 1) {
+    want = kWakeCountersBytesV1;
+  } else {
     writes_.refused = saturate16(writes_.refused);
     return;
   }
   std::uint8_t bytes[kWakeCountersBytes] = {};
-  for (std::size_t i = 0; i < sizeof bytes; ++i) {
+  for (std::size_t i = 0; i < want; ++i) {
     const int hi = hexValue(hex[2 * i]);
     const int lo = hexValue(hex[2 * i + 1]);
     if (hi < 0 || lo < 0) {
@@ -62,7 +72,9 @@ void WakeCounters::decode(const char* hex) {
     }
     bytes[i] = static_cast<std::uint8_t>((hi << 4) | lo);
   }
-  if (bytes[0] != kWakeCountersVersion) {
+  const std::uint8_t version =
+      want == kWakeCountersBytes ? kWakeCountersVersion : kWakeCountersVersionV1;
+  if (bytes[0] != version) {
     writes_.refused = saturate16(writes_.refused);
     return;
   }
@@ -70,7 +82,13 @@ void WakeCounters::decode(const char* hex) {
   totals_.radio = get32(bytes + 5);
   totals_.spurious = get32(bytes + 9);
   totals_.silent = get32(bytes + 13);
+  // 0 for a value of version 1, which is the honest figure for a total nothing had counted.
+  totals_.midway = want == kWakeCountersBytes ? get32(bytes + 17) : 0;
   survived_ = true;
+  // A value of the older shape is rewritten in this one at the next save, whether or not a total
+  // moved: a unit updated into this release would otherwise keep four totals under the key for as
+  // long as nothing woke it in a way that counts.
+  if (want != kWakeCountersBytes) dirty_ = true;
 }
 
 void WakeCounters::countWake(Wake wake) {
@@ -101,8 +119,18 @@ void WakeCounters::countSent(interfaces::Reached reached) {
   dirty_ = true;
 }
 
+// The wake before this boot did not reach sleep (task p15-06). The boot after is the only thing
+// that can count it, and it counts it once: `cycle now` at the console is a second pass of the
+// same boot and the fault is the same fault.
+void WakeCounters::countMidway() {
+  if (midway_counted_) return;
+  midway_counted_ = true;
+  totals_.midway = saturate(totals_.midway);
+  dirty_ = true;
+}
+
 bool WakeCounters::save() {
-  // Nothing moved, nothing is written: a wake that is none of the four spends no flash here.
+  // Nothing moved, nothing is written: a wake that moves none of them spends no flash here.
   if (!dirty_) return true;
   if (store_ == nullptr || !store_->ready()) return false;
   std::uint8_t bytes[kWakeCountersBytes] = {};
@@ -111,6 +139,7 @@ bool WakeCounters::save() {
   put32(bytes + 5, totals_.radio);
   put32(bytes + 9, totals_.spurious);
   put32(bytes + 13, totals_.silent);
+  put32(bytes + 17, totals_.midway);
   char hex[kWakeCountersHexBytes] = {};
   const char digits[] = "0123456789abcdef";
   for (std::size_t i = 0; i < sizeof bytes; ++i) {
@@ -130,6 +159,7 @@ void WakeCounters::forget() {
   dirty_ = false;
   wake_counted_ = false;
   sent_counted_ = false;
+  midway_counted_ = false;
   if (store_ != nullptr && store_->ready()) (void)store_->erase(kWakeCountersKey);
 }
 

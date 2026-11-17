@@ -64,6 +64,7 @@
 #include <agent/RateLimit.h>
 
 #include "core/cycle/agent_attention.h"
+#include "core/cycle/wake_progress.h"
 #include "core/cycle/wake_counters.h"
 #include "core/net/client.h"
 #include "core/settings/settings.h"
@@ -87,12 +88,13 @@ constexpr std::size_t kClaimReplyBytes = 6144;
 constexpr std::size_t kHeartbeatBodyBytes = 1536;
 
 // How many `errors` entries one heartbeat may carry through here: the library's six and room for
-// a few of this board's own behind them (task p10-03's `radioIdentityLost` is the first, and task
-// p13-02's four wake counters are the next). A heartbeat with more than this keeps the ones the
-// library wrote, because a counter is worth less than the heartbeat it would cost.
+// a few of this board's own behind them (task p10-03's `radioIdentityLost` is the first, and the
+// five wake counters of tasks p13-02 and p15-06 are the next). A heartbeat with more than this
+// keeps the ones the library wrote, because a counter is worth less than the heartbeat it would
+// cost.
 constexpr std::size_t kHeartbeatErrorsMax = 12;
 static_assert(kHeartbeatErrorsMax >= 6 + 1 + core::cycle::kWakeCounterCount,
-              "the library's six, the radio's refusal and the four wake counters have to fit");
+              "the library's six, the radio's refusal and the wake counters have to fit");
 
 // The least that may be left of the wake's uplink deadline for a call to be begun: a connect and
 // a TLS handshake over LTE-M are seconds each before a byte of the request goes, and a call begun
@@ -205,6 +207,12 @@ class ModemUplink final : public mm::IUplink {
   // this is the one place the list can be kept from. Null keeps none.
   void recordFailuresIn(CallLog* calls) { calls_ = calls; }
   CallLog* callLog() const { return calls_; }
+  // **Where the call that is out is written down while it is out** (task p15-06,
+  // core/cycle/wake_progress.h). The same one place as the line above, and for the same reason:
+  // every call the library asks for passes through `call()` below. A wake ended inside one - the
+  // 30-second command timeout of a failing observations post is the shape this unit has - leaves
+  // the call's name in RTC memory, and the boot after says it. Null writes nothing down.
+  void writeProgressTo(core::cycle::WakeProgress* progress) { progress_ = progress; }
   // Where a 401 is raised (task p4-04): the Walter's own attention, for the next wake record and
   // for `status`. A null one is a build with no duty cycle, and then a 401 is a log line and the
   // `Call` record and nothing more.
@@ -290,6 +298,7 @@ class ModemUplink final : public mm::IUplink {
   const core::cycle::WakeTotals* wakes_ = nullptr;
   const FloodTotals* floods_ = nullptr;
   CallLog* calls_ = nullptr;
+  core::cycle::WakeProgress* progress_ = nullptr;
   core::cycle::AgentAttention* attention_ = nullptr;
   ResultGate* gate_ = nullptr;
   KeptPayload payloads_[mm::kClaimMax];

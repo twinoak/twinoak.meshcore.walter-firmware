@@ -101,8 +101,13 @@ static_assert(kRefusalsKept <= interfaces::kBackendSettingsMax,
 constexpr std::size_t kRecordHeaderBytes = 8;
 constexpr std::size_t kRecordBytes = kRecordHeaderBytes + kRefusalsKept * 2 +
                                      kReadingsKept * kReadingBytes;
-static_assert(kRecordBytes <= interfaces::kRetainedRecordMax,
-              "the wake cycle's record has to fit a retained slot");
+// **Its slot is this size exactly** since task p15-06 (interfaces/retained.h,
+// kRetainedSlotBytes): the twelve bytes this record never used went to the slot that task needed,
+// so growing it by a byte is a failed build and not a quieter one. What to do about that is what
+// the table there says - this slot is the last of the eight, so its room can be moved without
+// moving anybody else's.
+static_assert(kRecordBytes <= interfaces::retainedSlotBytes(interfaces::RetainedSlot::kWakeCycle),
+              "the wake cycle's record has to fit its retained slot");
 constexpr std::uint8_t kRecordVersion = 1;
 
 // What a reading is made of when it is taken: whatever step 4 managed to read.

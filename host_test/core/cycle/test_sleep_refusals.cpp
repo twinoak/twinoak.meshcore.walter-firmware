@@ -48,9 +48,12 @@ TEST_CASE("no sleep while this firmware is on trial: it would be rolled back") {
   fakes::FakeSleeper sleeper{unit.world.clock, w->pins};
   core::cycle::WakeReason reason{unit.world.retained, unit.world.clock};
   reason.begin(w->health.thisBoot(), interfaces::WokeBy::kNotFromSleep, false, nullptr);
+  // Where the wake is (task p15-06): a Sleep marks the record *reached sleep*, so it needs one.
+  core::cycle::WakeProgress progress{unit.world.retained, unit.world.clock};
+  progress.begin();
 
   {
-    core::cycle::Sleep sleep{sleeper,          w->board,  w->client, uplink,  reason,
+    core::cycle::Sleep sleep{sleeper,          w->board,  w->client, uplink,  reason, progress,
                              unit.world.clock, unit.world.store.wall, nullptr, &w->self,
                              &w->journal};
     // No trial: a sleep is allowed.
@@ -70,7 +73,9 @@ TEST_CASE("no sleep while this firmware is on trial: it would be rolled back") {
   fakes::FakeSleeper sleeper2{unit.world.clock, w->pins};
   core::cycle::WakeReason reason2{unit.world.retained, unit.world.clock};
   reason2.begin(w->health.thisBoot(), interfaces::WokeBy::kNotFromSleep, false, nullptr);
-  core::cycle::Sleep on_trial{sleeper2,         w->board,  w->client, uplink,  reason2,
+  core::cycle::WakeProgress progress2{unit.world.retained, unit.world.clock};
+  progress2.begin();
+  core::cycle::Sleep on_trial{sleeper2,         w->board,  w->client, uplink,  reason2, progress2,
                               unit.world.clock, unit.world.store.wall, nullptr, &w->self,
                               &w->journal};
   CHECK(on_trial.wouldRefuse() == SleepRefusal::kOnTrial);
@@ -107,7 +112,9 @@ TEST_CASE("no sleep while a transfer into the other slot is open") {
   fakes::FakeSleeper sleeper{unit.world.clock, w->pins};
   core::cycle::WakeReason reason{unit.world.retained, unit.world.clock};
   reason.begin(w->health.thisBoot(), interfaces::WokeBy::kNotFromSleep, false, nullptr);
-  core::cycle::Sleep sleep{sleeper,          w->board,  w->client, uplink,  reason,
+  core::cycle::WakeProgress progress{unit.world.retained, unit.world.clock};
+  progress.begin();
+  core::cycle::Sleep sleep{sleeper,          w->board,  w->client, uplink,  reason, progress,
                            unit.world.clock, unit.world.store.wall, nullptr, &w->self,
                            &w->journal};
 
@@ -152,8 +159,10 @@ TEST_CASE("no sleep while the radio's update has a step in the air") {
   fakes::FakeSleeper sleeper{unit.world.clock, u->pins};
   core::cycle::WakeReason reason{u->retained, unit.world.clock};
   reason.begin(u->health.thisBoot(), interfaces::WokeBy::kNotFromSleep, false, nullptr);
+  core::cycle::WakeProgress progress{u->retained, unit.world.clock};
+  progress.begin();
   core::cycle::Sleep sleep{sleeper,    u->board, u->client,             uplink,
-                           reason,     unit.world.clock, unit.world.store.wall,
+                           reason,     progress, unit.world.clock, unit.world.store.wall,
                            &u->update, nullptr,  &u->journal};
 
   CHECK(sleep.wouldRefuse() == SleepRefusal::kNone);

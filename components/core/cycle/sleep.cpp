@@ -1,5 +1,7 @@
 #include "core/cycle/sleep.h"
 
+#include "core/cycle/wake_progress.h"
+
 namespace core {
 namespace cycle {
 
@@ -99,7 +101,8 @@ bool decode(const update::Entry& e, Payload* out) {
 }
 
 Sleep::Sleep(interfaces::Sleeper& sleeper, board::RadioPins& pins, link::client::Client& radio,
-             uplink::UplinkPolicy& uplink, WakeReason& wake, interfaces::Clock& clock,
+             uplink::UplinkPolicy& uplink, WakeReason& wake, WakeProgress& progress,
+             interfaces::Clock& clock,
              interfaces::WallClock& wall, update::RadioUpdate* update, update::SelfUpdate* self,
              update::Journal* journal)
     : sleeper_(sleeper),
@@ -107,6 +110,7 @@ Sleep::Sleep(interfaces::Sleeper& sleeper, board::RadioPins& pins, link::client:
       radio_(radio),
       uplink_(uplink),
       wake_(wake),
+      progress_(progress),
       clock_(clock),
       wall_(wall),
       update_(update),
@@ -239,6 +243,11 @@ SleepResult Sleep::sleepFor(std::uint32_t seconds, const power::Decision& decisi
   // `esp_timer` starts again at zero), and then sleep. The record is stored *before* the sleep
   // because after it there is no "after": the next statement runs in a new boot.
   wake_.endingInSleep(r.awake_s, seconds);
+  // **And that this wake has nothing to say to the boot after it** (task p15-06). Written here,
+  // beside the entry's duration and for the same reason: after the next statement there is no
+  // "after". A record that does not say this is a wake that was ended, and the boot after reads
+  // out what it was in the middle of.
+  progress_.reachedSleep();
 
   interfaces::SleepPlan plan{};
   plan.seconds = seconds;
@@ -249,6 +258,9 @@ SleepResult Sleep::sleepFor(std::uint32_t seconds, const power::Decision& decisi
     (void)pins_.releaseHolds();
     r.pins_held = false;
     r.refusal = SleepRefusal::kSleeperRefused;
+    // It did not sleep after all, so the word above is taken back: the bound is what will end
+    // this wake, and the boot after it should read where it got to.
+    progress_.sleepRefused();
   }
   last_ = r;
   return r;

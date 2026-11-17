@@ -1,0 +1,1 @@
+A wake that is cut short by its five-minute bound, a crash or a watchdog now leaves word of what it was in the middle of - the step, the call that was out or the job that was being run, and for how long - and the next boot prints it in the wake list and the journal. The count of such wakes goes out with every check-in. Seen in the simulated bench, not yet on a board.

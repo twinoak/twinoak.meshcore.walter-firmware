@@ -60,7 +60,20 @@ class TerminalOut final : public interfaces::TextOut {
 class FakeRestart final : public interfaces::Restart {
  public:
   int asked = 0;
-  void restart() override { asked++; }
+
+  // **A restart that does not return** (task p15-06). On a board `esp_restart()` never comes
+  // back, so everything after the line that asked for it does not happen; here `restart()`
+  // returns and the caller carries on, which for the bound on a wake means the pass goes on to
+  // step 10 and *sleeps* - the opposite of what the bound did. A test that wants a wake really
+  // ended turns this on and catches `Restarted` out of the pass, which leaves the objects exactly
+  // as a reset leaves them. **Opt-in**: every test written before this one relies on the return.
+  struct Restarted {};
+  bool does_not_return = false;
+
+  void restart() override {
+    asked++;
+    if (does_not_return) throw Restarted{};
+  }
 };
 
 }  // namespace fakes

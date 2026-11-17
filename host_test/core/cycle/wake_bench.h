@@ -32,6 +32,7 @@
 #include "core/cycle/null_backend.h"
 #include "core/cycle/telemetry_ring.h"
 #include "core/cycle/wake_cycle.h"
+#include "core/cycle/wake_progress.h"
 #include "core/flasher/flasher.h"
 #include "core/health/health.h"
 #include "core/image/store.h"
@@ -98,6 +99,17 @@ class ScriptedBackend final : public ifs::Backend {
   ifs::BackendAnswer answer{};
   std::uint32_t cost_ms = 50;  // what an exchange costs, so the budget can be seen to be spent
 
+  // **A wake that hangs where the agent hangs** (task p15-06). The scripted backend writes down
+  // where it is exactly as `components/agent/` does - `ModemUplink::call()` for a call that is
+  // out, `AgentBackend::noteProgress()` for a claimed job being run - and then spends the wake
+  // until the bound on it ends it. The guard is ticked here because on a board the library's own
+  // idle waits run the console's pump, which is what ticks it (main/main.cpp's `agentPump`);
+  // step 8 of the wake cycle does not tick it itself.
+  cyc::Doing hang = cyc::Doing::kNothing;  // kNothing: no hang
+  std::string hang_what;
+  std::uint32_t hang_requests = 0;
+  cyc::DutyCycle* duty = nullptr;  // the life of the Walter whose wake is being hung
+
   // What it saw. A copy and not a pointer: the firmware's structure is a member of the WakeCycle
   // and is filled again at the next wake.
   std::vector<ifs::BackendKnowledge> seen;
@@ -109,6 +121,7 @@ class ScriptedBackend final : public ifs::Backend {
                           ifs::BackendAnswer* out) override {
     ++exchanges;
     seen.push_back(known);
+    if (hang != cyc::Doing::kNothing && duty != nullptr) return hangs();
     // The deadline is the wake's, and an implementation that sat past it would be the failure the
     // budget exists for. This one spends what it was told to and no more.
     const std::uint64_t now = clock_.nowMs();
@@ -121,6 +134,40 @@ class ScriptedBackend final : public ifs::Backend {
     // backend that has not been scripted honestly is.
     if (answers != ifs::Exchanged::kFailed && out != nullptr) *out = answer;
     return answers;
+  }
+
+  // What a hanging exchange does: the word, and then the wake until the bound ends it.
+  ifs::Exchanged hangs() {
+    cyc::WakeProgress& where = duty->progress();
+    if (hang == cyc::Doing::kCall) {
+      where.callIsOut(hang_what.c_str());
+    } else if (hang == cyc::Doing::kJob) {
+      where.jobIsRunning(hang_what.c_str(), hang_requests);
+    }
+    // A second of simulated time a turn, bounded well past the longest bound a wake may have
+    // (`core::cycle::kRaisedBoundMax`, 45 minutes): the guard is what ends this, never the count.
+    for (int i = 0; i < 4000; ++i) {
+      clock_.advance(1000);
+      if (duty->tick()) break;
+    }
+    return ifs::Exchanged::kFailed;
+  }
+
+  // A call to the server is out and never comes back, by the name `agent calls` prints.
+  void hangsInCall(const char* name) {
+    hang = cyc::Doing::kCall;
+    hang_what = name;
+  }
+  // A claimed job of this type is being run and never finishes, having made `requests` requests.
+  void hangsInJob(const char* type, std::uint32_t requests) {
+    hang = cyc::Doing::kJob;
+    hang_what = type;
+    hang_requests = requests;
+  }
+  // The exchange hangs with nothing finer written down than the step it is.
+  void hangsInStep() {
+    hang = cyc::Doing::kStep;
+    hang_what.clear();
   }
 
   // The script, as a test writes it.
@@ -168,6 +215,9 @@ class ScriptedBackend final : public ifs::Backend {
   void forget() {
     answers = ifs::Exchanged::kNothing;
     answer = ifs::BackendAnswer{};
+    hang = cyc::Doing::kNothing;
+    hang_what.clear();
+    hang_requests = 0;
   }
   const ifs::BackendKnowledge& last() const {
     REQUIRE(!seen.empty());
@@ -430,6 +480,9 @@ struct WakeWalter {
     duty.reset(new cyc::DutyCycle(sleeper, board, link, uplink, health, clock, wall, restart,
                                   w.retained, supervisor.get(), &update, &self, &journal,
                                   &settings));
+    // The scripted backend outlives a life of the Walter and the duty cycle does not: a hanging
+    // exchange writes into *this* life's record and ticks *this* life's guard (task p15-06).
+    w.backend.duty = duty.get();
     // **Why the wake is worked out here and not in `begin()`.** main.cpp's order is
     // `duty.begin()` (main/main.cpp:492) and then the agent's `backend.begin()` (:614), and
     // since task p10-01 that order *matters*: the backend restores the agent library's state
@@ -511,6 +564,8 @@ struct WakeWalter {
   }
   ~WakeWalter() {
     CHECK(pins.violations.empty());
+    // The scripted backend outlives this life: its pointer to this one's duty cycle must not.
+    w.backend.duty = nullptr;
 #if WALTER_AGENT
     // This life's console is about to go; the library's sink must not reach it afterwards (the
     // platform's own destructor takes the sink away, but it runs after the console's), and
@@ -612,6 +667,35 @@ struct WakeBench {
       more = walter->journal.previous(&cursor, &e);
     }
     return found;
+  }
+
+  // The journal's entries about a wake that did not reach sleep, newest first (task p15-06).
+  std::vector<cyc::MidwayPayload> midwayEntries() {
+    std::vector<cyc::MidwayPayload> found;
+    core::update::Cursor cursor;
+    core::update::Entry e;
+    bool more = walter->journal.first(&cursor, &e);
+    while (more && found.size() < 1024) {
+      cyc::MidwayPayload p;
+      if (e.kind == core::update::kind::kWakeMidway && cyc::decode(e, &p)) found.push_back(p);
+      more = walter->journal.previous(&cursor, &e);
+    }
+    return found;
+  }
+
+  // A wake the bound really ended: the restart does not return, as it does not on a board, so
+  // the pass stops where the guard stopped it and the record is left as that wake left it.
+  // True when the bound ended it (task p15-06).
+  bool wakeEndedByItsBound() {
+    walter->restart.does_not_return = true;
+    bool ended = false;
+    try {
+      (void)walter->run();
+    } catch (const fakes::FakeRestart::Restarted&) {
+      ended = true;
+    }
+    walter->restart.does_not_return = false;
+    return ended;
   }
 
   // Every request type the radio was asked, over the whole life of the world.

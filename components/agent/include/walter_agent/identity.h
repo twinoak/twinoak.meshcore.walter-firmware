@@ -115,11 +115,18 @@ int addRadioIdentityLost(mm::ErrorCounter* out, int count, int capacity, bool lo
 // by the console's `agent heartbeat` (`Identity::fillHeartbeat`) and by the wake's own heartbeat
 // (`ModemUplink::postHeartbeat`), so the printed body and the posted one cannot disagree about
 // the keys or the order. `core/cycle/wake_counters.h` is what keeps the numbers and why there
-// are four. Returns the new count; `count` unchanged when there is no room for all four.
+// are four. Returns the new count; `count` unchanged when there is no room for all of them.
+//
+// **And a fifth since task p15-06**: `wakesMidway`, wakes that did not reach sleep. It is in the
+// heartbeat for the reason the other four are - a server cannot see it for itself, and on the
+// night of 17 November 2026 two wakes of this unit were ended by the bound and meshmaster.dk's
+// page had nothing that moved - and it is written at every heartbeat like them, so the counter
+// shows the next one when it happens.
 constexpr const char kWakesTimerKey[] = "wakesTimer";
 constexpr const char kWakesRadioKey[] = "wakesRadio";
 constexpr const char kWakesSpuriousKey[] = "wakesSpurious";
 constexpr const char kWakesSilentKey[] = "wakesSilent";
+constexpr const char kWakesMidwayKey[] = "wakesMidway";
 
 int addWakeCounters(mm::ErrorCounter* out, int count, int capacity,
                     const core::cycle::WakeTotals& totals);
@@ -354,9 +361,10 @@ class Identity {
   // `radioIdentityLost` behind them, which is written only while the radio refuses (task
   // p10-03). `mm::Heartbeat::errorCount` is what was actually written - six, or seven.
   //
-  // **And the four of task p13-02** behind that: what woke this unit, which a server cannot see
-  // for itself. Those four are written at every heartbeat, not only while something is wrong, so
-  // `errorCount` is now ten, or eleven while the radio refuses.
+  // **And the five of tasks p13-02 and p15-06** behind that: what woke this unit and how many
+  // wakes did not reach sleep, which a server cannot see for itself. They are written at every
+  // heartbeat, not only while something is wrong, so `errorCount` is now eleven, or twelve while
+  // the radio refuses.
   static constexpr int kLibraryErrorCount = 6;
   static constexpr int kErrorCount = kLibraryErrorCount + 1 + core::cycle::kWakeCounterCount;
 

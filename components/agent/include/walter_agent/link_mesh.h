@@ -91,6 +91,7 @@
 
 #include <agent/IMesh.h>
 
+#include "core/cycle/wake_progress.h"
 #include "core/link/client/client.h"
 #include "core/link/codec/messages.h"
 #include "core/link/codec/view.h"
@@ -211,6 +212,14 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   void clearOwnKey();
   bool hasOwnKey() const { return own_key_known_; }
 
+  // ------------------------------------------------------------------ where the wake is
+
+  // **That this end is waiting on the link** (task p15-06, core/cycle/wake_progress.h): set while
+  // a reply is awaited and cleared when the wait is over, so that a wake ended inside one says
+  // which of the two things it was waiting for. The job's type and its requests are written by
+  // `AgentBackend::noteProgress()`, which is what the pump of this very wait runs. Null writes
+  // nothing down.
+
   // ------------------------------------------------------------------ the flood scope (§6.5)
 
   // **Read the radio's default scope, once a session** (link 1.3). Called where the unit's own
@@ -277,6 +286,8 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   // that a wake which cannot yet tell a local job from a stranger's advertises no mesh type at
   // all (task p8-04; `setOwnKey` above).
   bool supports(const char* jobType) const override;
+
+  void writeProgressTo(core::cycle::WakeProgress* progress) { progress_ = progress; }
 
   // §6.5 and `mm::IMesh`: the region every flood of this mesh goes out in. The radio's own
   // default scope's name, `mm::kFloodScopeUnscoped` (`*`) when it holds none - every flood then
@@ -468,6 +479,7 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   lc::Fault last_fault_ = lc::Fault::kNone;
   std::uint8_t last_status_ = link::status::kOk;
   LinkMeshCounters link_counters_;
+  core::cycle::WakeProgress* progress_ = nullptr;
 
   // Where the last ten jobs went, newest first (task p9-04): seventy bytes of this object.
   JobBegun begun_[kJobsRemembered];

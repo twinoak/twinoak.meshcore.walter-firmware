@@ -302,8 +302,8 @@ line moved and nothing valid was on it** and **the unit woke and sent nothing** 
 are a radio fault, a wiring fault and a firmware fault. Everything above is in RTC memory, which
 holds ten wakes and which a power cut takes.
 
-So four running totals go out with every heartbeat, in its `errors` object, beside the library's
-own six and the `radioIdentityLost` of task p10-03:
+So four running totals go out with every heartbeat - and a fifth since task p15-06 - in its
+`errors` object, beside the library's own six and the `radioIdentityLost` of task p10-03:
 
 | | |
 |---|---|
@@ -311,18 +311,90 @@ own six and the `radioIdentityLost` of task p10-03:
 | `wakesRadio` | the radio's line, with a valid `EV_ATTENTION` inside §8's window — a wake somebody asked for |
 | `wakesSpurious` | the radio's line, and nothing valid inside it |
 | `wakesSilent` | a wake that **sent nothing**, whatever woke it: the reason it settled on is one of the *nothing was sent* ones above. *the backend answered* is not one, and neither is *it did not say* — which since this task means the exchange failed, and a wake that tried is not a silent one |
+| `wakesMidway` | a wake that **did not reach sleep**: the bound ended it, it crashed, or the chip's own watchdog took it (task p15-06, below) |
 
 A wake that is none of the first three — a person's cable, a power-on, a reset, a crash, a
-watchdog — moves none of them: these count the three a server cannot see, and the heartbeat's own
-record carries the total of all wakes. The first three are counted at step 1, the fourth at step
-10, and the four are kept in **one value of the settings store**, `agent_wakes`, as hex
-(`core/cycle/wake_counters.h`) — the shape `agent_state` has used since task p4-05, and for the
-same reason: RTC memory has no slot left and a power cut takes it, and *how many times has this
-unit woken on its radio's line* is exactly the question a person asks after the power came back.
+watchdog — moves none of the first three: they count the three a server cannot see, and the
+heartbeat's own record carries the total of all wakes; `wakesMidway` is about the wake *before*
+and is counted whatever woke this one. The first three are counted at step 1, the fourth at step
+10, the fifth at step 1 of the boot after the wake it is about, and they are kept in **one value
+of the settings store**, `agent_wakes`, as hex (`core/cycle/wake_counters.h`) — the shape
+`agent_state` has used since task p4-05, and for the same reason: RTC memory has no slot to spare
+and a power cut takes it, and *how many times has this unit woken on its radio's line* is exactly
+the question a person asks after the power came back.
 
-**What it costs the flash**: one value of the store a wake, 34 characters, **and only when one of
-the four moved**. meshmaster.dk's bound on the whole `errors` object is 4 000 characters of JSON
-(`AgentLimits.Json`); eleven counters are a little over three hundred.
+The value is **version 2** since task p15-06 and the four of version 1 are still read, so a unit
+updated into that release keeps months of counting and starts the fifth at 0; the older shape is
+rewritten in the new one at the first save.
+
+**What it costs the flash**: one value of the store a wake, 42 characters, **and only when one of
+them moved**. meshmaster.dk's bound on the whole `errors` object is 4 000 characters of JSON
+(`AgentLimits.Json`); twelve counters are a little over three hundred.
+
+### What a wake was doing when it was ended (task p15-06)
+
+In the night of 17 November 2026 this unit took the hourly `status` job of its own repeater at
+01:29 UTC and again at 02:05. Both times it sent its heartbeat, claimed the job, and was never
+heard again in that wake: five minutes later the bound on a wake ended it by reset, the next boot
+read that as a watchdog, and the unit slept half an hour instead of a quarter. The job expired
+unanswered and nothing was measured for over two hours. **What those two wakes were doing for five
+minutes, nobody could say**: the journal had *woke by watchdog*, the list of ten had *it never
+reached sleep*, and the log, the claimed job and the letters of the wake were in RAM.
+
+So **one line, in RTC memory, written as the wake goes** (`core/cycle/wake_progress.h`): where
+this wake is. It is not a log and not a trace — it is one record, overwritten, so that the one
+wake that matters is the one that left it.
+
+| | |
+|---|---|
+| the step | of the ten, written by the wake cycle as each is begun — so a wake ended between two steps names the one it had reached |
+| what is out | a call to the server, by the name `agent calls` prints for it (`heartbeat`, `claim`, `observations`, `a result`, `a lease`, `progress`, `config`, `a download range`) |
+| a job in hand | that a claimed job is being run and of which type, and **not** cleared by a call: a result posted inside a job still reads as that job |
+| its requests | how many requests of the radio or the mesh the job in hand has made (`agent::LinkMeshCounters::requests`), saturating at 255 |
+| waiting | that the modem or the link is being waited on, when this layer knows it |
+| the seconds | the second of the wake it began at, and the second the record was last written in — so *for how long* has an answer |
+
+Where each comes from, and all of it **without a line of the copied library changing**: the step
+is `core/cycle/wake_cycle.cpp`'s `begin(Step)`; the call is `ModemUplink::call()`, the one place
+every call to the server passes; the job and its requests are `mm::JobRunner::openJob()` and the
+link's own counter, read by `AgentBackend::noteProgress()` from the **pump** — the function the
+library runs at every idle wait, which this board wraps; and the link's wait is `LinkMesh::await()`.
+
+**The boot after says it**, at step 1, where the wake's reason is already settled:
+
+```
+journal
+   3. seq 1: the wake before did not reach sleep (watchdog)
+       it was in: step 8 (backend), a `status` job, 1 request(s), 297 s in it
+wake
+   2. timer     ???; it never reached sleep (a reset, a crash or the bound)
+       it was in: step 8 (backend), a `status` job, 1 request(s), 297 s in it
+```
+
+The phrase is on a line of its own because a journal line's or a list entry's own prefix and the
+phrase together do not fit a 100-column terminal, and every line this firmware prints does. The
+report's `wakes` section is `wake`, so it carries the line too, which is how a unit on a mast is
+read.
+
+**A wake that reached no step leaves nothing.** A boot with a USB host on the port never runs the
+wake cycle — a person is here and the console is the wake — and a bench session whose cable comes
+out is ended by the bound by design. Those have no step in the record, so they get no line, no
+journal entry and nothing counted; what the boot log says about them is `restarts`' business.
+
+**Where the 24 bytes came from.** RTC SLOW memory is 8 192 bytes and the pinned modem component's
+own `.rtc.data` is 6 996 of them, so a ninth retained slot of the usual 128 would not fit in what
+was left. `interfaces/retained.h` gives each slot its own room since this task: the first seven
+are 128 and byte for byte where they were — so the records of a unit in service survive — the
+wake cycle's telemetry slot gives back the twelve bytes its record never used, and this one is 24.
+The cost is one wake of the telemetry ring's readings at the first boot of the release, which is
+the price every change of a retained record's shape has paid.
+
+### The fifth total: wakes that did not reach sleep (task p15-06)
+
+`wakesMidway` goes out with the four above, in the same `errors` object and at every heartbeat.
+It is counted by the **boot after** — a wake ended by a reset counts nothing — from the one thing
+that can tell it from a power cut, the record of where that wake was. `cycle now` at the console
+is a second pass of the same boot and counts it once.
 
 ## The budget, and the things that may hold a wake open
 

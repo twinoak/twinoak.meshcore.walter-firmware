@@ -559,9 +559,10 @@ extern "C" void app_main() {
 
   // What woke this unit, counted and kept across a power cut (task p13-02,
   // core/cycle/wake_counters.h): the four totals a heartbeat carries beside the library's own
-  // counters. Built here, where the wake has just been worked out, and handed to the wake cycle
-  // below - which counts this wake at its first step and writes the totals at its last, and only
-  // when one of them moved.
+  // counters - and the fifth of task p15-06, wakes that did not reach sleep. Built here, where
+  // the wake has just been worked out, and handed to the wake cycle below - which counts this
+  // wake at its first step, the wake *before* it at the same step, and writes the totals at its
+  // last, and only when one of them moved.
   static core::cycle::WakeCounters g_wake_counters(g_nvs.ready() ? &g_nvs : nullptr);
   g_wake_counters.begin();
 
