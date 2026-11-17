@@ -126,8 +126,10 @@ struct AgentHalf {
     // The receiving side of the newest failed call, written to a key of its own in the same
     // moment the list moves (task p15-02), as main.cpp wires it.
     calls.keepReceivingOf(parts.receiving);
-    // ... and the call that worked, in RAM for the length of this life (task p15-07).
-    calls.keepAnsweredIn(&answered);
+    // ... and the call that worked, in RAM for the length of this life (task p15-07): the world's
+    // live record is pointed at **this** life's copy, as main.cpp points the board's at the one it
+    // took from the heap at boot.
+    if (parts.receiving != nullptr) parts.receiving->copyAnsweredTo(&answered);
     // The console's `agent heartbeat` carries the same `flood` object a wake posts (task p14-02):
     // the runner's rule and the kept totals, as main.cpp hands them over.
     identity_probe.countFloodsFrom(&jobs, &floods.totals());
@@ -136,6 +138,11 @@ struct AgentHalf {
   }
   ~AgentHalf() {
     if (current_ == this) current_ = nullptr;
+    // The world's record outlives this life and must not be left pointing at a member of it
+    // (task p15-07). On a board the two are taken together at boot and neither ever goes.
+    if (p.receiving != nullptr && p.receiving->answeredCopy() == &answered) {
+      p.receiving->copyAnsweredTo(nullptr);
+    }
   }
 
   // What the library's waits run: the link polled, as the console's pump does on a board.

@@ -174,16 +174,12 @@ class CallLog {
   // when none has been kept, or it is of another version or shape.
   bool keptReceiving(core::net::CallRecord& into) const;
 
-  // **Where the latest call of this boot that was answered is kept** (task p15-07): a second
-  // record, in RAM and never in the store, which `answered()` below copies the live one into the
-  // moment a call comes back 2xx. On the board it is a second block of the heap taken in
-  // `app_main`, for the reason `keepReceivingOf`'s is; a bench gives each life of the Walter its
-  // own, which is what makes a sleep forget it. nullptr keeps nothing and says so.
-  void keepAnsweredIn(core::net::CallRecord* record) { answered_ = record; }
-
   // One call the server answered: what the modem said in it, copied out of the live record before
-  // the next call overwrites it. Not in the list and not in the store - the list is the calls that
-  // did **not** come back 2xx, and this is the one that did.
+  // the next call overwrites it, into **the second record that one was given**
+  // (`core::net::CallRecord::copyAnsweredTo`, which `main/main.cpp` wires at boot and which holds
+  // the pointer so that this object - static storage - does not; rail R22). Not in the list and
+  // not in the store: the list is the calls that did **not** come back 2xx, and this is the one
+  // that did. A build with no second record keeps nothing and says so.
   void answered(CallKind what);
 
   // That record, or nullptr when no call has been answered in this boot.
@@ -218,7 +214,6 @@ class CallLog {
 
   interfaces::KeyValue* store_;
   core::net::CallRecord* receiving_ = nullptr;
-  core::net::CallRecord* answered_ = nullptr;
   // The ring, newest first, in the form it is written in: the value's bytes without its version
   // byte. A record is a memmove of this and nine bytes written over the front, and saving it is
   // the hex of one byte and this.

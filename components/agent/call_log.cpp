@@ -173,13 +173,17 @@ bool CallLog::keptReceiving(core::net::CallRecord& into) const {
 // reader is a report made later in the same wake.
 void CallLog::answered(CallKind what) {
   if (what == CallKind::kUnknown || what >= CallKind::kCount) return;
-  if (answered_ == nullptr || receiving_ == nullptr || !receiving_->held()) return;
-  answered_->copyFrom(*receiving_);
-  answered_->callWas(static_cast<std::uint8_t>(what));
+  if (receiving_ == nullptr || !receiving_->held()) return;
+  core::net::CallRecord* into = receiving_->answeredCopy();
+  if (into == nullptr) return;
+  into->copyFrom(*receiving_);
+  into->callWas(static_cast<std::uint8_t>(what));
 }
 
 const core::net::CallRecord* CallLog::answeredReceiving() const {
-  return answered_ != nullptr && answered_->held() ? answered_ : nullptr;
+  if (receiving_ == nullptr) return nullptr;
+  const core::net::CallRecord* answered = receiving_->answeredCopy();
+  return answered != nullptr && answered->held() ? answered : nullptr;
 }
 
 bool CallLog::save() {
@@ -216,7 +220,9 @@ void CallLog::forget() {
   survived_ = false;
   // The call that worked goes too (task p15-07): it is in RAM and not in the store, so no key
   // erases it, and *everything forgotten* has to mean both blocks `agent calls` prints.
-  if (answered_ != nullptr) answered_->drop();
+  if (receiving_ != nullptr && receiving_->answeredCopy() != nullptr) {
+    receiving_->answeredCopy()->drop();
+  }
   if (store_ != nullptr && store_->ready()) {
     (void)store_->erase(kCallsKey);
     // The receiving side of the newest of them goes with them: the list and that record are one

@@ -284,9 +284,21 @@ class CallRecord {
   // this boot that was answered** is kept, so that `agent calls` and the report can lay it beside
   // the failed one a sleep did keep. There is one live record and the next call overwrites it, so
   // a call that worked has to be copied out of it or lost; this copy is never written to the
-  // store, which is deliverable 1's *nothing more is kept in flash*. Not recording afterwards:
-  // a copy is a finished call.
+  // store, which is deliverable 1's *nothing more is kept in flash*. Not recording afterwards -
+  // a copy is a finished call - and `other`'s own wiring below is not copied: a copy is not where
+  // anything is copied to.
   void copyFrom(const CallRecord& other);
+
+  // Where a call this record held and the server answered is copied to, and the record that is
+  // (nullptr for a build that keeps none). `walter_agent/call_log.h` is what asks for the copy
+  // and would be the natural place for this pointer; it is **here** because this object is taken
+  // from the heap in `app_main` and that one is static storage the main task's stack has to be
+  // found around afterwards. Four bytes of `.bss` there cost eight after alignment, and the
+  // tightest big allocation of this image has about nine hundred to spare in all
+  // (`docs/ARCHITECTURE.md` §14, rail R22; the measurement is in `tasks/phase-15/reports/07.md`).
+  // Four bytes of heap here cost nothing anybody is counting.
+  void copyAnsweredTo(CallRecord* other) { answered_ = other; }
+  CallRecord* answeredCopy() const { return answered_; }
 
   // Nothing held: this record says *no call*. `begin()`'s own starting point, in public, for the
   // one in RAM that no store ever erases.
@@ -344,6 +356,10 @@ class CallRecord {
   bool answer_has_length_ = false;
   bool answer_chunked_ = false;
   bool answer_close_ = false;
+  // Where a call that was answered is copied to. Wiring, not content: clear(), begin() and
+  // copyFrom() all leave it alone, and a copy never carries the pointer of the record it came
+  // from - a copy is not a place anything is copied to.
+  CallRecord* answered_ = nullptr;
 };
 
 }  // namespace net
