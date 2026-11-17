@@ -56,6 +56,12 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
 - [ ] **[reviewer] The second ask of task 03 answered nothing in 35 tries**, and the first timer
   wake that made it was 68 seconds awake. Task 05 takes it out. The item above it (*One more ask
   can cost a wake 30 seconds more*) is settled by that.
+  **Done in task 05** (17 November): the ask, the two totals, their key and the rule's file are
+  out of the firmware; a receive that failed with the close seen ends the call *closed* after one
+  command, as it did before task 03. What stays is the record of task 02, which still prints the
+  *asked again* moment of a record v0.1.8 wrote - the only reading anybody has of what the modem
+  answered that ask. `agent_reread` is erased from the store at the first boot of the next
+  release. Whether the wakes are back to about 40 s is `docs/bench.md` §13's new line.
 - [ ] **[reviewer] Two real records, and one idea withdrawn.** Wake 254: receive sent at +310 ms,
   rings handed over at +320 (815 bytes) and +339 (5 bytes), the close at +359. Wake 289: receive
   sent at +397 ms, rings at +397 and +416, the close at +436. The first looked like a blind ask

@@ -93,9 +93,6 @@ idf_component_register(
        "net/http1.cpp"
        "net/http_over_tls.cpp"
        "net/call_record.cpp"
-       # One more ask after a receive that failed with the close seen (task p15-03): the rule, and
-       # the two totals it keeps across a sleep.
-       "net/read_again.cpp"
        # Which socket a connection uses and whose events it believes (task p8-03): the rule the
        # second HTTPS request of a wake failed on, with no modem in it.
        "net/socket_rotation.cpp"

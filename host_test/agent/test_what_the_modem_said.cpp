@@ -49,9 +49,6 @@ void theStallFromNowOn(AgentBench& bench) {
   socket.ring_after_ms = 100;
   socket.ring_bytes = 878;           // the length every lost answer had at the server
   socket.close_after_ms = 500;
-  // And what the one more ask of task p15-03 then finds: nothing, which is 8 November's own
-  // shape - the answer was lost. The rule's own cases are host_test/core/net/test_read_again.cpp.
-  socket.second_ask = sim::SecondAsk::kNothing;
 }
 
 void theModemBehavesAgain(AgentBench& bench) {
@@ -87,7 +84,8 @@ TEST_CASE("agent calls says what the modem said in the newest failed call") {
   CHECK(has(record, "a receive failed after 30000 ms"));
   CHECK(has(record, "nothing answered, the library gave up on the command"));
   CHECK(has(record, "the other end closed"));
-  CHECK(has(record, "asked again after that: the modem held nothing"));
+  // And nothing after the failed receive: one command, and the call is given up (task p15-05).
+  CHECK_FALSE(has(record, "asked again"));
 
   // Not a byte of what the server or this board sent: the token, the host, the route, the body.
   CHECK_FALSE(has(record, "Bearer"));

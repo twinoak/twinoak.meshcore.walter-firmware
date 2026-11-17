@@ -52,9 +52,6 @@ void CallRecord::clear() {
 void CallRecord::begin() {
   clear();
   held_ = true;
-  // The one more ask is unspent again (task p15-03): this is the one place a call begins, so the
-  // ask cannot be left spent by the call before it. The rule's totals are not touched.
-  again_.newCall();
 }
 
 void CallRecord::onSocket(int id) {
@@ -121,16 +118,6 @@ void CallRecord::rang(std::uint64_t now_ms, std::uint32_t announced) {
 void CallRecord::wasClosed(std::uint64_t now_ms) {
   if (!recording()) return;
   put(take(), CallMoment::kClose, now_ms, 0, 0, -1);
-}
-
-void CallRecord::readAgain(std::uint64_t now_ms, ReadAgainFound what, std::size_t bytes, int cme) {
-  // Counted whatever this record is doing: the totals are the unit's and the moment is this
-  // call's, and a record that has stopped recording must not cost the rule its figure.
-  again_.found(what);
-  if (!recording()) return;
-  put(take(), CallMoment::kReadAgain, now_ms,
-      what == ReadAgainFound::kBytes ? cap16(bytes) : static_cast<std::uint16_t>(0),
-      static_cast<std::uint8_t>(what), cme);
 }
 
 void CallRecord::ended(interfaces::HttpOutcome outcome) {
@@ -318,8 +305,10 @@ void CallRecord::describe(interfaces::TextOut& out, const char* what) const {
                           static_cast<unsigned>(s.at_ms), later));
         break;
       case CallMoment::kReadAgain:
-        // The one more ask, and what came of it (task p15-03): the line a person reads to know
-        // whether the modem still held the answer the failed command never brought back.
+        // The one more ask, and what came of it. **Read and printed, never written, since task
+        // p15-05**: the firmware of task p15-03 made that ask, and a record it kept is in the
+        // store of every unit that ran it - so these four lines stay exactly as they were, and
+        // the first thing a unit says after taking this release is what the last one found.
         if (s.state == static_cast<std::uint8_t>(ReadAgainFound::kBytes)) {
           say(std::snprintf(line, sizeof line,
                             "    +%u ms%s: asked again after that: the modem still held %u%s bytes\n",
