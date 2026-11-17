@@ -49,6 +49,15 @@
 // answered nothing in 35 tries on the unit and is gone; `begin()` erases the key **once**, so a
 // unit that ran v0.1.8 does not carry a value nothing will ever read again.
 //
+// **And one call more, in RAM and in no value at all, since task p15-07**: the latest call of
+// this boot that the server **answered**. Until it there was nothing to lay a failed call beside:
+// the config, the heartbeat, the claim and a job's result are answered at every wake by the same
+// server through the same code, and nothing was kept of them, so what is different about a call
+// that works could not be said. It is not written to the store - that would be a write at every
+// good wake, and the calls a report can see are the ones before it in the wake, which are still
+// in memory when the report is made (task p15-07, deliverable 1). A sleep takes it, as it takes
+// every other byte of RAM.
+//
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
 
@@ -164,6 +173,17 @@ class CallLog {
   // The kept record back out of the store, into `into`. False - and `into` holding nothing -
   // when none has been kept, or it is of another version or shape.
   bool keptReceiving(core::net::CallRecord& into) const;
+
+  // One call the server answered: what the modem said in it, copied out of the live record before
+  // the next call overwrites it, into **the second record that one was given**
+  // (`core::net::CallRecord::copyAnsweredTo`, which `main/main.cpp` wires at boot and which holds
+  // the pointer so that this object - static storage - does not; rail R22). Not in the list and
+  // not in the store: the list is the calls that did **not** come back 2xx, and this is the one
+  // that did. A build with no second record keeps nothing and says so.
+  void answered(CallKind what);
+
+  // That record, or nullptr when no call has been answered in this boot.
+  const core::net::CallRecord* answeredReceiving() const;
 
   // One call that did not come back 2xx. `status` 0 is "nothing answered", and then `outcome` is
   // how far the uplink had got. `at_epoch` 0 is a unit with no clock yet.

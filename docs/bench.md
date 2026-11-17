@@ -1360,7 +1360,9 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
 
   **Read the firmware's own record beside it.** Since task p15-02 a *release* build writes down
   the receiving side of a failed call itself, and `agent calls` prints it under its list — on the
-  trace build too, so the two can be read side by side in the same minute:
+  trace build too, so the two can be read side by side in the same minute. **For example** (these
+  lines are the shape, printed by the firmware's own console code in a host test; no byte of them
+  was read off a unit):
 
   ```
   agent calls
@@ -1371,7 +1373,7 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
       it ended as: the modem stopped answering for this socket before the body was complete
       +102 ms: a ring: the modem announced 878 bytes
       +514 ms: the other end closed
-      +30150 ms: a receive failed after 30000 ms: nothing answered, the library gave up on the command
+      +30150 ms (asked at +150 ms): a receive failed after 30000 ms: nothing answered, the library gave up on the command
   ```
 
   Four of the five things above have an answer in those lines, and that is what to check the trace
@@ -1427,6 +1429,58 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
     length of the first timer wake on v0.1.8, which is what a second command sent after one the
     modem did not answer can cost. If a wake runs into the five-minute bound again, that is task
     p15-06's line and not this one.
+- [ ] **A call that worked, beside the one that did not** (task p15-07). Since that task `agent
+  calls` prints **two** blocks: the record of the newest failed call, out of the store, and under
+  it the latest call of *this boot* that the server answered, out of RAM. The second is what the
+  first had nothing to be read against. No cable: both are in the report's `calls` section after
+  *Fetch now*, and the report is made in the middle of a wake, straight after the calls that
+  worked. **For example** (again the shape, from a host test, and not a reading):
+
+  ```
+    what the modem said in it (observations), on socket 6: 1158 bytes sent, 612 receives answered "nothing buffered yet"
+      it ended as: the modem stopped answering for this socket before the body was complete
+      +102 ms: a ring: the modem announced 878 bytes
+      +514 ms: the other end closed
+      +30150 ms (asked at +150 ms): a receive failed after 30000 ms: nothing answered, the library gave up on the command
+    what the modem said in the latest call that was answered (claim), on socket 1: 304 bytes sent, 0 receives answered "nothing buffered yet"
+      it ended as: ok
+      +20 ms (asked at +0 ms): a receive returned 64 bytes
+      +20 ms: a ring: the modem announced 512 bytes
+      +40 ms (asked at +20 ms): a receive returned 64 bytes
+      +40 ms: the other end closed
+      +60 ms (asked at +40 ms): a receive returned 64 bytes
+      ... (a dozen moments are kept; the rest are counted)
+      +200 ms (asked at +180 ms): a receive returned 35 bytes
+      the answer: http 200, framed by a length, 472 bytes of body read, and it said Connection: close
+      the other end's close was handed over before the last byte was read
+  ```
+
+  **Write both blocks down, and read the differences one by one.** What each one would mean:
+  - **the count of *nothing buffered yet*.** Hundreds in the failed block against none or a handful
+    in the good one says the answer never began to arrive, not that it arrived and was dropped.
+  - **the rings.** A good call that rings once with the whole length, against a failed call that
+    rings twice (815 and 5 on the unit's wake 254), points at the second ring: a `+SQNSRECV` that
+    declares more than follows it is item 3 above, and the library swallows the next answer whole.
+  - **when each receive was asked, against the rings.** In the good block a read is sent and comes
+    back in tens of milliseconds, inside the ring. If the failed block's unanswered receive was
+    sent in the same millisecond as a ring and the good block's never is, the race is real and the
+    cure is in how the ring is waited for; if the good block does it too, the race is not the
+    cause. (This is the reading the two records of 17 November could not settle alone, which is
+    why `tasks/phase-15/FOLLOWUPS.md` withdrew *ask only after a ring*.)
+  - **the bytes sent.** A failed call that is 1158 bytes and a good one that is 304 says the size
+    of the request matters, which no other reading would show.
+  - **what the answer said of itself.** A good answer framed by a length against a failed call
+    whose ring announced 878 says the server behaves the same both times; a good call that was
+    *chunked* while the lost ones are not would be a difference in the route, not in the modem.
+  - **where the close fell.** The failed call's close is handed over long before it gives up; a
+    good call's often is not handed over at all before the call ends, because a body framed by a
+    length ends on its last byte. The two reading the same way — the close early in both — would
+    mean the close is not what distinguishes them.
+
+  If the two blocks are the **same shape** in every line but the one unanswered receive, the fault
+  is in that one command and nowhere else, and the trace build's item 1 is the only thing left to
+  read. Note that the good block is gone at the next sleep: it is RAM and nothing else, so it is
+  read in the same report as the failed one or not at all.
 - [ ] **A dial refused on an id the modem may still hold** (task p9-02, the third shape of
   7 November: a result's `POST` refused at the dial after 12 532 ms, on the third connection of the
   wake, with the next connection going through in 3.7 s). Watch for

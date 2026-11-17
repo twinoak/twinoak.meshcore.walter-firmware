@@ -870,6 +870,10 @@ void AgentBackend::calls(interfaces::TextOut& out) {
        log.survived() ? "was read back at" : "starts at");
   if (log.count() == 0) {
     say(&out, "  no call has failed since the list began\n");
+    // ... and the call that worked all the same, which is the whole of what this unit has to show
+    // (task p15-07). The record kept in the store is not read here: there is no entry for it to
+    // belong to, and a line about a record nobody has is noise.
+    sayAnsweredCall(out, log);
     return;
   }
   for (std::size_t i = 0; i < log.count(); ++i) {
@@ -903,12 +907,42 @@ void AgentBackend::calls(interfaces::TextOut& out) {
   if (!log.keptReceiving(receiving)) {
     say(&out, "  what the modem said in it: nothing kept yet - no call has failed since the "
               "firmware that writes it down was flashed\n");
+  } else {
+    const std::uint8_t which = receiving.callWas();
+    receiving.describe(out, callKindName(which < static_cast<std::uint8_t>(CallKind::kCount)
+                                             ? static_cast<CallKind>(which)
+                                             : CallKind::kUnknown));
+  }
+  sayAnsweredCall(out, log);
+}
+
+// And **the call that worked**, under the one that did not (task p15-07). Until this there was
+// nothing to lay a failed call beside: the config, the heartbeat, the claim and a job's result are
+// answered at every wake by the same server through the same code, and nothing was kept of them -
+// so whether a good answer comes in two pieces, whether the server closes behind it and when the
+// receive is sent against the rings could not be said, and every cure for the call that fails was
+// a guess.
+//
+// **From RAM, and from this boot only.** The failed call's record is one value of the settings
+// store; this one is in no value at all, because keeping it would be a write to flash at every
+// good wake. It does not need to be: a report is made in the middle of a wake, straight after the
+// calls that worked (`walter_agent/call_log.h`).
+//
+// It is numbers and fixed words, like the block above it: times, counts, a socket id, a status,
+// how the body was framed and whether the server said `Connection: close` - and no byte of a body,
+// no header's value, no token and no name (spec/SYSTEM.md S-12).
+void AgentBackend::sayAnsweredCall(interfaces::TextOut& out, const CallLog& log) const {
+  const core::net::CallRecord* answered = log.answeredReceiving();
+  if (answered == nullptr) {
+    say(&out, "  no call has been answered in this boot, so there is nothing to lay beside it\n");
     return;
   }
-  const std::uint8_t which = receiving.callWas();
-  receiving.describe(out, callKindName(which < static_cast<std::uint8_t>(CallKind::kCount)
-                                           ? static_cast<CallKind>(which)
-                                           : CallKind::kUnknown));
+  const std::uint8_t which = answered->callWas();
+  answered->describe(out,
+                     callKindName(which < static_cast<std::uint8_t>(CallKind::kCount)
+                                      ? static_cast<CallKind>(which)
+                                      : CallKind::kUnknown),
+                     "in the latest call that was answered");
 }
 
 // `agent state`'s flood line, and the report's `agent` section with it (task p14-02): the scope

@@ -132,6 +132,11 @@ struct HttpResponse {
   bool has_content_length = false;
   std::uint32_t content_length = 0;     // when has_content_length
   bool chunked = false;                 // Transfer-Encoding: chunked was used
+  // The response's `Connection` header carried `close` (task p15-07). Nothing is done about it -
+  // one request is one connection here whatever the server says - and it is reported because a
+  // call's record says whether the close that followed the last byte was one the server had
+  // announced (core/net/call_record.h).
+  bool connection_close = false;
   std::uint64_t body_bytes = 0;         // bytes handed to the sink
   std::uint32_t elapsed_ms = 0;
 };

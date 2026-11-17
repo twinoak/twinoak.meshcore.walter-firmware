@@ -390,6 +390,16 @@ extern "C" void app_main() {
   core::net::CallRecord* call_record = new core::net::CallRecord();
   https.recordInto(call_record);
   tls_socket.recordInto(call_record);
+  // And a second block of it for **the latest call of this boot that was answered** (task
+  // p15-07), which `agent calls` and the report lay beside the failed one a sleep kept. There is
+  // one live record and the next call overwrites it, so a call that worked is copied out of it
+  // there and then; this copy is never written to the store, so it costs no flash at a good wake
+  // and a sleep takes it. From the heap for the reason above, and never freed.
+  core::net::CallRecord* answered_record = new core::net::CallRecord();
+  // The live record carries the pointer to it, and not the list that asks for the copy: that
+  // object is static storage and this one is not, and four bytes of `.bss` there move the heap
+  // the 19 kB kept scratch is carved out of (core/net/call_record.h, copyAnsweredTo).
+  call_record->copyAnsweredTo(answered_record);
   static core::net::Client http_client(https, g_clock);
   static core::net::Download download(http_client, g_clock);
   // The trial's third condition (S-6), which is `server.url` (task p3-03) - the console's

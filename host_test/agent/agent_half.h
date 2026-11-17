@@ -95,6 +95,10 @@ struct AgentHalf {
   // The last eight calls that did not come back 2xx (task p13-02): the life's object over the
   // world's key-value store, as main.cpp builds it.
   agent::CallLog calls{p.state_store};
+  // What the modem said in the latest call of this boot that was answered (task p15-07): **the
+  // life's own**, not the world's, because it is RAM and nothing else - a board takes it from the
+  // heap at every boot, so a sleep forgets it and this bench has to forget it too.
+  core::net::CallRecord answered;
   // The three counts of a flooded transaction (task p14-02): the life's object over the world's
   // key-value store, as main.cpp builds it - so the totals cross a sleep, a restart and a power
   // cut on this bench exactly as they do on a board.
@@ -122,6 +126,10 @@ struct AgentHalf {
     // The receiving side of the newest failed call, written to a key of its own in the same
     // moment the list moves (task p15-02), as main.cpp wires it.
     calls.keepReceivingOf(parts.receiving);
+    // ... and the call that worked, in RAM for the length of this life (task p15-07): the world's
+    // live record is pointed at **this** life's copy, as main.cpp points the board's at the one it
+    // took from the heap at boot.
+    if (parts.receiving != nullptr) parts.receiving->copyAnsweredTo(&answered);
     // The console's `agent heartbeat` carries the same `flood` object a wake posts (task p14-02):
     // the runner's rule and the kept totals, as main.cpp hands them over.
     identity_probe.countFloodsFrom(&jobs, &floods.totals());
@@ -130,6 +138,11 @@ struct AgentHalf {
   }
   ~AgentHalf() {
     if (current_ == this) current_ = nullptr;
+    // The world's record outlives this life and must not be left pointing at a member of it
+    // (task p15-07). On a board the two are taken together at boot and neither ever goes.
+    if (p.receiving != nullptr && p.receiving->answeredCopy() == &answered) {
+      p.receiving->copyAnsweredTo(nullptr);
+    }
   }
 
   // What the library's waits run: the link polled, as the console's pump does on a board.

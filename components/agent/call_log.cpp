@@ -166,6 +166,26 @@ bool CallLog::keptReceiving(core::net::CallRecord& into) const {
   return into.load(store_);
 }
 
+// **The one that worked** (task p15-07): the live record copied out before the next call
+// overwrites it, and which call it was stamped on the copy - the record itself keeps the number
+// and never reads it, exactly as `record()` stamps the kept one. Nothing is written to the store
+// here: a call that came back 2xx costs no flash, which is this object's discipline, and the only
+// reader is a report made later in the same wake.
+void CallLog::answered(CallKind what) {
+  if (what == CallKind::kUnknown || what >= CallKind::kCount) return;
+  if (receiving_ == nullptr || !receiving_->held()) return;
+  core::net::CallRecord* into = receiving_->answeredCopy();
+  if (into == nullptr) return;
+  into->copyFrom(*receiving_);
+  into->callWas(static_cast<std::uint8_t>(what));
+}
+
+const core::net::CallRecord* CallLog::answeredReceiving() const {
+  if (receiving_ == nullptr) return nullptr;
+  const core::net::CallRecord* answered = receiving_->answeredCopy();
+  return answered != nullptr && answered->held() ? answered : nullptr;
+}
+
 bool CallLog::save() {
   // **Nothing moved, nothing is written.** A wake in which no call failed spends no flash here,
   // which is task p13-02's fourth deliverable and the only reason this is a flag and not a
@@ -198,6 +218,11 @@ void CallLog::forget() {
   count_ = 0;
   dirty_ = false;
   survived_ = false;
+  // The call that worked goes too (task p15-07): it is in RAM and not in the store, so no key
+  // erases it, and *everything forgotten* has to mean both blocks `agent calls` prints.
+  if (receiving_ != nullptr && receiving_->answeredCopy() != nullptr) {
+    receiving_->answeredCopy()->drop();
+  }
   if (store_ != nullptr && store_->ready()) {
     (void)store_->erase(kCallsKey);
     // The receiving side of the newest of them goes with them: the list and that record are one

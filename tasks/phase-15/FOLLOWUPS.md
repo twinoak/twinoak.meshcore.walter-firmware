@@ -9,6 +9,12 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   8 November the three answers this board received were 876 bytes and the six it lost were 877
   or 878. On 16 November about one new batch in five was received during the morning, so that
   figure alone does not decide it.
+  **Task 07** (17 November) gives the record something to be read against: `agent calls` and the
+  report now print the latest call of the boot that **was** answered under the newest that failed,
+  with every receive's two times in both blocks and, for the answered one, what the answer said of
+  itself. Nothing of the modem changed and the cause is still not known; what changed is that the
+  question can be asked from a report. `docs/bench.md` §13's new item lists the differences to read
+  between the two blocks and what each of them would mean. **The box stays unticked.**
 - [ ] **[later] The failure the newest record shows is the one shape task 03's rule leaves alone.**
   Task 03 asks the modem once more after a receive that failed **with the close seen**, which is the
   shape task 02's task file and phase 10's follow-up describe (*the connection closed before the

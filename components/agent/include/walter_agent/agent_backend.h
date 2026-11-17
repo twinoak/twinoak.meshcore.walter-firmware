@@ -332,6 +332,10 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   // `agent jobs`'s own two blocks about the local door (task p9-04): the door's counters, and
   // the last ten jobs by the repeater they named - which the library's report has no field for.
   void sayLocalDoor(interfaces::TextOut& out) const;
+  // `agent calls`'s second block (task p15-07): what the modem said in the latest call of this
+  // boot that the server **answered**, which the one that failed is read against. From RAM, and
+  // from this boot only; one line when nothing has been answered yet.
+  void sayAnsweredCall(interfaces::TextOut& out, const CallLog& log) const;
 
   // The pump the library is given (task p15-06): this writes down where the wake is and then
   // runs the caller's. A plain function and a file-static owner, because that is what the library

@@ -192,6 +192,21 @@ void ModemUplink::noteFailedCall(CallKind what, std::uint16_t status,
   calls_->record(what, status, outcome, at_epoch);
 }
 
+// And the other half (task p15-07): a call that came back 2xx with its body whole. It is kept in
+// RAM beside the list - nothing of it goes to flash - so that `agent calls` and the report can
+// lay a call that worked beside the one that failed. The same four kinds of call reach this at
+// every wake, which is the whole point: until now nothing was kept of them.
+//
+// A download range is **not** in it, for the reason a fetch is one entry of the list: a fetch is
+// many range requests and there is one live record, so what a fetch left there is its *last*
+// range and not the fetch. The list keeps that for a fetch that failed, where the last range is
+// the one that failed and says something; for one that worked it would say only that the last
+// range of a download arrived, and it would displace the handful of calls the report is read for.
+void ModemUplink::noteAnsweredCall(CallKind what) {
+  if (calls_ == nullptr) return;
+  calls_->answered(what);
+}
+
 
 bool ModemUplink::call(CallKind what, const char* endpoint, const std::uint8_t* body,
                        std::size_t body_len, std::size_t bound, std::size_t& reply_len, Call& out) {
@@ -362,6 +377,11 @@ bool ModemUplink::call(CallKind what, const char* endpoint, const std::uint8_t* 
   if (out.ok) {
     LOG_I("server: %s -> http %u, %lu bytes, %lu ms", endpoint_, static_cast<unsigned>(r.status),
           static_cast<unsigned long>(reply_len), static_cast<unsigned long>(r.elapsed_ms));
+    // **And what the modem said in it** (task p15-07): the latest call of this boot that worked,
+    // kept in RAM beside the list of the ones that did not. A report is made in the middle of a
+    // wake, straight after calls like this one, so its record is still here to be read - and
+    // until there was one, every cure for the call that fails was a guess.
+    noteAnsweredCall(what);
   } else {
     LOG_W("server: %s -> %s (%lu ms)", endpoint_, out.error, static_cast<unsigned long>(r.elapsed_ms));
     // **Every call that did not come back 2xx**, 401 and 429 included - the library's own

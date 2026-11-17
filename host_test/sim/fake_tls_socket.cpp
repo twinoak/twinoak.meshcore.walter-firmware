@@ -292,6 +292,9 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
     spend(0xFFFFFFFFu, deadline_ms);
     return interfaces::TlsRecv::kTimeout;
   }
+  // What this one command costs, so that the record can say when the receive was asked as well as
+  // when it came back (task p15-07): the board reads its clock either side of `socketReceive`.
+  const std::uint64_t asked_at = clock_.nowMs();
   if (!spend(piece_ms, deadline_ms)) return interfaces::TlsRecv::kTimeout;
   std::size_t n = cut_at_ - read_;
   if (n > max) n = max;
@@ -300,7 +303,9 @@ interfaces::TlsRecv FakeTlsSocket::receive(std::uint8_t* out, std::size_t max, s
   read_ += n;
   bytes_out += n;
   *got = n;
-  if (record_ != nullptr) record_->gotData(clock_.nowMs(), n);
+  if (record_ != nullptr) {
+    record_->gotData(clock_.nowMs(), n, static_cast<std::uint32_t>(clock_.nowMs() - asked_at));
+  }
   return interfaces::TlsRecv::kData;
 }
 
