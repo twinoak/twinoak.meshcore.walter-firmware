@@ -21,7 +21,6 @@
 #include <vector>
 
 #include "core/net/call_record.h"
-#include "core/net/read_again.h"
 #include "core/net/socket_rotation.h"
 #include "fakes/fake_clock.h"
 #include "interfaces/tls_socket.h"
@@ -35,22 +34,6 @@ constexpr int kSecondSocketId = 2;
 
 // How many closes can be in flight at once: one per socket, and room to see a mistake.
 constexpr std::size_t kKeptCloses = 4;
-
-// What the **one more ask** finds (task p15-03, core/net/read_again.h). The board's rule, after a
-// receive that failed with the close seen, asks the modem once more for what it holds; which of
-// these three it then gets is the whole of what this fake has to script, because the asking
-// itself is the rule's and the rule is shared.
-enum class SecondAsk {
-  // The modem answers and holds nothing: the call ends *closed*, as it did before the rule. The
-  // default, because it is what 8 November looks like from the outside - the answer was lost -
-  // and because it is the shape every test written before this task was written against.
-  kNothing,
-  // The modem still holds the response: the bytes come back and the call is answered. The cure,
-  // if this is what the board does, and the thing nobody has looked at.
-  kHeld,
-  // The ask fails too: *closed*, and no third ask.
-  kFailed,
-};
 
 class FakeTlsSocket final : public interfaces::TlsSocket {
  public:
@@ -117,17 +100,11 @@ class FakeTlsSocket final : public interfaces::TlsSocket {
   std::uint32_t receive_hangs_ms = 0;
   std::uint8_t receive_state = 2;       // ... with this WalterModemState (2 is its own timeout)
   int receive_cme = -1;                 // ... and this `+CME ERROR: n`, or -1 for none
-  // ... and it is the receive at which this many bytes of the response have been handed over. 0
-  // is the first one, which is every test written before task p15-03; a figure above it is a
-  // response half read when the command fails, which the one more ask then has to complete.
-  std::uint64_t hang_after_bytes = 0;
+  // What the board then answers, and what this socket answers with it: the close delivered is
+  // *the other end hung up* (kClosed) and no close is this socket failing (kError). There is no
+  // knob for a second command, because there is no second command - task p15-03 made one and
+  // task p15-05 took it out, the modem having answered it `+CME ERROR: 4` 35 times out of 35.
 
-  // -- what the one more ask finds (task p15-03) ---------------------------------------------
-  // After the hang above, with the close delivered, the board's rule asks the modem once more
-  // (core/net/read_again.h). This is what it gets. The rule itself is not scripted here: it is
-  // the firmware's own and this socket drives the same object the board's does, through the
-  // record (`recordInto` below).
-  SecondAsk second_ask = SecondAsk::kNothing;
   // A ring, and the close, handed over this long after the request went out instead of with the
   // response: what the stall needs, because on the board both arrive while the receive hangs.
   std::uint32_t ring_after_ms = 0;

@@ -95,10 +95,10 @@ TEST_CASE("the 30-second stall, written down: the not-yets, the failed receive, 
 
   // What the console said on 8 November and says here: *the connection closed before the body
   // was complete* (`tasks/phase-10/FOLLOWUPS.md`'s first item quotes that sentence). The close
-  // is handed over while the receive hangs, so that is what the socket layer answers - and
-  // since task p15-03 one more ask is made first, which this script lets find nothing. Until
-  // that task this read as kSocketFailed here, because the bench's socket answered a failed
-  // receive without looking at the close; the board looks (`core/net/read_again.h`).
+  // is handed over while the receive hangs, so that is what the socket layer answers - one
+  // command and no more (task p15-05). Until task p15-03 this read as kSocketFailed here,
+  // because the bench's socket answered a failed receive without looking at the close; the
+  // board looks, and this socket has looked since (`sim/fake_tls_socket.h`).
   CHECK(r.status == 0);
   CHECK(r.outcome == HttpOutcome::kClosed);
 
@@ -149,9 +149,9 @@ TEST_CASE("the 30-second stall, written down: the not-yets, the failed receive, 
   CHECK(has(said, "nothing answered, the library gave up on the command"));
   CHECK(has(said, "the other end closed"));
   CHECK(has(said, "the connection closed before the body was complete"));
-  // ... and, since task p15-03, the one more ask that was made before it was given up, which
-  // this script lets find nothing (host_test/core/net/test_read_again.cpp is the rule's own).
-  CHECK(has(said, "asked again after that: the modem held nothing"));
+  // ... and nothing was asked again (task p15-05): the failed command is the last thing in the
+  // call. Between p15-03 and p15-05 one more ask stood here and said *the modem held nothing*.
+  CHECK_FALSE(has(said, "asked again"));
 }
 
 TEST_CASE("no byte of a body, a header or a token is in the record or in its lines") {

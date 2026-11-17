@@ -1140,23 +1140,22 @@ and finds which id it got by asking for 6 down to 2 (the response structure is z
 command goes out, so it cannot be read back); when the library gives none, the rotation runs on
 one id and the owed-close rule alone.
 
-**One more ask before a call is given up** (task p15-03). A receive command that *fails* when the
-connection's close has already been handed over used to be the end of the call: the pair read as
-the other end hanging up, and the modem was never asked a second time. On the unit in service that
-pair is nearly every wake - an observations POST reaches meshmaster.dk, is answered `200` in under
-a second, and one `AT+SQNSRECV` then goes unanswered for the library's whole 30 s command timeout,
-by which time the `+SQNSH` of a response sent under `Connection: close` has arrived. Whether the
-modem still holds those bytes at that moment nobody has looked; if it does, one more ask is the
-whole cure for the data. So `core/net/read_again.h` is that rule, with no modem in it either:
-**the close seen and this call's one extra ask unspent is one more `AT+SQNSRECV`**, and bytes are
-read on from there as if the first ask had returned them; nothing, or a second failure, ends the
-call *closed* as before; a failure with **no** close seen is still the socket's own
-(`kSocketFailed`), untouched. Once per call, never a loop, so a failing call can cost at most one
-command more than it did - and the deadline does not refuse it, because the command that failed is
-the command that overran it (30 000 ms against a 15 000 ms piece deadline). How often it has been
-asked, and how often that brought an answer back, are two totals in one value of the settings
-store, printed by `agent calls`, because on a unit with no cable they are the only way to know
-whether the rule does anything.
+**A receive that failed is the end of the call** (tasks p15-03 and p15-05). When a receive
+command fails and the connection's close has already been handed over, the pair is the other end
+hanging up: `kClosed`, *the connection closed before the body was complete*. When no close has
+been seen it is the socket's own failure (`kSocketFailed`). On the unit in service that first
+shape is nearly every wake - an observations POST reaches meshmaster.dk, is answered `200` in
+under a second, and one `AT+SQNSRECV` then goes unanswered for the library's whole 30 s command
+timeout, by which time the `+SQNSH` of a response sent under `Connection: close` has arrived - so
+task p15-03 asked the modem once more at that moment, on the chance that it still held the answer
+the failed command never brought back. **It held nothing, 35 times out of 35** (v0.1.8, the night
+of 16 to 17 November 2026; the second ask came back at once with `+CME ERROR: 4`), and a second
+command sent straight after one the modem did not answer can hang as well - the first timer wake
+on that firmware was 68 seconds awake where the others are about 40. Task p15-05 took it out: a
+failing call costs **one** command timeout, as it did before, and `components/modem/walter_tls.cpp`
+asks the modem nothing it was not going to ask. What the modem said in a call that failed is still
+written down (`core/net/call_record.h`), and a record kept by the firmware that made the ask still
+prints it.
 
 **The chain is verified, and nothing in this firmware can ask otherwise.** The roots
 (`keys/tls/*.pem`, ISRG Root X1 and USERTrust ECC; each with its subject, fingerprint, expiry,

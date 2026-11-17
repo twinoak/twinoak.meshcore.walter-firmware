@@ -22,8 +22,14 @@
 //   a ring                            with the length the modem announced, as the library hands
 //                                     it over (`+SQNSRING: <id>,<n>`)
 //   the close                         `+SQNSH: <id>`, when the library hands it over
-//   the one more ask                  what it came back with, and the bytes when it came back
-//                                     with some (task p15-03, `core/net/read_again.h`)
+//   the one more ask                  **read, never written, since task p15-05**: the firmware
+//                                     of task p15-03 asked the modem a second time after a
+//                                     receive that failed with the close seen and wrote down
+//                                     what came of it. The ask is gone (it answered nothing in
+//                                     35 tries on the unit) and nothing writes this moment any
+//                                     more, but a record kept by that firmware is in the store
+//                                     of every unit that ran it, so it is still decoded and
+//                                     still printed.
 //
 // and, once for the call: the socket id, the bytes sent, and how it ended.
 //
@@ -61,18 +67,15 @@
 // (`docs/ARCHITECTURE.md` §14, rail R22). A call that succeeds writes nothing, so the kept record
 // stays the failed one's.
 //
-// **And one more value beside it, since task p15-03**: the two totals of the one more ask
-// (`core/net/read_again.h`), under a key of their own. They are the unit's and not this call's -
-// a recovered answer is a call that came back 2xx and is therefore in no list of failures - so
-// they are written when they moved and not when a call failed. `walter_agent/call_log.h` reads
-// and writes them with this record, which is the one place both are reachable.
+// **One value and no more, again, since task p15-05.** Task p15-03 kept two totals of its one
+// more ask in a second value beside this one; the ask is gone and so is that value, which
+// `walter_agent/call_log.h` erases once from the store of a unit that ran it.
 #pragma once
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 
-#include "core/net/read_again.h"
 #include "interfaces/http.h"
 #include "interfaces/key_value.h"
 #include "interfaces/text_out.h"
@@ -88,10 +91,21 @@ enum class CallMoment : std::uint8_t {
   kReceiveFailed = 2,  // a receive failed; `value` is how long the command took, in ms
   kRing = 3,           // the library handed over a ring; `value` is the length the modem announced
   kClose = 4,          // the library handed over the close
-  // The one more ask the rule of `core/net/read_again.h` makes after a receive that failed with
-  // the close seen (task p15-03): `state` is the `ReadAgainFound` it came back with and, when
-  // that is kBytes, `value` is how many.
+  // The one more ask the firmware of task p15-03 made after a receive that failed with the close
+  // seen: `state` is the `ReadAgainFound` it came back with and, when that is kBytes, `value` is
+  // how many. **Nothing writes this any more** (task p15-05 took the ask out), and it keeps its
+  // number for the records that firmware left in the stores of the units that ran it.
   kReadAgain = 5,
+  kCount,
+};
+
+// What that one more ask found, as the `state` nibble of a kReadAgain moment holds it. The
+// numbers were stored by the firmware of task p15-03, so they are not reordered and not reused:
+// this build reads them and never writes one.
+enum class ReadAgainFound : std::uint8_t {
+  kNothing = 0,  // the modem answered and held nothing
+  kBytes = 1,    // it still held the response
+  kFailed = 2,   // the ask failed too, with the modem's `+CME ERROR` number when it answered one
   kCount,
 };
 
@@ -194,20 +208,6 @@ class CallRecord {
   // The library handed over the close.
   void wasClosed(std::uint64_t now_ms);
 
-  // **The one more ask** the rule of `core/net/read_again.h` made after a receive that failed
-  // with the close seen (task p15-03): what it came back with, how many bytes when it came back
-  // with some, and the `+CME ERROR` number when the ask failed with one - `cme` below zero when
-  // there was none. The rule's own count moves here too, in the same breath, so that what is
-  // printed and what is counted can never disagree.
-  void readAgain(std::uint64_t now_ms, ReadAgainFound what, std::size_t bytes, int cme);
-
-  // The rule itself, which the socket layer asks and `walter_agent/call_log.h` keeps and prints.
-  // It lives here because this is the one object of its concern both of them already hold a
-  // pointer to, and this one is on the heap (`core/net/read_again.h`, *why it lives inside the
-  // record*).
-  ReadAgain& again() { return again_; }
-  const ReadAgain& again() const { return again_; }
-
   // The call is over and this is how it ended. Recording stops here: the close this end asks for
   // afterwards is not the other end's, and is not in the record.
   void ended(interfaces::HttpOutcome outcome);
@@ -276,11 +276,6 @@ class CallRecord {
   std::atomic<bool> recording_{false};
   std::uint64_t origin_ms_ = 0;
   bool held_ = false;
-  // The one more ask, and the two totals it keeps across a sleep. **Not part of `bytes_`**: it is
-  // a key of its own and a lifetime of its own - the record is one call's and these are the
-  // unit's - and it is a member here only because this object is the one both the socket layer
-  // and the call log reach, and is on the heap (`core/net/read_again.h`).
-  ReadAgain again_;
 };
 
 }  // namespace net

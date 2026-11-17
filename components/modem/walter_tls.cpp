@@ -172,36 +172,6 @@ bool WalterTlsSocket::send(const std::uint8_t* data, std::size_t size, std::uint
   return true;
 }
 
-// The one more ask (task p15-03). One `AT+SQNSRECV`, the same command the loop below makes and
-// not a special one: if the modem still holds the answer the failed command never brought back,
-// these are the bytes, and the response is read on from here as if the first ask had returned
-// them. The deadline is not checked - the command that failed is the command that overran it
-// (core/net/read_again.h, *the deadline does not refuse it*) - and the rule has already spent
-// this call's one ask, so this cannot be reached a second time in the same call.
-bool WalterTlsSocket::askOnceMore(int id, std::uint8_t* out, std::size_t want, std::size_t* got) {
-  WalterModemRsp rsp = {};
-  const bool answered = WalterModem::socketReceive(id, out, want, &rsp);
-  const std::uint64_t came_back = clock_.nowMs();
-  if (answered && rsp.type == WALTER_MODEM_RSP_DATA_TYPE_SOCKET &&
-      rsp.data.socketResponse.bytesReceived > 0) {
-    std::size_t n = rsp.data.socketResponse.bytesReceived;
-    if (n > want) n = want;  // the library copies what the modem said; never more than asked
-    *got = n;
-    received_ = true;
-    record_->readAgain(came_back, core::net::ReadAgainFound::kBytes, n, -1);
-    return true;
-  }
-  // Nothing, or a failure: *closed*, as before this rule. A failure keeps the modem's `+CME
-  // ERROR` number when it answered one, as a failed receive does.
-  const core::net::ReadAgainFound what =
-      answered ? core::net::ReadAgainFound::kNothing : core::net::ReadAgainFound::kFailed;
-  const int cme = !answered && rsp.type == WALTER_MODEM_RSP_DATA_TYPE_CME_ERROR
-                      ? static_cast<int>(rsp.data.cmeError)
-                      : -1;
-  record_->readAgain(came_back, what, 0, cme);
-  return false;
-}
-
 interfaces::TlsRecv WalterTlsSocket::receive(std::uint8_t* out, std::size_t max, std::size_t* got,
                                              std::uint64_t deadline_ms) {
   if (got != nullptr) *got = 0;
@@ -239,31 +209,16 @@ interfaces::TlsRecv WalterTlsSocket::receive(std::uint8_t* out, std::size_t max,
                                    : -1);
       }
       if (not_yet && record_ != nullptr) record_->notYet();
-      if (!not_yet) {
-        // **The rule, and nothing of this layer's own** (task p15-03, core/net/read_again.h):
-        // what a receive that failed is answered with. A close seen and the one extra ask of
-        // this call unspent is one more ask; a close seen and it spent is *closed*; no close
-        // seen is this socket failing, which is what it was before the rule and is told apart
-        // from a close on purpose (interfaces/http.h, kSocketFailed). A build with no record
-        // cannot reach the rule and gets the second of the three, which is this firmware's
-        // behaviour before this task.
-        const bool closed_seen = rotation_.closedSeen();
-        const core::net::AfterFailure next =
-            record_ != nullptr ? record_->again().onFailedReceive(closed_seen)
-                               : core::net::after(closed_seen, true);
-        switch (next) {
-          case core::net::AfterFailure::kAskAgain:
-            if (askOnceMore(id, out, want, got)) return interfaces::TlsRecv::kData;
-            return interfaces::TlsRecv::kClosed;
-          case core::net::AfterFailure::kClosed:
-            return interfaces::TlsRecv::kClosed;
-          case core::net::AfterFailure::kFailed:
-            return interfaces::TlsRecv::kError;
-        }
-      }
-      // A *not yet* with the close seen: everything the other end sent has been read, and this
-      // is the end of the response.
+      // The close seen: the other end hung up, whether this command failed or only said *not
+      // yet* - and a failing call costs **one** command timeout, which is what it cost before
+      // task p15-03 and costs again since task p15-05. That task asked the modem once more here
+      // when a failed receive met the close; the unit made that ask 35 times in a night and was
+      // answered `+CME ERROR: 4` every time - the bytes are gone when the first command gives up
+      // - so it was taken out, and with it the second 30 seconds a call could spend.
       if (rotation_.closedSeen()) return interfaces::TlsRecv::kClosed;
+      // No close, and the command failed: this socket failing, which is told apart from a close
+      // on purpose (interfaces/http.h, kSocketFailed).
+      if (!not_yet) return interfaces::TlsRecv::kError;
     } else if (rsp.type == WALTER_MODEM_RSP_DATA_TYPE_SOCKET &&
                rsp.data.socketResponse.bytesReceived > 0) {
       std::size_t n = rsp.data.socketResponse.bytesReceived;

@@ -1408,24 +1408,24 @@ the firmware's own HTTP, and the one thing a session cannot script is the modem'
   unit, or pull its power, and fetch again: the same block, to the character — it is one value of
   the settings store and nothing of it is in RTC memory. If the section says *nothing kept yet*
   after a wake whose call failed, the write is not happening and that is the finding.
-- [ ] **Did the one more ask ever find anything** (task p15-03). The question this rule exists to
-  answer, and the whole of what the bench has to bring back about it: on a **release** build after
-  half an hour of the unit's own wakes, read `agent calls`'s own line — *asked again after a failed
-  receive: N since this unit was made, M of them answered* — from the console, or from the report's
-  `calls` section after *Fetch now*. **Write N and M down.** Three readings and three findings:
-  - **N is 0 after wakes whose calls failed** → the receives are failing with **no close seen**
-    (the list says *the modem stopped answering for this socket*), which the rule leaves alone on
-    purpose, and the cure is somewhere else.
-  - **N > 0 and M is 0** → the modem does not hold the answer when the failed command gives up.
-    The data is not recoverable this way and the rule's one command a call is all it costs; the
-    record's own line says which of *the modem held nothing* and *it failed too* it was.
-  - **N > 0 and M > 0** → **the answers are being recovered.** Then meshmaster.dk should stop
-    seeing the same batch twice (`tasks/phase-15/FOLLOWUPS.md`), the list of failed calls should
-    thin out, and the record beside entry 1 should say *asked again after that: the modem still
-    held … bytes*. The 30 seconds are still spent: that is the follow-up, not this.
-  Also worth one line: whether a wake that recovered an answer is **longer** than 30 s and not
-  60 s — a second ask that hangs as well is the one cost this rule can add, and the wake's own
-  uplink deadline is what bounds it.
+- [ ] **The second ask is gone, and what it cost with it** (task p15-05). The reading task p15-03
+  asked for was taken on the morning of 17 November, after one night of v0.1.8: *asked again after
+  a failed receive: 35 since this unit was made, 0 of them answered*, and both records read showed
+  the second ask coming back at once with `+CME ERROR: 4`. The bytes are gone when the first
+  command gives up, so the ask was taken out. On a **release** build of this firmware, after a
+  night of the unit's own wakes, read three things — none of them needs a cable, they are all in
+  the report after *Fetch now*:
+  - **`agent calls` has no *asked again after a failed receive* line** above its list at all. It
+    is gone with the rule, and the key it was kept under (`agent_reread`) is erased at the first
+    boot of this firmware.
+  - **the record below the list still prints the ask of the firmware before it**, if the kept
+    record is one v0.1.8 wrote: *asked again after that: it failed too, +CME ERROR: 4*. A record
+    written by this firmware has no such line, so the line's disappearing is itself the sign that
+    a call has failed since the update.
+  - **the wakes.** About 40 s for a wake whose observations call fails, and **none of 68 s** — the
+    length of the first timer wake on v0.1.8, which is what a second command sent after one the
+    modem did not answer can cost. If a wake runs into the five-minute bound again, that is task
+    p15-06's line and not this one.
 - [ ] **A dial refused on an id the modem may still hold** (task p9-02, the third shape of
   7 November: a result's `POST` refused at the dial after 12 532 ms, on the third connection of the
   wake, with the next connection going through in 3.7 s). Watch for

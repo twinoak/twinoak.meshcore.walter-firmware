@@ -55,15 +55,13 @@
 // "known bug: CME ERROR 4") and then reads until "\r\nOK\r\n", which a binary body can contain.
 // One more reason the download is over sockets.
 //
-// **A receive that failed with the close seen is asked once more** (task p15-03). The rule is
-// core/net/read_again.h - with no modem in it, driven by a host test, and the one thing that
-// decides - and `receive()` below branches on its three answers and does nothing of its own:
-// kAskAgain is one `AT+SQNSRECV` and no second one, kClosed and kFailed are the two answers this
-// socket gave before the rule existed. Why it is needed: at nearly every wake of the unit in
-// service an observations POST reaches meshmaster.dk, is answered `200` in under a second, and
-// one receive command then goes unanswered for the library's whole 30 s - and the close of a
-// response sent under `Connection: close` has usually been handed over by then, so the pair read
-// as *the other end hung up* and the answer was never asked for a second time.
+// **A receive that failed with the close seen is the other end hanging up, and costs one command
+// timeout.** Task p15-03 asked the modem once more at that moment, on the chance that it still
+// held the answer the failed command never brought back; the unit made that ask 35 times in a
+// night of v0.1.8 and every one came back at once with `+CME ERROR: 4` - the bytes are gone by
+// then - while a second command sent straight after one the modem did not answer can hang as
+// well. Task p15-05 took it out: `receive()` below answers kClosed when the close has been handed
+// over and kError when it has not, which is what this socket did before that task.
 #pragma once
 
 #include <cstddef>
@@ -151,13 +149,6 @@ class WalterTlsSocket final : public interfaces::TlsSocket {
   // A second socket id out of the library, once per modem start (the header). 0 when it would
   // not give one. Leaves the rotation holding whatever it got.
   void askForASecondSocket(std::uint64_t deadline_ms);
-
-  // **The one more ask** (task p15-03, core/net/read_again.h), made when and only when that
-  // rule says so: one `AT+SQNSRECV` for whatever the modem still holds. True - with `*got` set
-  // and `out` filled - when it came back with bytes; false when it held nothing or failed, and
-  // the call then ends *closed* as it did before the rule. Writes what it found into the record,
-  // which counts it. Never a loop: there is one of these per call and the rule spends it.
-  bool askOnceMore(int id, std::uint8_t* out, std::size_t want, std::size_t* got);
 
   const WalterUplink& uplink_;
   interfaces::Clock& clock_;
