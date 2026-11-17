@@ -36,6 +36,12 @@
 //     a closed connection then completes it, and completes nothing else.
 //   * 204, 304 and the answer to a HEAD request have no body whatever the headers say (§3.3.3
 //     items 1 and 2); the caller says which request it made.
+//   * `Connection` is read for one thing only: whether the `close` connection option is in it
+//     (§6.1), which is `connectionClose()` below. It changes nothing the parser does - this
+//     firmware keeps no connection alive and sends `Connection: close` itself - and is kept
+//     because a call's record says whether the server asked for the close it then sent
+//     (task p15-07, core/net/call_record.h). A value longer than the parser's own buffer reads
+//     as *it did not say so*, and no value of the header is kept.
 //
 // What the parser does not do: decompress (this firmware sends no Accept-Encoding, so a
 // conforming server sends none), handle HTTP/2, or keep a connection alive (the writer says
@@ -144,6 +150,9 @@ class ResponseParser {
   std::uint32_t contentLength() const { return content_length_; }
   bool chunked() const { return chunked_; }
   bool untilClose() const { return until_close_; }
+  // Whether the response's `Connection` header carried the `close` option (RFC 7230 §6.1). Read
+  // and reported, never acted on: one request is one connection here either way.
+  bool connectionClose() const { return connection_close_; }
   std::uint64_t bodyBytes() const { return body_bytes_; }
   std::size_t headerBytes() const { return header_bytes_; }
 
@@ -178,7 +187,7 @@ class ResponseParser {
   int wanted_index_ = -1;          // which wanted header this is, or -1
   std::size_t wanted_written_ = 0; // bytes copied into it
   // The two headers the parser itself reads.
-  enum class Own : std::uint8_t { kNone, kContentLength, kTransferEncoding };
+  enum class Own : std::uint8_t { kNone, kContentLength, kTransferEncoding, kConnection };
   Own own_ = Own::kNone;
   char own_value_[32] = {};
   std::size_t own_len_ = 0;
@@ -189,6 +198,7 @@ class ResponseParser {
   std::uint32_t content_length_ = 0;
   bool chunked_ = false;
   bool until_close_ = false;
+  bool connection_close_ = false;
   std::size_t header_bytes_ = 0;
   std::uint64_t body_bytes_ = 0;
   std::uint64_t body_left_ = 0;    // of a Content-Length body or of the current chunk

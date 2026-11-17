@@ -278,6 +278,9 @@ class ModemUplink final : public mm::IUplink {
   // One failed call into the list, when this object was given one.
   void noteFailedCall(CallKind what, std::uint16_t status, interfaces::HttpOutcome outcome,
                       std::uint32_t at_epoch);
+  // And one that came back 2xx whole, into the record the list keeps beside it in RAM (task
+  // p15-07): the other half of the line above, in the one place every call passes through.
+  void noteAnsweredCall(CallKind what);
   void offerServerTime(std::uint32_t epoch);
   void wipeSecret();
   void wipeReply();

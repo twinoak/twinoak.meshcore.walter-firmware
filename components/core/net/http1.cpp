@@ -31,6 +31,29 @@ bool sameName(const char* a, const char* b) {
 
 bool isWhitespace(std::uint8_t c) { return c == ' ' || c == '\t'; }
 
+// Whether `header` - a comma-separated series of tokens, as `Connection` is (RFC 7230 §6.1) -
+// holds `token`, compared case-insensitively and with the optional whitespace around each element
+// dropped (§7). Nothing of `header` is kept: the answer is one bool. (The parameter is not named
+// for what §6.1 calls it, because `host_test/core/net/test_net_no_allocation.cpp` holds this
+// component to naming no heap container, and `std::list` is one of them.)
+bool hasToken(const char* header, const char* token) {
+  for (const char* at = header; *at != 0;) {
+    while (*at == ',' || isWhitespace(static_cast<std::uint8_t>(*at))) ++at;
+    const char* begin = at;
+    while (*at != 0 && *at != ',') ++at;
+    const char* end = at;
+    while (end > begin && isWhitespace(static_cast<std::uint8_t>(end[-1]))) --end;
+    const char* t = token;
+    const char* p = begin;
+    while (p < end && *t != 0 && lower(*p) == lower(*t)) {
+      ++p;
+      ++t;
+    }
+    if (p == end && *t == 0) return true;
+  }
+  return false;
+}
+
 // Appends `text` to out at *at, bounded; false when it does not fit.
 bool append(char* out, std::size_t capacity, std::size_t* at, const char* text) {
   const std::size_t n = std::strlen(text);
@@ -155,6 +178,7 @@ void ResponseParser::begin(bool expect_body, interfaces::HttpWantedHeader* wante
   content_length_ = 0;
   chunked_ = false;
   until_close_ = false;
+  connection_close_ = false;
   header_bytes_ = 0;
   body_bytes_ = 0;
   body_left_ = 0;
@@ -260,7 +284,13 @@ void ResponseParser::headerDone() {
   if (own_ != Own::kNone) {
     while (own_len_ > 0 && isWhitespace(static_cast<std::uint8_t>(own_value_[own_len_ - 1]))) --own_len_;
     own_value_[own_len_] = 0;
-    if (own_ == Own::kContentLength) {
+    if (own_ == Own::kConnection) {
+      // The `close` connection option, among however many the header lists (RFC 7230 §6.1: a
+      // comma-separated list of tokens, case-insensitive). Nothing here can refuse a response:
+      // an option this firmware does not know is an option it ignores, and a value too long for
+      // the buffer reads as *it did not say close*.
+      if (!own_overflow_) connection_close_ = hasToken(own_value_, "close");
+    } else if (own_ == Own::kContentLength) {
       // Digits only, at most ten, inside 32 bits (§3.3.2). A second one must agree.
       if (own_overflow_ || own_len_ == 0 || own_len_ > 10) {
         fail(ParseError::kBadContentLength);
@@ -284,7 +314,7 @@ void ResponseParser::headerDone() {
       }
       has_content_length_ = true;
       content_length_ = static_cast<std::uint32_t>(value);
-    } else {
+    } else if (own_ == Own::kTransferEncoding) {
       // `chunked`, alone, case-insensitively (§3.3.1: a sender may use `Chunked`).
       if (own_overflow_ || !sameName(own_value_, "chunked")) {
         fail(ParseError::kBadTransferEncoding);
@@ -382,6 +412,8 @@ bool ResponseParser::headerByte(std::uint8_t c) {
       }
       if (sameName(name_, "Content-Length")) own_ = Own::kContentLength;
       if (sameName(name_, "Transfer-Encoding")) own_ = Own::kTransferEncoding;
+      // Read for one bit and acted on by nothing (task p15-07, http1.h).
+      if (sameName(name_, "Connection")) own_ = Own::kConnection;
       state_ = ParseState::kHeaderValue;
       return true;
     }

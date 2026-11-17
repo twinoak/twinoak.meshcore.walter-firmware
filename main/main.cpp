@@ -390,6 +390,12 @@ extern "C" void app_main() {
   core::net::CallRecord* call_record = new core::net::CallRecord();
   https.recordInto(call_record);
   tls_socket.recordInto(call_record);
+  // And a second block of it for **the latest call of this boot that was answered** (task
+  // p15-07), which `agent calls` and the report lay beside the failed one a sleep kept. There is
+  // one live record and the next call overwrites it, so a call that worked is copied out of it
+  // there and then; this copy is never written to the store, so it costs no flash at a good wake
+  // and a sleep takes it. From the heap for the reason above, and never freed.
+  core::net::CallRecord* answered_record = new core::net::CallRecord();
   static core::net::Client http_client(https, g_clock);
   static core::net::Download download(http_client, g_clock);
   // The trial's third condition (S-6), which is `server.url` (task p3-03) - the console's
@@ -612,6 +618,9 @@ extern "C" void app_main() {
   // the list moves and that record is written in the same moment, so the two always name the
   // same call. `agent calls` and the report's `calls` section read them together.
   g_calls.keepReceivingOf(call_record);
+  // ... and, in RAM only, the latest call of this boot the server answered (task p15-07): the
+  // thing a failed call had nothing to be read against.
+  g_calls.keepAnsweredIn(answered_record);
   server.countWakesFrom(&g_wake_counters.totals());
   // And the three counts of a flooded transaction (task p14-02, walter_agent/flood_counters.h):
   // one more value of the store, written only when one of the three moved, read back at the

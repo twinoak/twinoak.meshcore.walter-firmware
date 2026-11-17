@@ -66,8 +66,12 @@ constexpr const char* kTotalsOf0_1_8 = "012300000000000000";
 
 // The record's own lines of `agent calls`: everything from the line that names it onwards.
 std::string receivingOf(const std::string& said) {
-  const std::size_t at = said.find("  what the modem said");
-  return at == std::string::npos ? std::string() : said.substr(at);
+  const std::size_t at = said.find("  what the modem said in it");
+  if (at == std::string::npos) return std::string();
+  // Not the block under it: the latest call that was answered is task p15-07's, and no boot of
+  // this file's cases has one.
+  const std::size_t end = said.find("  no call has been answered in this boot");
+  return end == std::string::npos ? said.substr(at) : said.substr(at, end - at);
 }
 
 }  // namespace
@@ -92,7 +96,9 @@ TEST_CASE("a record kept by the firmware of task p15-03 still prints its second 
   CHECK(has(record, "+320 ms: a ring: the modem announced 815 bytes"));
   CHECK(has(record, "+339 ms: a ring: the modem announced 5 bytes"));
   CHECK(has(record, "+359 ms: the other end closed"));
-  CHECK(has(record, "+30310 ms: a receive failed after 30000 ms: nothing answered"));
+  // With when it was asked, which task p15-07 prints from the duration this record already
+  // carried: +30310 less 30000.
+  CHECK(has(record, "+30310 ms (asked at +310 ms): a receive failed after 30000 ms: nothing answered"));
   CHECK(has(record, "+30310 ms: asked again after that: it failed too, +CME ERROR: 4"));
 
   // The other answer that firmware could write down, and the other line.
@@ -101,7 +107,7 @@ TEST_CASE("a record kept by the firmware of task p15-03 still prints its second 
   bench.v().begin();
   const std::string other = receivingOf(bench.v().runLine("agent calls"));
   INFO(other);
-  CHECK(has(other, "+30150 ms: a receive failed after 30000 ms: nothing answered"));
+  CHECK(has(other, "+30150 ms (asked at +150 ms): a receive failed after 30000 ms: nothing answered"));
   CHECK(has(other, "+30150 ms: asked again after that: the modem held nothing"));
 }
 

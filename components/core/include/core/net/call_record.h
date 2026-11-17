@@ -13,7 +13,8 @@
 // So this is written down instead, small enough for a release image: for each thing that happens
 // after the request has gone out, how long after and what.
 //
-//   a receive that returned bytes     and how many
+//   a receive that returned bytes     and how many, and how long the command took - so that when
+//                                     it was asked can be read against the rings (task p15-07)
 //   a receive that said *not yet*     counted, not listed: the modem answers `+CME ERROR: 4` or
 //                                     `+SQNSRECV: <id>,0` to every ask before the first byte is
 //                                     there, and there are hundreds of them in a stalled call
@@ -32,6 +33,14 @@
 //                                     still printed.
 //
 // and, once for the call: the socket id, the bytes sent, and how it ended.
+//
+// **And, since task p15-07, what the answer said of itself** when one came back: the status,
+// whether it was framed by a length or by chunks or by the close, how many bytes of body were
+// read, and whether it said `Connection: close`. Those four are **not stored**: they are what a
+// call that *worked* is read by, and a call that worked is not kept over a sleep (deliverable 1
+// of that task: a report is made in the middle of a wake, straight after the calls that worked,
+// so their record is still in memory). A record read back out of the store therefore says nothing
+// about an answer, which is also what every record kept by a firmware before that task says.
 //
 // **No byte of a payload, a header, a token or a name is in it** (`spec/SYSTEM.md` S-12). Every
 // field is a count, a duration or a code, and `describe()` prints nothing else; a host test reads
@@ -87,7 +96,8 @@ namespace net {
 // reordered: a value this build has no name for reads back as kNothing and is not printed.
 enum class CallMoment : std::uint8_t {
   kNothing = 0,
-  kData = 1,           // a receive returned bytes; `value` is how many
+  kData = 1,           // a receive returned bytes; `value` is how many, and the sixth byte is how
+                       // long its command took (task p15-07)
   kReceiveFailed = 2,  // a receive failed; `value` is how long the command took, in ms
   kRing = 3,           // the library handed over a ring; `value` is the length the modem announced
   kClose = 4,          // the library handed over the close
@@ -126,7 +136,11 @@ constexpr std::size_t kCallMoments = 12;
 //   5    cme    u8   kReceiveFailed, and kReadAgain that failed, and the modem answered
 //                    `+CME ERROR: n`: **n + 1**, capped at 255 - the bias is because
 //                    `+CME ERROR: 0` is a real code (equipment failure), so 0 has to mean *the
-//                    modem answered no CME error at all*
+//                    modem answered no CME error at all*. For kData, since task p15-07, the same
+//                    byte with the same bias holds **how long that receive's command took**, in
+//                    milliseconds: `took + 1`, 255 meaning kCallTookAtMost or more - so that a
+//                    0 there reads as *not written down*, which is what a record kept by a
+//                    firmware before that task has in it, and not as *it came back at once*
 constexpr std::size_t kCallMomentBytes = 6;
 
 // The once-per-call bytes in front of them:
@@ -162,6 +176,11 @@ constexpr std::uint16_t kCallMomentAtMost = 0xFFFFu;
 constexpr std::uint16_t kCallBytesAtMost = 0xFFFFu;
 constexpr std::uint16_t kCallNotYetAtMost = 0xFFFFu;
 constexpr std::uint8_t kCallDroppedAtMost = 15;
+// How long a receive that returned bytes can say its command took, in milliseconds: one byte with
+// the plus-one bias, so 254 and not 255. A successful `AT+SQNSRECV` is a UART round trip and tens
+// of milliseconds; the one that takes thirty seconds is the one that fails, and that one's
+// duration is a whole u16 (`value`).
+constexpr std::uint8_t kCallTookAtMost = 254;
 
 // One moment, read back out of the six bytes it is held in.
 struct CallStep {
@@ -171,6 +190,13 @@ struct CallStep {
   std::uint8_t state = 0;  // kReceiveFailed: the library's own state for the command
   std::uint16_t cme = 0;   // kReceiveFailed: the `+CME ERROR` number the modem answered
   bool had_cme = false;    // ... and whether it answered one at all
+  // How long this receive's command took (task p15-07), so that **when it was asked** can be read
+  // against the rings: `at_ms - took_ms`. kReceiveFailed has always carried it in `value`; kData
+  // carries it in the sixth byte, and `took_known` is false for a kData moment of a record kept by
+  // a firmware that did not write it. `took_or_more` is the figure sitting on its cap.
+  std::uint16_t took_ms = 0;
+  bool took_known = false;
+  bool took_or_more = false;
 };
 
 class CallRecord {
@@ -191,8 +217,9 @@ class CallRecord {
   // from, and the moment recording begins.
   void wentOut(std::uint64_t now_ms, std::size_t bytes);
 
-  // A receive that returned `bytes` bytes.
-  void gotData(std::uint64_t now_ms, std::size_t bytes);
+  // A receive that returned `bytes` bytes, whose command took `took_ms` (task p15-07: the ask and
+  // the answer are both wanted, so that a read can be placed against the rings).
+  void gotData(std::uint64_t now_ms, std::size_t bytes, std::uint32_t took_ms);
 
   // A receive answered *nothing buffered yet*: counted, not listed.
   void notYet();
@@ -207,6 +234,12 @@ class CallRecord {
 
   // The library handed over the close.
   void wasClosed(std::uint64_t now_ms);
+
+  // What the answer said of itself (task p15-07), straight off the response the transport is about
+  // to hand back: the status, the framing, the bytes of body and whether it said `Connection:
+  // close`. **Not stored** and not printed when `response.status` is 0 - nothing answered, so
+  // there is nothing for it to have said. Before ended(), which is where the transport calls it.
+  void answerWas(const interfaces::HttpResponse& response);
 
   // The call is over and this is how it ended. Recording stops here: the close this end asks for
   // afterwards is not the other end's, and is not in the record.
@@ -236,6 +269,29 @@ class CallRecord {
   std::size_t steps() const;
   CallStep step(std::size_t index) const;
 
+  // What the answer said of itself, when one came back (task p15-07). `answerKnown()` is false
+  // for a call nothing answered and for every record read back out of the store.
+  bool answerKnown() const { return answer_known_; }
+  std::uint16_t answerStatus() const { return answer_status_; }
+  bool answerHadLength() const { return answer_has_length_; }
+  bool answerWasChunked() const { return answer_chunked_; }
+  bool answerSaidClose() const { return answer_close_; }
+  std::uint32_t answerBytes() const { return answer_bytes_; }
+
+  // -- the one that worked, kept in RAM and nowhere else (task p15-07) ------------------------
+
+  // This record made a copy of `other`, whatever `other` goes on to do: how **the latest call of
+  // this boot that was answered** is kept, so that `agent calls` and the report can lay it beside
+  // the failed one a sleep did keep. There is one live record and the next call overwrites it, so
+  // a call that worked has to be copied out of it or lost; this copy is never written to the
+  // store, which is deliverable 1's *nothing more is kept in flash*. Not recording afterwards:
+  // a copy is a finished call.
+  void copyFrom(const CallRecord& other);
+
+  // Nothing held: this record says *no call*. `begin()`'s own starting point, in public, for the
+  // one in RAM that no store ever erases.
+  void drop() { clear(); }
+
   // -- kept over a sleep ---------------------------------------------------------------------
 
   // This record under kCallRecordKey, as hex. `what` is the caller's number for the call. True
@@ -250,9 +306,11 @@ class CallRecord {
   static bool forget(interfaces::KeyValue* store);
 
   // The record in words, each line ended with '\n', or one line saying there is none. `what` is
-  // the caller's word for which call it was; nullptr for *a call*. Every line is well inside the
-  // console's 200 bytes (task p9-04).
-  void describe(interfaces::TextOut& out, const char* what) const;
+  // the caller's word for which call it was; nullptr for *a call*. `lead` is what goes after
+  // *what the modem said* on the first line, so that the two blocks `agent calls` prints are told
+  // apart by their own first words (task p15-07). Every line is well inside the console's
+  // 200 bytes (task p9-04).
+  void describe(interfaces::TextOut& out, const char* what, const char* lead = "in it") const;
 
  private:
   // Everything forgotten and nothing held: what begin() and load() both start from.
@@ -276,6 +334,16 @@ class CallRecord {
   std::atomic<bool> recording_{false};
   std::uint64_t origin_ms_ = 0;
   bool held_ = false;
+  // What the answer said of itself (task p15-07). **Outside `bytes_`, so outside the stored
+  // value**: 158 characters of hex is what one value of the settings store holds, and these are
+  // read off a call that worked - which is not kept over a sleep at all. `answer_known_` false is
+  // a call nothing answered, and every record a load() brought back.
+  std::uint32_t answer_bytes_ = 0;
+  std::uint16_t answer_status_ = 0;
+  bool answer_known_ = false;
+  bool answer_has_length_ = false;
+  bool answer_chunked_ = false;
+  bool answer_close_ = false;
 };
 
 }  // namespace net

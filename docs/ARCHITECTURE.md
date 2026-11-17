@@ -1157,6 +1157,21 @@ asks the modem nothing it was not going to ask. What the modem said in a call th
 written down (`core/net/call_record.h`), and a record kept by the firmware that made the ask still
 prints it.
 
+**And since task p15-07 there is a call that worked to lay beside it.** One record was never
+enough to decide anything: the config, the heartbeat, the claim and a job's result are answered at
+every wake by the same server through the same code, and nothing was kept of them, so *what is
+different about a call that works* could not be asked. So `walter_agent/call_log.h` keeps a second
+record - **in RAM and in no value of the store**, because keeping it would be a write to flash at
+every good wake and a report is made in the middle of a wake, straight after the calls that worked
+- holding the latest call of this boot that came back 2xx whole. Both records gained the same two
+facts: every receive that returned bytes now carries **how long its command took**, so when it was
+asked can be placed against the rings as the failed receive's always could; and a call something
+answered carries **what the answer said of itself** - the status, the framing, the bytes of body,
+and whether the server said `Connection: close`, which is the one thing `core/net/http1.h`'s parser
+was taught to read for this (it is reported and acted on by nothing: one request is one connection
+here either way). Those four are outside the record's stored bytes, so a record read back out of
+the store - every one written by an earlier firmware among them - says what it always said.
+
 **The chain is verified, and nothing in this firmware can ask otherwise.** The roots
 (`keys/tls/*.pem`, ISRG Root X1 and USERTrust ECC; each with its subject, fingerprint, expiry,
 source and the chains observed, held to the certificate at build time) are written into the modem's

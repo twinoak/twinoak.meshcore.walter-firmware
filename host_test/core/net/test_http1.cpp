@@ -397,3 +397,44 @@ TEST_CASE("ten thousand random inputs without a fault, and the parser always end
   CHECK(done > 0);
   CHECK(errors > 0);
 }
+
+TEST_CASE("the Connection header: the close option, among others and in any case") {
+  // Read for one bit and acted on by nothing (task p15-07, core/net/http1.h): a call's record says
+  // whether the server asked for the close it then sent.
+  struct Case {
+    const char* value;
+    bool close;
+  };
+  const Case cases[] = {
+      {"close", true},
+      {"Close", true},
+      {"CLOSE", true},
+      {"keep-alive, close", true},
+      {"close , keep-alive", true},
+      {" close ", true},
+      {"keep-alive", false},
+      {"closed", false},
+      {"no-close", false},
+      {"", false},
+      // Longer than the parser's own 32-byte buffer for a header it reads itself: no value is
+      // kept, so the answer is *it did not say close* rather than a guess.
+      {"keep-alive, trailers, upgrade, te, something-else, close", false},
+  };
+  for (const Case& one : cases) {
+    ResponseParser p;
+    p.begin(true, nullptr, 0);
+    VectorSink sink;
+    const std::string text = std::string("HTTP/1.1 200 OK\r\nConnection: ") + one.value +
+                             "\r\nContent-Length: 2\r\n\r\nhi";
+    CHECK(feedIn(p, text, 7, sink) == ParseState::kDone);
+    INFO(one.value);
+    CHECK(p.connectionClose() == one.close);
+    CHECK(p.status() == 200);
+    CHECK(sink.text() == "hi");
+  }
+  // No Connection header at all.
+  ResponseParser p;
+  VectorSink sink;
+  CHECK(feedIn(p, "HTTP/1.1 204 No Content\r\n\r\n", 5, sink) == ParseState::kDone);
+  CHECK_FALSE(p.connectionClose());
+}

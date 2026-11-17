@@ -44,11 +44,20 @@ void HttpOverTls::request(const interfaces::HttpRequest& request, interfaces::Ht
     response->has_content_length = parser_.hasContentLength();
     response->content_length = parser_.contentLength();
     response->chunked = parser_.chunked();
+    response->connection_close = parser_.connectionClose();
     response->body_bytes = parser_.bodyBytes();
     response->elapsed_ms = static_cast<std::uint32_t>(clock_.nowMs() - started);
     // Before the close this end asks for: `+SQNSH` for our own AT+SQNSH is not the other end
     // hanging up, and the record is the receiving side of the call and not of the close.
-    if (record_ != nullptr) record_->ended(outcome);
+    //
+    // What the answer said of itself goes in first (task p15-07): the status, the framing, the
+    // bytes and the server's `Connection: close`, which are what a call that *worked* is read by
+    // when it is laid beside one that did not. A call nothing answered has a status of 0 and the
+    // record says nothing about an answer.
+    if (record_ != nullptr) {
+      record_->answerWas(*response);
+      record_->ended(outcome);
+    }
     socket_.close();
   };
 

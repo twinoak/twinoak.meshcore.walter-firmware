@@ -225,7 +225,10 @@ interfaces::TlsRecv WalterTlsSocket::receive(std::uint8_t* out, std::size_t max,
       if (n > want) n = want;  // the library copies what the modem said; never more than asked
       *got = n;
       received_ = true;
-      if (record_ != nullptr) record_->gotData(came_back, n);
+      // With how long the command took, as a failed one has always carried it (task p15-07): a
+      // receive that returned bytes says when it was asked as well as when it came back, which is
+      // the only way the read of a call that worked can be placed against that call's rings.
+      if (record_ != nullptr) record_->gotData(came_back, n, took_ms);
       return interfaces::TlsRecv::kData;
     } else if (record_ != nullptr) {
       // `+SQNSRECV: <id>,0`: the other way the modem says *nothing buffered yet*, and counted

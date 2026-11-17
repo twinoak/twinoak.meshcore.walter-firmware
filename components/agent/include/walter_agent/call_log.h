@@ -49,6 +49,15 @@
 // answered nothing in 35 tries on the unit and is gone; `begin()` erases the key **once**, so a
 // unit that ran v0.1.8 does not carry a value nothing will ever read again.
 //
+// **And one call more, in RAM and in no value at all, since task p15-07**: the latest call of
+// this boot that the server **answered**. Until it there was nothing to lay a failed call beside:
+// the config, the heartbeat, the claim and a job's result are answered at every wake by the same
+// server through the same code, and nothing was kept of them, so what is different about a call
+// that works could not be said. It is not written to the store - that would be a write at every
+// good wake, and the calls a report can see are the ones before it in the wake, which are still
+// in memory when the report is made (task p15-07, deliverable 1). A sleep takes it, as it takes
+// every other byte of RAM.
+//
 // Logic, like core/: no ESP-IDF include, no heap, every byte of state a member of this object.
 #pragma once
 
@@ -165,6 +174,21 @@ class CallLog {
   // when none has been kept, or it is of another version or shape.
   bool keptReceiving(core::net::CallRecord& into) const;
 
+  // **Where the latest call of this boot that was answered is kept** (task p15-07): a second
+  // record, in RAM and never in the store, which `answered()` below copies the live one into the
+  // moment a call comes back 2xx. On the board it is a second block of the heap taken in
+  // `app_main`, for the reason `keepReceivingOf`'s is; a bench gives each life of the Walter its
+  // own, which is what makes a sleep forget it. nullptr keeps nothing and says so.
+  void keepAnsweredIn(core::net::CallRecord* record) { answered_ = record; }
+
+  // One call the server answered: what the modem said in it, copied out of the live record before
+  // the next call overwrites it. Not in the list and not in the store - the list is the calls that
+  // did **not** come back 2xx, and this is the one that did.
+  void answered(CallKind what);
+
+  // That record, or nullptr when no call has been answered in this boot.
+  const core::net::CallRecord* answeredReceiving() const;
+
   // One call that did not come back 2xx. `status` 0 is "nothing answered", and then `outcome` is
   // how far the uplink had got. `at_epoch` 0 is a unit with no clock yet.
   void record(CallKind what, std::uint16_t status, interfaces::HttpOutcome outcome,
@@ -194,6 +218,7 @@ class CallLog {
 
   interfaces::KeyValue* store_;
   core::net::CallRecord* receiving_ = nullptr;
+  core::net::CallRecord* answered_ = nullptr;
   // The ring, newest first, in the form it is written in: the value's bytes without its version
   // byte. A record is a memmove of this and nine bytes written over the front, and saving it is
   // the hex of one byte and this.

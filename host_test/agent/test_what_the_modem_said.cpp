@@ -30,12 +30,22 @@ bool has(const std::string& text, const std::string& what) {
   return text.find(what) != std::string::npos;
 }
 
-// The record's own lines of `agent calls`: everything from the line that names it onwards. The
-// lines above it count what *this boot* recorded and wrote, and a boot that recorded nothing is
-// what two of the cases below are about.
+// Where the **second** block of `agent calls` begins (task p15-07): the latest call of this boot
+// that was answered, or the line saying none has been.
+std::size_t answeredAt(const std::string& said) {
+  const std::size_t worked = said.find("  what the modem said in the latest call that was answered");
+  const std::size_t none = said.find("  no call has been answered in this boot");
+  return worked < none ? worked : none;  // npos is the largest of the two
+}
+
+// The kept record's own lines of `agent calls`: from the line that names it to where the block
+// under it begins. The lines above it count what *this boot* recorded and wrote, and a boot that
+// recorded nothing is what two of the cases below are about.
 std::string receivingOf(const std::string& said) {
-  const std::size_t at = said.find("  what the modem said");
-  return at == std::string::npos ? std::string() : said.substr(at);
+  const std::size_t at = said.find("  what the modem said in it");
+  if (at == std::string::npos) return std::string();
+  const std::size_t end = answeredAt(said);
+  return end == std::string::npos ? said.substr(at) : said.substr(at, end - at);
 }
 
 // The modem of 8 November, on every connection this socket makes.
@@ -173,9 +183,12 @@ TEST_CASE("a unit whose calls have all come back 2xx says there is no record yet
   INFO(said);
   CHECK(has(said, "no call has failed since the list began"));
   CHECK_FALSE(bench.world.kv.has(core::net::kCallRecordKey));
-  // `agent calls` stops at the list's own line in that case: there is nothing to read the record
-  // against, and a line about a record nobody has is noise.
+  // The kept record is not read in that case: there is no entry for it to belong to, and a line
+  // about a record nobody has is noise.
   CHECK(receivingOf(said).empty());
+  // What there **is** since task p15-07: the latest call of this boot that was answered, which on
+  // this wake is every call it made.
+  CHECK(has(said, "what the modem said in the latest call that was answered"));
 }
 
 TEST_CASE("forgetting the list forgets the record with it") {
