@@ -472,8 +472,8 @@ class WakeReason {
     WakeEntry items[kWakesRemembered];
   };
   static_assert(sizeof(WakeEntry) == 10, "a wake entry is ten bytes");
-  static_assert(sizeof(Record) <= interfaces::kRetainedRecordMax,
-                "the duty cycle's record has to fit a retained slot");
+  static_assert(sizeof(Record) <= interfaces::retainedSlotBytes(interfaces::RetainedSlot::kDutyCycle),
+                "the duty cycle's record has to fit its retained slot");
 
   void load();
   void save();

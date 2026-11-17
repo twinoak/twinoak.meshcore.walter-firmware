@@ -182,6 +182,58 @@ void stepLetters(const Pass& pass, char* out, std::size_t cap) {
   out[i] = 0;
 }
 
+// Where a wake was, as one phrase (task p15-06). The format docs/cycle.md prints:
+//
+//   step 8 (backend), a `status` job, 2 request(s), on the link, 283 s in it
+//   step 8 (backend), the call out: `observations`, on the modem, 30 s in it
+//   step 6 (uplink), 4 s in it
+//
+// The call's name is the one `agent calls` prints (`agent::callKindName()`), articles and all -
+// one vocabulary, so a reader does not have two words for one thing - which is why the clause
+// reads *the call out: `a result`* and not *the `a result` call*.
+//
+// **It is short on purpose.** Every line a console command prints fits a 100-column terminal
+// (host_test/core/cycle/test_what_a_wake_did.cpp, `fitsATerminal`), and this phrase goes on a
+// line of its own under an entry of `wake`'s list of ten and under a `journal` line - each of
+// which has a prefix of its own. So the step is its **one word** (`name()`, not `describe()`)
+// and the clauses are the shortest that still say what happened; docs/cycle.md is where the
+// words are spelled out. The worst case this can print is 88 bytes.
+//
+// `what` is printed with a width and never as a string: the record's field is sixteen bytes and
+// is not terminated when it is full (core/cycle/wake_progress.h).
+std::size_t describeWhere(const WakeWhere& where, char* out, std::size_t cap) {
+  if (out == nullptr || cap == 0) return 0;
+  out[0] = 0;
+  // The step, what was out or being run, and what was being waited on: three pieces written into
+  // buffers of their own and then composed in **one** snprintf. Not appended one at a time: this
+  // firmware's build refuses `buf + used` as a destination (-Werror=format-truncation), and an
+  // snprintf whose destination is also one of its arguments is undefined behaviour.
+  char step[32] = {};
+  if (where.step == 0 || where.step > kStepCount) {
+    (void)std::snprintf(step, sizeof step, "no step written down");
+  } else {
+    (void)std::snprintf(step, sizeof step, "step %u (%s)", static_cast<unsigned>(where.step),
+                        cycle::name(static_cast<Step>(where.step - 1)));
+  }
+  char doing[64] = {};
+  if (where.doing == Doing::kJob) {
+    (void)std::snprintf(doing, sizeof doing, ", a `%.*s` job, %u request(s)",
+                        static_cast<int>(kProgressWhatBytes), where.what,
+                        static_cast<unsigned>(where.requests));
+  } else if (where.doing == Doing::kCall) {
+    (void)std::snprintf(doing, sizeof doing, ", the call out: `%.*s`%s",
+                        static_cast<int>(kProgressWhatBytes), where.what,
+                        where.in_job ? " (in a job)" : "");
+  }
+  const char* waiting = where.on_link    ? ", on the link"
+                        : where.on_modem ? ", on the modem"
+                                         : "";
+  const int n = std::snprintf(out, cap, "%s%s%s, %lu s in it", step, doing, waiting,
+                              static_cast<unsigned long>(where.forS()));
+  if (n <= 0) return 0;
+  return static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1;
+}
+
 std::size_t recordLine(const Pass& pass, char* out, std::size_t cap) {
   if (out == nullptr || cap == 0) return 0;
   char letters[interfaces::kBackendStepLetters] = {};
@@ -333,6 +385,12 @@ bool WakeCycle::begin(Step step) {
   const StepDef& d = def(step);
   StepRecord& r = pass_.step[static_cast<std::size_t>(step)];
   step_began_ms_ = clock_.nowMs();
+  // **Where this wake is, before the step is begun** (task p15-06): a step that is about to run
+  // and a step that is about to be skipped are both recorded, because the record's one question
+  // is *where was it when it was ended* and the honest answer for a wake reset between two steps
+  // is the one it had reached. The step's number and not its index, so that a record of all
+  // zeroes cannot read as step 1.
+  duty_.progress().atStep(static_cast<std::uint8_t>(static_cast<std::uint8_t>(step) + 1));
   // The preconditions, from the table: every step it needs must have succeeded.
   for (std::size_t i = 0; i < kStepCount; ++i) {
     const Step other = static_cast<Step>(i);
@@ -492,6 +550,9 @@ void WakeCycle::stepWhy() {
   // What woke this unit, counted and kept across the sleep and a power cut (task p13-02): the
   // three a server cannot see for itself - the timer, the radio's line, a chattering line.
   if (tally_ != nullptr) tally_->countWake(w.wake);
+  // **And what the wake before this one was in the middle of**, when it did not reach sleep
+  // (task p15-06): counted, journalled, and left for `wake`'s list of ten to print all boot.
+  journalMidway();
   finish(Step::kWhy, Outcome::kDone, cycle::describe(w.wake));
   if (out_ != nullptr) sayf("cycle: wake %lu, %s\n", static_cast<unsigned long>(w.wakes),
                             cycle::describe(w.wake));
@@ -1366,6 +1427,32 @@ void WakeCycle::journalWake() {
   std::uint8_t bytes[kWakePayloadBytes];
   encode(p, bytes);
   (void)journal_->append(update::kind::kWakeCycle, bytes, kWakePayloadBytes);
+}
+
+// **What the wake before this boot was in the middle of** (task p15-06): one line, at the first
+// step of the first pass of this boot, and only when the retained record says that wake did not
+// reach sleep. The reset, the crash or the bound that ended it has already been read by then -
+// step 1 is where the wake's reason is settled - so the line carries both halves of the answer.
+//
+// `once_` and not a flag of the pass: the console's `cycle now` is a second pass in the same
+// boot and the word belongs to the boot, not to a pass. A dry run reaches none of this.
+void WakeCycle::journalMidway() {
+  const WakeWhere& before = duty_.progress().before();
+  if (midway_said_ || !before.endedMidway()) return;
+  midway_said_ = true;
+  // The fifth total of `agent_wakes`, beside the four of task p13-02: wakes that did not reach
+  // sleep. Counted here and not where the wake ended, for the plain reason that a wake ended by a
+  // reset counts nothing - the boot after is the only thing that can.
+  if (tally_ != nullptr) tally_->countMidway();
+  if (out_ != nullptr) {
+    char where[120];
+    (void)describeWhere(before, where, sizeof where);
+    sayf("cycle: the wake before this one did not reach sleep: %s\n", where);
+  }
+  if (journal_ == nullptr) return;
+  std::uint8_t bytes[kMidwayPayloadBytes];
+  encode(static_cast<std::uint8_t>(pass_.reason), before, bytes);
+  (void)journal_->append(update::kind::kWakeMidway, bytes, kMidwayPayloadBytes);
 }
 
 // -- what crosses the seam -----------------------------------------------------------------------

@@ -89,12 +89,14 @@ std::string substitute(std::string text, const std::string& from, const std::str
 }
 
 // The six counters the library writes, as JSON, in the library's own order (AgentLoop.cpp's
-// `doHeartbeat`), and **the four of task p13-02 behind them**: what woke this unit, which the
-// server cannot see for itself. Every one is 0 for a unit that has not run a wake yet.
+// `doHeartbeat`), and **the four of task p13-02 and the fifth of p15-06 behind them**: what woke
+// this unit and how many wakes did not reach sleep, which the server cannot see for itself. Every
+// one is 0 for a unit that has not run a wake yet.
 const char* const kZeroErrors =
     "\"errors\":{\"overheard\":0,\"wifiReconnects\":0,\"httpFailures\":0,"
     "\"observationsDropped\":0,\"resultsDropped\":0,\"reboots\":0,"
-    "\"wakesTimer\":0,\"wakesRadio\":0,\"wakesSpurious\":0,\"wakesSilent\":0}";
+    "\"wakesTimer\":0,\"wakesRadio\":0,\"wakesSpurious\":0,\"wakesSilent\":0,"
+    "\"wakesMidway\":0}";
 
 // A `mm::IUplink` that answers and keeps what it was given: what the loop posted, verbatim.
 class CapturingUplink final : public mm::IUplink {

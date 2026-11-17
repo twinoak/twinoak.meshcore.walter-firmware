@@ -7,17 +7,26 @@
 // record (core/cycle/wake_reason.h) knows all three and holds ten wakes of them in RTC memory,
 // which a power cut takes; nothing crossed to the server at all.
 //
-// So four running totals, beside the ones a heartbeat already carries:
+// So four running totals, beside the ones a heartbeat already carries - and a fifth since task
+// p15-06:
 //
 //   timer      the check-in: the sleep timer came round.
 //   radio      the radio's line, with a valid EV_ATTENTION inside §8's window - a wake somebody
 //              asked for.
 //   spurious   the radio's line, and nothing valid inside it.
 //   silent     a wake that **sent nothing**, whatever woke it.
+//   midway     a wake that **did not reach sleep** (task p15-06): the bound on a wake ended it,
+//              it crashed, or the chip's own watchdog took it. Counted by the **boot after**,
+//              which is the only thing that can - a wake ended by a reset counts nothing - and
+//              from the one thing that can tell it from a power cut, the retained record of
+//              where that wake was (core/cycle/wake_progress.h). It is not one of the three a
+//              server cannot see; it is the one meshmaster.dk's page could not see *move*, and
+//              on the night of 17 November 2026 two of them cost the unit two hours.
 //
 // A reason that is none of the first three - a person's cable, a power-on, a reset, a crash, a
-// watchdog - moves none of them: these count the three a server cannot see, not every wake there
-// is, and the heartbeat's own record carries the total of those.
+// watchdog - moves none of the first three: they count the three a server cannot see, not every
+// wake there is, and the heartbeat's own record carries the total of those. `midway` is about the
+// wake *before* and is counted whatever woke this one.
 //
 // **Kept as `httpFailures` is**: a running total, across a deep sleep and a power cut. The
 // library keeps its own inside `mm::WakeState`, which goes to the settings store as hex under
@@ -29,10 +38,10 @@
 //
 // **It is core/'s and not agent/'s** although only a heartbeat reads it: the wake cycle is what
 // knows why a wake happened and whether it sent anything, and it cannot name components/agent/
-// (agent/ is built on core/, not the other way round). What agent/ takes is the four numbers.
+// (agent/ is built on core/, not the other way round). What agent/ takes is the numbers.
 //
 // **What it costs the flash.** One value of the store a wake, and only when a total moved - so a
-// wake that is none of the four writes nothing here at all. An ordinary timer wake moves `timer`
+// wake that moves none of them writes nothing here at all. An ordinary timer wake moves `timer`
 // and costs one write of 34 characters beside the one `agent_state` already made.
 //
 // Logic: no ESP-IDF include, no heap, every byte of state a member of this object.
@@ -48,23 +57,33 @@
 namespace core {
 namespace cycle {
 
-// The key, and what is kept under it: a version byte and the four totals, little-endian.
+// The key, and what is kept under it: a version byte and the totals, little-endian.
 constexpr const char kWakeCountersKey[] = "agent_wakes";
-constexpr std::uint8_t kWakeCountersVersion = 1;
-constexpr std::size_t kWakeCountersBytes = 1 + 4 * sizeof(std::uint32_t);
+// **Version 2 is the five of task p15-06**, and version 1's four are still read: a unit that has
+// run 0.1.8 has four totals in its store and they are months of counting. `decode()` takes
+// either, by the length of the value and the version byte in it; `save()` writes version 2. So
+// the release that carries this keeps the four and starts the fifth at 0, which is the honest
+// figure for a total nothing had counted.
+constexpr std::uint8_t kWakeCountersVersion = 2;
+constexpr std::uint8_t kWakeCountersVersionV1 = 1;
+constexpr std::size_t kWakeCountersBytes = 1 + 5 * sizeof(std::uint32_t);
+constexpr std::size_t kWakeCountersBytesV1 = 1 + 4 * sizeof(std::uint32_t);
 constexpr std::size_t kWakeCountersHexBytes = 2 * kWakeCountersBytes + 1;
+constexpr std::size_t kWakeCountersHexBytesV1 = 2 * kWakeCountersBytesV1 + 1;
+static_assert(kWakeCountersBytesV1 < kWakeCountersBytes, "v1 is the shorter one");
 static_assert(kWakeCountersHexBytes - 1 <= interfaces::kKeyValueMax,
               "the wake counters have to fit one value of the store");
 
-// How many `errors` entries these four take in a heartbeat. Named here so that the array can be
+// How many `errors` entries these take in a heartbeat. Named here so that the array can be
 // sized from it rather than from a number somebody has to keep in step.
-constexpr int kWakeCounterCount = 4;
+constexpr int kWakeCounterCount = 5;
 
 struct WakeTotals {
   std::uint32_t timer = 0;
   std::uint32_t radio = 0;
   std::uint32_t spurious = 0;
   std::uint32_t silent = 0;
+  std::uint32_t midway = 0;
 };
 
 // Saturating 16-bit counters, for the reason `agent::CallLogCounters` gives: this object is in
@@ -100,6 +119,11 @@ class WakeCounters {
   // of a wake, and a second call in the same wake counts nothing.
   void countSent(interfaces::Reached reached);
 
+  // ... and that the wake **before** this one did not reach sleep (task p15-06). Called once a
+  // boot by the step that reads the retained record of where that wake was
+  // (core/cycle/wake_cycle.h, journalMidway()); a second call in the same boot counts nothing.
+  void countMidway();
+
   // The totals to the store, **only when one moved**. True when there was nothing to write or
   // the write went through.
   bool save();
@@ -120,6 +144,7 @@ class WakeCounters {
   bool dirty_ = false;
   bool wake_counted_ = false;
   bool sent_counted_ = false;
+  bool midway_counted_ = false;
   WakeCounterWrites writes_;
 };
 

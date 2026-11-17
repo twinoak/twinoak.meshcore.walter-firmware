@@ -274,9 +274,16 @@ bool ModemUplink::call(CallKind what, const char* endpoint, const std::uint8_t* 
 
   ReplySink sink(reply_, sizeof reply_ - 1);
   counters_.requests = saturate(counters_.requests);
+  // **Which call is out, written down while it is out** (task p15-06): one line of RTC memory,
+  // so that a wake ended inside this call - the 30-second command timeout a failing observations
+  // post costs is the shape this unit has - leaves the call's name for the boot after. The name
+  // is the one `agent calls` prints, because a reader should not have two vocabularies for one
+  // thing.
+  if (progress_ != nullptr) progress_->callIsOut(callKindName(what));
   const core::net::Result r = body == nullptr
                                   ? http_.get(full_url_, options, sink)
                                   : http_.post(full_url_, body, body_len, "application/json", options, sink);
+  if (progress_ != nullptr) progress_->callCameBack();
   wipeSecret();
 
   reply_len = sink.length();

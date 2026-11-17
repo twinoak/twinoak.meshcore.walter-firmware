@@ -96,6 +96,12 @@ constexpr std::uint16_t kTrialEvidence = 0x0008;
 // nothing was ever sent. Its own kind for the same reason as the evidence above - the *rolled
 // back* entry's 48 bytes are full - and written immediately after it.
 constexpr std::uint16_t kTrialUplink = 0x0009;
+// **Where the wake before this boot was when it was ended** (task p15-06,
+// core/cycle/wake_progress.h): the step, the call that was out or the job that was being run, and
+// for how long. Written by the boot that reads the retained record, and only when that record
+// says the wake did not reach sleep - so it is one line a fault costs and no line at all for the
+// ordinary wake, which is the rule kWakeCycle's own entry is held to.
+constexpr std::uint16_t kWakeMidway = 0x000A;
 }  // namespace kind
 
 struct Entry {

@@ -15,14 +15,19 @@ DutyCycle::DutyCycle(interfaces::Sleeper& sleeper, board::RadioPins& pins,
       health_(health),
       settings_(settings),
       reason_(retained, clock),
+      progress_(retained, clock),
       guard_(clock, restart, health),
-      sleep_(sleeper, pins, radio, uplink, reason_, clock, wall, update, self, journal),
+      sleep_(sleeper, pins, radio, uplink, reason_, progress_, clock, wall, update, self, journal),
       attentions_(supervisor) {}
 
 void DutyCycle::begin() {
   // The USB host is read before anything else: it is what turns every wake into "a person is
   // here", and the bound on a wake is held off by it.
   const bool host = sleeper_.usbHost();
+  // Where the wake before this one was, out of the record, and this wake's own begun - **before**
+  // the wake reason, because reading why we woke can block for the whole of §8's repeat window
+  // and a wake that is reset inside that window should still leave word (task p15-06).
+  progress_.begin();
   reason_.begin(health_.thisBoot(), sleeper_.wokeBy(), host,
                 attentions_.there() ? &attentions_ : nullptr);
   guard_.usbHostIs(host);
@@ -118,6 +123,9 @@ SleepResult DutyCycle::sleepFor(std::uint32_t seconds, bool by_hand) {
 
 bool DutyCycle::tick() {
   guard_.usbHostIs(sleeper_.usbHost());
+  // The wake is still going, at this second of it (task p15-06): the one place that is asked as
+  // the loop turns, so *for how long* has an answer for a wake nothing finer wrote down again.
+  progress_.stillAwake();
   return guard_.tick();
 }
 

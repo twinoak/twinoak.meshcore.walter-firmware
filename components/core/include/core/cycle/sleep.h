@@ -163,6 +163,12 @@ bool decode(const update::Entry& entry, Payload* out);  // false unless it is a 
 
 // -- the object ---------------------------------------------------------------------------------
 
+// Where the wake is (task p15-06, core/cycle/wake_progress.h). **Declared and not included**: a
+// Sleep holds a reference to one and nothing here reads it, and that header carries an overload of
+// `decode()` of its own - pulling it in would make `decode(entry, nullptr)` ambiguous for every
+// reader of this one.
+class WakeProgress;
+
 class Sleep {
  public:
   // The update machine, the self-update and the journal are pointers because a build can be
@@ -170,7 +176,8 @@ class Sleep {
   // machine over flash that is not there). Without a journal nothing is written down and the
   // retained wake log is all there is, which `wake` says.
   Sleep(interfaces::Sleeper& sleeper, board::RadioPins& pins, link::client::Client& radio,
-        uplink::UplinkPolicy& uplink, WakeReason& wake, interfaces::Clock& clock,
+        uplink::UplinkPolicy& uplink, WakeReason& wake, WakeProgress& progress,
+        interfaces::Clock& clock,
         interfaces::WallClock& wall, update::RadioUpdate* update = nullptr,
         update::SelfUpdate* self = nullptr, update::Journal* journal = nullptr);
 
@@ -202,6 +209,7 @@ class Sleep {
   link::client::Client& radio_;
   uplink::UplinkPolicy& uplink_;
   WakeReason& wake_;
+  WakeProgress& progress_;
   interfaces::Clock& clock_;
   interfaces::WallClock& wall_;
   update::RadioUpdate* update_ = nullptr;

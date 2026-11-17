@@ -4005,6 +4005,7 @@ void Console::wake() {
   // record use (`interfaces::describe`), with the seconds when a wait was what it was.
   for (std::size_t i = 0; i < duty_->reason().count(); ++i) {
     const cycle::WakeEntry& e = duty_->reason().at(i);
+    bool said_where = false;
     char did[4] = {'?', '?', '?', 0};
     if ((e.did & cycle::kDidSaid) != 0) {
       did[0] = (e.did & cycle::kDidModem) != 0 ? 'M' : '-';
@@ -4020,6 +4021,12 @@ void Console::wake() {
       print(" - this wake");
     } else if (e.lasted_s == 0) {
       print("; it never reached sleep (a reset, a crash or the bound)");
+      // **And what it was in the middle of** (task p15-06). The retained record holds one wake's
+      // worth of that and the wake before this boot is the one it holds, so the clause goes on
+      // entry 1 and nowhere else; `before().endedMidway()` is what says there is anything to put
+      // there at all - an older firmware's boot, or a power cut, leaves nothing and this prints
+      // nothing, which is the honest answer for one.
+      said_where = i == 1 && duty_->progress().before().endedMidway();
     } else {
       printf("; awake %lu s", static_cast<unsigned long>(e.lasted_s));
     }
@@ -4042,6 +4049,13 @@ void Console::wake() {
       printf("; nothing sent: %s", interfaces::describe(sent));
     }
     print("\n");
+    // A line of its own, because the phrase and the entry together do not fit a 100-column
+    // terminal and every line this firmware prints does (task p15-06).
+    if (said_where) {
+      char where[120];
+      (void)cycle::describeWhere(duty_->progress().before(), where, sizeof where);
+      printf("       it was in: %s\n", where);
+    }
   }
 }
 
@@ -4256,6 +4270,19 @@ void Console::printJournalEntry(std::size_t number, const update::Entry& entry) 
       cycle::WakePayload p;
       if (!cycle::decode(entry, &p)) break;
       printWakeEntry(number, entry, p);
+      return;
+    }
+    case update::kind::kWakeMidway: {
+      cycle::MidwayPayload p;
+      if (!cycle::decode(entry, &p)) break;
+      char said[120];
+      (void)cycle::describeWhere(p.where, said, sizeof said);
+      // Two lines, and for the reason `wake`'s list prints two: a journal line's own prefix and
+      // this phrase do not fit a 100-column terminal together.
+      printf("  %2lu. seq %lu: the wake before did not reach sleep (%s)\n",
+             static_cast<unsigned long>(number), static_cast<unsigned long>(entry.seq),
+             cycle::name(static_cast<cycle::Wake>(p.wake)));
+      printf("       it was in: %s\n", said);
       return;
     }
     case update::kind::kAgentAttention: {

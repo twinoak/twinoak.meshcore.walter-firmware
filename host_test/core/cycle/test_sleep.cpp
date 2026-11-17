@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/cycle/sleep.h"
+#include "core/cycle/wake_progress.h"
 #include "core/link/codec/wire.h"
 #include "cycle_bench.h"
 
@@ -348,9 +349,10 @@ TEST_CASE("the journal entry's payload survives a round trip, and another kind's
   e.payload[27] = 0;
   e.size = core::cycle::kPayloadBytes - 1;
   CHECK_FALSE(core::cycle::decode(e, &back));
-  // Nor is a null out.
+  // Nor is a null out. The type is named because `core::cycle::decode` is overloaded for three
+  // payloads now (the wake's, and task p15-06's) and a bare `nullptr` names none of them.
   e.size = core::cycle::kPayloadBytes;
-  CHECK_FALSE(core::cycle::decode(e, nullptr));
+  CHECK_FALSE(core::cycle::decode(e, static_cast<core::cycle::Payload*>(nullptr)));
 }
 
 TEST_CASE("a build with no journal sleeps all the same: the retained wake log is all there is") {
@@ -358,7 +360,10 @@ TEST_CASE("a build with no journal sleeps all the same: the retained wake log is
   bench::CycleWalter v(world);
   core::cycle::WakeReason reason(world.retained, world.clock);
   reason.begin(v.health.thisBoot(), interfaces::WokeBy::kTimer, false, nullptr);
-  core::cycle::Sleep sleep(v.sleeper, v.board, v.link, v.uplink, reason, world.clock, world.wall);
+  core::cycle::WakeProgress progress(world.retained, world.clock);
+  progress.begin();
+  core::cycle::Sleep sleep(v.sleeper, v.board, v.link, v.uplink, reason, progress, world.clock,
+                           world.wall);
   core::power::IntervalPolicy policy;
   policy.addSample(3800, -20);
   const SleepResult r = sleep.go(policy.decide(core::power::Inputs{}), true);

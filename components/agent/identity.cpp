@@ -155,13 +155,14 @@ const mm::HeartbeatFlood* fillFlood(mm::HeartbeatFlood* out, const char* scope,
 
 int addWakeCounters(mm::ErrorCounter* out, int count, int capacity,
                     const core::cycle::WakeTotals& totals) {
-  // All four or none: a body with three of them would read on the page as a counter that had
-  // stopped moving, which is the opposite of what they are for.
+  // All of them or none: a body with four of the five would read on the page as a counter that
+  // had stopped moving, which is the opposite of what they are for.
   if (out == nullptr || count < 0 || count + core::cycle::kWakeCounterCount > capacity) return count;
   out[count + 0] = mm::ErrorCounter{kWakesTimerKey, static_cast<long long>(totals.timer)};
   out[count + 1] = mm::ErrorCounter{kWakesRadioKey, static_cast<long long>(totals.radio)};
   out[count + 2] = mm::ErrorCounter{kWakesSpuriousKey, static_cast<long long>(totals.spurious)};
   out[count + 3] = mm::ErrorCounter{kWakesSilentKey, static_cast<long long>(totals.silent)};
+  out[count + 4] = mm::ErrorCounter{kWakesMidwayKey, static_cast<long long>(totals.midway)};
   return count + core::cycle::kWakeCounterCount;
 }
 

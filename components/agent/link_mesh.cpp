@@ -687,7 +687,7 @@ void LinkMesh::cancelWait() {
 
 bool LinkMesh::await(bool text, std::uint32_t tag, std::uint32_t timeoutMs, void (*pump)()) {
   if (job_.local) {
-    return localAwait(text, tag);
+    return localAwait(text, tag);  // the local door answers at once: nothing is waited on
   }
   if (await_ == Await::kNone) {
     return false;  // nothing was sent, or the radio restarted since
@@ -695,6 +695,10 @@ bool LinkMesh::await(bool text, std::uint32_t tag, std::uint32_t timeoutMs, void
   // The runner's own timeout, plus the margin a reply that reached the RAK at the last moment
   // needs to cross the UART. The event is what is waited for; the clock is this end's.
   const std::uint64_t deadline = clock_.nowMs() + timeoutMs + kReplyMarginMs;
+  // And that this end is waiting on the link, for the boot after a wake that was ended in here
+  // (task p15-06). Cleared at every way out of this method, which is why it is written once here
+  // and once at the end rather than beside each `break`.
+  if (progress_ != nullptr) progress_->waitingOnLink(true);
   for (;;) {
     client_.poll();
     takeMeshReplies();
@@ -713,6 +717,7 @@ bool LinkMesh::await(bool text, std::uint32_t tag, std::uint32_t timeoutMs, void
     clock_.delayMs(kPollMs);
   }
   if (await_ == Await::kNone) {
+    if (progress_ != nullptr) progress_->waitingOnLink(false);
     return false;  // the radio restarted under the wait (onRadioRestart): nothing to ask for
   }
   if (!resolved_) {
@@ -735,6 +740,8 @@ bool LinkMesh::await(bool text, std::uint32_t tag, std::uint32_t timeoutMs, void
   const bool resolved = resolved_;
   await_ = Await::kNone;
   resolved_ = false;
+  // The wait is over, whichever way it went (task p15-06).
+  if (progress_ != nullptr) progress_->waitingOnLink(false);
   if (!resolved) {
     return false;
   }

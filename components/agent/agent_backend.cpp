@@ -61,13 +61,60 @@ void shortKey(const std::uint8_t* key, char* out) {
   out[2 * kKeyShownBytes] = 0;
 }
 
+// The one backend whose pump the library was given (task p15-06). One on a board and one in a
+// test at a time; a backend begun later takes it, which is what a test with two lives of the
+// Walter over one world wants - the same arrangement `WalterPlatform`'s log sink uses.
+AgentBackend* g_pump_owner = nullptr;
+
 }  // namespace
 
 AgentBackend::AgentBackend(const Parts& parts, interfaces::Clock& clock, interfaces::WallClock& wall)
     : p_(parts), clock_(clock), wall_(wall) {}
 
+AgentBackend::~AgentBackend() {
+  if (g_pump_owner == this) g_pump_owner = nullptr;
+}
+
+// **Where the wake is, at every wait the library takes.** `mm::JobRunner::openJob()` is the job
+// `claimAndRun` has in hand - the library sets it before it dispatches and clears it after, so it
+// covers a mesh job, a local-door job and a firmware job of this board's own extension alike -
+// and `LinkMeshCounters::requests` is every §6 request that went out. Neither is a change to the
+// copied library: both are what it already offers.
+void AgentBackend::noteProgress() {
+  if (p_.duty == nullptr) return;
+  core::cycle::WakeProgress& progress = p_.duty->progress();
+  const mm::ClaimedJob* job = p_.jobs != nullptr ? p_.jobs->openJob() : nullptr;
+  if (job == nullptr) {
+    progress_job_ = 0;
+    progress.jobEnded();
+    return;
+  }
+  const std::uint32_t made = p_.mesh != nullptr ? p_.mesh->linkCounters().requests : 0;
+  const std::uint32_t id = static_cast<std::uint32_t>(static_cast<unsigned long long>(job->id));
+  if (id != progress_job_) {
+    progress_job_ = id;
+    progress_requests_at_ = made;
+  }
+  progress.jobIsRunning(job->type, made >= progress_requests_at_ ? made - progress_requests_at_ : 0);
+}
+
+void AgentBackend::pumpAndNote() {
+  AgentBackend* owner = g_pump_owner;
+  if (owner == nullptr) return;
+  owner->noteProgress();
+  if (owner->pump_ != nullptr) owner->pump_();
+}
+
 void AgentBackend::begin(void (*pump)()) {
   pump_ = pump;
+  g_pump_owner = this;
+  pump = &AgentBackend::pumpAndNote;
+  if (p_.server != nullptr && p_.duty != nullptr) {
+    p_.server->writeProgressTo(&p_.duty->progress());
+  }
+  if (p_.mesh != nullptr && p_.duty != nullptr) {
+    p_.mesh->writeProgressTo(&p_.duty->progress());
+  }
   if (p_.jobs == nullptr || p_.loop == nullptr || p_.mesh == nullptr || p_.server == nullptr ||
       p_.platform == nullptr || p_.identity == nullptr) {
     return;
@@ -490,6 +537,12 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   }
 
   if (talk != nullptr) printReport(*talk);
+
+  // The exchange is over, so no job is being run in it (task p15-06): the pump writes the job
+  // down at every wait the library takes, and this is the edge where the last one ends. Without
+  // it a wake that was ended after its exchange - at step 9 or step 10 - would read as a wake
+  // still in the last job the runner had open.
+  noteProgress();
 
   // How it went, in the seam's three words. A heartbeat the server did not answer is the
   // exchange failing (news for the journal); a wake that did nothing because it had nobody to

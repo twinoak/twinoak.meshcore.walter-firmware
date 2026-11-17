@@ -219,15 +219,32 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
     std::size_t kept_scratch_len = 0;
     core::cycle::DutyCycle* duty = nullptr;
     core::update::SelfUpdate* self = nullptr;
+
     core::update::RadioUpdate* update = nullptr;
   };
 
   AgentBackend(const Parts& parts, interfaces::Clock& clock, interfaces::WallClock& wall);
+  // The library holds a plain function pointer to this object's pump (task p15-06), so the owner
+  // that pointer finds has to go when this object does.
+  ~AgentBackend() override;
 
   // Once a boot, before the first wake: the runner and the loop begun over the seams, the
   // identity handed over, the extension set, the state restored, the kept image read back.
   // `pump` is what the runner's idle waits run (docs/library.md §6 step 3): the console's.
+  //
+  // **The pump the library is given is this object's and not the caller's** (task p15-06): it
+  // writes down which job is being run before it runs the caller's. That is the one hook the
+  // copied library gives a board inside a job - `IPlatform::delayMs` and the runner's own waits
+  // call it - and `mm::JobRunner::openJob()` is where the job's type comes from, so a wake ended
+  // inside a job leaves the job's type and its requests of the radio without a line of the
+  // library changing.
   void begin(void (*pump)());
+
+  // Where this wake is, from what the runner and the mesh say now: the job being run and how many
+  // requests of the radio or the mesh it has made, or that none is. Called by the pump above at
+  // every wait the library takes, and at the two edges of an exchange. Cheap and idempotent -
+  // `core::cycle::WakeProgress` writes nothing unless something moved.
+  void noteProgress();
 
   // ------------------------------------------------------------------ interfaces::Backend
   interfaces::Exchanged exchange(const interfaces::BackendKnowledge& known, std::uint64_t deadline_ms,
@@ -316,10 +333,23 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   // the last ten jobs by the repeater they named - which the library's report has no field for.
   void sayLocalDoor(interfaces::TextOut& out) const;
 
+  // The pump the library is given (task p15-06): this writes down where the wake is and then
+  // runs the caller's. A plain function and a file-static owner, because that is what the library
+  // takes - the same arrangement `WalterPlatform`'s log sink uses, and a backend constructed
+  // later takes it, which is what a test with two lives of the Walter wants.
+  static void pumpAndNote();
+
   Parts p_;
   interfaces::Clock& clock_;
   interfaces::WallClock& wall_;
   void (*pump_)() = nullptr;
+  // The job the pump last wrote down, and what the mesh's request counter stood at when it began:
+  // the record carries the requests **this job** made, and `LinkMeshCounters::requests` counts
+  // from the boot. The id's low 32 bits and not the whole of it: every byte of this object is
+  // static storage (`tools/heap_at_start.py`), and what this is asked is *is it the same job*,
+  // which two meshmaster.dk ids four thousand million apart in one wake would not disturb.
+  std::uint32_t progress_job_ = 0;
+  std::uint32_t progress_requests_at_ = 0;
   bool begun_ = false;
   bool state_survived_ = false;
   // Beside the two bools and not beside the two figures it belongs to: it costs nothing in the

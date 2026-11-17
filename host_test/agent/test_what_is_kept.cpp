@@ -374,20 +374,21 @@ TEST_CASE("the heartbeat carries what woke this unit, and the four survive a sle
   CHECK(bench.v().wake_counters.totals().silent == 1);
 }
 
-TEST_CASE("the body a wake posts carries the four, and its errors fit the server's bound") {
+TEST_CASE("the body a wake posts carries the five, and its errors fit the server's bound") {
   AgentBench bench(nullptr, false);
   bench.modemWorks();
   (void)bench.oneWake();
   REQUIRE_FALSE(bench.server().heartbeats.empty());
   const std::string body = bench.server().heartbeats.back();
   INFO(body);
-  for (const char* key : {"wakesTimer", "wakesRadio", "wakesSpurious", "wakesSilent"}) {
+  for (const char* key : {"wakesTimer", "wakesRadio", "wakesSpurious", "wakesSilent",
+                          "wakesMidway"}) {
     CHECK(has(body, std::string("\"") + key + "\""));
   }
-  // The library's six, this board's `radioIdentityLost` when the radio refuses, and these four:
+  // The library's six, this board's `radioIdentityLost` when the radio refuses, and these five:
   // meshmaster.dk serialises the whole object and refuses a heartbeat whose `errors` passes
   // `AgentLimits.Json` - **4 000 characters** (`src/MeshMaster.Core/Transport/Agents.cs`), which
-  // takes the exit node off the air. Eleven counters are nowhere near it, and this is what holds
+  // takes the exit node off the air. Twelve counters are nowhere near it, and this is what holds
   // that true at the next counter somebody adds.
   constexpr std::size_t kServerJsonBound = 4000;
   const std::string errors = errorsObjectOf(body);
@@ -397,7 +398,7 @@ TEST_CASE("the body a wake posts carries the four, and its errors fit the server
   // And the body itself fits the buffer the uplink writes it into.
   CHECK(body.size() < agent::kHeartbeatBodyBytes);
 
-  // The console prints the same four, from the same function: `agent heartbeat` is not a second
+  // The console prints the same five, from the same function: `agent heartbeat` is not a second
   // opinion about what a wake sends.
   bench.v().begin();
   (void)bench.v().runLine("lte up");

@@ -366,6 +366,16 @@ std::size_t recordLine(const Pass& pass, char* out, std::size_t cap);
 // what crosses the backend seam.
 void stepLetters(const Pass& pass, char* out, std::size_t cap);
 
+// **Where a wake was when it was ended**, as one phrase, into `out` (at most `cap` bytes, always
+// terminated): task p15-06, `core/cycle/wake_progress.h`. The step's number and its name, the
+// call that was out or the job that was being run and how many requests it had made, what was
+// being waited on, and for how long. It is here and not beside the record because the step's
+// names are this file's, and it is what the journal line, `wake`'s list of ten and the report's
+// `wakes` section all print - one phrase, three readers. The format is docs/cycle.md's and a
+// host test holds the two together. It carries no key, no id and nothing the mesh said: a job
+// type and a call name, both of a closed list.
+std::size_t describeWhere(const WakeWhere& where, char* out, std::size_t cap);
+
 // -- the journal entry: kind::kWakeCycle, 37 bytes ---------------------------------------------
 //
 //    0  wake        u8   a core::cycle::Wake
@@ -491,6 +501,8 @@ class WakeCycle {
   std::uint32_t leftMs() const;
   // The journal, when the wake has news.
   void journalWake();
+  // ... and one line for the wake before this boot, when it did not reach sleep (task p15-06).
+  void journalMidway();
   // **Why nothing was sent**, when a step settles it (task p13-02): into this pass - which the
   // record line and the journal entry are written from - and into this wake's own entry in
   // retained storage, which is what `wake` prints a boot later. One reading, two readers, as
@@ -561,6 +573,9 @@ class WakeCycle {
   // What a console command asked for and the next pass has not carried out yet: askBit() bits.
   std::uint8_t wanted_ = 0;
   bool running_ = false;
+  // Whether the word about the wake before has been said: once a boot, not once a pass, because
+  // `cycle now` is a second pass of the same boot (task p15-06).
+  bool midway_said_ = false;
   std::uint64_t began_ms_ = 0;
   std::uint64_t step_began_ms_ = 0;
   // The radio's clock, as step 4's STATUS reported it.

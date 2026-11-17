@@ -82,6 +82,7 @@ Two marks:
 | [17](#17-the-agent) | The agent | §3, a second repeater on the bench; §12 and a token for the uplink's items |
 | [18](#18-a-day-as-an-exit-node) ★ | A day as an exit node | §§16–17, a token, a release on the server |
 | [19](#19-a-night-that-is-not-silent) ★ | A night that is not silent | §18, the unit on the battery with the cable out |
+| [25](#25-what-a-wake-was-doing-when-it-was-ended) | What a wake was doing when it was ended | §18, the cable pulled in the middle of a wake |
 | [—](#what-to-bring-back) | **What to bring back** | the numbers, in one table |
 
 The numbers above are this walk's, in walking order; the task files' own section numbers are not
@@ -2452,6 +2453,55 @@ is the walk after the release.
       that wake's line says `the sleep was shortened` and `next 5 min`, and `image list` says
       `empty; a transfer of sha256 … stopped at N of M bytes`. The next wake resumes from N and the
       wake after the download finishes is back to `next 15 min`.
+
+## 25. What a wake was doing when it was ended
+
+From task p15-06 (`core/cycle/wake_progress.h`). The night of 17 November 2026 ended two wakes by
+the bound - 01:29 and 02:05 UTC, each holding meshmaster.dk's hourly `status` job of this unit's
+own repeater - and nothing anywhere said what those five minutes had been spent on. One retained
+line now does. These items are whether that line is written and whether the boot after prints it;
+**nothing here changes what the unit does**, only what it says it did.
+
+- [ ] ★ **A wake held past its bound, and what the next boot says.** With the cable in,
+      `stay off` first (the bound does not apply while `stay` is on), then `agent wake` on a unit
+      whose server is reachable - and **pull the cable** while the exchange is running. A minute
+      of USB grace later the wake's bound ends it by reset. Plug the cable back in and read:
+
+      * `wake`'s list of ten: the entry under *this wake* says *it never reached sleep (a reset,
+        a crash or the bound)* and under it, on a line of its own, `it was in: step 8 (backend),
+        …`. **No line may run past 100 columns.**
+      * `journal`: two lines, *the wake before did not reach sleep (watchdog)* and the same
+        `it was in:` phrase. A *watchdog* and not a *reset*: this firmware's own bound records
+        who asked (`core/cycle/wake_guard.h`).
+      * `agent heartbeat`: `"wakesMidway":1`, and one more for each such wake after it.
+
+      What the phrase names depends on where the wake was when the cable went, and any of these is
+      a pass: `a \`status\` job, N request(s)`, `the call out: \`heartbeat\``, or the step alone.
+      What would be a **failure** is `no step written down` - that would mean the wake cycle is
+      not writing the step as it goes.
+
+- [ ] **A bench session that ends tidily leaves no word.** `stay on`, wait, `stay off`, let the
+      wake sleep: the next boot's `wake` has no `it was in:` line anywhere and `journal` has no
+      *did not reach sleep* entry. And a boot with the cable in that is simply reset by hand - no
+      `cycle now`, no `agent wake` - leaves none either: it never ran a step, which is not a
+      fault.
+
+- [ ] **`wakesMidway` on the exit node's page.** After the item above, *Fetch now* on the
+      Diagnostics tab and the counter is there beside `wakesTimer`, `wakesRadio`,
+      `wakesSpurious` and `wakesSilent`. A unit that has run 0.1.8 keeps those four across the
+      update: the stored value is read in either shape.
+
+- [ ] **A power cut leaves the word behind and keeps the total.** Pull the power while a wake is
+      running, then power up: `wake` has no `it was in:` line (RTC memory went with the power,
+      which is honest), and `agent heartbeat`'s `wakesMidway` is what it was - the settings store
+      is flash.
+
+- [ ] **The telemetry ring starts again, once.** The first boot of the release that carries this
+      task reads no telemetry record: its retained slot gave twelve bytes to the new one and a
+      record of another room is not the same record. `wake cycle` shows no kept readings at that
+      one boot, and the boot after it has them again. Nothing else of RTC memory is lost - the
+      boot log, the supervisor's day, the uplink's backoff, the TLS trust table and the wake log
+      are all byte for byte where they were.
 
 ## What to bring back
 
