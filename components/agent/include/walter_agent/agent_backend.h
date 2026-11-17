@@ -345,8 +345,10 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   void (*pump_)() = nullptr;
   // The job the pump last wrote down, and what the mesh's request counter stood at when it began:
   // the record carries the requests **this job** made, and `LinkMeshCounters::requests` counts
-  // from the boot.
-  long long progress_job_ = 0;
+  // from the boot. The id's low 32 bits and not the whole of it: every byte of this object is
+  // static storage (`tools/heap_at_start.py`), and what this is asked is *is it the same job*,
+  // which two meshmaster.dk ids four thousand million apart in one wake would not disturb.
+  std::uint32_t progress_job_ = 0;
   std::uint32_t progress_requests_at_ = 0;
   bool begun_ = false;
   bool state_survived_ = false;

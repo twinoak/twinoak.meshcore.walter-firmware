@@ -163,7 +163,10 @@ class WakeProgress {
 
   // Where the wake before this one was. `said` false is the first boot, a power cut, or a record
   // of another shape - and `reached_sleep` true is the ordinary wake, which has nothing to say.
-  const WakeWhere& before() const { return before_; }
+  //
+  // **By value**, because this object keeps the record's 24 bytes and not a reading of them: see
+  // the members.
+  WakeWhere before() const;
 
   // -- as the wake goes ------------------------------------------------------------------------
 
@@ -198,33 +201,44 @@ class WakeProgress {
   void reachedSleep();
   void sleepRefused();
 
-  // This wake's own record, for the console while the wake is in hand.
-  const WakeWhere& now() const { return now_; }
+  // This wake's own record, read out of the slot it lives in: for the console while the wake is
+  // in hand, and for a test. By value, for the reason `before()` is.
+  WakeWhere now() const;
 
   // Everything forgotten and the record erased, as a power cut leaves it: the bench, and a test.
   void forget();
 
  private:
-  void writeOut();
+  // The slot, in both directions. Every change is one of these each way: read, change, write.
+  bool read(WakeWhere* out) const;
+  void write(const WakeWhere& where);
+  static void unpack(const std::uint8_t* bytes, WakeWhere* out);
+  static void pack(const WakeWhere& where, std::uint8_t* bytes);
   // The second of the wake, counted from `begin()` and clamped.
   std::uint16_t second() const;
-  // A caller's string as the field holds it: at most kProgressWhatBytes bytes, NUL-padded.
+  // A caller's string as the field holds it: at most kProgressWhatBytes bytes, NUL-padded, and
+  // whether that differs from what a reading holds.
   static void cropName(const char* name, char* out);
-  bool sameName(const char* name) const;
-  // `what` from a caller's string. True when it changed.
-  bool nameIs(const char* name);
+  static bool nameIs(const char* name, WakeWhere* where);  // true when it changed
 
   interfaces::Retained& retained_;
   interfaces::Clock& clock_;
-  WakeWhere before_{};
-  WakeWhere now_{};
-  // The job in hand, outside the record: its type and the second it began at, so that a call
-  // made inside it can put both back when it comes back (see `callCameBack()`). It is the one
-  // thing this object keeps that RTC memory has no room for and nothing needs after a reset -
-  // the record itself is what crosses one.
+  // **The wake before, as the record's own bytes**, latched at `begin()` because the slot is
+  // overwritten by this wake a moment later. 24 bytes and not a decoded `WakeWhere`, and
+  // **this wake's own record is not kept here at all** - it lives in the slot and is read out of
+  // it when anybody asks. Every byte of this object is static storage: it is a member of the
+  // `DutyCycle` in `main/app_main`'s, so it moves `_heap_start` and with it the heap the 20 kB
+  // kept scratch is carved out of (`tools/heap_at_start.py`, rail R22). A reading of each would
+  // have cost 60 bytes there to save a 24-byte memcpy and a CRC of RTC memory per change, which
+  // is the wrong way round.
+  std::uint8_t before_[kProgressBytes] = {};
+  // The job in hand: its type and the second it began at, so that a call made inside it can put
+  // both back when it comes back (see `callCameBack()`). The record has one name field and this
+  // is the other name - nothing needs it after a reset, so it is not in the record.
   char job_what_[kProgressWhatBytes + 1] = {};
   std::uint16_t job_since_s_ = 0;
-  std::uint64_t began_ms_ = 0;
+  std::uint32_t began_ms_ = 0;  // the low 32 bits: a wake is minutes, and this wraps in 49 days
+  bool before_said_ = false;
   bool begun_ = false;
 };
 

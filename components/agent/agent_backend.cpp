@@ -90,8 +90,9 @@ void AgentBackend::noteProgress() {
     return;
   }
   const std::uint32_t made = p_.mesh != nullptr ? p_.mesh->linkCounters().requests : 0;
-  if (job->id != progress_job_) {
-    progress_job_ = job->id;
+  const std::uint32_t id = static_cast<std::uint32_t>(static_cast<unsigned long long>(job->id));
+  if (id != progress_job_) {
+    progress_job_ = id;
     progress_requests_at_ = made;
   }
   progress.jobIsRunning(job->type, made >= progress_requests_at_ ? made - progress_requests_at_ : 0);
