@@ -1257,87 +1257,6 @@ def rail_a_release_starts(r):
 
 # ---- the rails, in one table -------------------------------------------------------------------
 
-# ---- R24: nothing but the room of a session asks for external memory (task p16-05) -------------
-
-# The one file that may name ESP-IDF's external memory at all, and the one that may ask for a
-# block of it. Everything else of this firmware - every `malloc`, every `new`, every task stack,
-# `.data`, `.bss`, and everything the copied library allocates - stays internal, because nothing
-# this board needs in order to boot, to keep its radio, to update or to reach the server may come
-# to depend on a PSRAM chip answering.
-PSRAM_PLATFORM = "components/platform/heap.cpp"
-PSRAM_SEAM = "components/interfaces/include/interfaces/scratch.h"
-PSRAM_ONE_CALLER = "components/core/update/scanner_session.cpp"
-# ESP-IDF's names for external memory. `MALLOC_CAP_SPIRAM` is how a block of it is asked for;
-# `esp_psram` is the component that brings it up; the two attributes put static storage there.
-PSRAM_NAMES = r"MALLOC_CAP_SPIRAM|esp_psram|EXT_RAM_BSS_ATTR|EXT_RAM_NOINIT_ATTR|heap_caps_malloc_extmem_enable"
-# The lines of sdkconfig.defaults that keep the configuration what the rail says it is.
-PSRAM_CONFIG = (
-    "CONFIG_SPIRAM_BOOT_INIT=n",            # brought up by the room and at no other moment
-    "CONFIG_SPIRAM_USE_CAPS_ALLOC=y",       # malloc() stays internal
-    "CONFIG_SPIRAM_IGNORE_NOTFOUND=y",      # a board with none, or the other kind, still boots
-)
-PSRAM_CONFIG_FORBIDDEN = (
-    "CONFIG_SPIRAM_USE_MALLOC=y",
-    "CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y",
-    "CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y",
-    "CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y",
-    "CONFIG_SPIRAM_RODATA=y",
-)
-
-
-def rail_only_the_room_is_external(r):
-    """Task p16-05: the module's PSRAM has one job, the room a step of a session lays a scanner's
-    lines down in, and nothing else of this firmware may ask for external memory. Three things
-    hold it: ESP-IDF's names for external memory appear in one file (platform/heap.cpp, the
-    implementation of the seam); `takeExternal` is called from one file (the room of a session);
-    and `sdkconfig.defaults` keeps malloc() internal, keeps `.bss` and `.noinit` out of it, and
-    brings none of it up at boot."""
-    # -- the names: one file, and the seam that declares what it is for
-    allowed = (PSRAM_PLATFORM, PSRAM_SEAM)
-    hits = [h for h in grep(PSRAM_NAMES, sources("components", "main")) if h[0] not in allowed]
-    r.problems(shown(hits),
-               "external memory is named outside %s: the PSRAM has one job and this is not it:"
-               % PSRAM_PLATFORM)
-    r.looked_at("%s and %s are the only files of components/ and main/ whose code names "
-                "MALLOC_CAP_SPIRAM, esp_psram or an EXT_RAM_* attribute"
-                % (PSRAM_PLATFORM, PSRAM_SEAM))
-
-    # -- the one caller: the seam declares takeExternal, the room of a session calls it
-    callers = sorted({h[0] for h in grep(r"takeExternal", sources("components", "main"))})
-    expected = sorted({PSRAM_SEAM, PSRAM_PLATFORM, PSRAM_ONE_CALLER,
-                       "components/platform/include/platform/heap.h"})
-    if callers != expected:
-        r.broken("takeExternal() is named by other files than the seam, its implementation and "
-                 "the room of a session:", ["found: " + ", ".join(callers)])
-    r.looked_at("takeExternal() is declared in %s, implemented in %s and called from %s - the "
-                "room of a session, through takeStepRoom()" % (PSRAM_SEAM, PSRAM_PLATFORM,
-                                                               PSRAM_ONE_CALLER))
-
-    # -- the configuration
-    r.problems(must_contain("sdkconfig.defaults", *PSRAM_CONFIG),
-               "sdkconfig.defaults no longer keeps the PSRAM to the one job:")
-    config = read("sdkconfig.defaults")
-    bad = ["sdkconfig.defaults sets %s" % line for line in PSRAM_CONFIG_FORBIDDEN
-           if any(l.strip() == line for l in config.splitlines())]
-    r.problems(bad, "sdkconfig.defaults would put something other than the room in the PSRAM:")
-    r.looked_at("sdkconfig.defaults: BOOT_INIT off, CAPS_ALLOC (malloc() internal), "
-                "IGNORE_NOTFOUND on, and no .bss, .noinit, instructions or rodata in it")
-
-    # -- and the tests that hold what a grep cannot: the pattern, the fall-back, the three states
-    r.problems(must_exist("host_test/core/update/test_scanner_session_room.cpp"),
-               "the tests of the room and its pattern are gone:")
-    r.problems(must_contain("host_test/core/update/test_scanner_session_room.cpp",
-                            "externalHasADeadAddressLine", "externalWillNotComeUp",
-                            "kStepBytesExternal", "noExternal"),
-               "the tests no longer script an external memory that is absent, that will not come "
-               "up and that does not hold what is written to it:")
-    r.says("the PSRAM is named in %s alone, asked for by %s alone, and the four states of a board "
-           "- none, asleep, up, failed - are held by "
-           "host_test/core/update/test_scanner_session_room.cpp" % (PSRAM_PLATFORM,
-                                                                    PSRAM_ONE_CALLER))
-    return r
-
-
 RAILS = [
     ("R1", "nRESET is never output-high", rail_reset_never_high),
     ("R2", "radio-facing pins are inputs before KILL; two resets a second apart", rail_kill_and_spacing),
@@ -1363,8 +1282,6 @@ RAILS = [
     ("R21", "a path hash is the claim's; this firmware chooses none (S-12)", rail_path_hashes),
     ("R22", "an image whose main task would not fit is never built", rail_main_task_fits),
     ("R23", "nothing is signed that has not started in QEMU", rail_a_release_starts),
-    ("R24", "nothing but the room of a session asks for external memory",
-     rail_only_the_room_is_external),
 ]
 
 

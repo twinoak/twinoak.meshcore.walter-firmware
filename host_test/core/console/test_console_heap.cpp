@@ -17,7 +17,6 @@
 #include <string>
 
 #include "core/console/heap_report.h"
-#include "core/update/scanner_session.h"
 #include "settings_console_rig.h"
 
 using bench::hasText;
@@ -84,86 +83,6 @@ TEST_CASE("a build that was handed no heap seam says so in one line") {
   CHECK_FALSE(hasText(out, "33872"));
 }
 
-// ------------------------------------------------------- the PSRAM, and `heap room` (task p16-05)
-
-TEST_CASE("heap says which of three things this board's PSRAM is") {
-  SUBCASE("none at all") {
-    SettingsConsole c;
-    c.scratch.noExternal();
-    const std::string out = c.run("heap");
-    CHECK(hasText(out, "psram: none found - this build asks for none"));
-  }
-  SUBCASE("some, and nothing has brought it up in this boot") {
-    SettingsConsole c;
-    c.scratch.externalOf(2u * 1024u * 1024u);
-    const std::string out = c.run("heap");
-    CHECK(hasText(out, "psram: not brought up in this boot"));
-    CHECK(hasText(out, "'heap room' brings it up"));
-    // And asking does not bring it up: `heap` costs a board nothing.
-    CHECK(c.scratch.bring_ups == 0);
-  }
-  SUBCASE("asked for in this boot, and it did not come up") {
-    SettingsConsole c;
-    c.scratch.externalWillNotComeUp(2u * 1024u * 1024u);
-    c.run("heap room");
-    const std::string out = c.run("heap");
-    CHECK(hasText(out, "psram: none found - it was asked for in this boot and did not come up"));
-  }
-  SUBCASE("up, with its size and what is free of it") {
-    SettingsConsole c;
-    c.scratch.externalOf(2u * 1024u * 1024u);
-    c.run("heap room");
-    const std::string out = c.run("heap");
-    CHECK(hasText(out, "psram: 2097152 bytes, 2097152 free"));
-  }
-}
-
-TEST_CASE("heap room takes the room a session takes, prints its line and gives it back") {
-  SettingsConsole c;
-  c.scratch.externalOf(2u * 1024u * 1024u);
-  const std::string out = c.run("heap room");
-  // The session's own `room` line, with the PSRAM's figures in it.
-  CHECK(hasText(out, "room: 65536 psram of 2097152; internal 33872, block 18432"));
-  CHECK(hasText(out, "65536 bytes, external, written and read back; given back now"));
-  // 64 kB asked for by name, which is what brought the PSRAM up at all.
-  CHECK(c.scratch.bring_ups == 1);
-  CHECK(c.scratch.external_asks == 1);
-  CHECK(c.scratch.external_last_asked == core::update::kStepBytesExternal);
-  // And nothing is left taken: the line printed after it says the whole of it is free again.
-  CHECK(c.scratch.out == 0);
-  CHECK(c.scratch.gives == 1);
-  CHECK(hasText(out, "psram: 2097152 bytes, 2097152 free"));
-  // Two reads of the heap seam, which is what taking a room costs: before, and after.
-  CHECK(c.heap_report.reads == 2);
-}
-
-TEST_CASE("heap room on a board with no PSRAM prints task p16-03's own line") {
-  SettingsConsole c;
-  c.scratch.noExternal();
-  const std::string out = c.run("heap room");
-  CHECK(hasText(out, "room: 8192 of 33872, block 18432"));
-  CHECK(hasText(out, "8192 bytes, the internal heap, written and read back; given back now"));
-  CHECK_FALSE(hasText(out, "psram of"));
-  CHECK(c.scratch.out == 0);
-}
-
-TEST_CASE("heap room with neither room to be had says so and takes nothing") {
-  SettingsConsole c;
-  c.scratch.noExternal();
-  c.scratch.onlyHas(core::update::kStepBytes - 1);
-  const std::string out = c.run("heap room");
-  CHECK(hasText(out, "error: heap room: neither room could be had"));
-  CHECK(hasText(out, "the largest is 8191"));
-  CHECK(c.scratch.out == 0);
-}
-
-TEST_CASE("heap takes no argument but 'room'") {
-  SettingsConsole c;
-  CHECK(hasText(c.run("heap rooms"), "error: heap takes no argument, or 'room': rooms"));
-  CHECK(c.scratch.external_asks == 0);
-  CHECK(c.scratch.asks == 0);
-}
-
 TEST_CASE("help has the entry, and it says what the block is for") {
   SettingsConsole c;
   const std::string out = c.run("help");
@@ -172,7 +91,4 @@ TEST_CASE("help has the entry, and it says what the block is for") {
   CHECK(hasText(out, "decides whether an image starts at all"));
   // Under *the unit*, where `reboots` and `dump` are: it is about this board and no radio.
   CHECK(hasText(out, "the unit"));
-  // And `heap room`'s own entry, which is what a Walter alone proves its PSRAM with.
-  CHECK(hasText(out, "heap room"));
-  CHECK(hasText(out, "A Walter with no radio proves its"));
 }

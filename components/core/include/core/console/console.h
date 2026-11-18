@@ -250,17 +250,8 @@ class Console final : public ReportSource {
   void printLinkCounts();
   void reboots();
   // The heap now (task p11-02): the four figures of heap_report.h, and the sentence that says
-  // which of them is the one a build is held to. Since task p16-05 it has one line more, the
-  // module's PSRAM - which is no part of those figures and has one job.
+  // which of them is the one a build is held to.
   void heap();
-  // `heap room` (task p16-05): the room a session's step lays its lines down in, taken exactly as
-  // a session takes it - the PSRAM brought up, the pattern written and read back - its `room`
-  // line printed, and the room given straight back. A Walter alone on a cable proves its PSRAM
-  // with it.
-  void heapRoom();
-  // The one line about the external memory: its size and what is free of it, or that nothing has
-  // brought it up in this boot, or that none was found.
-  void printPsramLine();
   // The core dump the panic handler left behind (task p11-03): whether there is one, whether its
   // checksum holds, which slot's image wrote it, its panic line and its tasks - and the one
   // command in this firmware that erases one.

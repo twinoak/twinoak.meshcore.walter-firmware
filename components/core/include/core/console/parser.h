@@ -222,9 +222,6 @@ enum class Verb : std::uint8_t {
   kReboots,
   // The heap as the chip keeps it (task p11-02): the four figures of core/console/heap_report.h.
   kHeap,
-  // `heap room` (task p16-05): the room of a session taken exactly as a session takes it, its
-  // line printed, and given back. The one command that brings the PSRAM up on a Walter alone.
-  kHeapRoom,
   // The `coredump` partition (task p11-03): what the panic handler left behind, and the one way
   // it is ever erased.
   kCoreDump,

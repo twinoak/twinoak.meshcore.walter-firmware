@@ -89,12 +89,6 @@ struct ScriptedScanner {
       const bool measures = word == "stat" || word == "sweep" || word == "scope" ||
                             word == "hist" || word == "dwell" || word == "cad";
       if (!measures) {
-        // `stop` stops the measuring, which means the lines this scanner had not said yet are
-        // never said: a real NoiseScope's §5 `stop` ends the activity, and a session says it for
-        // exactly that reason - a step that ended `full` or on its clock with half a minute of
-        // frames still to come must not have them arrive while the golden image is going back
-        // (task p16-05).
-        if (word == "stop") radio.forgetPending();
         // `time`, `auto`, `info`, `stop`: an `ack`, and for `info` the line §5 promises.
         radio.sendLine(scannerAck(word, true, "ok"));
         if (word == "info") radio.sendLine(kScannerInfo, 10);

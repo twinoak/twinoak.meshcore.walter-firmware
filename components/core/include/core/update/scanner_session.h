@@ -84,20 +84,9 @@ extern const char* const kVerbs[kVerbCount];
 // line the scanner can send about 7.6 kB, so one of those fits whole with room beside it.
 //
 // It is **measured at every session** (the `room` entry below), so that the figure can be raised
-// later from what units say rather than from what this comment guesses.
+// later from what units say rather than from what this comment guesses. Task p16-05 answers the
+// same seam out of the module's PSRAM.
 constexpr std::size_t kStepBytes = 8192;
-
-// **And 65 536 bytes where this board has external RAM** (task p16-05). The module has 2 MB of
-// PSRAM, which this firmware leaves switched off until a session asks for a room: 64 kB of it is
-// the room then, and the 8 192 bytes above are what a board with no PSRAM, with PSRAM of the
-// other kind, or with one that does not answer its pattern still gets.
-//
-// **Why 64 kB and no more**, with 2 MB to choose from: what bounds the room is what leaves the
-// board. Six steps of it are 384 kB, inside the 512 kB meshmaster.dk keeps of one session, and
-// every 8 kB of it is a post over LTE-M (task p16-04's `postSomeLines`). It is also what a
-// minute of `scope` costs: a frame a second at 250 points is about 30 kB, so a minute of it fits
-// whole with room beside it, where the small room ends `full` after about thirteen frames.
-constexpr std::size_t kStepBytesExternal = 65536;
 
 // -- the ceiling, and the bound on a wake that runs a session -----------------------------------
 
@@ -259,66 +248,19 @@ class SessionSink {
 // what units say.
 struct RoomFigures {
   bool known = false;       // false in a build that was handed no heap seam
-  std::uint32_t bytes = 0;  // the room taken: kStepBytesExternal, or kStepBytes
+  std::uint32_t bytes = 0;  // the room taken: kStepBytes
   std::uint32_t free_bytes = 0;
   std::uint32_t block = 0;        // the largest free block before
   std::uint32_t left_block = 0;   // ... and after
   std::uint32_t least_free = 0;   // the least free since this boot, when the steps were over
-  // The size of the external RAM the room came out of, or 0 when the room is the internal heap's
-  // (task p16-05). It is the figure and not a flag because that is what the line prints, and
-  // because an external room whose size is nought is not an external room.
-  std::uint32_t external = 0;
 };
 
-// The one line the `room` journal entry, `rak session` and `heap room` all print, into `out`
-// (always terminated). Two shapes, because the room came from one of two places:
-//
-//   65536 psram of 2097152; internal 27472, block 12288; least 25300    (task p16-05)
-//   8192 of 27472, block 12288; left block 4096; least free 17108       (task p16-03)
-//
-// The external line says what the room is, where it came from and what the **internal** heap had
-// while it was out - which is the figure that says whether anything else on this board was left
-// short. The internal line says what it cost the one heap there was. Every figure of either is
-// under a megabyte on this chip bar the PSRAM's own, so both fit the 72 bytes the task gives
-// them; a build with no heap seam says so instead. Answers the bytes written.
+// The one line the `room` journal entry and `rak session` both print, into `out` (always
+// terminated), as `8192 of 27472, block 12288; left block 4096; least free 17108`. The internal
+// heap's figures are under a megabyte on this chip, so the line fits the 72 bytes the task gives
+// it; a build with no seam says so instead. Answers the bytes written.
 constexpr std::size_t kRoomLineMax = 72;
 std::size_t roomLine(const RoomFigures& figures, char* out, std::size_t cap);
-
-// -- taking the room, which `heap room` does exactly as a session does --------------------------
-
-// The room in hand: where it is, how big it is, and which of the two places it came from.
-struct Room {
-  char* data = nullptr;
-  std::size_t bytes = 0;
-  bool external = false;
-};
-
-// Takes the room a step's lines are laid down in and measures it, through one `interfaces::Scratch`
-// (whose external half is the only way anything of this firmware asks for external memory, rail
-// R24):
-//
-//   1. 65 536 bytes of external RAM, which brings the PSRAM up if nothing has yet;
-//   2. the pattern of `patternHolds()` written over the whole of it and read back, **before the
-//      first line goes in** - a room that fails is given back and is not used;
-//   3. 8 192 bytes of the internal heap, when there was no external room or it failed.
-//
-// `figures` is filled either way - the internal heap's four figures through `heap` (which may be
-// null in a build that was given none), and `external` set to the PSRAM's size when the room came
-// from there - so that whoever took the room can print its line. `data` is null when neither room
-// could be had; `figures->left_block` then says what the internal heap did have in one piece.
-Room takeStepRoom(interfaces::Scratch& scratch, console::HeapReport* heap, RoomFigures* figures);
-
-// Hands the room back and leaves `room` empty. Safe on a room that was never taken.
-void giveStepRoom(interfaces::Scratch& scratch, Room* room);
-
-// The pattern, written over the whole room and read back: the 32-bit word at index *n* is *n*
-// times the FNV prime, exclusive-ored with 0xA5A5A5A5 - a value of its own index, so that two
-// addresses which answer for each other (a dead address line, the commonest way a PSRAM is wrong)
-// are caught rather than read back as each other's value. Written a byte at a time, because what
-// the seam hands over is bytes and nothing here may assume its alignment. True when every byte
-// read back is the byte written. **Leaves the room full of the pattern**: the caller writes over
-// it before it reads, which every caller of a room does.
-bool patternHolds(char* room, std::size_t bytes);
 
 // -- what the machine is doing now ---------------------------------------------------------------
 
@@ -380,18 +322,13 @@ bool readMark(const Journal& journal, Mark* out);
 //    3  flags      u8   bit 0: this entry was written by resume(); bits 4..6: the step's StepEnd
 //    4  at_epoch   u32  when the session was opened, 0 when this board had no time of day
 //    8  body            the step's command (1..40 bytes, no terminator: `size` says), or the
-//                       `room` entry's six figures (24 bytes, little-endian u32)
+//                       `room` entry's five figures (20 bytes, little-endian u32)
 //
 // The body is one or the other and never both: a step's entry carries no figures and the `room`
 // entry carries no command, so the 48 bytes a journal slot gives are enough for a 40-byte command.
-//
-// The sixth figure is task p16-05's, the size of the external RAM the room came out of. An entry
-// written before that task has a body of 20 bytes and is read with that figure nought, which is
-// what the line it prints means anyway: the room was the internal heap's.
 constexpr std::uint8_t kSessionFlagResumed = 0x01;
 constexpr std::size_t kSessionHeaderBytes = 8;
-constexpr std::size_t kRoomFigureBytes = 24;
-constexpr std::size_t kRoomFigureBytesBefore05 = 20;
+constexpr std::size_t kRoomFigureBytes = 20;
 
 struct SessionPayload {
   Stage stage = Stage::kIdle;
@@ -462,6 +399,7 @@ class ScannerSession {
   Refusal check(board::Slot slot);
   bool takeRoom();
   void giveRoom();
+  void readFiguresBefore();
   void readFiguresAfter();
 
   SessionStep stepScanner();   // the greeting, and the first step begun
@@ -495,9 +433,7 @@ class ScannerSession {
   SessionStatus status_{};
   std::uint32_t first_seq_ = 0;
 
-  // The borrowed buffer, given back when the steps are over: 64 kB of the PSRAM or 8 192 bytes of
-  // the internal heap, and `room_.bytes` is which (task p16-05).
-  Room room_{};
+  char* room_ = nullptr;             // the borrowed buffer, given back when the steps are over
   link::client::TextRoom lent_{};    // the book-keeping about it, which is this object's
   bool lending_ = false;
 

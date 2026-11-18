@@ -253,139 +253,24 @@ Refusal judge(const Program& program) {
 
 std::size_t roomLine(const RoomFigures& f, char* out, std::size_t cap) {
   if (out == nullptr || cap == 0) return 0;
-  // Four shapes, two of which are task p16-05's. Where the room came out of comes first, because
-  // it is the thing a person reading a session's journal on meshmaster.dk is looking for; then
-  // what the **internal** heap had while it was out, which says whether anything else on this
-  // board was left short.
-  //
-  //   65536 psram of 2097152; internal 27472, block 12288; least 25300
-  //   65536 psram of 2097152; this build reports no heap figures
+  // The five figures, in the order they are taken, as the task writes them:
   //   8192 of 27472, block 12288; left block 4096; least free 17108
-  //   8192 taken; this build reports no heap figures
-  //
-  // Every figure but the PSRAM's own is under a megabyte on this chip, so six digits each is the
-  // worst case and the longest of the four is 67 bytes: inside kRoomLineMax. A build with no heap
-  // seam says that instead - the figures decide nothing, so a build without them is not a build
-  // that refuses anything.
-  int n = 0;
-  if (f.external != 0 && f.known) {
-    n = std::snprintf(out, cap, "%lu psram of %lu; internal %lu, block %lu; least %lu",
-                      static_cast<unsigned long>(f.bytes),
-                      static_cast<unsigned long>(f.external),
-                      static_cast<unsigned long>(f.free_bytes),
-                      static_cast<unsigned long>(f.block),
-                      static_cast<unsigned long>(f.least_free));
-  } else if (f.external != 0) {
-    n = std::snprintf(out, cap, "%lu psram of %lu; this build reports no heap figures",
-                      static_cast<unsigned long>(f.bytes),
-                      static_cast<unsigned long>(f.external));
-  } else if (f.known) {
-    n = std::snprintf(out, cap, "%lu of %lu, block %lu; left block %lu; least free %lu",
+  // The internal heap of this chip is under a megabyte, so six digits each is the worst case and
+  // the line fits kRoomLineMax. A build with no heap seam says that instead - the figures decide
+  // nothing, so a build without them is not a build that refuses anything.
+  const int n = f.known
+      ? std::snprintf(out, cap, "%lu of %lu, block %lu; left block %lu; least free %lu",
                       static_cast<unsigned long>(f.bytes), static_cast<unsigned long>(f.free_bytes),
                       static_cast<unsigned long>(f.block),
                       static_cast<unsigned long>(f.left_block),
-                      static_cast<unsigned long>(f.least_free));
-  } else {
-    n = std::snprintf(out, cap, "%lu taken; this build reports no heap figures",
+                      static_cast<unsigned long>(f.least_free))
+      : std::snprintf(out, cap, "%lu taken; this build reports no heap figures",
                       static_cast<unsigned long>(f.bytes));
-  }
   if (n <= 0) {
     out[0] = 0;
     return 0;
   }
   return static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1;
-}
-
-// ---------------------------------------------------------------------- the room, and its pattern
-//
-// Task p16-05. The room is 64 kB of the module's PSRAM where there is PSRAM that answers, and
-// task p16-03's 8 192 bytes of the internal heap where there is not. Both doors take it through
-// this one function - a session's `start()` and the console's `heap room` - so that what a person
-// proves on a cable is byte for byte what a session gets.
-
-namespace {
-
-// The 32-bit word at index `at32`, derived from its own index: the FNV-1a prime times the index,
-// exclusive-ored with 0xA5A5A5A5. Two addresses that answer for each other read back as each
-// other's value and are caught; a bus that answers a constant is caught; a stuck bit is caught.
-std::uint32_t patternWord(std::size_t at32) {
-  return (static_cast<std::uint32_t>(at32) * 0x01000193u) ^ 0xA5A5A5A5u;
-}
-
-char patternByte(std::size_t at) {
-  const std::uint32_t word = patternWord(at / 4);
-  return static_cast<char>((word >> (8u * (at % 4))) & 0xFFu);
-}
-
-}  // namespace
-
-bool patternHolds(char* room, std::size_t bytes) {
-  if (room == nullptr || bytes == 0) return false;
-  // A byte at a time: what the seam hands over is bytes, and nothing here may assume the
-  // alignment of it. The whole room is written before any of it is read back, which is what makes
-  // an address line that answers for another one show up at all.
-  for (std::size_t at = 0; at < bytes; ++at) room[at] = patternByte(at);
-  for (std::size_t at = 0; at < bytes; ++at) {
-    if (room[at] != patternByte(at)) return false;
-  }
-  return true;
-}
-
-Room takeStepRoom(interfaces::Scratch& scratch, console::HeapReport* heap, RoomFigures* figures) {
-  RoomFigures measured;
-  measured.bytes = kStepBytes;
-  if (heap != nullptr) {
-    const console::HeapReport::Figures f = heap->read();
-    measured.known = true;
-    measured.free_bytes = f.free_bytes;
-    measured.block = f.largest_block;
-  }
-  Room room;
-  // The big room first, which is what brings the PSRAM up at all. A board with none, a board with
-  // the other kind of chip and a board whose chip does not answer all come back nullptr here and
-  // go on to the small room below, which is the whole point of the arrangement.
-  room.data = static_cast<char*>(scratch.takeExternal(kStepBytesExternal));
-  if (room.data != nullptr) {
-    // **Before the first line goes in.** A room that does not answer its own pattern is given
-    // back rather than filled with measurements nobody could trust.
-    if (patternHolds(room.data, kStepBytesExternal)) {
-      room.bytes = kStepBytesExternal;
-      room.external = true;
-      const interfaces::Scratch::ExternalRoom outside = scratch.external();
-      measured.bytes = static_cast<std::uint32_t>(kStepBytesExternal);
-      measured.external = static_cast<std::uint32_t>(outside.bytes);
-    } else {
-      scratch.give(room.data);
-      room.data = nullptr;
-    }
-  }
-  if (room.data == nullptr) {
-    room.data = static_cast<char*>(scratch.take(kStepBytes));
-    room.bytes = room.data != nullptr ? kStepBytes : 0;
-    measured.bytes = kStepBytes;
-    measured.external = 0;
-  }
-  if (room.data == nullptr) {
-    // Nothing to be had: what the internal heap does have in one piece is the one thing worth
-    // saying, and it is what the refusal's line prints.
-    const std::size_t largest = scratch.largestBlock();
-    measured.left_block = largest > 0xFFFFFFFFu ? 0u : static_cast<std::uint32_t>(largest);
-  } else if (heap != nullptr && measured.known) {
-    const console::HeapReport::Figures f = heap->read();
-    measured.left_block = f.largest_block;
-    // The least free **so far**, so that a caller which takes a room and gives it straight back
-    // (`heap room`) has the figure. A session reads it again when its steps are over, which is
-    // the moment that number is worth having, and writes over this one.
-    measured.least_free = f.min_free;
-  }
-  if (figures != nullptr) *figures = measured;
-  return room;
-}
-
-void giveStepRoom(interfaces::Scratch& scratch, Room* room) {
-  if (room == nullptr || room->data == nullptr) return;
-  scratch.give(room->data);
-  *room = Room{};
 }
 
 // ------------------------------------------------------------------------------- the journal entry
@@ -409,7 +294,6 @@ std::size_t encode(const SessionPayload& p, std::uint8_t out[kPayloadMax]) {
     put32(out + kSessionHeaderBytes + 8, p.room.block);
     put32(out + kSessionHeaderBytes + 12, p.room.left_block);
     put32(out + kSessionHeaderBytes + 16, p.room.least_free);
-    put32(out + kSessionHeaderBytes + 20, p.room.external);
     return kSessionHeaderBytes + kRoomFigureBytes;
   }
   return kSessionHeaderBytes;
@@ -433,18 +317,13 @@ bool decode(const Entry& entry, SessionPayload* out) {
       out->command[i] = static_cast<char>(entry.payload[kSessionHeaderBytes + i]);
     }
     out->command[take] = 0;
-  } else if (out->stage == Stage::kRoom && body >= kRoomFigureBytesBefore05) {
+  } else if (out->stage == Stage::kRoom && body >= kRoomFigureBytes) {
     out->room.known = true;
     out->room.bytes = get32(entry.payload + kSessionHeaderBytes + 0);
     out->room.free_bytes = get32(entry.payload + kSessionHeaderBytes + 4);
     out->room.block = get32(entry.payload + kSessionHeaderBytes + 8);
     out->room.left_block = get32(entry.payload + kSessionHeaderBytes + 12);
     out->room.least_free = get32(entry.payload + kSessionHeaderBytes + 16);
-    // The sixth figure is task p16-05's. An entry a firmware before it wrote has twenty bytes of
-    // body and no PSRAM behind it at all, which is what a nought here says.
-    if (body >= kRoomFigureBytes) {
-      out->room.external = get32(entry.payload + kSessionHeaderBytes + 20);
-    }
     // A build with no heap seam wrote zeroes: the line then says so rather than claiming a heap
     // of nothing.
     if (out->room.free_bytes == 0 && out->room.block == 0 && out->room.least_free == 0) {
@@ -652,22 +531,38 @@ Refusal ScannerSession::check(board::Slot slot) {
   return Refusal::kNone;
 }
 
+void ScannerSession::readFiguresBefore() {
+  status_.room = RoomFigures{};
+  status_.room.bytes = kStepBytes;
+  if (heap_ == nullptr) return;
+  const console::HeapReport::Figures f = heap_->read();
+  status_.room.known = true;
+  status_.room.free_bytes = f.free_bytes;
+  status_.room.block = f.largest_block;
+}
+
 void ScannerSession::readFiguresAfter() {
   if (heap_ == nullptr || !status_.room.known) return;
   const console::HeapReport::Figures f = heap_->read();
   status_.room.least_free = f.min_free;
 }
 
-// The room, and its figures, through the one function the console's `heap room` also goes
-// through: 64 kB of the module's PSRAM where there is PSRAM that answers its pattern, and 8 192
-// bytes of the internal heap where there is not (task p16-05).
 bool ScannerSession::takeRoom() {
-  if (room_.data != nullptr) return true;
-  room_ = takeStepRoom(scratch_, heap_, &status_.room);
-  return room_.data != nullptr;
+  if (room_ != nullptr) return true;
+  room_ = static_cast<char*>(scratch_.take(kStepBytes));
+  if (room_ == nullptr) return false;
+  if (heap_ != nullptr && status_.room.known) {
+    const console::HeapReport::Figures f = heap_->read();
+    status_.room.left_block = f.largest_block;
+  }
+  return true;
 }
 
-void ScannerSession::giveRoom() { giveStepRoom(scratch_, &room_); }
+void ScannerSession::giveRoom() {
+  if (room_ == nullptr) return;
+  scratch_.give(room_);
+  room_ = nullptr;
+}
 
 // ------------------------------------------------------------------------------- the two doors
 
@@ -690,14 +585,16 @@ bool ScannerSession::start(const Program& program, board::Slot slot, SessionSink
     return false;
   }
   // The room, before anything is journalled and long before anything is flashed: a session that
-  // cannot hold what a step says is refused rather than begun. This is also the one moment of a
-  // wake that brings the PSRAM up - a wake with no session never touches it (task p16-05).
-  status_.room = RoomFigures{};
+  // cannot hold what a step says is refused rather than begun.
+  readFiguresBefore();
   if (!takeRoom()) {
     program_ = nullptr;
     sink_ = nullptr;
     status_.refusal = Refusal::kNoMemory;
     status_.ending = Ending::kRefused;
+    status_.room.left_block = scratch_.largestBlock() > 0xFFFFFFFFu
+                                  ? 0u
+                                  : static_cast<std::uint32_t>(scratch_.largestBlock());
     return false;
   }
   interfaces::WallTime now;
@@ -810,7 +707,7 @@ SessionStep ScannerSession::stepScanner() {
   if (!status_.greeted) {
     if (!lending_) {
       lent_ = lc::TextRoom{};
-      lending_ = radio_.lendText(&lent_, room_.data, room_.bytes);
+      lending_ = radio_.lendText(&lent_, room_, kStepBytes);
     }
     char line[24];
     // The epoch the check insisted on. `time` is answered with an `ack` like every other command
@@ -859,7 +756,7 @@ SessionStep ScannerSession::beginStep() {
     }
     lent_ = lc::TextRoom{};
   }
-  if (!lending_) lending_ = radio_.lendText(&lent_, room_.data, room_.bytes);
+  if (!lending_) lending_ = radio_.lendText(&lent_, room_, kStepBytes);
   const SessionStep r = enter(Stage::kStep, "the step's command", s->command);
   if (!r.changed) return r;  // the journal: nothing is said
   step_until_ms_ = clock_.nowMs() + static_cast<std::uint64_t>(s->seconds) * 1000u;
@@ -927,7 +824,7 @@ void ScannerSession::endStep(StepEnd end) {
     report.command = s != nullptr ? s->command : "";
     report.seconds = s != nullptr ? s->seconds : 0;
     report.end = end;
-    report.lines = room_.data;
+    report.lines = room_;
     report.used = lent_.used;
     report.count = lent_.lines;
     report.first = status_.step == 1;
@@ -945,7 +842,7 @@ SessionStep ScannerSession::goBack() {
     radio_.takeText();
     lending_ = false;
   }
-  if (room_.data != nullptr) {
+  if (room_ != nullptr) {
     readFiguresAfter();
     const SessionStep r = enter(Stage::kRoom, "what the room cost");
     giveRoom();

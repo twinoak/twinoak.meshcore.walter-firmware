@@ -489,65 +489,6 @@ TEST_CASE("a step whose lines fill the room: one post of at most 8 192 bytes, ev
   CHECK(has(stepRows(data), "full/"));
 }
 
-// And the same step on a board that has the PSRAM (task p16-05): the room is 64 kB, so a minute
-// of `scope` is kept whole and goes out as four posts instead of ending `full` after one.
-TEST_CASE("a step of 30 kB of lines in the big room: four posts, each cut between lines") {
-  SessionJob unit;
-  bench::Answer scope;
-  scope.lines = 60;
-  scope.line_bytes = 480;  // 60 frames of 480 bytes: about 29 kB, a minute of `scope`
-  scope.done = false;
-  unit.scripted.answers["scope"] = scope;
-  unit.server().queue(bench::ownJob(44, agent::kSessionType,
-                                    bench::sessionPayload({{"scope 863 870 250 0 1000", 70}}))
-                          .json());
-  // The board, after the boot and before the wake: the seam is the life's, and the PSRAM is what
-  // this case is about.
-  unit.boot();
-  unit.v().scratch.externalOf(2u * 1024u * 1024u);
-  unit.v().begin();
-  (void)unit.v().run();
-
-  CHECK(unit.v().scratch.external_last_asked == upd::kStepBytesExternal);
-  const std::vector<bench::SeenLines>& posts = unit.posts(44);
-  REQUIRE(posts.size() == 4);
-  std::size_t counted = 0;
-  std::size_t frames = 0;
-  for (const bench::SeenLines& post : posts) {
-    CAPTURE(post.from);
-    // `{from}` is the lines handed to posts before this one, and nothing else keeps the two ends
-    // in step (task p16-04).
-    CHECK(post.from == counted);
-    CHECK(post.body.size() <= agent::kLinesPostBytes);
-    // Cut between lines and not at a byte: the body ends with a newline and every line in it is
-    // whole, and the cut is within one line of the bound.
-    REQUIRE_FALSE(post.body.empty());
-    const bool ends_with_a_newline = post.body.back() == '\n';
-    CHECK(ends_with_a_newline);
-    std::vector<std::string> lines = bodyLines(post.body);
-    if (!lines.empty() && lines.back().empty()) lines.pop_back();
-    for (const std::string& line : lines) {
-      CHECK(line.front() == '{');
-      CHECK(line.back() == '}');
-      frames += line.size() == scope.line_bytes ? 1 : 0;
-    }
-    counted += lines.size();
-  }
-  for (std::size_t i = 0; i + 1 < posts.size(); ++i) {
-    CAPTURE(i);
-    // Every post but the last is full to within one line of the bound.
-    CHECK(posts[i].body.size() > agent::kLinesPostBytes - (scope.line_bytes + 1));
-  }
-  // All sixty frames went out whole, which is the thing the small room could not do.
-  CHECK(frames == scope.lines);
-  const std::string data = unit.lastData(44);
-  INFO(data);
-  CHECK(bench::member(data, "outcome") == "restored");
-  CHECK(has(stepRows(data), "clock/"));
-  // And the `room` line in the result's journal says where the room came from.
-  CHECK(data.find("65536 psram of 2097152") != std::string::npos);
-}
-
 TEST_CASE("a post whose answer never comes is sent once more, and its lines are unanswered") {
   SessionJob unit;
   bench::Answer four;

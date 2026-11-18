@@ -27,7 +27,6 @@ const CommandLine kCommandLines[] = {
     {"reboot", "reboot"},
     {"reboots", "reboots"},
     {"heap", "heap"},
-    {"heap room", "heap room"},
     {"coredump", "coredump"},  // the read; `coredump erase confirm` is a case of its own
     {"dump", "dump"},
     {"pins", "pins"},
