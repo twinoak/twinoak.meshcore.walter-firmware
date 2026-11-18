@@ -612,6 +612,7 @@ void ScriptedRadio::ignoreType(std::uint8_t type, int times) {
 void ScriptedRadio::onCommand(const std::string& line) {
   commands.push_back(line);
   if (deaf) return;  // a radio whose firmware is gone answers no text either
+  if (on_text_command && on_text_command(line)) return;
   if (line == "info") {
     sendLine(kInfoLine);
     return;

@@ -206,6 +206,21 @@ Parsed parseRak(char* rest) {
     p.command.text_size = n;
     return p;
   }
+  // rak say <words>: the rest of the line verbatim, as `rak cli` takes it (§9, task p16-01).
+  // The words are the scanner's own grammar - `sweep`, `hist 869.4 869.8 25`, `stop` - and this
+  // parser does not know it: the scanner answers an unknown word with an `ack` that is not ok,
+  // which is the answer a person wants to see rather than a guess made here.
+  if (std::strcmp(sub, "say") == 0) {
+    if (!hasArg) return refuse("rak say needs a line to say: rak say <words> (try 'rak say info')");
+    const std::size_t n = std::strlen(arg);
+    if (n > kMaxCliLine) {  // the same 160 bytes, and link::client::kSaidMax is held to it
+      return refuse("rak say: the line is 1 to 160 bytes");
+    }
+    Parsed p = accept(Verb::kRakSay);
+    std::memcpy(p.command.text, arg, n + 1);
+    p.command.text_size = n;
+    return p;
+  }
   // rak request <type> [hex data] (§5.9, link 1.2, task p9-06): one LOCAL_REQUEST. The type is
   // two hex digits and the data an even number of them, 0 to 32 bytes - both parsed here so that
   // a typo is one line from the parser and never a frame.

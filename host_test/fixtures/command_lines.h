@@ -44,6 +44,10 @@ const CommandLine kCommandLines[] = {
     {"rak scope", "rak scope"},
     {"rak events", "rak events"},
     {"rak text", "rak text"},
+    // §9's other direction (task p16-01). `info` is the one word the client already says to a
+    // scanner of its own accord, so it is the safest thing to type at a radio of any kind: a
+    // repeater is in frame mode and the command refuses before a byte goes out.
+    {"rak say", "rak say info"},
     {"rak swd connect", "rak swd connect"},
     {"rak swd id", "rak swd id"},
     {"rak swd mem", "rak swd mem 0x10000100 4"},

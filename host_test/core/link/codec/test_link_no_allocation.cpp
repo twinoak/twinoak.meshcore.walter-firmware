@@ -49,6 +49,7 @@ const char* const kClientIncludes[] = {
     "core/board/radio_pins.h",
     "core/link/client/client.h",
     "core/link/client/port.h",
+    "core/link/client/text_line.h",
     "core/link/client/words.h",
     "core/link/codec/frame.h",
     "core/link/codec/messages.h",
@@ -72,9 +73,10 @@ TEST_CASE("nothing under components/core/link/codec/ allocates") {
 }
 
 TEST_CASE("nothing under components/core/link/client/ allocates") {
-  // The client is six files: the port, the client, the words and their headers (task p1-02).
+  // The client is eight files: the port, the client, the words, the scanner line reader of
+  // task p16-01, and their headers.
   checks::checkNoAllocation("the client",
                             checks::filesUnder(kClientDirectories,
                                                sizeof kClientDirectories / sizeof kClientDirectories[0]),
-                            kClientIncludes, sizeof kClientIncludes / sizeof kClientIncludes[0], 6, 500);
+                            kClientIncludes, sizeof kClientIncludes / sizeof kClientIncludes[0], 8, 500);
 }

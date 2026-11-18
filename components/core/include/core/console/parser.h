@@ -67,6 +67,10 @@
 //                         goes on the air
 //   rak events            the events the client has queued
 //   rak text              the lines a scanner has sent (§9)
+//   rak say <words>       §9, the other direction (task p16-01): one plain-text command line to a
+//                         scanner - `rak say sweep`, `rak say hist 869.4 869.8 25`, `rak say
+//                         stop` - its `ack` printed, and then every line of the next five
+//                         seconds printed whole. Only to a scanner: a repeater is refused
 //
 // and the debug port (task p1-03) and the chip behind it (task p1-04):
 //
@@ -244,6 +248,9 @@ enum class Verb : std::uint8_t {
   kRakScope,
   kRakEvents,
   kRakText,
+  // §9, the other direction (task p16-01): `rak say <words>` - the words in `text`, as
+  // `rak cli` has them.
+  kRakSay,
   // The debug port (task p1-03) and the nRF52 behind it (task p1-04).
   kRakSwdConnect,
   kRakSwdId,

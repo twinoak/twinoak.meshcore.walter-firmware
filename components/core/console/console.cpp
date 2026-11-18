@@ -114,6 +114,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakScope:
     case Verb::kRakEvents:
     case Verb::kRakText:
+    case Verb::kRakSay:
     case Verb::kRakSwdConnect:
     case Verb::kRakSwdId:
     case Verb::kRakSwdMem:
@@ -147,13 +148,13 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
                  AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets,
                  cycle::NetworkClock* wall, ModemTrace* trace, HeapReport* heap,
-                 health::CoreDump* dumps)
+                 health::CoreDump* dumps, interfaces::Scratch* scratch)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
       mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets), wall_(wall),
-      trace_(trace), heap_(heap), dumps_(dumps), flasher_(pins, clock, slots),
+      trace_(trace), heap_(heap), dumps_(dumps), scratch_(scratch), flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -570,6 +571,7 @@ void Console::runLine(const char* line) {
     case Verb::kRakScope: rakScope(); return;
     case Verb::kRakEvents: rakEvents(); return;
     case Verb::kRakText: rakText(); return;
+    case Verb::kRakSay: rakSay(p.command.text, p.command.text_size); return;
     case Verb::kRakSwdConnect: rakSwdConnect(); return;
     case Verb::kRakSwdId: rakSwdId(); return;
     case Verb::kRakSwdMem: rakSwdMem(p.command.address, p.command.words); return;
@@ -1514,6 +1516,102 @@ void Console::rakText() {
     printText(radio_.textLine(i));
   }
   radio_.clearText();
+}
+
+// `rak say`'s three numbers (task p16-01). The room is what the heap of a unit in service has in
+// one piece - *27472 bytes free, largest free block 12288* by its own report in November - with
+// a `sweep` line of the band at about 4 kB and the longest the scanner can send at about 7.6 kB
+// inside it. Five seconds is the figure task p16-01 gives, and the `done` ends the wait as soon
+// as it comes, so a command that finishes sooner hands the prompt back sooner. It is **not** a
+// promise that every command finishes inside it: a default `sweep` of the band is 281 points at
+// 20 ms of dwell and so about 5.6 s of measuring, and a line that lands after the window is one
+// `rak text` shows cut. How long a step is given is task p16-03's to decide; this is a person at
+// a prompt, who can say the word again.
+constexpr std::size_t kSayRoom = 8192;
+constexpr std::uint32_t kSayListenMs = 5000;
+constexpr std::uint32_t kSayPollMs = 10;
+
+// §9, the other direction (task p16-01). One plain-text line to a scanner, its `ack`, and then
+// every line of the next five seconds printed whole.
+//
+// **Printed and not logged** (spec/SYSTEM.md S-12), exactly as `rak text` and `rak cli`'s reply
+// are: every byte a scanner sent - the ack's own message included - leaves through printText(),
+// which writes to the port with the ring held shut. Nothing of it is in `dump`, in the journal
+// or in a report section, and the test that greps this console's transcript holds that.
+//
+// The room is borrowed and handed back (interfaces/scratch.h). 8 192 bytes, because one `sweep`
+// line of the band is about 4 kB and the longest line the scanner can send about 7.6 kB, and
+// because a buffer that size cannot be a static of this firmware - every byte of `.bss` moves
+// the heap the start-up margin is measured in (tools/heap_at_start.py, rail R22).
+void Console::rakSay(const char* words, std::size_t size) {
+  const link::Text line = link::text(words, size);
+  const link::Text command = lc::firstWord(line);
+  if (scratch_ == nullptr) {
+    printf("error: rak say: this build has no room to borrow for a scanner's lines\n");
+    return;
+  }
+  // The room first: a command that cannot hold what comes back says so before it says anything
+  // to the radio, rather than starting a sweep nobody can read.
+  char* buffer = static_cast<char*>(scratch_->take(kSayRoom));
+  if (buffer == nullptr) {
+    printf("error: rak say: the heap has no %lu-byte block (the largest is %lu); nothing was "
+           "said\n", static_cast<unsigned long>(kSayRoom),
+           static_cast<unsigned long>(scratch_->largestBlock()));
+    return;
+  }
+  const lc::Said said = radio_.say(line);
+  if (!said.answered()) {
+    scratch_->give(buffer);
+    printf("error: rak say: %s\n", lc::describe(said.fault));
+    return;
+  }
+  print(said.ok ? "ack: ok" : "ack: not ok");
+  if (said.msg[0] != 0) {
+    print(" - ");
+    printText(link::text(said.msg));  // the scanner's own words: printed, never logged
+  } else {
+    print("\n");
+  }
+  if (said.msg_cut) print("  (the message was longer than this firmware keeps)\n");
+  // The room is lent **after** the ack, so that what is printed below is what came *after* it
+  // and the ack is not printed twice. Nothing is lost by it on a board: the scanner answers a
+  // command with one line at once and measures afterwards, and a `sweep` of the band is seconds
+  // of measuring. Whoever needs the ack in the room too - a step of task p16-03 - lends before
+  // it says the line, which this client allows.
+  lc::TextRoom room;  // this frame's, as the client's own comment asks for
+  if (!radio_.lendText(&room, buffer, kSayRoom)) {
+    scratch_->give(buffer);
+    printf("error: rak say: the room could not be lent; the ack above is all of it\n");
+    return;
+  }
+  // Five seconds, or until the scanner says it has finished this command.
+  const std::uint64_t deadline = clock_.nowMs() + kSayListenMs;
+  for (;;) {
+    pump();
+    if (room.full || room.hasDone(command) || clock_.nowMs() >= deadline) break;
+    clock_.delayMs(kSayPollMs);
+  }
+  radio_.takeText();
+  if (room.lines == 0) {
+    printf("no lines in the %lu seconds after it\n",
+           static_cast<unsigned long>(kSayListenMs / 1000));
+  } else {
+    printf("%lu line%s, %lu byte%s:\n", static_cast<unsigned long>(room.lines),
+           room.lines == 1 ? "" : "s", static_cast<unsigned long>(room.used),
+           room.used == 1 ? "" : "s");
+    for (std::size_t at = 0; at < room.used;) {
+      std::size_t end = at;
+      while (end < room.used && room.data[end] != '\n') ++end;
+      print("  ");
+      printText(link::text(room.data + at, end - at));
+      at = end + 1;
+    }
+  }
+  if (room.full) {
+    printf("the room ran out: a line did not fit in %lu bytes and nothing after it was kept\n",
+           static_cast<unsigned long>(kSayRoom));
+  }
+  scratch_->give(buffer);
 }
 
 // ------------------------------------------------------------------------ the debug port (p1-03)
