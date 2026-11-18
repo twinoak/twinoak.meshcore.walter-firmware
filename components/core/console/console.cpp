@@ -1552,8 +1552,8 @@ void Console::rakSay(const char* words, std::size_t size) {
   }
   // The room first: a command that cannot hold what comes back says so before it says anything
   // to the radio, rather than starting a sweep nobody can read.
-  char* room = static_cast<char*>(scratch_->take(kSayRoom));
-  if (room == nullptr) {
+  char* buffer = static_cast<char*>(scratch_->take(kSayRoom));
+  if (buffer == nullptr) {
     printf("error: rak say: the heap has no %lu-byte block (the largest is %lu); nothing was "
            "said\n", static_cast<unsigned long>(kSayRoom),
            static_cast<unsigned long>(scratch_->largestBlock()));
@@ -1561,7 +1561,7 @@ void Console::rakSay(const char* words, std::size_t size) {
   }
   const lc::Said said = radio_.say(line);
   if (!said.answered()) {
-    scratch_->give(room);
+    scratch_->give(buffer);
     printf("error: rak say: %s\n", lc::describe(said.fault));
     return;
   }
@@ -1578,8 +1578,9 @@ void Console::rakSay(const char* words, std::size_t size) {
   // command with one line at once and measures afterwards, and a `sweep` of the band is seconds
   // of measuring. Whoever needs the ack in the room too - a step of task p16-03 - lends before
   // it says the line, which this client allows.
-  if (!radio_.lendText(room, kSayRoom)) {
-    scratch_->give(room);
+  lc::TextRoom room;  // this frame's, as the client's own comment asks for
+  if (!radio_.lendText(&room, buffer, kSayRoom)) {
+    scratch_->give(buffer);
     printf("error: rak say: the room could not be lent; the ack above is all of it\n");
     return;
   }
@@ -1587,31 +1588,30 @@ void Console::rakSay(const char* words, std::size_t size) {
   const std::uint64_t deadline = clock_.nowMs() + kSayListenMs;
   for (;;) {
     pump();
-    const lc::TextHeld so_far = radio_.textHeld();
-    if (so_far.full || so_far.hasDone(command) || clock_.nowMs() >= deadline) break;
+    if (room.full || room.hasDone(command) || clock_.nowMs() >= deadline) break;
     clock_.delayMs(kSayPollMs);
   }
-  const lc::TextHeld held = radio_.takeText();
-  if (held.lines == 0) {
+  radio_.takeText();
+  if (room.lines == 0) {
     printf("no lines in the %lu seconds after it\n",
            static_cast<unsigned long>(kSayListenMs / 1000));
   } else {
-    printf("%lu line%s, %lu byte%s:\n", static_cast<unsigned long>(held.lines),
-           held.lines == 1 ? "" : "s", static_cast<unsigned long>(held.size),
-           held.size == 1 ? "" : "s");
-    for (std::size_t at = 0; at < held.size;) {
+    printf("%lu line%s, %lu byte%s:\n", static_cast<unsigned long>(room.lines),
+           room.lines == 1 ? "" : "s", static_cast<unsigned long>(room.used),
+           room.used == 1 ? "" : "s");
+    for (std::size_t at = 0; at < room.used;) {
       std::size_t end = at;
-      while (end < held.size && held.data[end] != '\n') ++end;
+      while (end < room.used && room.data[end] != '\n') ++end;
       print("  ");
-      printText(link::text(held.data + at, end - at));
+      printText(link::text(room.data + at, end - at));
       at = end + 1;
     }
   }
-  if (held.full) {
+  if (room.full) {
     printf("the room ran out: a line did not fit in %lu bytes and nothing after it was kept\n",
            static_cast<unsigned long>(kSayRoom));
   }
-  scratch_->give(room);
+  scratch_->give(buffer);
 }
 
 // ------------------------------------------------------------------------ the debug port (p1-03)

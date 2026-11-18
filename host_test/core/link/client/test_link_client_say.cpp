@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -154,8 +155,8 @@ TEST_CASE("a line this console could not have typed is refused before the port i
   const std::size_t writes = bench.radio.writes.size();
   CHECK(bench.client.say(link::Text{}).fault == lc::Fault::kEncode);
   CHECK(bench.client.say(link::text("")).fault == lc::Fault::kEncode);
-  CHECK(bench.client.say(link::text(std::string(lc::kSaidMax + 1, 'x').c_str())).fault ==
-        lc::Fault::kEncode);
+  const std::string too_long(lc::kSaidMax + 1, 'x');
+  CHECK(bench.client.say(link::text(too_long.c_str())).fault == lc::Fault::kEncode);
   // A newline of its own would be a second command nobody asked for.
   CHECK(bench.client.say(link::text("sweep\nreboot")).fault == lc::Fault::kEncode);
   CHECK(bench.radio.writes.size() == writes);
@@ -171,21 +172,22 @@ TEST_CASE("a 7 600-byte sweep line, in reads of 64, is in the lent room byte for
   const std::string line = sweepLineOf(7600);
   REQUIRE(line.size() == 7600);
 
-  std::vector<char> room(8192);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(8192);
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
   CHECK(bench.client.textLent());
   bench.radio.sendLine(line);
   bench.client.poll();
 
-  const lc::TextHeld held = bench.client.takeText();
+  bench.client.takeText();
   CHECK_FALSE(bench.client.textLent());
-  CHECK(held.lines == 1);
-  CHECK(held.size == line.size() + 1);
-  CHECK_FALSE(held.full);
-  REQUIRE(held.data != nullptr);
-  const bool same = std::memcmp(held.data, line.data(), line.size()) == 0;
+  CHECK(room.lines == 1);
+  CHECK(room.used == line.size() + 1);
+  CHECK_FALSE(room.full);
+  REQUIRE(room.data != nullptr);
+  const bool same = std::memcmp(room.data, line.data(), line.size()) == 0;
   CHECK(same);
-  CHECK(held.data[line.size()] == '\n');
+  CHECK(room.data[line.size()] == '\n');
   // And the ring above is untouched by any of it: it keeps its 320 bytes of the same line.
   REQUIRE(bench.client.textLines() >= 1);
   CHECK(bench.client.textLine(bench.client.textLines() - 1).size == lc::kTextLineMax);
@@ -193,24 +195,26 @@ TEST_CASE("a 7 600-byte sweep line, in reads of 64, is in the lent room byte for
 
 TEST_CASE("two lines in one read, each whole and in order") {
   ScannerBench bench;
-  std::vector<char> room(1024);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(1024);
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
 
   const std::string first = "{\"t\":\"stat\",\"up\":12}";
   const std::string second = "{\"t\":\"stat\",\"up\":13}";
-  bench.radio.sendLine(first);   // both due now: they are in the port together
+  bench.radio.sendLine(first);  // both due now: they are in the port together
   bench.radio.sendLine(second);
   bench.client.poll();
 
-  const lc::TextHeld held = bench.client.takeText();
-  REQUIRE(held.lines == 2);
-  CHECK(std::string(held.data, held.size) == first + "\n" + second + "\n");
+  bench.client.takeText();
+  REQUIRE(room.lines == 2);
+  CHECK(std::string(room.data, room.used) == first + "\n" + second + "\n");
 }
 
 TEST_CASE("one line over three reads, whole") {
   ScannerBench bench;
-  std::vector<char> room(1024);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(1024);
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
 
   // Three pieces of one line, arriving at three different moments: what a UART does with a line
   // longer than whatever was in the receiver when the client last looked.
@@ -220,7 +224,7 @@ TEST_CASE("one line over three reads, whole") {
   const std::string c = whole.substr(30);
   bench.radio.sendBytes(std::vector<std::uint8_t>(a.begin(), a.end()));
   bench.client.poll();
-  CHECK(bench.client.textHeld().lines == 0);  // half a line is not a line
+  CHECK(room.lines == 0);  // half a line is not a line
   bench.radio.sendBytes(std::vector<std::uint8_t>(b.begin(), b.end()));
   bench.client.poll();
   std::vector<std::uint8_t> last(c.begin(), c.end());
@@ -228,15 +232,16 @@ TEST_CASE("one line over three reads, whole") {
   bench.radio.sendBytes(last);
   bench.client.poll();
 
-  const lc::TextHeld held = bench.client.takeText();
-  REQUIRE(held.lines == 1);
-  CHECK(std::string(held.data, held.size) == whole + "\n");
+  bench.client.takeText();
+  REQUIRE(room.lines == 1);
+  CHECK(std::string(room.data, room.used) == whole + "\n");
 }
 
 TEST_CASE("a chatter line between two lines is not in the room") {
   ScannerBench bench;
-  std::vector<char> room(1024);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(1024);
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
 
   const std::string first = "{\"t\":\"stat\",\"up\":12}";
   const std::string second = "{\"t\":\"stat\",\"up\":13}";
@@ -245,9 +250,9 @@ TEST_CASE("a chatter line between two lines is not in the room") {
   bench.radio.sendLine(second);
   bench.client.poll();
 
-  const lc::TextHeld held = bench.client.takeText();
-  REQUIRE(held.lines == 2);
-  const std::string text(held.data, held.size);
+  bench.client.takeText();
+  REQUIRE(room.lines == 2);
+  const std::string text(room.data, room.used);
   CHECK(text == first + "\n" + second + "\n");
   CHECK(text.find('#') == std::string::npos);
 }
@@ -255,18 +260,19 @@ TEST_CASE("a chatter line between two lines is not in the room") {
 TEST_CASE("a line that would end past the end of the room ends the lending as full") {
   ScannerBench bench;
   const std::string fits = "{\"t\":\"stat\",\"up\":12}";
-  std::vector<char> room(fits.size() + 1 + 8);  // the first line and its ending, and no second
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(fits.size() + 1 + 8);  // the first line and its ending, and no second
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
 
   bench.radio.sendLine(fits);
   bench.radio.sendLine("{\"t\":\"sweep\",\"n\":281,\"avg\":[-115.2,-114.8,-113.0]}");
   bench.radio.sendLine("{\"t\":\"stat\",\"up\":13}");  // after the full: not kept either
   bench.client.poll();
 
-  const lc::TextHeld held = bench.client.takeText();
-  CHECK(held.full);
-  REQUIRE(held.lines == 1);
-  CHECK(std::string(held.data, held.size) == fits + "\n");
+  bench.client.takeText();
+  CHECK(room.full);
+  REQUIRE(room.lines == 1);
+  CHECK(std::string(room.data, room.used) == fits + "\n");
   CHECK(bench.client.counters().text_full == 1);
   // Nothing of it was lost to the client itself: the ring and the counters saw all three.
   CHECK(bench.client.counters().text_lines >= 3);
@@ -274,47 +280,52 @@ TEST_CASE("a line that would end past the end of the room ends the lending as fu
 
 TEST_CASE("a done for the command is found among the lines, and one for another is not") {
   ScannerBench bench;
-  std::vector<char> room(1024);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(1024);
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
 
   bench.radio.sendLine("{\"t\":\"sweep\",\"seq\":17,\"n\":281}");
   bench.radio.sendLine(doneLine("sweep"));
   bench.client.poll();
 
-  const lc::TextHeld held = bench.client.takeText();
-  REQUIRE(held.lines == 2);
-  CHECK(held.hasDone(link::text("sweep")));
-  CHECK_FALSE(held.hasDone(link::text("hist")));
-  CHECK_FALSE(held.hasDone(link::Text{}));
+  bench.client.takeText();
+  REQUIRE(room.lines == 2);
+  CHECK(room.hasDone(link::text("sweep")));
+  CHECK_FALSE(room.hasDone(link::text("hist")));
+  CHECK_FALSE(room.hasDone(link::Text{}));
 }
 
 TEST_CASE("the room is lent once, and a second lending is refused") {
   ScannerBench bench;
-  std::vector<char> room(1024);
+  std::vector<char> buffer(1024);
   std::vector<char> other(1024);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
-  CHECK_FALSE(bench.client.lendText(other.data(), other.size()));
-  CHECK_FALSE(bench.client.lendText(nullptr, 1024));
-  (void)bench.client.takeText();
-  CHECK_FALSE(bench.client.lendText(room.data(), 1));  // no room for any line at all
-  CHECK(bench.client.lendText(other.data(), other.size()));
+  lc::TextRoom room;
+  lc::TextRoom second;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
+  CHECK_FALSE(bench.client.lendText(&second, other.data(), other.size()));
+  CHECK_FALSE(bench.client.lendText(&second, nullptr, 1024));
+  bench.client.takeText();
+  CHECK_FALSE(bench.client.lendText(&second, buffer.data(), 1));  // no room for any line at all
+  CHECK(bench.client.lendText(&second, other.data(), other.size()));
 }
 
 TEST_CASE("nothing is laid down when no room is lent") {
   ScannerBench bench;
   bench.radio.sendLine("{\"t\":\"stat\",\"up\":12}");
   bench.client.poll();
-  const lc::TextHeld held = bench.client.textHeld();
-  CHECK(held.data == nullptr);
-  CHECK(held.size == 0);
-  CHECK(held.lines == 0);
-  CHECK_FALSE(held.hasDone(link::text("sweep")));
+  CHECK_FALSE(bench.client.textLent());
+  const lc::TextRoom nothing;
+  CHECK(nothing.data == nullptr);
+  CHECK(nothing.used == 0);
+  CHECK(nothing.lines == 0);
+  CHECK_FALSE(nothing.hasDone(link::text("sweep")));
 }
 
 TEST_CASE("half a line is dropped when the radio restarts under a lending") {
   ScannerBench bench;
-  std::vector<char> room(1024);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(1024);
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
   bench.radio.sendLine("{\"t\":\"stat\",\"up\":12}");
   bench.client.poll();
   const std::string half = "{\"t\":\"swe";
@@ -322,17 +333,17 @@ TEST_CASE("half a line is dropped when the radio restarts under a lending") {
   bench.client.poll();
 
   bench.client.radioWasReset();
-  const lc::TextHeld held = bench.client.takeText();
-  REQUIRE(held.lines == 1);
-  CHECK(std::string(held.data, held.size) == "{\"t\":\"stat\",\"up\":12}\n");
+  bench.client.takeText();
+  REQUIRE(room.lines == 1);
+  CHECK(std::string(room.data, room.used) == "{\"t\":\"stat\",\"up\":12}\n");
 }
 
 // ------------------------------------------------------------- the ring is what it was (3.)
 
 TEST_CASE("with a room lent, the three kept lines and the counts are what they are without one") {
   const std::vector<std::string> lines = {
-      "{\"t\":\"stat\",\"up\":1}",  "{\"t\":\"stat\",\"up\":2}", "# chatter",
-      "{\"t\":\"stat\",\"up\":3}",  "{\"t\":\"stat\",\"up\":4}",
+      "{\"t\":\"stat\",\"up\":1}", "{\"t\":\"stat\",\"up\":2}", "# chatter",
+      "{\"t\":\"stat\",\"up\":3}", "{\"t\":\"stat\",\"up\":4}",
       "{\"t\":\"sweep\",\"avg\":[" + std::string(3000, '1') + "]}",
   };
 
@@ -351,8 +362,9 @@ TEST_CASE("with a room lent, the three kept lines and the counts are what they a
   }
 
   ScannerBench bench;
-  std::vector<char> room(16384);
-  REQUIRE(bench.client.lendText(room.data(), room.size()));
+  std::vector<char> buffer(16384);
+  lc::TextRoom room;
+  REQUIRE(bench.client.lendText(&room, buffer.data(), buffer.size()));
   for (const std::string& line : lines) bench.radio.sendLine(line);
   bench.client.poll();
 
@@ -370,7 +382,7 @@ TEST_CASE("with a room lent, the three kept lines and the counts are what they a
   CHECK(with.text_truncated == without.text_truncated);
 
   // And the room has the long line whole, which is the whole difference between the two.
-  const lc::TextHeld held = bench.client.takeText();
-  CHECK(held.lines == 5);
-  CHECK(std::string(held.data, held.size).find(std::string(3000, '1')) != std::string::npos);
+  bench.client.takeText();
+  CHECK(room.lines == 5);
+  CHECK(std::string(room.data, room.used).find(std::string(3000, '1')) != std::string::npos);
 }

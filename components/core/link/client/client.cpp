@@ -115,9 +115,11 @@ void Client::radioWasReset() {
   line_overflow_ = false;
   // Half a line is not a line: a lending that was in the middle of one when the radio restarted
   // drops it and keeps the whole ones before it (task p16-01).
-  held_begun_ = false;
-  held_keep_ = false;
-  held_at_ = held_size_;
+  if (room_ != nullptr) {
+    room_->begun = false;
+    room_->keep = false;
+    room_->at = room_->used;
+  }
   text_mark_ = counters_.text_lines;  // §9 is about the lines of *this* session
   // Whoever reset the radio may have taken the pins with it (a kill releases everything,
   // ARCHITECTURE §2 rule 3). Asking the port is how it finds out, and it then lets the stream go
@@ -586,95 +588,83 @@ void Client::clearText() {
 
 // ------------------------------------------------------------------- §9, the lent room (p16-01)
 
-bool Client::lendText(char* room, std::size_t size) {
+bool Client::lendText(TextRoom* room, char* buffer, std::size_t size) {
   // Two bytes is the shortest thing that could ever be laid down (a `{` and its newline), so
   // anything smaller is room that could hold no line at all and is refused rather than filled.
-  if (held_ != nullptr || room == nullptr || size < 2) {
+  if (room_ != nullptr || room == nullptr || buffer == nullptr || size < 2) {
     return false;
   }
-  held_ = room;
-  held_room_ = size;
-  held_size_ = 0;
-  held_lines_ = 0;
-  held_at_ = 0;
-  held_begun_ = false;
-  held_keep_ = false;
-  held_full_ = false;
+  *room = TextRoom{};
+  room->data = buffer;
+  room->size = size;
+  room_ = room;
   return true;
 }
 
-TextHeld Client::textHeld() const {
-  TextHeld out;
-  out.data = held_;
-  out.size = held_size_;
-  out.lines = held_lines_;
-  out.full = held_full_;
-  return out;
-}
-
-TextHeld Client::takeText() {
-  const TextHeld out = textHeld();
-  held_ = nullptr;
-  held_room_ = 0;
-  held_at_ = 0;
-  held_begun_ = false;
-  held_keep_ = false;
-  return out;
+void Client::takeText() {
+  if (room_ == nullptr) {
+    return;
+  }
+  // Half a line is not a line: what the caller keeps is the whole ones.
+  room_->at = room_->used;
+  room_->begun = false;
+  room_->keep = false;
+  room_ = nullptr;
 }
 
 // One byte of the line being read. The first byte decides whether the line is kept at all (§9: a
 // line that does not begin with `{` is chatter), and room is reserved for the ending so that a
 // line is never laid down without one.
 void Client::holdTextByte(std::uint8_t byte) {
-  if (held_ == nullptr || held_full_) {
+  if (room_ == nullptr || room_->full) {
     return;
   }
-  if (!held_begun_) {
-    held_begun_ = true;
-    held_keep_ = byte == '{';
-    held_at_ = held_size_;
+  if (!room_->begun) {
+    room_->begun = true;
+    room_->keep = byte == '{';
+    room_->at = room_->used;
   }
-  if (!held_keep_) {
+  if (!room_->keep) {
     return;
   }
-  if (held_at_ + 2 > held_room_) {
+  if (room_->at + 2 > room_->size) {
     // This line would end past the end of the room. Nothing of it is kept, the lines before it
     // stand as they are, and the lending is over.
-    held_full_ = true;
+    room_->full = true;
     counters_.text_full = saturate(counters_.text_full);
     return;
   }
-  held_[held_at_++] = static_cast<char>(byte);
+  room_->data[room_->at++] = static_cast<char>(byte);
 }
 
 void Client::endHeldLine() {
-  if (held_ == nullptr) {
+  if (room_ == nullptr) {
     return;
   }
-  if (held_begun_ && held_keep_ && !held_full_ && held_at_ > held_size_) {
-    held_[held_at_++] = '\n';
-    held_size_ = held_at_;
-    ++held_lines_;
+  if (room_->begun && room_->keep && !room_->full && room_->at > room_->used) {
+    room_->data[room_->at++] = '\n';
+    room_->used = room_->at;
+    ++room_->lines;
   }
-  held_begun_ = false;
-  held_keep_ = false;
-  held_at_ = held_size_;
+  room_->begun = false;
+  room_->keep = false;
+  room_->at = room_->used;
 }
 
-bool TextHeld::hasDone(Text command) const {
+bool TextRoom::hasDone(Text command) const {
   if (data == nullptr) {
     return false;
   }
-  std::size_t at = 0;
-  while (at < size) {
-    std::size_t end = at;
-    while (end < size && data[end] != '\n') {
+  std::size_t from = 0;
+  while (from < used) {
+    std::size_t end = from;
+    while (end < used && data[end] != '\n') {
       ++end;
     }
-    if (isDoneFor(Text{data + at, end - at}, command)) {
+    if (isDoneFor(Text{data + from, end - from}, command)) {
       return true;
     }
-    at = end + 1;
+    from = end + 1;
   }
   return false;
 }
@@ -682,25 +672,25 @@ bool TextHeld::hasDone(Text command) const {
 // ------------------------------------------------------------------- §9, a line said (p16-01)
 
 void Client::noticeAck(Text line) {
-  if (await_into_ == nullptr || await_into_->fault == Fault::kNone) {
+  if (awaited_ == nullptr || awaited_->into->fault == Fault::kNone) {
     return;  // nothing is waiting, or the ack has already been found
   }
   if (!lineIs(line, text("ack"))) {
     return;
   }
   Text said;
-  if (!lineText(line, text("cmd"), &said) ||
-      !equal(said, Text{await_cmd_, await_cmd_size_})) {
+  if (!lineText(line, text("cmd"), &said) || !equal(said, awaited_->command)) {
     return;  // an ack for another command: not this call's answer (§9)
   }
+  Said* into = awaited_->into;
   bool ok = false;
   lineFlag(line, text("ok"), &ok);
-  await_into_->ok = ok;
+  into->ok = ok;
   Text msg;
   if (lineText(line, text("msg"), &msg)) {
-    await_into_->msg_cut = !copyText(msg, await_into_->msg, sizeof await_into_->msg);
+    into->msg_cut = !copyText(msg, into->msg, sizeof into->msg);
   }
-  await_into_->fault = Fault::kNone;
+  into->fault = Fault::kNone;
 }
 
 Said Client::say(Text line) {
@@ -745,11 +735,13 @@ Said Client::say(Text line) {
   copyBytes(line.data, out, line.size);
   out[line.size] = '\n';
 
-  const Text command = firstWord(line);
   said.fault = Fault::kLinkDown;  // until an ack says otherwise
-  await_cmd_ = command.data;
-  await_cmd_size_ = command.size;
-  await_into_ = &said;
+  // On this call's own stack, like the line above it: the client keeps the pointer and nothing
+  // else while the ack is awaited.
+  Awaited awaited;
+  awaited.command = firstWord(line);
+  awaited.into = &said;
+  awaited_ = &awaited;
   if (port_.send(out, line.size + 1)) {
     counters_.text_said = saturate(counters_.text_said);
     // kProbeWaitMs, for the reason the probe has it: the scanner answers a command with one line
@@ -765,9 +757,7 @@ Said Client::say(Text line) {
   } else {
     said.fault = Fault::kClosed;
   }
-  await_into_ = nullptr;
-  await_cmd_ = nullptr;
-  await_cmd_size_ = 0;
+  awaited_ = nullptr;
   if (said.fault == Fault::kNone) {
     if (!said.ok) {
       counters_.text_not_ok = saturate(counters_.text_not_ok);

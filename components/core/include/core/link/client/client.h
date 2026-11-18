@@ -217,15 +217,22 @@ struct Said {
   bool answered() const { return fault == Fault::kNone; }
 };
 
-// Room a caller lends the client for the scanner's whole lines (§9, task p16-01), and what it
-// holds when the caller takes it back. A `sweep` line of the band is about 4 kB and the longest
-// the scanner can send about 7.6 kB, where the ring above keeps kTextLineMax of a line: so
-// whoever wants a line whole lends the room for it, and this firmware keeps none of its own.
+// Room a caller lends the client for the scanner's whole lines (§9, task p16-01). A `sweep` line
+// of the band is about 4 kB and the longest the scanner can send about 7.6 kB, where the ring
+// above keeps kTextLineMax of a line: so whoever wants a line whole lends the room for it.
 //
-// The lines are laid down one after another, each ended with `\n`, exactly as they arrived.
-struct TextHeld {
-  const char* data = nullptr;
-  std::size_t size = 0;   // bytes laid down, the line endings included
+// **The room and the book-keeping about it are both the caller's.** This object is a local of
+// whoever lends the buffer, and the client keeps one pointer to it and not a byte more - which
+// is the whole of what this costs an image whose start-up margin is counted in kilobytes
+// (tools/heap_at_start.py, rail R22). It must outlive the lending.
+//
+// The lines are laid down one after another in `data`, each ended with `\n`, exactly as they
+// arrived. A caller reads the first five fields whenever it likes; the last three are the
+// client's note of the line it is in the middle of.
+struct TextRoom {
+  char* data = nullptr;
+  std::size_t size = 0;   // how much of the buffer was lent
+  std::size_t used = 0;   // whole lines laid down, their line endings included
   std::size_t lines = 0;
   // A line did not fit in what was left: the lending ended there, nothing of that line was kept
   // and nothing after it was.
@@ -233,6 +240,10 @@ struct TextHeld {
 
   // Whether a `{"t":"done","cmd":"<command>"…}` is among the lines (text_line.h).
   bool hasDone(Text command) const;
+
+  std::size_t at = 0;   // where the line being laid down has reached
+  bool begun = false;   // a byte of it has come since the last line ending
+  bool keep = false;    // ...and it began with `{`
 };
 
 // Four of each: the supervisor, the cycle, the console and one spare. A fixed array, because
@@ -394,20 +405,18 @@ class Client {
   // its own would be a second command).
   Said say(Text line);
 
-  // Lends the client `size` bytes of the caller's own room for whole lines. While it is lent,
-  // every line beginning with `{` is laid down in it whole and ended with `\n`; a line that does
-  // not begin with `{` is chatter and is not kept (§9). What the ring and the watchers above see
-  // does not change at all.
+  // Lends the client `size` bytes of `buffer`, with `room` - the caller's own - to keep the
+  // count in. While it is lent, every line beginning with `{` is laid down in the buffer whole
+  // and ended with `\n`; a line that does not begin with `{` is chatter and is not kept (§9).
+  // What the ring and the watchers above see does not change at all.
   //
-  // False when room is lent already, when the pointer is null, or when `size` is too small to
-  // hold any line. The room is the caller's and must outlive the lending.
-  bool lendText(char* room, std::size_t size);
-  bool textLent() const { return held_ != nullptr; }
-  // What the room holds now, without ending the lending: what a caller polling for a `done`
-  // reads between calls to poll().
-  TextHeld textHeld() const;
-  // The same, and the lending is over: nothing more is laid down in the caller's room.
-  TextHeld takeText();
+  // False when room is lent already, when either pointer is null, or when `size` is too small to
+  // hold any line. Both the room and the buffer are the caller's and must outlive the lending;
+  // the caller reads the room whenever it likes, during the lending and after it.
+  bool lendText(TextRoom* room, char* buffer, std::size_t size);
+  bool textLent() const { return room_ != nullptr; }
+  // The lending is over: nothing more is laid down in the caller's room, which keeps what it has.
+  void takeText();
 
   // ------------------------------------------------------------------ the rest
 
@@ -511,22 +520,17 @@ class Client {
   // not be called a scanner on the strength of what the last session saw.
   std::uint32_t text_mark_ = 0;
 
-  // §9's lent room (task p16-01). **The buffer is the caller's**: what is here is the few words
-  // that point at it and count what is in it, and nothing this firmware keeps.
-  char* held_ = nullptr;
-  std::size_t held_room_ = 0;    // what was lent
-  std::size_t held_size_ = 0;    // whole lines laid down, their endings included
-  std::size_t held_lines_ = 0;
-  std::size_t held_at_ = 0;      // where the line being laid down has reached
-  bool held_begun_ = false;      // a byte of a line has come since the last line ending
-  bool held_keep_ = false;       // ...and the line began with `{`
-  bool held_full_ = false;       // a line did not fit: the lending ended there
-
-  // §9's say() while it waits for its `ack`: the command word it is matching, and the answer it
-  // is filling in - a Said on the caller's own stack, for the length of the call and no longer.
-  const char* await_cmd_ = nullptr;
-  std::size_t await_cmd_size_ = 0;
-  Said* await_into_ = nullptr;
+  // §9's lent room and §9's say() while it waits for its `ack` (task p16-01). **Both of the
+  // things these point at are the caller's**, on its own stack for the length of its call: all
+  // this client keeps of either is the pointer, which is what deliverable 4 of the task asks for
+  // - no room of this firmware's own, and static storage that grows by the few words that point
+  // at it.
+  TextRoom* room_ = nullptr;
+  struct Awaited {
+    Text command;          // the line's first word: the `cmd` of the ack that counts
+    Said* into = nullptr;  // where the ack goes when it comes
+  };
+  Awaited* awaited_ = nullptr;
 
   RestartWatcher* restart_watchers_[kMaxWatchers] = {};
   std::size_t restart_watcher_count_ = 0;
