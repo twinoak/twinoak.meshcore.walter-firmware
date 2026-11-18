@@ -17,8 +17,19 @@ soon as that file exists.
 | `UnitReportResult.json` | `twinoak.report`'s result | meshmaster.dk's 216 | the same |
 | `FirmwareApplyProgress.json` | `twinoak.fw.apply`'s progress report — the journal as it is written | meshmaster.dk's 227 | written here from `tasks/phase-14/04-an-apply-keeps-its-lease.md`'s *The contract* |
 | `FirmwareOfferPayloadScanner.json` | `twinoak.fw.offer`'s payload with `into` — the member that sends the release's scanner image into the scanner slot | meshmaster.dk's 235 | written here from `tasks/phase-16/02-an-offer-into-the-scanner-slot.md`'s *The contract* |
+| `NoiseScopeSessionPayload.json` | `twinoak.noisescope.session`'s payload — the slot and one to six steps | meshmaster.dk's 236 | written here from `tasks/phase-16/04-a-session-is-a-job.md`'s *The contract* |
+| `NoiseScopeSessionStep.json` | one step of that payload — a command and its seconds | meshmaster.dk's 236 | the same |
+| `NoiseScopeLinesReply.json` | what a post of a scanner's lines is answered with — how many the server holds, and whether its room is used up | meshmaster.dk's 236 | the same |
+| `NoiseScopeSessionResult.json` | the session's result — the outcome, the scanner's version, a row per step, the two counts, the journal, the refusal | meshmaster.dk's 236 | the same |
+| `NoiseScopeStepResult.json` | one step's row of that result — how it ended, and what it handed to its posts | meshmaster.dk's 236 | the same |
 
 `tasks/phase-13/FOLLOWUPS.md` carries the item that compares the first two byte for byte once task
 216 is deployed, `tasks/phase-14/FOLLOWUPS.md` the same for the third once task 227 is, and
-`tasks/phase-16/FOLLOWUPS.md` the same for the fourth once task 235 is; each moves the files into
-the copied tree where every other fixture is.
+`tasks/phase-16/FOLLOWUPS.md` the same for the fourth once task 235 is and for the five of
+`twinoak.noisescope.session` once task 236 is; each moves the files into the copied tree where
+every other fixture is.
+
+The five session files are **the task's own five lines**, read at run time:
+`host_test/agent/test_a_session_is_a_job.cpp` collects every line of
+`tasks/phase-16/04-a-session-is-a-job.md` that begins a JSON object and holds each file against
+it, so a byte that drifts in either is a failing test.

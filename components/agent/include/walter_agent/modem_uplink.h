@@ -254,6 +254,25 @@ class ModemUplink final : public mm::IUplink {
   bool extendLease(long long jobId, int seconds, std::uint32_t& leaseUntil) override;
   bool postProgress(long long jobId, const char* body, std::size_t len) override;
 
+  // ------------------------------------------------------------------ and one call of our own
+
+  // **A scanner's lines on their way to the server** (task p16-04): `POST
+  // /agent/v1/jobs/{id}/lines/{from}`. It is not one of `mm::IUplink`'s seven - the copied library
+  // has no notion of it and is not changed - so it is declared here and goes out through the same
+  // `call()` as every other one: the same token path, the same wake deadline, the same
+  // 120-a-minute ceiling, the same `Call` record, the same line in the failed-call list and the
+  // same name written down while it is out (`core/cycle/wake_progress.h`).
+  //
+  // `body` is what the scanner said, its lines as they were sent and each ended with `\n`. It is
+  // read where it lies - the session's room - and nothing of it is kept here or logged (S-12).
+  // True when the server answered 2xx and the reply parsed; `out` is then what it said.
+  struct LinesReply {
+    std::uint32_t held = 0;  // how many lines of this job the server holds now
+    bool full = false;       // the job's room is used up: the unit posts no more and goes on
+  };
+  bool postLines(long long jobId, std::uint32_t from, const char* body, std::size_t len,
+                 LinesReply* out);
+
   bool hasConfig() const override { return has_config_; }
   const mm::AgentConfig& config() const override { return config_; }
   const Outcome& last() const override { return last_; }

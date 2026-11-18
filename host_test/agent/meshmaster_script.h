@@ -67,6 +67,16 @@ struct PostedResult {
   bool late = false;
 };
 
+// One post of a scanner's lines, as the server saw it (task p16-04): `POST
+// /agent/v1/jobs/{id}/lines/{from}`, whose body is NDJSON and not JSON - the lines as the scanner
+// sent them, each ended with `\n`.
+struct SeenLines {
+  long long job_id = 0;
+  std::uint32_t from = 0;
+  std::string body;
+  std::uint64_t at_ms = 0;
+};
+
 // One `extend`, as the server saw it.
 struct SeenExtend {
   int seconds = 0;
@@ -138,6 +148,18 @@ class MeshMasterScript {
     result_fail_status_ = status;
     result_fail_count_ = count;
   }
+  // The next `count` posts of a scanner's lines are **taken and never answered** (task p16-04):
+  // the call ends at its deadline with no status at all, which is what the contract's *a post
+  // whose answer never comes* is. The route carries `{from}` in its path, so it cannot be named
+  // to `silenceRoute` once and for all.
+  void silenceNextLines(int count) { silent_lines_ = count; }
+  // How many lines of one job this server has room for; 0 is as many as come. Past it the reply
+  // says `full` and the unit posts no more.
+  void roomForLines(std::uint32_t lines) { lines_room_ = lines; }
+  std::uint32_t linesHeld(long long job_id) const {
+    const auto at = lines_held_.find(job_id);
+    return at == lines_held_.end() ? 0u : at->second;
+  }
   // Whether a claim is held to the types the last heartbeat advertised. True is the server.
   bool route_by_job_types = true;
   // The types the last heartbeat offered, in order.
@@ -161,6 +183,8 @@ class MeshMasterScript {
   std::map<long long, std::uint64_t> lease_until_ms;          // what the server holds now
   std::map<long long, std::vector<std::string>> progress;
   std::map<long long, std::vector<std::uint64_t>> progress_at_ms;
+  std::map<long long, std::vector<SeenLines>> lines;  // the posts of a scanner's lines, in order
+  int lines_unanswered = 0;                           // ... and the ones this script never answered
   std::vector<std::string> batches;               // observation batches, the bodies
   std::vector<std::string> calls;                 // every agent route reached, in order
   int configs = 0;
@@ -426,6 +450,30 @@ class MeshMasterScript {
         reply->body = "{\"jobId\":" + std::to_string(job_id) + ",\"recordedAt\":\"" + iso(server_time) + "\"}";
         return true;
       }
+      // **A scanner's lines** (task p16-04): `{from}` is in the path, the body is NDJSON, and the
+      // reply says how many lines of this job are held and whether the room is used up. The rule
+      // the contract gives this end - *a line it already holds is left alone, a `from` past what
+      // it holds is accepted and the gap counted as lost* - is `held = max(held, from + count)`.
+      if (what.rfind("lines/", 0) == 0) {
+        const std::uint32_t from =
+            static_cast<std::uint32_t>(std::strtoul(what.c_str() + 6, nullptr, 10));
+        lines[job_id].push_back(SeenLines{job_id, from, request.body, clock_.nowMs()});
+        if (silent_lines_ > 0) {
+          --silent_lines_;
+          ++lines_unanswered;
+          reply->no_response = true;
+          return true;
+        }
+        std::uint32_t count = 0;
+        for (char c : request.body) count += c == '\n' ? 1 : 0;
+        const std::uint32_t held = from + count;
+        std::uint32_t& have = lines_held_[job_id];
+        if (held > have) have = held;
+        const bool full = lines_room_ != 0 && have >= lines_room_;
+        reply->body = "{\"held\":" + std::to_string(have) + ",\"full\":" +
+                      (full ? "true" : "false") + "}";
+        return true;
+      }
     }
     reply->status = 404;
     reply->body = "{\"title\":\"There is no such resource.\"}";
@@ -455,6 +503,11 @@ class MeshMasterScript {
   std::vector<std::string> silent_routes_;
   int result_fail_status_ = 503;
   int result_fail_count_ = 0;
+  // A scanner's lines (task p16-04): how many posts to leave unanswered, the room one job's lines
+  // have, and how many this server holds of each.
+  int silent_lines_ = 0;
+  std::uint32_t lines_room_ = 0;
+  std::map<long long, std::uint32_t> lines_held_;
 };
 
 }  // namespace bench

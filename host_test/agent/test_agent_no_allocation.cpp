@@ -97,6 +97,8 @@ const char* const kAgentIncludes[] = {
     "core/update/fetch.h",
     "core/update/journal.h",
     "core/update/radio_update.h",
+    // Task p16-04: the session of the radio as a scanner the sixth job type drives.
+    "core/update/scanner_session.h",
     "core/update/self_update.h",
     "core/update/uplink_check.h",
     "core/version.h",

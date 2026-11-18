@@ -29,6 +29,7 @@
 #include "core/update/fetch.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
+#include "core/update/scanner_session.h"
 #include "core/update/self_update.h"
 #include "fakes/fake_entropy.h"
 #include "fakes/fake_heap.h"
@@ -64,6 +65,9 @@ struct AgentHalfParts {
   core::image::Store* store = nullptr;
   core::update::RadioUpdate* update = nullptr;
   core::update::SelfUpdate* self = nullptr;
+  // A session of the radio as a scanner (task p16-04): the life's own object, which the wake
+  // cycle is handed too - the one the job opens and the one a wake ends.
+  core::update::ScannerSession* session = nullptr;
   core::update::Fetch* fetch = nullptr;
   core::supervisor::Supervisor* supervisor = nullptr;
   core::board::RadioPins* pins = nullptr;
@@ -163,6 +167,7 @@ struct AgentHalf {
     j.journal = parts.journal;
     j.supervisor = parts.supervisor;
     j.guard = &parts.duty->guard();
+    j.session = parts.session;
     return j;
   }
   agent::AgentBackend::Parts backendParts() {

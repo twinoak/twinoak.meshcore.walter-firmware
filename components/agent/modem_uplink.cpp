@@ -612,6 +612,49 @@ bool ModemUplink::extendLease(long long jobId, int seconds, std::uint32_t& lease
   return true;
 }
 
+// -- and one call of our own (task p16-04) -------------------------------------------------------
+
+bool ModemUplink::postLines(long long jobId, std::uint32_t from, const char* body, std::size_t len,
+                            LinesReply* out) {
+  if (out != nullptr) *out = LinesReply();
+  // `{from}` is part of the route, so it goes into the action the job route is built from -
+  // `lines/0`, `lines/3` - rather than into a body. `kMaxEndpointLen` holds `/jobs/` and a
+  // nineteen-digit id with it.
+  char action[24];
+  std::snprintf(action, sizeof action, "lines/%lu", static_cast<unsigned long>(from));
+  std::size_t reply_len = 0;
+  Call c;
+  if (!callJob(CallKind::kLines, jobId, action, reinterpret_cast<const std::uint8_t*>(body), len,
+               reply_len, c) ||
+      !c.ok) {
+    wipeReply();
+    return false;
+  }
+  // The reply is `NoiseScopeLinesReply.json`, two members, and the library has no parser for it:
+  // the payload reader this firmware already has is what reads it (walter_agent/json_scan.h).
+  long long held = 0;
+  bool is_full = false;
+  const json::Value held_value = json::member(reply_, reply_len, "held");
+  if (!json::integer(held_value, &held)) {
+    counters_.unparsed = saturate(counters_.unparsed);
+    last_call_.ok = false;
+    std::snprintf(last_call_.error, sizeof last_call_.error,
+                  "http %d but the reply carries no `held`", c.httpStatus);
+    LOG_E("server: lines: %s", last_call_.error);
+    wipeReply();
+    return false;
+  }
+  // `full` left out is *not full*: the member is the server's way of stopping the posts, and a
+  // reply that does not carry it has not stopped them.
+  (void)json::boolean(json::member(reply_, reply_len, "full"), &is_full);
+  if (out != nullptr) {
+    out->held = held > 0 ? static_cast<std::uint32_t>(held) : 0u;
+    out->full = is_full;
+  }
+  wipeReply();
+  return true;
+}
+
 bool ModemUplink::postProgress(long long jobId, const char* body, std::size_t len) {
   std::size_t reply_len = 0;
   Call c;

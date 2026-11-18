@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <support/Jobs.h>
@@ -112,6 +113,19 @@ inline std::string applyPayload(const std::string& expected_hex, const char* pro
   return out;
 }
 inline std::string powerCyclePayload(int off_seconds) { return "{\"offSeconds\":" + std::to_string(off_seconds) + "}"; }
+
+// `NoiseScopeSessionPayload.json`'s shape (task p16-04): the slot, and one to six steps in order.
+// A test may pass more than six, or seconds outside their bounds: that is what a refusal is made
+// of, and the shape of such a payload is the same.
+inline std::string sessionPayload(const std::vector<std::pair<std::string, int>>& steps,
+                                  int slot = 0) {
+  std::string out = "{\"slot\":" + std::to_string(slot) + ",\"steps\":[";
+  for (std::size_t i = 0; i < steps.size(); ++i) {
+    if (i > 0) out += ",";
+    out += "{\"command\":\"" + steps[i].first + "\",\"seconds\":" + std::to_string(steps[i].second) + "}";
+  }
+  return out + "]}";
+}
 
 // A job for the unit's own repeater at class `none`, as the server routes every `twinoak.*` job
 // (unit-protocol.md §5). No lease named: the bench walks months, and a lease that lapsed would be

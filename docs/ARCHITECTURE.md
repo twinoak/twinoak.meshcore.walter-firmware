@@ -1631,7 +1631,7 @@ wake cycle's business and are handed to it, not acted on here:
   and the journal see it exactly as they see a console-driven update.
 
 The firmware jobs are `agent::FirmwareJobs : mm::IJobExtension` (`components/agent/firmware_jobs.h`),
-five types the library hands over by name, each mapped onto phase 2's image store and update
+six types the library hands over by name, each mapped onto phase 2's image store and update
 machines and run **for the unit's own repeater through the local door** — no `client_tx`, no packet
 on the air:
 
@@ -1641,6 +1641,7 @@ on the air:
 | `twinoak.fw.apply` | the radio's `RadioUpdate` or this board's own `SelfUpdate`, in slices, journalled (the journal truncated to 40 entries / 2000 characters for the result); refused by a word (`battery`, `link`, `clock`, `inProgress`, `noGolden`, `badList`, `order`) rather than a silent failure. **Each journal line is posted as `progress` as it is written** and the lease is extended before every step that cannot stop to ask again — a flash is one call of the flasher and a quarter of an hour, so the ask before one is the server's whole ceiling, `kLeaseFlashSeconds` (task p14-04) | `committed` or `rolledBack`; **the Walter's own apply result is posted by the *next* boot's wake**, after the trial whose third condition is one heartbeat `ok` |
 | `twinoak.fw.state` | read back the store's records, the running and golden versions, the journal and the supervisor's counts | the state, as bytes. The slot's `role`, `board` and `band` - the three words the server picks an image by - come from the **golden image's descriptor** when there is one, and from `HELLO` when there is none, which is every radio before its first install through the Walter commits; `band` is left out when the radio speaks link 1.0 and says none (task p8-05) |
 | `twinoak.power.cycle` | `RadioPins::killCycle` within the §2 bounds, then a `HELLO` to prove the radio came back | the cycle's outcome |
+| `twinoak.noisescope.session` | **a session of the radio as a scanner** (task p16-04): `core/update/scanner_session.h`'s machine run from a claimed job — the scanner image on, a program of one to six steps whose lines are posted as each step hands them over, and the golden image back and proved. The program comes out of the payload and is judged by task p16-03's own rules; the lease is extended for the server's whole ceiling before each of the two flashes; the journal goes out as `progress` a line at a time, the `room` line among it. A scanner's line goes into a post and nowhere else (S-12) | `restored`, `refused` with one word, or `stuck`, with a row for every step of the payload and the two line counts. **A board that restarts in the middle owes it**: the wake that ends the session posts it from the journal, `notRun` for every step it cannot vouch for ([`update.md`](update.md), *A session as a job*) |
 | `twinoak.report` | **what the unit says about itself** (task p13-01): the console's own lines by section — `wake`, `agent state`, `lte`, `agent obs`, `agent jobs`, `journal`, the radio's three, `power`, `reboots` and `heap`, the settings, `dump`. Read only: no section changes a counter, a queue or a record, and nothing goes on the air. The lines are not written twice — a section is the console command, printing into the result's buffer instead of into the port (`core/console/report_source.h`) | the sections asked for, in the order asked, each cut at a line end if the whole data object would pass 8 000 bytes; the ones not started in `left`, the names this firmware has no section for in `unknown` |
 
 Telemetry a job needs is read with §5.8's `LPP_GET`, never a chat line. The payloads and results are
@@ -1648,7 +1649,7 @@ read and written through meshmaster.dk's own fixture bytes (`unit-protocol.md` �
 `host_test/agent/test_firmware_jobs.cpp`.
 
 **A second deviation from p4-04's empty list.** §13's identity note above says the *mesh* job type
-list is not reduced by the local door. The extension's five `twinoak.*` types go further: they are
+list is not reduced by the local door. The extension's six `twinoak.*` types go further: they are
 advertised in the heartbeat **even before the repeater has a key**, where the mesh list is empty,
 because they concern the unit and its own store rather than a neighbour, and the server routes them
 to it only once it is linked. `host_test/agent/test_agent_backend.cpp` holds both halves.

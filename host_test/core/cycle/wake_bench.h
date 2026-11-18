@@ -519,6 +519,9 @@ struct WakeWalter {
       parts.store = &w.images.store;
       parts.update = &update;
       parts.self = &self;
+      // The session of the radio as a scanner (task p16-04): the **same** object the wake cycle
+      // is handed below, as main.cpp hands the two the one it built.
+      parts.session = &session;
       parts.fetch = &fetch;
       parts.supervisor = supervisor.get();
       parts.pins = &board;

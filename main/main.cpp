@@ -655,6 +655,10 @@ extern "C" void app_main() {
   job_parts.journal = g_journal;
   job_parts.supervisor = &supervisor;
   job_parts.guard = &duty.guard();
+  // The session of the radio as a scanner (task p16-04): the **same** object the wake cycle is
+  // handed below, so that a job and a typed `rak session` cannot both have one open and an open
+  // one is ended by the next wake whichever door began it.
+  job_parts.session = g_session;
   static agent::FirmwareJobs firmware_jobs(job_parts, radio_pins, slots, radio, server, settings,
                                            g_clock, g_wall);
   static agent::IdentityProbe identity_probe(agent_identity, mesh, agent_observations,
