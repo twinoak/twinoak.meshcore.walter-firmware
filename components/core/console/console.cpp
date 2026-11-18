@@ -39,6 +39,7 @@ bool isRadioVerb(Verb verb) {
     case Verb::kStatus:
     case Verb::kReboots:
     case Verb::kHeap:
+    case Verb::kHeapRoom:
     case Verb::kCoreDump:
     case Verb::kCoreDumpErase:
     case Verb::kPins:
@@ -554,6 +555,7 @@ void Console::runLine(const char* line) {
     case Verb::kStatus: status(); return;
     case Verb::kReboots: reboots(); return;
     case Verb::kHeap: heap(); return;
+    case Verb::kHeapRoom: heapRoom(); return;
     case Verb::kCoreDump: coreDump(); return;
     case Verb::kCoreDumpErase: coreDumpErase(); return;
     case Verb::kPins: pins(); return;
@@ -934,9 +936,68 @@ void Console::heap() {
          static_cast<unsigned long>(f.largest_block), static_cast<unsigned long>(f.min_free));
   printf("main task stack: %lu bytes, %lu never used (the high-water mark)\n",
          static_cast<unsigned long>(f.stack_bytes), static_cast<unsigned long>(f.stack_unused));
+  printPsramLine();
   print("the block is what decides whether an image starts: the main task's stack has to come "
         "out of one, and tools/heap_at_start.py says so before the image is built "
         "(docs/ARCHITECTURE.md section 14)\n");
+}
+
+// The module's PSRAM, in one line (task p16-05). It is **not** part of the heap above: the four
+// figures of that line and the two the heartbeat reports are the internal heap's, as they have
+// always been, and the PSRAM has one job - the room of a session - which brings it up, uses it
+// for twenty minutes and gives it back. So this line says which of three things this board is,
+// and nothing of it decides anything.
+void Console::printPsramLine() {
+  if (scratch_ == nullptr) return;
+  const interfaces::Scratch::ExternalRoom room = scratch_->external();
+  switch (room.state) {
+    case interfaces::Scratch::External::kUp:
+      printf("psram: %lu bytes, %lu free (a session's room is all that is ever in it)\n",
+             static_cast<unsigned long>(room.bytes),
+             static_cast<unsigned long>(room.free_bytes));
+      return;
+    case interfaces::Scratch::External::kAsleep:
+      print("psram: not brought up in this boot ('heap room' brings it up and gives it back, and "
+            "so does a session)\n");
+      return;
+    case interfaces::Scratch::External::kFailed:
+      print("psram: none found - it was asked for in this boot and did not come up; a session's "
+            "room is the internal heap's\n");
+      return;
+    case interfaces::Scratch::External::kNone:
+      print("psram: none found - this build asks for none; a session's room is the internal "
+            "heap's\n");
+      return;
+  }
+}
+
+// `heap room`: the room a session lays a step's lines down in, taken exactly as a session takes
+// it - the PSRAM brought up, 64 kB of it asked for, the whole of it written and read back - and
+// given straight back (task p16-05). It is how a Walter alone on a cable, with no radio to turn
+// into a scanner, proves its PSRAM: `heap`, then this, then `heap` again.
+void Console::heapRoom() {
+  if (scratch_ == nullptr) {
+    print("error: heap room: this build has no room to borrow (main/main.cpp)\n");
+    return;
+  }
+  update::RoomFigures figures;
+  update::Room room = update::takeStepRoom(*scratch_, heap_, &figures);
+  if (room.data == nullptr) {
+    printf("error: heap room: neither room could be had: no external memory, and the internal "
+           "heap has no %lu-byte block (the largest is %lu)\n",
+           static_cast<unsigned long>(update::kStepBytes),
+           static_cast<unsigned long>(figures.left_block));
+    printPsramLine();
+    return;
+  }
+  printRoomLine(figures);
+  printf("  %lu bytes, %s, written and read back; given back now\n",
+         static_cast<unsigned long>(room.bytes),
+         room.external ? "external" : "the internal heap");
+  update::giveStepRoom(*scratch_, &room);
+  // The line again after the room is back, so that what the command cost is read off the board
+  // and not off this comment.
+  printPsramLine();
 }
 
 // The core dump the panic handler left behind (task p11-03; core/health/coredump.h). The one of

@@ -16,10 +16,70 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # the header and the bootloader are what put the chip in QIO.
 CONFIG_ESPTOOLPY_FLASH_MODE_AUTO_DETECT=n
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
-# PSRAM stays off. The N16R2 has 2 MB of quad PSRAM, but the datasheet (§Ordering) also lists
-# Walter variants with 8 MB (octal) PSRAM, and a firmware configured for one kind aborts its boot on
-# the other. Nothing here needs PSRAM; the task that first does decides (report 01, decisions).
-# CONFIG_SPIRAM is not set
+# ---- The PSRAM: one job, and it is the room of a session (task p16-05) --------------------------
+# Task p0-01 left PSRAM off with the note that the first task to need it decides. This is that
+# task, and what needs it is **one buffer**: the room a step of a NoiseScope session lays a
+# scanner's lines down in (docs/ARCHITECTURE.md §14, docs/update.md's *A session*). 64 kB of it
+# where there is PSRAM, 8 192 bytes of the internal heap where there is not - which is what a unit
+# in service has in one piece. Nothing this board needs in order to boot, to keep its radio, to
+# update or to reach the server depends on any of it, and rail R24 holds that.
+#
+# The N16R2 has "2 MB of quad SPI PSRAM" (datasheet §1, Specifications); every Walter Thomas has is
+# that part. The datasheet's §Ordering also lists variants with 8 MB of **octal** PSRAM, which this
+# configuration does not drive: on one of those the chip does not answer in quad mode
+# (esp_psram_impl_enable: "PSRAM chip is not connected, or wrong PSRAM line mode"), the room comes
+# out of the internal heap instead, and the board boots and runs exactly as it does today. The
+# board aborting its boot on the wrong kind - task p0-01's reason for leaving this off - is what
+# CONFIG_SPIRAM_BOOT_INIT=n below makes impossible: nothing of the memory is brought up at boot,
+# so there is nothing for a boot to fail at.
+CONFIG_SPIRAM=y
+# Quad, and auto-detected type: the two defaults of the S3's Kconfig, stated because the module is
+# quad and because an 8 MB octal Walter must *fail* to find a chip rather than mis-drive one.
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+# 40 MHz, ESP-IDF's default. 80 and 120 are offered; neither buys this firmware anything - the one
+# thing in the PSRAM is a 64 kB buffer written a line at a time by a 115 200-baud UART - and the
+# flash on this module is already at 80 MHz in QIO. The slowest setting is the one with the least
+# to go wrong on a board that has never had its PSRAM up.
+CONFIG_SPIRAM_SPEED_40M=y
+# **The memory is brought up by the room of a session and at no other moment.** BOOT_HW_INIT
+# brings up the chip and its MSPI timing at boot, which has to be early (the timing registers are
+# shared with the flash, and the functions that set them are ESP-IDF's `*_early` ones); BOOT_INIT
+# - the mapping, the memory test and the heap pool - is off, so an ordinary wake maps no page of
+# PSRAM and has no external pool in its heap. `platform::EspScratch::takeExternal` calls
+# esp_psram_init() and esp_psram_extram_add_to_heap_allocator() at the first ask of a boot.
+# This is ESP-IDF's own supported arrangement, not a trick: the help of
+# CONFIG_SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION describes exactly it ("In case you wish to disable
+# SPIRAM_BOOT_INIT just for delaying the PSRAM initialization and plan to use ... esp_psram_init()
+# in the application code, you should still enable this config"), and
+# components/esp_psram/test_apps/psram/sdkconfig.ci.psram_no_boot_init is these three lines, run
+# on the esp32s3 in ESP-IDF's own CI.
+CONFIG_SPIRAM_BOOT_HW_INIT=y
+CONFIG_SPIRAM_BOOT_INIT=n
+CONFIG_SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION=y
+# A PSRAM that is not found at boot is a log line, not a panic: "Normally, if psram initialization
+# is enabled during compile time but not found at runtime, it is seen as an error making the CPU
+# panic. If this is enabled, booting will complete but no PSRAM will be available" (its Kconfig
+# help). That covers the 8 MB octal variant, a board with none at all, and a chip that has stopped
+# answering - all three of which must boot, run and hold their sessions in the 8 192 bytes.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+# **malloc() stays internal.** The access method is "Add RAM to heap_caps allocator (malloc() stays
+# internal by default)" and not ESP-IDF's default of SPIRAM_USE_MALLOC: under CAPS_ALLOC nothing
+# calls heap_caps_malloc_extmem_enable(), so heap_caps_malloc_default() - which is malloc(), new
+# and everything the copied library allocates - keeps asking for
+# MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL (heap/heap_caps.c). The one thing that gets external
+# memory asks for it by name, with MALLOC_CAP_SPIRAM, in platform/heap.cpp.
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+# And nothing static goes there. `.bss` and `.noinit` in external memory are what would make the
+# image's start depend on a chip answering, and they are also what makes SPIRAM_IGNORE_NOTFOUND
+# unavailable - both are off, which is ESP-IDF's default, stated because rail R24 greps for them.
+# CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is not set
+# CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY is not set
+# No instruction or read-only data is moved into it either: this firmware's flash is fast enough,
+# and code fetched from PSRAM is code that cannot run while the PSRAM is down.
+# CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
+# CONFIG_SPIRAM_FETCH_INSTRUCTIONS is not set
+# CONFIG_SPIRAM_RODATA is not set
 
 # ---- The partition table ------------------------------------------------------------------------
 # partitions.csv (docs/ARCHITECTURE.md §11), checked by tools/check_partitions.py on every build.

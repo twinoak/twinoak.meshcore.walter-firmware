@@ -39,7 +39,14 @@ const CommandDef kCommands[kCommandCount] = {
     {"heap", "heap", Group::kUnit,
      "the internal heap now: free, the largest free block, the least free since this boot, and "
      "how much of the main task's 16 KB stack has never been used. The block is the figure that "
-     "decides whether an image starts at all"},
+     "decides whether an image starts at all. One line more says what the module's PSRAM is: its "
+     "size and what is free of it, or that nothing has brought it up in this boot, or that none "
+     "was found"},
+    {"heap room", "heap room", Group::kUnit,
+     "takes the room a step of a session lays a scanner's lines down in, exactly as a session "
+     "takes it - the PSRAM brought up, 64 KB of it asked for, the whole of it written and read "
+     "back - prints its room line and gives it straight back. A Walter with no radio proves its "
+     "PSRAM with it"},
     {"coredump [erase confirm]", "coredump", Group::kUnit,
      "the core dump the panic handler left behind: whether there is one, whether its checksum "
      "holds, which of the two application slots wrote it, its panic line and its tasks. "

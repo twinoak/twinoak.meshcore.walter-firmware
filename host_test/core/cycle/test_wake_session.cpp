@@ -169,6 +169,45 @@ TEST_CASE("a scanner nobody opened a session for is left alone, wake after wake"
   }
 }
 
+// An ordinary wake never touches the PSRAM (task p16-05, deliverable 2). The memory is brought up
+// by the room of a session and at no other moment, so a wake that runs none boots and runs exactly
+// as it did before this task - which is what makes a board with no PSRAM, with the other kind, or
+// with one that does not answer no different from any other.
+TEST_CASE("a wake that runs no session never brings the PSRAM up") {
+  SessionWake unit;
+  unit.modemSilent();
+  // oneWake() in three lines, because the board this wake is on has to be given its PSRAM after
+  // the boot and before the wake: a life of this bench is built at every boot, and the seam is
+  // the life's (host_test/core/cycle/wake_bench.h).
+  for (int wake = 0; wake < 4; ++wake) {
+    CAPTURE(wake);
+    unit.boot();
+    unit.v().scratch.externalOf(2u * 1024u * 1024u);
+    CHECK(unit.v().scratch.external().state == interfaces::Scratch::External::kAsleep);
+    unit.v().begin();
+    const cyc::Pass& pass = unit.v().run();
+    CHECK_FALSE(pass.session);
+    CHECK(pass.ending == cyc::Ending::kSlept);
+    // Not a block of either memory asked for, and nothing has asked this board to bring its
+    // external RAM up: a wake with no session is the wake it was before this task.
+    CHECK(unit.v().scratch.asks == 0);
+    CHECK(unit.v().scratch.external_asks == 0);
+    CHECK(unit.v().scratch.bring_ups == 0);
+    CHECK(unit.v().scratch.external().state == interfaces::Scratch::External::kAsleep);
+  }
+  // And a wake that **does** take a session up takes no room either: what is left of one is the
+  // switch back, which needs no heap, no server, no uplink and no console (task p16-03).
+  unit.theRadioIsAScanner();
+  unit.anOpenSessionAt(upd::Stage::kStep);
+  unit.boot();
+  unit.v().scratch.externalOf(2u * 1024u * 1024u);
+  unit.v().begin();
+  const cyc::Pass& pass = unit.v().run();
+  CHECK(pass.session);
+  CHECK(unit.v().scratch.external_asks == 0);
+  CHECK(unit.v().scratch.bring_ups == 0);
+}
+
 TEST_CASE("a switch back a wake cannot make leaves the session open, and rak watch says so") {
   // No golden image in the store: the switch back is refused, the session stays open (rail 5),
   // and the wake sleeps all the same.
