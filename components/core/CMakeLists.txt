@@ -32,6 +32,9 @@ idf_component_register(
        "link/client/port.cpp"
        "link/client/client.cpp"
        "link/client/words.cpp"
+       # The four fields of a scanner's NDJSON line this firmware reads (task p16-01): `t`,
+       # `cmd`, `ok` and `msg`, and nothing else - a line is forwarded whole, not understood.
+       "link/client/text_line.cpp"
        # The radio's identity in three states, in one place (task p10-03): known, not made
        # yet, and lost - the refusal repeater v0.1.2 answers IDENTITY with.
        "link/radio_identity.cpp"

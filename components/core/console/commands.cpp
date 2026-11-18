@@ -79,6 +79,10 @@ const CommandDef kCommands[kCommandCount] = {
     {"rak events", "rak events", Group::kRadio, "the events the radio has sent"},
     {"rak text", "rak text", Group::kRadio,
      "the lines a scanner has sent instead of frames; they are printed and not logged (S-12)"},
+    {"rak say <words>", "rak say", Group::kRadio,
+     "say one line to a scanner - 'rak say sweep', 'rak say hist 869.4 869.8 25', 'rak say "
+     "stop' - print its ack, then print whole every line of the next five seconds. Only to a "
+     "scanner; printed and not logged (S-12)"},
     {"rak swd connect", "rak swd connect", Group::kRadio,
      "connect to the radio's debug port: DPIDR and the power-up, then the lines released"},
     {"rak swd id", "rak swd id", Group::kRadio,

@@ -46,4 +46,26 @@ core::console::HeapReport::Figures EspHeapReport::read() {
   return f;
 }
 
+// interfaces::Scratch (task p16-01). MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT: the same
+// capabilities EspHeapReport above reports and a task stack asks for, so that what `heap` says
+// has in one block is what this can hand out. heap_caps_get_largest_free_block is documented as
+// "the largest value of s for which heap_caps_malloc(s, caps) will succeed"
+// (esp_heap_caps.h, ESP-IDF v5.5.5), so a caller told it cannot have 8 192 bytes is told how
+// much the board does have in one piece.
+constexpr std::uint32_t kScratchCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+
+void* EspScratch::take(std::size_t bytes) {
+  return bytes == 0 ? nullptr : heap_caps_malloc(bytes, kScratchCaps);
+}
+
+void EspScratch::give(void* room) {
+  if (room != nullptr) {
+    heap_caps_free(room);
+  }
+}
+
+std::size_t EspScratch::largestBlock() {
+  return static_cast<std::size_t>(heap_caps_get_largest_free_block(kScratchCaps));
+}
+
 }  // namespace platform

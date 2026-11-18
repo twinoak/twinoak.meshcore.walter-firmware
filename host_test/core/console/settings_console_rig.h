@@ -39,6 +39,7 @@
 #include "fakes/fake_modem_trace.h"
 #include "fakes/fake_pins.h"
 #include "fakes/fake_retained.h"
+#include "fakes/fake_scratch.h"
 #include "fakes/fake_sleeper.h"
 #include "fakes/fake_wall_clock.h"
 #include "fakes/sim_key_value.h"
@@ -101,6 +102,10 @@ struct SettingsConsole {
   // as well. A test that wants a dump in it writes one (fixtures/coredump_fixture.h).
   sim::SimFlash coredump_flash{0x10000};
   core::health::CoreDump dumps{coredump_flash};
+  // Room borrowed for the length of one command (task p16-01): `rak say` reaches something here,
+  // so the test that runs every command of the table runs it as well, and a test can take the
+  // heap away and see the one line it answers with.
+  fakes::FakeScratch scratch;
   // The duty cycle (task p3-04), so that `wake`, `power`, `sleep` and `stay` reach something and
   // so that `status`'s last two lines are the ones a real unit prints - docs/provisioning.md is
   // replayed against this console, and a document that showed a line no unit prints would be
@@ -143,7 +148,8 @@ struct SettingsConsole {
                                              // cycle, battery, mesh, agent, identity, loop,
                                              // sockets, wall: none of them here.
                                              nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                             nullptr, nullptr, &trace, &heap_report, &dumps));
+                                             nullptr, nullptr, &trace, &heap_report, &dumps,
+                                             &scratch));
   }
 
   // A console that was handed no coredump partition, as a build whose table has none has (task

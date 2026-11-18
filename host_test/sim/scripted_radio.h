@@ -62,6 +62,12 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // restarts the node, §5.7), executed and neither remembered nor answered. False leaves the
   // fixtures to answer.
   std::function<bool(const core::link::Packet&, std::vector<std::uint8_t>* payload)> on_request;
+  // §9's other half (task p16-01): what this scanner answers a **text** command with. Called
+  // after the command is recorded, with the line as it arrived, and before the default answer;
+  // true means the hook has said everything there is to say (it sends with sendLine()), false
+  // leaves the defaults below - `info`, `stat`, `help`, and an `ack` that is not ok for anything
+  // NoiseScope's own table does not have.
+  std::function<bool(const std::string&)> on_text_command;
   int silence = 0;                    // ignore this many more requests, whole
   bool deaf = false;                  // ignore every request (a radio whose firmware is gone)
   std::uint32_t answer_delay_ms = 0;  // how long after a request its answer appears

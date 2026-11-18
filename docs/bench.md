@@ -881,6 +881,17 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   proved`, and `rak id` shows **the same public key and name as before** - the file system above
   the application region was never touched. `image list`: golden and candidate as they were,
   `image bad` empty.
+- [ ] **The scanner is spoken to** (task p16-01, `spec/LINK-PROTOCOL.md` §9). With the scanner
+  running from the item above: `rak say sweep`. Expected, in order: `ack: ok - started`, then one
+  `sweep` line printed **whole** with `"n":281` in it and no cut - it is about 4 kB and `rak text`
+  would have shown 320 bytes of it - and a `{"t":"done","cmd":"sweep"…}`, which ends the wait
+  before the five seconds are up. A default sweep of the band is 281 points at 20 ms of dwell, so
+  if the line lands after the window say it again, or narrow it: `rak say sweep 869.0 869.8 25`.
+  Then `rak say nonsense`: `ack: not ok` with the scanner's own message, and `rak say stop`:
+  `ack: ok`. Then `rak role repeater` and `rak say sweep` again: *the radio answers frames, not
+  text: nothing was said*, and `rak status` shows no frame went out for it. **Not on a mast:**
+  `rak say dfu` reboots the scanner into its bootloader and `rak say hang` stops its loop on
+  purpose; both are for a radio on a desk.
 - [ ] **`rak update --first-install` on a module whose application was wiped** (after §5's
   power-cut item, or `rak flash-test confirm`'s region). `rak update` is refused (*there is no
   golden image to return to*); with `--first-install` the candidate is flashed, proved and becomes

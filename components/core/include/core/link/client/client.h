@@ -29,6 +29,11 @@
 //     the radio is running NoiseScope: the client says *scanner (text)*, sends no more frames, and
 //     offers the lines to whoever subscribed. A reset of the radio puts it back to "unknown, try
 //     HELLO". Frames and text are never mixed in one session.
+//   - **and what is said to it** (§9, task p16-01). In text mode one plain-text command line goes
+//     out and its `ack` comes back (`say`), and whoever wants the lines that follow *whole* -
+//     a `sweep` of the band is about 4 kB where the ring below keeps 320 bytes - lends this
+//     client the room to lay them down in (`lendText`). The room is the caller's: this object
+//     grows by the few words that point at it and by nothing else.
 //
 // **A decoded answer's variable-length fields are views** into this object's own response buffer
 // (codec/view.h), valid until the next call on this client. Whoever keeps one copies it; the
@@ -44,6 +49,7 @@
 
 #include "core/board/slot.h"
 #include "core/link/client/port.h"
+#include "core/link/client/text_line.h"
 #include "core/link/codec/frame.h"
 #include "core/link/codec/messages.h"
 #include "core/link/codec/view.h"
@@ -77,6 +83,20 @@ constexpr std::size_t kEventQueue = 4;
 constexpr std::size_t kTextLineMax = 320;
 constexpr std::size_t kTextRing = 3;
 
+// §9, the other direction (task p16-01): one plain-text command line said to a scanner. The
+// scanner reads "plain-text commands, one per line, space-separated arguments ... At most eight
+// words are read" (the repeater firmware's docs/noisescope.md §5, *Framing*), and the longest
+// command of its table is far shorter than this. 160 is core/console/parser.h's own bound for a
+// typed line, so what a person may type is what may be said.
+constexpr std::size_t kSaidMax = 160;
+
+// The `msg` of an `ack`, kept in the answer the caller gets. The scanner's own messages are a
+// few dozen bytes - `started`, and `n=250 step=28.0000kHz rbw=39.0kHz seg=1 cov=1.393
+// interval=0ms sweep=86ms` is the longest in its document - so this holds them whole and cuts
+// anything longer rather than refusing it. It lives in the returned Answer, on the caller's
+// stack, so it is not storage this firmware keeps.
+constexpr std::size_t kAckMsgMax = 96;
+
 // A str8 of the HELLO body, copied into the session. §5.1's examples are 13, 14 and 25 bytes
 // (`0.3.0+abc1234`, `rak4630-single`, `repeater-v1.17.1+d9296435`); a longer one is kept
 // truncated and counted rather than refused, because a version string is not a protocol error.
@@ -100,6 +120,12 @@ enum class Fault : std::uint8_t {
   kRefused,      // the radio answered with a status that is not OK; `status` says which
   kMalformed,    // a response arrived whose CRC passed and whose payload did not decode
   kSlotBusy,     // another slot's operation holds the selection, or this slot does not exist
+  // The two modes a line may not be said in (§9, task p16-01). They are the mirror of
+  // kTextMode - "no frame in text mode and no text in frame mode" - and each names the mode it
+  // was refused in, because that is what a caller has to do something about: a repeater is
+  // flashed with a scanner image, and a radio nobody has greeted is greeted.
+  kFrameMode,    // the radio answers frames: nothing of a line went out
+  kModeUnknown,  // what the radio is running is not known yet: nothing of a line went out
 };
 
 // What this client believes it is talking to (§9). Never two of these at once.
@@ -174,6 +200,41 @@ class TextWatcher {
   virtual void onTextLine(Text line) = 0;
 };
 
+// What a scanner answered a line with (§9, task p16-01). Three answers and no fourth: it said
+// ok; it said not ok, and `msg` is its own wording; or it said nothing within kProbeWaitMs and
+// the fault is kLinkDown. The `ack` that counts is the one whose `cmd` is the line's first word
+// - the scanner answers every command with one ("Commands", noisescope.md §5) - so an `ack` for
+// something else, and the `stat` heartbeat that falls in the middle, are not it.
+//
+// The message is **copied**, not a view: it is a few dozen bytes, this object is the caller's,
+// and a view would be gone the moment the next line arrived.
+struct Said {
+  Fault fault = Fault::kClosed;
+  bool ok = false;                // the ack's `ok`; false when no ack came
+  char msg[kAckMsgMax + 1] = {};  // the ack's `msg`, terminated; empty when it carried none
+  bool msg_cut = false;           // the message was longer than kAckMsgMax and was cut
+
+  bool answered() const { return fault == Fault::kNone; }
+};
+
+// Room a caller lends the client for the scanner's whole lines (§9, task p16-01), and what it
+// holds when the caller takes it back. A `sweep` line of the band is about 4 kB and the longest
+// the scanner can send about 7.6 kB, where the ring above keeps kTextLineMax of a line: so
+// whoever wants a line whole lends the room for it, and this firmware keeps none of its own.
+//
+// The lines are laid down one after another, each ended with `\n`, exactly as they arrived.
+struct TextHeld {
+  const char* data = nullptr;
+  std::size_t size = 0;   // bytes laid down, the line endings included
+  std::size_t lines = 0;
+  // A line did not fit in what was left: the lending ended there, nothing of that line was kept
+  // and nothing after it was.
+  bool full = false;
+
+  // Whether a `{"t":"done","cmd":"<command>"…}` is among the lines (text_line.h).
+  bool hasDone(Text command) const;
+};
+
 // Four of each: the supervisor, the cycle, the console and one spare. A fixed array, because
 // core/ has no heap.
 constexpr std::size_t kMaxWatchers = 4;
@@ -196,6 +257,10 @@ struct Counters {
   std::uint32_t text_lines = 0;      // NDJSON lines seen (§9)
   std::uint32_t text_truncated = 0;  // of those, lines longer than kTextLineMax
   std::uint32_t text_dropped = 0;    // lines the ring had no room for
+  std::uint32_t text_said = 0;         // command lines said to a scanner (§9, task p16-01)
+  std::uint32_t text_not_ok = 0;       // of those, answered by an `ack` whose `ok` was false
+  std::uint32_t text_unanswered = 0;   // of those, answered by no `ack` at all
+  std::uint32_t text_full = 0;         // lendings ended because a line did not fit the room
   std::uint32_t long_versions = 0;    // HELLO strings longer than the session keeps, truncated
   std::uint32_t restarts = 0;        // restarts of the radio noticed
   std::uint32_t time_sets = 0;       // TIME_SETs the client sent of its own accord
@@ -319,6 +384,31 @@ class Client {
   Text textLine(std::size_t index) const;
   void clearText();
 
+  // §9, the other direction (task p16-01). One plain-text command line to a scanner - `sweep`,
+  // `hist 869.4 869.8 25`, `stop` - and its `ack`, waited for inside kProbeWaitMs.
+  //
+  // **Only in text mode.** In frame mode and before anything has answered, nothing of the line
+  // goes out and the fault names the mode (kFrameMode, kModeUnknown): §9 says text is never
+  // mixed with frames in one session, and this is that rule's other half. kEncode is a line
+  // that is empty, longer than kSaidMax, or carries a byte no command line may (a newline of
+  // its own would be a second command).
+  Said say(Text line);
+
+  // Lends the client `size` bytes of the caller's own room for whole lines. While it is lent,
+  // every line beginning with `{` is laid down in it whole and ended with `\n`; a line that does
+  // not begin with `{` is chatter and is not kept (§9). What the ring and the watchers above see
+  // does not change at all.
+  //
+  // False when room is lent already, when the pointer is null, or when `size` is too small to
+  // hold any line. The room is the caller's and must outlive the lending.
+  bool lendText(char* room, std::size_t size);
+  bool textLent() const { return held_ != nullptr; }
+  // What the room holds now, without ending the lending: what a caller polling for a `done`
+  // reads between calls to poll().
+  TextHeld textHeld() const;
+  // The same, and the lending is over: nothing more is laid down in the caller's room.
+  TextHeld takeText();
+
   // ------------------------------------------------------------------ the rest
 
   void subscribeRestart(RestartWatcher* watcher);
@@ -358,6 +448,11 @@ class Client {
                 bool* found);
   void onTextByte(std::uint8_t byte);
   void keepTextLine();
+  // The lent room (task p16-01): one byte of the line being read, and the line's ending.
+  void holdTextByte(std::uint8_t byte);
+  void endHeldLine();
+  // While a say() is waiting: is this kept line the `ack` it is waiting for (§9).
+  void noticeAck(Text line);
   void queueEvent(const Packet& packet);
   // `announced` is an EV_BOOT, which is news of a restart whether or not a boot_id was known;
   // a HELLO is news only when the boot_id changed.
@@ -415,6 +510,23 @@ class Client {
   // *in this session*: a radio that was running the scanner, was reset, and now says nothing must
   // not be called a scanner on the strength of what the last session saw.
   std::uint32_t text_mark_ = 0;
+
+  // §9's lent room (task p16-01). **The buffer is the caller's**: what is here is the few words
+  // that point at it and count what is in it, and nothing this firmware keeps.
+  char* held_ = nullptr;
+  std::size_t held_room_ = 0;    // what was lent
+  std::size_t held_size_ = 0;    // whole lines laid down, their endings included
+  std::size_t held_lines_ = 0;
+  std::size_t held_at_ = 0;      // where the line being laid down has reached
+  bool held_begun_ = false;      // a byte of a line has come since the last line ending
+  bool held_keep_ = false;       // ...and the line began with `{`
+  bool held_full_ = false;       // a line did not fit: the lending ended there
+
+  // §9's say() while it waits for its `ack`: the command word it is matching, and the answer it
+  // is filling in - a Said on the caller's own stack, for the length of the call and no longer.
+  const char* await_cmd_ = nullptr;
+  std::size_t await_cmd_size_ = 0;
+  Said* await_into_ = nullptr;
 
   RestartWatcher* restart_watchers_[kMaxWatchers] = {};
   std::size_t restart_watcher_count_ = 0;

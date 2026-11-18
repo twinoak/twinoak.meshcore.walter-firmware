@@ -120,6 +120,11 @@ platform::EspHeap g_heap;
 // has no initialiser that runs - a vtable pointer is constant-initialised - so nothing of it is
 // in the heap programme tools/heap_at_start.py replays.
 platform::EspHeapReport g_heap_report;
+// Room borrowed for the length of one command and handed straight back (task p16-01,
+// interfaces/scratch.h): `rak say` takes 8 192 bytes of the internal heap to hold a scanner's
+// lines whole. Like the report above it holds no state and nothing of it is in the start-up
+// arrangement tools/heap_at_start.py judges - what it hands out is taken long after app_main.
+platform::EspScratch g_scratch;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
 // The `coredump` partition (task p11-03): what the panic handler wrote the last time this board
@@ -705,7 +710,7 @@ extern "C" void app_main() {
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, &mesh_probe, &agent_probe, &identity_probe,
                                         &backend, &tls_socket.rotation(), &g_wall,
-                                        &g_modem_trace, &g_heap_report, g_coredump);
+                                        &g_modem_trace, &g_heap_report, g_coredump, &g_scratch);
   // The library's log goes where every other line of this port goes: the console's print(), and
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
@@ -749,7 +754,7 @@ extern "C" void app_main() {
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, nullptr, nullptr, nullptr, nullptr,
                                         &tls_socket.rotation(), &g_wall, &g_modem_trace,
-                                        &g_heap_report, g_coredump);
+                                        &g_heap_report, g_coredump, &g_scratch);
 #endif
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop

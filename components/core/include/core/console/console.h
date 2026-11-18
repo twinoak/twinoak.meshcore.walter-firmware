@@ -52,6 +52,7 @@
 #include "core/uplink/policy.h"
 #include "interfaces/clock.h"
 #include "interfaces/restart.h"
+#include "interfaces/scratch.h"
 #include "interfaces/text_out.h"
 
 namespace core {
@@ -142,7 +143,13 @@ class Console final : public ReportSource {
           // core/'s own reader over interfaces::FlashRegion, so a pointer to the real thing and
           // not a seam; a build whose table has no `coredump` hands over nothing and the command
           // says so in one line. It is the last of these pointers because it is the newest.
-          health::CoreDump* dumps = nullptr);
+          health::CoreDump* dumps = nullptr,
+          // Room borrowed for the length of one command (task p16-01,
+          // interfaces/scratch.h): `rak say` takes 8 192 bytes of the heap to hold a scanner's
+          // lines whole and hands them back before the prompt. A pointer like the rest; a build
+          // that was given none answers in one line. It is the last of these because it is the
+          // newest.
+          interfaces::Scratch* scratch = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -266,6 +273,9 @@ class Console final : public ReportSource {
   // of it (task p13-01).
   void eventCounts();
   void rakText();
+  // §9, the other direction (task p16-01): one line said to a scanner, its `ack`, and the lines
+  // of the next five seconds printed whole out of room borrowed from the heap.
+  void rakSay(const char* words, std::size_t size);
   void printEvent(const link::client::QueuedEvent& event, std::size_t number);
   void printBytes(const char* label, link::Bytes bytes);
   void printText(link::Text text);
@@ -471,6 +481,7 @@ class Console final : public ReportSource {
   ModemTrace* trace_ = nullptr;
   HeapReport* heap_ = nullptr;
   health::CoreDump* dumps_ = nullptr;
+  interfaces::Scratch* scratch_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the
