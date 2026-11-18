@@ -102,6 +102,13 @@ constexpr std::uint16_t kTrialUplink = 0x0009;
 // says the wake did not reach sleep - so it is one line a fault costs and no line at all for the
 // ordinary wake, which is the rule kWakeCycle's own entry is held to.
 constexpr std::uint16_t kWakeMidway = 0x000A;
+// **A session of the radio as a scanner** (task p16-03, core/update/scanner_session.h): the two
+// role switches as one thing, with a program of steps between them. Its own kind because the
+// thing the next wake has to read is *is a session open* - the scanner image flashed, the golden
+// image not yet back - which no radio-update entry can say: a `rak role scanner` run ends `done`
+// and is terminal, and a session is open across two runs of that machine and the steps between
+// them. The entry says open before the first flash and says closed only at `restored`.
+constexpr std::uint16_t kScannerSession = 0x000B;
 }  // namespace kind
 
 struct Entry {

@@ -38,7 +38,7 @@ std::uint32_t EspHeap::minFreeBytes() { return esp_get_minimum_free_heap_size();
 core::console::HeapReport::Figures EspHeapReport::read() {
   constexpr std::uint32_t kCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
   Figures f;
-  f.free = static_cast<std::uint32_t>(heap_caps_get_free_size(kCaps));
+  f.free_bytes = static_cast<std::uint32_t>(heap_caps_get_free_size(kCaps));
   f.largest_block = static_cast<std::uint32_t>(heap_caps_get_largest_free_block(kCaps));
   f.min_free = static_cast<std::uint32_t>(heap_caps_get_minimum_free_size(kCaps));
   f.stack_bytes = CONFIG_ESP_MAIN_TASK_STACK_SIZE;

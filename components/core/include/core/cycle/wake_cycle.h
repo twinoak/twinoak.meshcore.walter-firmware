@@ -91,6 +91,7 @@
 #include "core/update/fetch.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
+#include "core/update/scanner_session.h"
 #include "core/update/self_update.h"
 #include "core/uplink/policy.h"
 #include "interfaces/backend.h"
@@ -185,6 +186,16 @@ constexpr std::uint32_t kLadderBoundMs = 360000;
 // is the next number to move, and tasks/phase-14/FOLLOWUPS.md carries the item.
 constexpr std::uint32_t kUpdateBoundMs = 1200000;
 static_assert(kUpdateBoundMs <= kRaisedBoundMax, "an update's bound has to be one a wake may ask for");
+
+// Step 3, **a session of the radio as a scanner taken up out of the journal** (task p16-03). A
+// session is only ever *begun* by a person or a job, but it is **ended by the next wake** whatever
+// ended the last one - a restart, a crash, this bound, a power cut - so step 3 may have the
+// golden image's whole way back in hand: a flash, a boot window and a three-minute proving
+// period, and, where the session was still in its steps, the ceiling before it. That is
+// `core::update::kSessionBoundMs`, and it is what set `kRaisedBoundMax`.
+constexpr std::uint32_t kSessionBoundMs = update::kSessionBoundMs;
+static_assert(kSessionBoundMs <= kRaisedBoundMax,
+              "a session's bound has to be one a wake may ask for");
 
 // Step 9, this firmware's own trial (S-6). The trial window and a minute: a trial that cannot
 // confirm itself rejects itself inside `kTrialWindowMs` and restarts, and a wake that was reset
@@ -352,6 +363,9 @@ struct Pass {
   bool time_known = false;     // this firmware knew what day it was
   bool shortened = false;      // step 10's interval was shortened for a half-done download
   bool lengthened = false;     // ... or lengthened for a wait the backend owes (task p4-05)
+  // Step 3 took up a session of the radio as a scanner that nobody was running (task p16-03). It
+  // counts as this wake's one update step (S-7), so the record says it happened.
+  bool session = false;
 
   Outcome outcomeOf(Step s) const { return step[static_cast<std::size_t>(s)].outcome; }
   bool ok(Step s) const { return outcomeOf(s) == Outcome::kDone; }
@@ -493,6 +507,17 @@ class WakeCycle {
   // a settings store has none of these to keep. Null counts nothing.
   void countWakesIn(WakeCounters* counters) { tally_ = counters; }
 
+  // Where an **open session of the radio as a scanner** is ended (task p16-03,
+  // core/update/scanner_session.h). A setter and not another constructor argument, for the reason
+  // `countWakesIn` above is one: every caller of that constructor passes `out` positionally behind
+  // the optional ones. Null ends none, which is what a build with no store or no journal is.
+  //
+  // **It only ever ends one.** Nothing here begins a session: `start()` has two callers, a typed
+  // console command and task p16-04's job, and rail R20 holds it there. What step 3 does is read
+  // the journal and, when it says a session is open with nobody running it, flash the golden
+  // image back and prove it - which needs no server, no uplink and no console.
+  void endSessionsWith(update::ScannerSession* session) { session_ = session; }
+
  private:
   // One step, run or not: the table's row, the preconditions, the budget, and the record.
   bool begin(Step step);                     // false: it was skipped or there was no time
@@ -533,6 +558,10 @@ class WakeCycle {
   bool trialBeat(std::uint64_t deadline_ms);
   bool runSelfUpdate();
   bool runRadioUpdate();
+  // Step 3's other half: an open session nobody is running, driven to its end inside a deadline.
+  // True when something of a session happened in this wake.
+  bool resumeSession();
+  bool driveSession(std::uint64_t deadline_ms);
   bool runFetch(std::uint64_t deadline_ms);
   bool applySettings();
   // The ladder, and the update machine, in slices inside a deadline. True when the machine is
@@ -560,6 +589,7 @@ class WakeCycle {
   supervisor::Supervisor* supervisor_ = nullptr;
   update::RadioUpdate* update_ = nullptr;
   update::SelfUpdate* self_ = nullptr;
+  update::ScannerSession* session_ = nullptr;
   update::Fetch* fetch_ = nullptr;
   image::Store* store_ = nullptr;
   update::Journal* journal_ = nullptr;

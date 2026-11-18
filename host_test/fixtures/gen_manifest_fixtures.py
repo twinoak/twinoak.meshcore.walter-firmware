@@ -402,6 +402,12 @@ def main(argv):
                 "150 000 bytes: two of the store's 64 KB resume points fall inside it", seed=55)
     store_image("store-scanner", 2 * 4096, "a scanner image, for the scanner slot", role="scanner",
                 version="0.3.0+scanner", seed=66)
+    # A scanner image of the **other** band (task p16-03): the band a slot is known to be is its
+    # golden image's, so a session refuses a scanner image that is not of it - `noScanner`, before
+    # anything is flashed. The only fixture image here that is not an 868 one.
+    store_image("store-scanner-433", 2 * 4096,
+                "a scanner image of the 433 band: not the golden image's, and refused",
+                role="scanner", band="433", version="0.3.0+scan433", seed=67)
     # The radio's update (task p2-03) flashes these through the bit-level SWD simulator, many
     # times over in its power-loss loops, so they are one page each: a golden image and a newer
     # candidate, each with a version of its own for the health check to hold HELLO against.

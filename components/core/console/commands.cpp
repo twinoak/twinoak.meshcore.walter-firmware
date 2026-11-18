@@ -113,6 +113,11 @@ const CommandDef kCommands[kCommandCount] = {
     {"rak role scanner|repeater", "rak role", Group::kRadio,
      "flash the stored scanner image and prove a scanner is there; or the golden image back, "
      "proved as an update would be"},
+    {"rak session [<seconds> <command>]", "rak session", Group::kRadio,
+     "a whole session of one step: the scanner image, the command for that many seconds, then "
+     "the golden image back and proved - about forty minutes, the radio off the mesh for all of "
+     "it, every line printed whole and not logged (S-12). Without words it only says whether a "
+     "session is open, since when, and what the next wake will do about it"},
     {"rak watch", "rak watch", Group::kRadio,
      "the supervisor's view: healthy since when, the last incidents, today's counts against the "
      "daily caps, a stop in force (docs/supervisor.md). It only reads"},

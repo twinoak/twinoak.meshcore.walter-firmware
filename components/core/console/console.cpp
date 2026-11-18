@@ -126,6 +126,8 @@ bool isRadioVerb(Verb verb) {
     case Verb::kRakUpdateStatus:
     case Verb::kRakRoleScanner:
     case Verb::kRakRoleRepeater:
+    case Verb::kRakSession:
+    case Verb::kRakSessionRun:
     case Verb::kRakWatch:
     case Verb::kRakWatchResetCaps:
     case Verb::kRakLadder:
@@ -148,13 +150,15 @@ Console::Console(interfaces::TextOut& out, board::RadioPins& pins, health::Healt
                  update::BatterySource* battery, MeshProbe* mesh, UplinkProbe* agent,
                  AgentProbe* identity, AgentLoopProbe* loop, const net::SocketRotation* sockets,
                  cycle::NetworkClock* wall, ModemTrace* trace, HeapReport* heap,
-                 health::CoreDump* dumps, interfaces::Scratch* scratch)
+                 health::CoreDump* dumps, interfaces::Scratch* scratch,
+                 update::ScannerSession* session)
     : out_(out), pins_(pins), health_(health), clock_(clock), restart_(restart), radio_(radio),
       slots_(slots), images_(images), receiver_(receiver), update_(update), journal_(journal),
       self_(self), supervisor_(supervisor), uplink_(uplink), http_(http), fetch_(fetch),
       trust_(trust), settings_(settings), server_(server), duty_(duty), cycle_(cycle),
       mesh_(mesh), agent_(agent), identity_(identity), loop_(loop), sockets_(sockets), wall_(wall),
-      trace_(trace), heap_(heap), dumps_(dumps), scratch_(scratch), flasher_(pins, clock, slots),
+      trace_(trace), heap_(heap), dumps_(dumps), scratch_(scratch), session_(session),
+      flasher_(pins, clock, slots),
       provision_(pins, slots, clock, radio, images, battery, update, supervisor) {}
 
 bool Console::slotOk(board::Slot slot) {
@@ -589,6 +593,10 @@ void Console::runLine(const char* line) {
     case Verb::kRakUpdateStatus: rakUpdateStatus(); return;
     case Verb::kRakRoleScanner: rakUpdate(update::Kind::kRoleScanner); return;
     case Verb::kRakRoleRepeater: rakUpdate(update::Kind::kRoleRepeater); return;
+    case Verb::kRakSession: rakSession(); return;
+    case Verb::kRakSessionRun:
+      rakSessionRun(p.command.seconds, p.command.text, p.command.text_size);
+      return;
     case Verb::kRakWatch: rakWatch(); return;
     case Verb::kRakWatchResetCaps: rakWatchResetCaps(); return;
     case Verb::kRakLadder: rakLadder(); return;
@@ -922,7 +930,7 @@ void Console::heap() {
   }
   const HeapReport::Figures f = heap_->read();
   printf("heap: %lu bytes free, largest free block %lu, least free since this boot %lu "
-         "(internal, 8-bit)\n", static_cast<unsigned long>(f.free),
+         "(internal, 8-bit)\n", static_cast<unsigned long>(f.free_bytes),
          static_cast<unsigned long>(f.largest_block), static_cast<unsigned long>(f.min_free));
   printf("main task stack: %lu bytes, %lu never used (the high-water mark)\n",
          static_cast<unsigned long>(f.stack_bytes), static_cast<unsigned long>(f.stack_unused));
@@ -2437,6 +2445,207 @@ void Console::transferEnded() {
   prompt();
 }
 
+// ------------------------------------------------------------------------ a session (p16-03)
+//
+// `rak session <seconds> <command>` is a whole session of one step: the scanner image, the
+// command for that many seconds, the golden image back and proved. It is **one of the two doors**
+// a session may be begun by (the other is task p16-04's job) and rail R20 holds it there; what
+// *ends* one needs no console at all - the journal says a session is open and step 3 of the next
+// wake takes it up.
+//
+// Every line the scanner said is printed **whole** as the step hands it over, through printText()
+// with the ring held shut (S-12): nothing of it is in `dump`, in the journal or in a report, as
+// `rak text` and `rak say` already are.
+
+void Console::printRoomLine(const update::RoomFigures& figures) {
+  char line[update::kRoomLineMax + 1];
+  (void)update::roomLine(figures, line, sizeof line);
+  printf("  room: %s\n", line);
+}
+
+void Console::rakSessionRun(std::uint32_t seconds, const char* command, std::size_t size) {
+  if (session_ == nullptr || update_ == nullptr || journal_ == nullptr) {
+    print("error: rak session: this build has no session machine (it needs the image store, the "
+          "`journal` partition and room to borrow)\n");
+    return;
+  }
+  if (!slotOk(slot_)) return;
+  // The program, on this frame's stack: the session keeps a pointer to it for the length of the
+  // run and the run ends inside this command (core/update/scanner_session.h, Program).
+  update::Program program;
+  program.count = 1;
+  program.step[0].seconds = seconds;
+  if (size > update::kCommandMax) {
+    printf("error: rak session: refused: %s - a step's command is at most %lu characters\n",
+           update::word(update::Refusal::kProgram),
+           static_cast<unsigned long>(update::kCommandMax));
+    return;
+  }
+  for (std::size_t i = 0; i < size; ++i) program.step[0].command[i] = command[i];
+  program.step[0].command[size] = 0;
+  const char* why = update::whyProgram(program);
+  if (why != nullptr) {
+    printf("error: rak session: refused: %s - %s\n", update::word(update::Refusal::kProgram), why);
+    return;
+  }
+
+  // What a step's lines are printed by, as the step hands them over. A local class of this member
+  // function, so that they go through this console's own printText and nothing is kept of them.
+  class Printer final : public update::SessionSink {
+   public:
+    explicit Printer(Console& console) : console_(console) {}
+    void onStepLines(const update::StepReport& report) override {
+      console_.printf("step %lu (`%s`, %lu s) ended %s: %lu line%s, %lu byte%s%s\n",
+                      static_cast<unsigned long>(report.index), report.command,
+                      static_cast<unsigned long>(report.seconds), update::name(report.end),
+                      static_cast<unsigned long>(report.count), report.count == 1 ? "" : "s",
+                      static_cast<unsigned long>(report.used), report.used == 1 ? "" : "s",
+                      report.first ? " (the greeting's acks and its info line among them)" : "");
+      for (std::size_t at = 0; at < report.used;) {
+        std::size_t end = at;
+        while (end < report.used && report.lines[end] != '\n') ++end;
+        console_.print("  ");
+        console_.printText(link::text(report.lines + at, end - at));
+        at = end + 1;
+      }
+    }
+
+   private:
+    Console& console_;
+  };
+
+  Printer printer(*this);
+  if (!session_->start(program, slot_, &printer)) {
+    const update::Refusal refused = session_->refusal();
+    printf("error: rak session: refused: %s - %s\n", update::word(refused),
+           update::describe(refused));
+    if (refused == update::Refusal::kNoMemory) {
+      printf("  the room is %lu bytes; the largest block there is is %lu\n",
+             static_cast<unsigned long>(update::kStepBytes),
+             static_cast<unsigned long>(session_->status().room.left_block));
+    }
+    if (refused == update::Refusal::kInProgress) {
+      print("  an open session is ended, never begun again: 'rak session' says where it is\n");
+    }
+    return;
+  }
+  printf("rak session: slot %u, one step of %lu s: `%s`\n", static_cast<unsigned>(slot_.index),
+         static_cast<unsigned long>(seconds), program.step[0].command);
+  printf("  two flashes of about %lu min around it, the scanner at most %lu min: the radio is off "
+         "the mesh for all of it\n",
+         static_cast<unsigned long>(update::kFlashWindowMs / 60000u),
+         static_cast<unsigned long>(update::kSessionCeilingMs / 60000u));
+  // The entry that opens a session is written by start(), before this line and before anything is
+  // flashed, so the story's first transition is said here rather than by the loop below.
+  printf("session: %s -> %s: a session is open in the journal; nothing is flashed yet\n",
+         update::name(update::Stage::kIdle), update::name(update::Stage::kCheck));
+  PrintProgress progress(out_);
+  update_->setProgress(&progress);
+  for (;;) {
+    const update::SessionStep s = session_->step();
+    if (s.changed) {
+      printf("session: %s -> %s%s%s\n", update::name(s.before), update::name(s.after),
+             s.note[0] != 0 ? ": " : "", s.note);
+    } else if (s.stalled) {
+      printf("session: stopped in %s: %s\n", update::name(s.before), s.note);
+      break;
+    }
+    if (!session_->active()) break;
+    if (s.waited) clock_.delayMs(update::kListenIdleMs);
+  }
+  update_->setProgress(nullptr);
+  const update::SessionStatus& st = session_->status();
+  if (st.room.bytes != 0) printRoomLine(st.room);
+  switch (st.ending) {
+    case update::Ending::kRestored:
+      print("rak session: restored: the repeater is back and proved, and the session is closed\n");
+      break;
+    case update::Ending::kStuck:
+      printf("rak session: STUCK: %s\n", update::describe(update_->reason()));
+      print("  the session is still open: every wake flashes the golden image back and tries "
+            "again ('rak session')\n");
+      break;
+    case update::Ending::kRefused:
+    case update::Ending::kRunning:
+      printf("rak session: %s\n", update::describe(st.stage));
+      break;
+  }
+  session_->clear();
+}
+
+// `rak session` with no words: whether one is open, since when, and what the next wake will do
+// about it. A read - nothing is said to the radio and nothing is flashed.
+void Console::rakSession() {
+  if (session_ == nullptr || journal_ == nullptr) {
+    print("error: rak session: this build has no session machine (it needs the image store, the "
+          "`journal` partition and room to borrow)\n");
+    return;
+  }
+  if (session_->active()) {
+    const update::SessionStatus& st = session_->status();
+    printf("rak session: one is running now: %s (step %lu of %lu, %lu s as a scanner of %lu)\n",
+           update::describe(st.stage), static_cast<unsigned long>(st.step),
+           static_cast<unsigned long>(st.steps),
+           static_cast<unsigned long>(st.scanner_ms / 1000u),
+           static_cast<unsigned long>(update::kSessionCeilingMs / 1000u));
+    return;
+  }
+  update::Mark mark;
+  if (!update::readMark(*journal_, &mark)) {
+    print("rak session: no session has been opened on this unit\n");
+    return;
+  }
+  if (!mark.open) {
+    printf("rak session: none open; the last one ended %s (slot %u, opened at epoch %lu)\n",
+           update::name(mark.stage), static_cast<unsigned>(mark.slot.index),
+           static_cast<unsigned long>(mark.at_epoch));
+  } else {
+    printf("rak session: OPEN since epoch %lu, slot %u, last at %s%s\n",
+           static_cast<unsigned long>(mark.at_epoch), static_cast<unsigned>(mark.slot.index),
+           update::name(mark.stage),
+           mark.stage == update::Stage::kStep ? " (a step was running)" : "");
+    print("  the next wake flashes the golden image back and proves it, then says closed: it "
+          "needs no server, no uplink and no console\n");
+  }
+  // The `room` line of that session, if it got as far as writing one: the same line the journal
+  // entry carries. A bounded backwards walk - a session writes at most
+  // update::kEntriesPerSessionMax entries - that stops at the `check` the session was opened by.
+  update::Cursor cursor;
+  update::Entry entry;
+  std::uint32_t looked = 0;
+  bool more = journal_->first(&cursor, &entry);
+  while (more && looked++ < update::kEntriesPerSessionMax) {
+    update::SessionPayload p;
+    if (entry.kind == update::kind::kScannerSession && update::decode(entry, &p)) {
+      if (p.stage == update::Stage::kRoom) {
+        printRoomLine(p.room);
+        break;
+      }
+      if (p.stage == update::Stage::kCheck) break;  // the session's first entry: no room line
+    }
+    more = journal_->previous(&cursor, &entry);
+  }
+}
+
+void Console::printSessionEntry(std::size_t number, const update::Entry& entry,
+                                const update::SessionPayload& p) {
+  printf("  %2lu. seq %lu: session, %s", static_cast<unsigned long>(number),
+         static_cast<unsigned long>(entry.seq), update::name(p.stage));
+  if (p.stage == update::Stage::kStep) {
+    printf("-%u: `%s`", static_cast<unsigned>(p.step), p.command);
+  }
+  if (p.stage == update::Stage::kRoom) {
+    char line[update::kRoomLineMax + 1];
+    (void)update::roomLine(p.room, line, sizeof line);
+    printf(": %s", line);
+  }
+  printf("; slot %u", static_cast<unsigned>(p.slot));
+  if (p.at_epoch != 0) printf(", opened at epoch %lu", static_cast<unsigned long>(p.at_epoch));
+  if ((p.flags & update::kSessionFlagResumed) != 0) print("; taken up after a restart");
+  if (update::isOpen(p.stage)) print("; the session is open");
+  print("\n");
+}
+
 // ------------------------------------------------------------------- the radio's update (p2-03)
 //
 // docs/update.md. `rak update` runs the machine (core/update/radio_update.h) to its end inside
@@ -2946,6 +3155,18 @@ void Console::rakWatch() {
   printf("rak watch: slot %u: the radio is %s; the supervisor is %s\n",
          static_cast<unsigned>(slot_.index), supervisor::describe(w.health),
          supervisor::describe(w.state));
+  // **Which of the two scanners this is** (task p16-03). §9 leaves a scanner alone either way;
+  // what a person needs to know is whether anything is going to turn it back.
+  if (w.health == supervisor::Health::kScanner) {
+    if (w.session_open) {
+      printf("  in a session, since epoch %lu: the next wake puts the golden image back and "
+             "proves it ('rak session')\n",
+             static_cast<unsigned long>(w.session_since_epoch));
+    } else {
+      print("  running the scanner, left alone: nobody opened a session for it, so it stays one "
+            "until 'rak role repeater'\n");
+    }
+  }
   if (w.ever_answered) {
     printf("  healthy since %lu s ago; last answer %lu s ago; %lu pings; its uptime %lu s; boot_id 0x%08lx\n",
            static_cast<unsigned long>(now >= w.healthy_since_ms ? (now - w.healthy_since_ms) / 1000u : 0),
@@ -4381,6 +4602,12 @@ void Console::printJournalEntry(std::size_t number, const update::Entry& entry) 
              static_cast<unsigned long>(number), static_cast<unsigned long>(entry.seq),
              cycle::name(static_cast<cycle::Wake>(p.wake)));
       printf("       it was in: %s\n", said);
+      return;
+    }
+    case update::kind::kScannerSession: {
+      update::SessionPayload p;
+      if (!update::decode(entry, &p)) break;
+      printSessionEntry(number, entry, p);
       return;
     }
     case update::kind::kAgentAttention: {

@@ -249,7 +249,8 @@ std::size_t recordLine(const Pass& pass, char* out, std::size_t cap) {
                       pass.reached != interfaces::Reached::kUnsaid;
   const unsigned minutes = static_cast<unsigned>(pass.interval_s / 60u);
   const int n = std::snprintf(
-      out, cap, "wake %lu %s: radio %s, band %s, steps %s, %lu s awake, next %u min%s%s%s%s%s%s%s",
+      out, cap,
+      "wake %lu %s: radio %s, band %s, steps %s, %lu s awake, next %u min%s%s%s%s%s%s%s%s",
       static_cast<unsigned long>(pass.wakes), cycle::name(pass.reason),
       supervisor::describe(pass.radio), power::name(pass.band), letters,
       static_cast<unsigned long>(pass.awake_s), minutes,
@@ -257,7 +258,8 @@ std::size_t recordLine(const Pass& pass, char* out, std::size_t cap) {
       pass.attention != 0 ? link::client::attentionName(pass.attention) : "",
       agent[0] != 0 ? ", agent " : "", agent,
       pass.carried != interfaces::Ask::kNothing ? ", one update step" : "",
-      silent ? ", nothing sent: " : "", silent ? interfaces::describe(pass.reached) : "");
+      silent ? ", nothing sent: " : "", silent ? interfaces::describe(pass.reached) : "",
+      pass.session ? ", a session was taken up" : "");
   if (n <= 0) return 0;
   return static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1;
 }
@@ -631,6 +633,10 @@ void WakeCycle::stepResume() {
     allow(kTrialBoundMs);
   }
   if (update_ == nullptr) {
+    if (resumeSession()) {
+      finish(Step::kResume, Outcome::kDone, "an open session was taken up");
+      return;
+    }
     finish(Step::kResume, pass_.on_trial ? Outcome::kDone : Outcome::kNothing,
            pass_.on_trial ? "this firmware is on trial: its conditions run through the steps below"
                           : "nothing of the radio's update was journalled");
@@ -640,6 +646,13 @@ void WakeCycle::stepResume() {
   // machine stays idle, so a console that has already resumed (main/main.cpp) is not a problem.
   if (!update_->active()) (void)update_->resume();
   if (!update_->active()) {
+    if (resumeSession()) {
+      finish(Step::kResume, Outcome::kDone,
+             session_->status().ending == update::Ending::kRestored
+                 ? "an open session was taken up: the repeater is back and proved"
+                 : "an open session was taken up and is still open");
+      return;
+    }
     finish(Step::kResume, pass_.on_trial ? Outcome::kDone : Outcome::kNothing,
            pass_.on_trial ? "this firmware is on trial: its conditions run through the steps below"
                           : "nothing of the radio's update was journalled");
@@ -655,10 +668,59 @@ void WakeCycle::stepResume() {
            "the update is mid-run: the journal carries it to the next wake");
     return;
   }
+  // **And then a session** (task p16-03): the radio's own update came first because that is what
+  // the journal says is in progress, and a session is open across two runs of that machine.
+  if (resumeSession()) {
+    finish(Step::kResume, Outcome::kDone,
+           session_->status().ending == update::Ending::kRestored
+               ? "the resumed update ended, and an open session put the repeater back"
+               : "the resumed update ended; the open session is still open");
+    return;
+  }
   finish(Step::kResume, Outcome::kDone, update::describe(update_->state()));
   if (out_ != nullptr) {
     sayf("cycle: the resumed update ended %s\n", update::describe(update_->state()));
   }
+}
+
+// **An open session of the radio as a scanner, ended by this wake** (task p16-03, rail 2). The
+// journal says one is open and nobody is running it - a restart, a crash, the bound on a wake or
+// a power cut - so the golden image is flashed back and proved and the journal says closed. It
+// needs no server, no uplink and no console, and it counts as this wake's one update step (S-7):
+// nothing here begins a session, and no other update step runs in a wake that ended one.
+//
+// False when there was nothing to take up, which is every ordinary wake.
+bool WakeCycle::resumeSession() {
+  if (session_ == nullptr) return false;
+  if (!session_->active() && !session_->resume()) return false;
+  pass_.session = true;
+  update_ran_ = true;
+  allow(kSessionBoundMs);
+  const std::uint64_t from = clock_.nowMs();
+  const bool finished = driveSession(from + kSessionBoundMs);
+  outside_ms_ += elapsed(from, clock_.nowMs());
+  if (out_ != nullptr) {
+    sayf("cycle: an open session was taken up: %s%s\n",
+         update::name(session_->status().stage),
+         finished ? "" : " (mid-run: the journal carries it to the next wake)");
+  }
+  return true;
+}
+
+bool WakeCycle::driveSession(std::uint64_t deadline_ms) {
+  std::uint32_t slices = 0;
+  while (session_->active()) {
+    const update::SessionStep s = session_->step();
+    if (s.stalled) return false;  // the journal would not take the entry: nothing more to do here
+    if (clock_.nowMs() >= deadline_ms) return false;
+    if (++slices >= kSlicesMax) return false;
+    if (duty_.tick()) {  // the bound on the wake ended it
+      pass_.ending = Ending::kOverran;
+      return false;
+    }
+    if (s.waited) clock_.delayMs(update::kListenIdleMs);
+  }
+  return true;
 }
 
 // -- step 4: the radio's state -------------------------------------------------------------------

@@ -153,6 +153,10 @@ core::image::Store* g_store = nullptr;
 core::image::Receiver* g_receiver = nullptr;
 core::update::Journal* g_journal = nullptr;
 core::update::RadioUpdate* g_update = nullptr;
+// A session of the radio as a scanner (task p16-03, core/update/scanner_session.h): the two role
+// switches as one thing. Built beside the update machine, because it needs the store, the journal
+// and that machine; a build without them has none and `rak session` says so in one line.
+core::update::ScannerSession* g_session = nullptr;
 core::update::Fetch* g_fetch = nullptr;
 
 // The time of day (task p3-05, core/cycle/network_clock.h): filled from the cellular network by
@@ -282,7 +286,7 @@ extern "C" void app_main() {
   {
     const core::console::HeapReport::Figures h = g_heap_report.read();
     std::printf("heap: %lu bytes free, largest free block %lu (internal, 8-bit), the main task's "
-                "%lu-byte stack already taken ('heap')\n", static_cast<unsigned long>(h.free),
+                "%lu-byte stack already taken ('heap')\n", static_cast<unsigned long>(h.free_bytes),
                 static_cast<unsigned long>(h.largest_block),
                 static_cast<unsigned long>(h.stack_bytes));
   }
@@ -536,6 +540,12 @@ extern "C" void app_main() {
     static core::update::SelfUpdate self_update(g_own, *g_store, *g_journal, radio, g_uplink, g_clock,
                                                 g_restart, battery, health, g_coredump);
     self_update_ptr = &self_update;
+    // The session (task p16-03): the machine above, the link client's §9 half, the store, the
+    // journal, the two clocks, the battery's last good reading and the room a step's lines are
+    // laid down in. The heap report so that every session says what the room cost.
+    static core::update::ScannerSession session(update, radio, *g_store, *g_journal, g_clock,
+                                                g_wall, battery, g_scratch, &g_heap_report);
+    g_session = &session;
   }
 
   // The supervisor (task p2-05, core/supervisor/supervisor.h; docs/supervisor.md): the radio's
@@ -695,6 +705,8 @@ extern "C" void app_main() {
                                       &supervisor, g_update, self_update_ptr, g_fetch, g_store,
                                       g_journal, &settings);
   cycle.countWakesIn(&g_wake_counters);
+  // Step 3 ends an open session of the radio as a scanner (task p16-03). It never begins one.
+  cycle.endSessionsWith(g_session);
 
   // The console, on the USB port, in this task: one byte at a time, the radio's port read every
   // time round, the uptime kept in retained storage about once a second. Returning is not an
@@ -710,7 +722,8 @@ extern "C" void app_main() {
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, &mesh_probe, &agent_probe, &identity_probe,
                                         &backend, &tls_socket.rotation(), &g_wall,
-                                        &g_modem_trace, &g_heap_report, g_coredump, &g_scratch);
+                                        &g_modem_trace, &g_heap_report, g_coredump, &g_scratch,
+                                        g_session);
   // The library's log goes where every other line of this port goes: the console's print(), and
   // so the four kilobytes `dump` prints. At the `log.level` setting, because the library has a
   // level of its own and a person who turned this port down meant the whole port.
@@ -754,7 +767,7 @@ extern "C" void app_main() {
                                         g_fetch, &trust, &settings, &g_uplink, &duty, &cycle,
                                         &battery, nullptr, nullptr, nullptr, nullptr,
                                         &tls_socket.rotation(), &g_wall, &g_modem_trace,
-                                        &g_heap_report, g_coredump, &g_scratch);
+                                        &g_heap_report, g_coredump, &g_scratch, g_session);
 #endif
   console.begin();
   // One turn of the loop before the wake, because the trial's first condition is "the main loop

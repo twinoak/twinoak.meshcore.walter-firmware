@@ -35,7 +35,10 @@ class HeapReport {
     // has both capabilities, the 22 308-byte region the ROM's stack was in included - it is
     // registered at the top of `main_task`, so by the time anything of ours can read this it is
     // part of the figure and it was *not* part of the heap the main task's stack came from.
-    std::uint32_t free = 0;
+    // **`free_bytes` and not `free`**: a part of core/ that may allocate nothing is held to
+    // that by a test which reads its sources for the word (host_test/checks/no_allocation.h),
+    // and `core/update/scanner_session.h` reads this figure at every session (task p16-03).
+    std::uint32_t free_bytes = 0;
     // heap_caps_get_largest_free_block(same): the one that decides whether the next big thing
     // fits. A free of 33 kB in two heaps is no use to a 20 kB object.
     std::uint32_t largest_block = 0;

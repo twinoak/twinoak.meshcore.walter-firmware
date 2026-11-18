@@ -48,6 +48,7 @@
 #include "core/update/last_good_battery.h"
 #include "core/update/link_battery.h"
 #include "core/update/radio_update.h"
+#include "core/update/scanner_session.h"
 #include "core/update/self_update.h"
 #include "core/update/update_bench.h"
 #include "core/uplink/policy.h"
@@ -55,7 +56,9 @@
 #include "fakes/fake_clock.h"
 #include "fakes/fake_own_update.h"
 #include "fakes/fake_pins.h"
+#include "fakes/fake_heap_report.h"
 #include "fakes/fake_retained.h"
+#include "fakes/fake_scratch.h"
 #include "fakes/fake_sleeper.h"
 #include "fakes/sim_key_value.h"
 #include "sim/fake_modem.h"
@@ -417,6 +420,13 @@ struct WakeWalter {
   core::health::CoreDump dumps{w.coredump_flash};
   core::update::SelfUpdate self{w.own,  w.images.store, journal, link,   trialCheck(),
                                 clock, restart,        battery, health, &dumps};
+  // A session of the radio as a scanner (task p16-03): main/ builds one beside the update
+  // machine, and the wake cycle is handed it so that **step 3 can end an open one**. Nothing of
+  // the wake ever begins one.
+  fakes::FakeScratch scratch;
+  fakes::FakeHeapReport heap;
+  core::update::ScannerSession session{update,  link,    w.images.store, journal, clock,
+                                        wall,   battery, scratch,        &heap};
   cyc::TelemetryRing readings{w.retained};
   // What woke this unit, counted and kept (task p13-02): the life's object over the world's
   // key-value store, as main.cpp builds it - so a sleep and a power cut both leave the totals
@@ -528,6 +538,7 @@ struct WakeWalter {
                                    &journal, &settings));
     wake_counters.begin();
     cycle->countWakesIn(&wake_counters);
+    cycle->endSessionsWith(&session);
 #if WALTER_AGENT
     if (agent) {
       agent->server.countWakesFrom(&wake_counters.totals());

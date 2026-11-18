@@ -340,6 +340,35 @@ Parsed parseRak(char* rest) {
     if (std::strcmp(arg, "repeater") == 0) return accept(Verb::kRakRoleRepeater);
     return refuse2("rak role: not one of scanner, repeater: ", arg);
   }
+  // rak session [<seconds> <command>] (task p16-03). Without words: what the journal says. With
+  // them: a session of one step - the first word is its seconds and the rest of the line is the
+  // command, verbatim, as `rak say` takes it. **Nothing of the program's rules is judged here**:
+  // the seconds' range, the command's characters and its first word are
+  // `core::update::judge()`'s, so that this prompt and task p16-04's payload are refused by one
+  // list in one wording. What this reads is only "is the first word a number at all".
+  if (std::strcmp(sub, "session") == 0) {
+    if (!hasArg) return accept(Verb::kRakSession);
+    char* number = arg;
+    char* line = number;
+    while (*line != 0 && !isSpace(*line)) ++line;
+    if (*line != 0) {
+      *line++ = 0;
+      while (*line != 0 && isSpace(*line)) ++line;
+    }
+    if (*line == 0) {
+      return refuse("rak session needs a command after the seconds: rak session <seconds> "
+                    "<command> (try 'rak session 30 sweep')");
+    }
+    const std::size_t n = std::strlen(line);
+    if (n > kMaxCliLine) return refuse("rak session: the command is 1 to 160 bytes");
+    Parsed p = accept(Verb::kRakSessionRun);
+    if (!parseSeconds(number, p.command.seconds)) {
+      return refuse2("rak session: not a whole number of seconds: ", number);
+    }
+    std::memcpy(p.command.text, line, n + 1);
+    p.command.text_size = n;
+    return p;
+  }
   // rak provision check | <radio> [confirm] (task p5-03; spec/SYSTEM.md S-5a). The radio is
   // one word - a DEVICEID, `locked` or `locked:<key16>` - and its grammar is the console's to
   // judge (core/nrf52/provision_grant.h makes the grant from it); this only separates the

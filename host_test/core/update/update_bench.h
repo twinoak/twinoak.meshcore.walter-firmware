@@ -36,10 +36,13 @@
 #include "core/update/battery.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
+#include "core/update/scanner_session.h"
 #include "core/image/store_bench.h"
 #include "fakes/capture.h"
+#include "fakes/fake_heap_report.h"
 #include "fakes/fake_pins.h"
 #include "fakes/fake_retained.h"
+#include "fakes/fake_scratch.h"
 #include "sim/nrf52_chip.h"
 #include "sim/scripted_radio.h"
 #include "sim/sim_flash.h"
@@ -278,8 +281,24 @@ struct Walter {
   fakes::FakeRestart restart;
   core::health::Health health{retained, w.clock};
   core::image::Receiver receiver{w.store.store, w.store.verdict, out, w.clock};
+  // A session of the radio as a scanner (task p16-03): the machine above, the link client's §9
+  // half, the room a step's lines are laid down in and the heap behind its seam. It is a member
+  // of a *life* of the Walter, as the update machine is, because a reset is what the rails are
+  // about - a session open in the journal and nobody running it.
+  fakes::FakeScratch scratch;
+  fakes::FakeHeapReport heap;
+  upd::ScannerSession session{update,   client,  w.store.store, journal, w.clock,
+                              w.store.wall, battery, scratch,   &heap};
+  // The console with everything a session needs and nothing else: the store, the receiver, the
+  // update machine, the journal, the heap behind its seam, the room to borrow and the session.
+  // The eighteen nulls between are the things these tests are deliberately a build without - no
+  // supervisor, no modem, no settings store, no duty cycle, no agent.
   core::console::Console console{out, board, health, w.clock, restart, client, slots,
-                                 &w.store.store, &receiver, &update, &journal};
+                                 &w.store.store, &receiver, &update, &journal,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 &heap, nullptr, &scratch, &session};
   std::vector<upd::StepResult> transitions;
 
   explicit Walter(UpdateWorld& world) : w(world) {

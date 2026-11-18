@@ -417,6 +417,7 @@ one of them **raises the bound on the wake** rather than removing it:
 | a climb | the ladder waits 30, 60 and 120 s between rungs, and **the state of a climb does not survive a sleep** — only its counts and a stop do. So a climb runs to its end inside its wake or starts again at rung 1 in the next one, and the caps are what keep that from becoming a loop | 6 min |
 | an update **resumed from the journal** (steps 3 and 9) | "a flash may take several wakes' worth of time and is allowed to hold the wake open up to its own bound" (the task). A flash, a 20 s boot window and a three-minute proving period do not fit in five minutes | 20 min |
 | an **apply** claimed from the server | the same machine, run to its end inside step 8 — and that end may be a **rollback**, which is the flash and the proof twice. The unit's own journal says a flash is 14 min 51 s, so a whole run is `core::update::kWholeRunMs` (task p14-04). At the thirty minutes this used to be, the bound fell in the middle of the second flash: no result could be posted and the lease was left to lapse | 38 min 40 s |
+| a **session** of the radio as a scanner **taken up out of the journal** (step 3) | a session is only ever *begun* by a person or a job, and is **ended by the next wake** whatever ended the last one — a restart, a crash, this bound, a power cut (`docs/update.md`, *A session*). So step 3 may have the golden image's whole way back in hand, and, where the session was still in its steps, the twenty-minute ceiling before it. It is the number that set `kRaisedBoundMax` | 58 min 40 s |
 | a trial | this firmware proving itself (S-6) has to finish before the wake may sleep: a deep sleep during a trial is a rollback of the image being tried. Its loop also asks the backend seam for **one more heartbeat and nothing else** while the third condition is open (task p14-05, `interfaces::Beat`): step 8's one exchange is not enough to condemn an image on, and the implementation's own wait is what paces it | 6 min |
 | a backend exchange | step 8's `exchange()` is given a whole update's deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. It is a minute longer than the apply above, for the heartbeat and the claim that come first — and it is not only the guard's business: the library is given what is left to this deadline as its wake's **budget**, and a result made after that budget has run out is kept rather than posted (task p14-04). The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 39 min 40 s |
 
@@ -436,6 +437,13 @@ happens in a wake, of one MCU** (S-7): when both are asked for, the Walter's own
 anyway — and the radio's is refused with `one update a wake, and the other one went`, recorded,
 and told at the next exchange. The two machines already refuse each other through the journal;
 this is the third lock on the same door, and the one that reports it.
+
+**And a wake that ended a session runs no update step** (task p16-03). Step 3 takes up an open
+session of the radio as a scanner — the scanner image is on, the golden image is not back — flashes
+the golden image back and proves it, and that counts as this wake's one update step: step 9 then
+refuses the other with `one update a wake, and the other one went`, exactly as it refuses the
+second of the two MCUs. A session is never *begun* in a wake by this firmware; the two things that
+begin one are a typed `rak session` and task p16-04's job.
 
 **Asks do not cross a sleep.** A refused ask is remembered and reported; the ask itself is not.
 A backend that still wants something asks again at the next wake, which is one exchange later and

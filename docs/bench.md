@@ -892,6 +892,43 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   text: nothing was said*, and `rak status` shows no frame went out for it. **Not on a mast:**
   `rak say dfu` reboots the scanner into its bootloader and `rak say hang` stops its loop on
   purpose; both are for a radio on a desk.
+- [ ] **A session: the scanner, one `sweep`, and the repeater back** (task p16-03;
+  `docs/update.md`, *A session*). Needs the scanner image in the store (`fetch scanner` or
+  `image receive scanner`), a golden image, `lte up` so that this board knows what time it is, and
+  about **forty minutes** — the radio is not a repeater for any of it, so a dummy load or a site
+  that can spare it. Type `rak session 30 sweep`. Expected, in order: the two lines naming the
+  slot, the step and what it costs; `session: idle -> check`; `session: check ->
+  flashing-scanner` with the flasher's page lines; `session: flashing-scanner -> scanner: a
+  scanner is there`; `session: scanner -> step`; then, after about thirty seconds,
+  `step 1 (`sweep`, 30 s) ended done: N lines, M bytes (the greeting's acks and its info line
+  among them)` and **every line printed whole** — among them the three `ack`s of `time`, `auto 0`
+  and `info`, the `info` line itself, and a `sweep` line with `"n":281` in it and no cut. Then
+  `session: step -> room`, the `room:` line, `session: room -> flashing-golden`, `-> booting`,
+  `-> proving`, `-> restored`, and `rak session: restored`. Afterwards `rak id` shows **the same
+  public key and name as before** and `rak hello` the golden image's version.
+  **Write down the wall-clock time of each of the two flashes** and the `room:` line verbatim:
+  they are the two numbers this pile exists to replace guesses with (`kFlashWindowMs`, and whether
+  8 192 bytes is the right room).
+- [ ] **The cable pulled while the radio is a scanner: the next boot brings the repeater back by
+  itself** (task p16-03, rail 2). Start `rak session 300 dwell 869.618 300` and, while the step is
+  running (the scanner's lines are coming in), **pull the Walter's USB cable** — or its power.
+  Nothing else. Expected at the next boot, with the cable back in: the boot lines, and then
+  **step 3 of the wake**: `cycle: an open session was taken up: flashing-golden`, the flasher's
+  pages, and the wake's record saying `, a session was taken up`. The whole switch back runs with
+  **no server, no uplink and no console command** — do not type anything until it is over.
+  Afterwards `rak session` says *none open; the last one ended restored*, `rak hello` the golden
+  image's version, `rak id` the same key, and `journal` shows the session's entries: `check`,
+  `flashing-scanner`, `scanner`, `step-1: `dwell 869.618 300``, and then `flashing-golden`,
+  `booting`, `proving`, `restored` with *taken up after a restart* on them. Do this one on a
+  **bench radio**, not on a mast: it costs the site about twenty minutes of no repeater.
+- [ ] **`rak role scanner` by hand is left alone, three wakes running** (task p16-03,
+  deliverable 6). `rak role scanner`, then `stay off` and let three wakes go by (or
+  `cycle now` three times with the cable in). Expected: **nothing flashes the radio back**, and
+  `rak watch` says `running the scanner, left alone: nobody opened a session for it, so it stays
+  one until 'rak role repeater'` — not *in a session*. `rak session` says *no session has been
+  opened on this unit*, or that the last one is closed. Each wake's step 4 is skipped with *the
+  scanner is running: it answers no frame*, and each wake still reaches sleep. Then
+  `rak role repeater` puts it back by hand, as it always did.
 - [ ] **`rak update --first-install` on a module whose application was wiped** (after §5's
   power-cut item, or `rak flash-test confirm`'s region). `rak update` is refused (*there is no
   golden image to return to*); with `--first-install` the candidate is flashed, proved and becomes
@@ -2797,6 +2834,7 @@ how long each step really takes.
 | `kLadderBoundMs` | `360000` | |
 | `kUpdateBoundMs` | `1200000` | |
 | `kTrialBoundMs` | `update::kTrialWindowMs + 60000` | |
+| `kSessionBoundMs` | `update::kSessionBoundMs` | |
 | `kStateBoundMs` | `15000` | |
 | `kUplinkBoundMs` | `kWakeBudgetMs` | |
 | `kUplinkLeastMs` | `20000` | |

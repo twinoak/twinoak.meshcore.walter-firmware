@@ -424,6 +424,15 @@ struct Status {
   bool battery_known = false;
   std::uint16_t battery_mv = 0;
   std::uint32_t battery_age_ms = 0;
+  // **A scanner in a session is not a scanner a person left running** (task p16-03). §9's
+  // classification is the same either way - NoiseScope answers no frame, so the health is
+  // `kScanner` and the ladder leaves it alone - but what it means to whoever reads it is not: one
+  // is ended by the next wake whatever happens to this board, the other stays until a person
+  // types `rak role repeater`. Read out of the journal's own session entry
+  // (`core/update/scanner_session.h`, `readMark()`) wherever the journal is read, so that
+  // `rak watch` can say which of the two it sees.
+  bool session_open = false;
+  std::uint32_t session_since_epoch = 0;
   // The climb in hand.
   Cause cause = Cause::kNone;
   Rung rung = Rung::kNone;
@@ -670,6 +679,8 @@ class Supervisor final : public link::client::RestartWatcher {
   void noteUptime(std::uint32_t uptime_s);
   bool bootLooping() const;
   Silence classify();
+  // What the journal says about an open session of the radio as a scanner (task p16-03).
+  void readSessionMark();
   void refreshStatus();
 
   void beginIncident(Cause cause);

@@ -1031,6 +1031,14 @@ UPDATE_STARTERS = ("components/core/cycle/wake_cycle.cpp",
                    "components/agent/firmware_jobs.cpp",
                    "components/core/supervisor/supervisor.cpp")
 SUPERVISOR = "components/core/supervisor/supervisor.cpp"
+# A session of the radio as a scanner (task p16-03): **two** doors and not four. A typed
+# `rak session` and the server's `twinoak.noisescope.session` job are the only things that may
+# begin one; the wake cycle may only *end* an open one, and that is the rail that gets the
+# repeater back after a reset, a crash or a power cut. So wake_cycle.cpp is deliberately absent
+# from this list and present in the one above.
+SESSION_STARTERS = ("components/core/console/console.cpp",
+                    "components/agent/firmware_jobs.cpp")
+SESSION_ENDER = "components/core/cycle/wake_cycle.cpp"
 
 
 def rail_update_has_three_doors(r):
@@ -1067,9 +1075,42 @@ def rail_update_has_three_doors(r):
     if hits:
         r.broken("the supervisor names the candidate slot: a server's image could reach the "
                  "ladder:", shown(hits))
-    r.says("held here: four call sites - the wake cycle's ask (a claimed job), a typed console "
-           "command, the agent's own apply job, and the supervisor's golden-image rung, which "
-           "can only put back what the store already calls golden")
+    # -- and the session's own door (task p16-03) ------------------------------------------------
+    hits = [h for h in grep(r"->start\s*\(", sources("components", "main"))
+            if "session_->" in h[2] or "session->" in h[2]]
+    outside = sorted({h[0] for h in hits} - set(SESSION_STARTERS))
+    if outside:
+        r.broken("ScannerSession::start is called outside the console's verb and the agent's "
+                 "jobs:", shown([h for h in hits if h[0] in outside]))
+    elif not hits:
+        r.broken("no call site of ScannerSession::start was found at all: the grep has stopped "
+                 "matching, or the console's `rak session` is gone")
+    else:
+        r.looked_at("ScannerSession::start: %d call site(s), all in %s"
+                    % (len(hits), ", ".join(sorted({h[0] for h in hits}))))
+    # The wake cycle ends sessions and never begins one: it may name resume(), not start().
+    began = [h for h in grep(r"session_->start\s*\(", [SESSION_ENDER])]
+    if began:
+        r.broken("the wake cycle begins a session: a session is a person's or a server's choice "
+                 "and never this firmware's (task p16-03, rail 6):", shown(began))
+    else:
+        ends = grep(r"session_->resume\s*\(", [SESSION_ENDER])
+        if not ends:
+            r.broken("the wake cycle no longer takes up an open session: nothing would get the "
+                     "repeater back after a reset (task p16-03, rail 2)")
+        else:
+            r.looked_at("the wake cycle only ever ends a session (resume(), %d call site)"
+                        % len(ends))
+    r.problems(must_contain("components/core/update/scanner_session.cpp",
+                            "Open, before the first flash"),
+               "the entry that opens a session before the scanner is flashed is gone:")
+    r.problems(must_exist("host_test/core/update/test_scanner_session.cpp",
+                          "host_test/core/update/test_scanner_session_power_loss.cpp"),
+               "the session's own tests are gone:")
+    r.says("held here: four call sites for an update - the wake cycle's ask (a claimed job), a "
+           "typed console command, the agent's own apply job, and the supervisor's golden-image "
+           "rung, which can only put back what the store already calls golden - and two for a "
+           "session, the typed verb and the agent's job, with the wake cycle able only to end one")
     return r
 
 
@@ -1237,7 +1278,7 @@ RAILS = [
     ("R17", "the token is printed by nothing and goes to one host, in one header", rail_token_one_host),
     ("R18", "the server never chooses an image and never decides one is good", rail_server_chooses_nothing),
     ("R19", "no job a finished wake claimed is left leased", rail_no_job_left_leased),
-    ("R20", "an update starts by a claimed job, a typed command or the golden-image rung", rail_update_has_three_doors),
+    ("R20", "an update starts by a claimed job, a typed command or the golden-image rung; a session by a command or a job, and is ended by the next wake", rail_update_has_three_doors),
     ("R21", "a path hash is the claim's; this firmware chooses none (S-12)", rail_path_hashes),
     ("R22", "an image whose main task would not fit is never built", rail_main_task_fits),
     ("R23", "nothing is signed that has not started in QEMU", rail_a_release_starts),
