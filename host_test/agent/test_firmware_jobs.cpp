@@ -331,6 +331,9 @@ TEST_CASE("twinoak.fw.offer with into: scanner: the scanner slot filled and the 
   REQUIRE(bench.world.images.put(Which::kCandidate, bench::Slot{0}, standing) == bench::StoreError::kNone);
   const bench::Record before = bench.world.images.read(Which::kCandidate);
   REQUIRE(before.present);
+  const bench::Record golden_before = bench.world.images.read(Which::kGolden);
+  REQUIRE(golden_before.present);
+  REQUIRE(bench.world.images.store.badCount() == 0);
 
   bench.server().queue(bench::ownJob(21, agent::kOfferType,
                                      bench::offerPayload(scanner, agent::kProductRepeater, bench::kBase,
@@ -359,6 +362,11 @@ TEST_CASE("twinoak.fw.offer with into: scanner: the scanner slot filled and the 
   CHECK(std::string(after.version) == std::string(before.version));
   CHECK(std::memcmp(after.sha256, before.sha256, sizeof after.sha256) == 0);
   CHECK(bench.world.images.store.verify(Which::kCandidate, bench::Slot{0}) == bench::StoreError::kNone);
+  // And nothing else of the store moved either: the golden image and the bad list are as they were.
+  const bench::Record golden_after = bench.world.images.read(Which::kGolden);
+  CHECK(golden_after.present);
+  CHECK(std::memcmp(golden_after.sha256, golden_before.sha256, sizeof golden_after.sha256) == 0);
+  CHECK(bench.world.images.store.badCount() == 0);
 
   // The scanner's file was asked for and the repeater's was not.
   const int asked_scanner = bench.server().requestsTo(std::string(bench::kBase) + "/files/" +
