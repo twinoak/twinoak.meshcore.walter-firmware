@@ -271,9 +271,12 @@ struct SessionStatus {
   board::Slot slot{};
   std::size_t steps = 0;       // how many the program has
   std::size_t step = 0;        // which one is running or last ran, 1..6
+  // How each step ended, which is the one thing about a step this object keeps. **The bytes and
+  // the line count are not here**: they go out with the step in its `StepReport`, which is where
+  // the console prints them from and where task p16-04's job reads them, and forty-eight bytes of
+  // `.bss` for a figure that has already been handed over is forty-eight bytes off the heap the
+  // main task's stack comes out of (tools/heap_at_start.py, rail R22).
   StepEnd step_end[kStepsMax] = {};
-  std::uint32_t step_used[kStepsMax] = {};
-  std::uint32_t step_lines[kStepsMax] = {};
   RoomFigures room;
   std::uint32_t at_epoch = 0;      // when the session was opened, when this board knew the time
   std::uint32_t scanner_ms = 0;    // how long the radio has been a scanner (the ceiling's clock)

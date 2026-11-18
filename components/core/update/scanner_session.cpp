@@ -814,11 +814,7 @@ void ScannerSession::endStep(StepEnd end) {
   }
   step_over_ = true;
   const std::size_t i = status_.step > 0 ? status_.step - 1 : 0;
-  if (i < kStepsMax) {
-    status_.step_end[i] = end;
-    status_.step_used[i] = static_cast<std::uint32_t>(lent_.used);
-    status_.step_lines[i] = static_cast<std::uint32_t>(lent_.lines);
-  }
+  if (i < kStepsMax) status_.step_end[i] = end;
   // Handed to whoever runs the session, as the room itself (S-12: nothing of it is copied into a
   // log, the journal or a report). The next step begins when this returns.
   if (sink_ != nullptr) {
