@@ -206,6 +206,53 @@ TEST_CASE("a download half done shortens the next sleep in `plenty`, and in no o
   }
 }
 
+TEST_CASE("a scanner image half fetched shortens the next sleep as a candidate's does; an erased slot does not") {
+  // Task p16-02: `twinoak.fw.offer` with `into: scanner` fills the scanner slot by the same
+  // ranges and the same progress record the candidate's download uses, so a wake's budget leaves
+  // the same thing behind - half a file the next wake continues - and it is worth the same few
+  // extra wakes of a pack that can pay for them. `store-both-scanner` is the fixture for it:
+  // 150 000 bytes with the role `scanner`, so a write that stops past `kResumeStep` leaves a
+  // progress record in the scanner slot's own header sector.
+  WakeBench bench;
+  bench.modemWorks();
+  const bench::Candidate release{"store-both-scanner"};
+  REQUIRE(release.file.size() > core::image::kResumeStep);
+  REQUIRE(bench.world.images.open(core::image::Which::kScanner, core::board::Slot{0}, release) ==
+          core::image::StoreError::kNone);
+  REQUIRE(bench.world.images.store.write(release.file.data(), core::image::kResumeStep + 4096) ==
+          core::image::StoreError::kNone);
+  bench.world.images.store.abandonWrite();
+  core::image::Record record{};
+  REQUIRE(bench.world.images.store.read(core::image::Which::kScanner, core::board::Slot{0},
+                                        &record) == core::image::StoreError::kNone);
+  REQUIRE(record.transfer);
+  REQUIRE_FALSE(record.present);
+  bench.world.rak.battery_mv = 4150;  // `plenty`: the one band a download shortens
+
+  SUBCASE("half done: the next sleep is the download's") {
+    const Pass& pass = bench.oneWake();
+    CHECK(pass.band == core::power::Band::kPlenty);
+    CHECK(pass.shortened);
+    CHECK(pass.interval_s == core::cycle::kDownloadMinutes * 60u);
+  }
+  SUBCASE("`image erase scanner` afterwards: the slot reads empty and the sleep is the band's") {
+    // What the console's `image erase scanner` does to the store (core/image/store.h): the
+    // record voided and the header sector erased, which takes the download's markers with it.
+    REQUIRE(bench.world.images.store.erase(core::image::Which::kScanner, core::board::Slot{0}) ==
+            core::image::StoreError::kNone);
+    core::image::Record after{};
+    REQUIRE(bench.world.images.store.read(core::image::Which::kScanner, core::board::Slot{0},
+                                          &after) == core::image::StoreError::kNone);
+    CHECK_FALSE(after.present);
+    CHECK_FALSE(after.transfer);
+    CHECK(after.transferred == 0);
+    const Pass& pass = bench.oneWake();
+    CHECK(pass.band == core::power::Band::kPlenty);
+    CHECK_FALSE(pass.shortened);
+    CHECK(pass.interval_s == core::power::kPlentyMinutes * 60u);
+  }
+}
+
 TEST_CASE("a committed radio update does not shorten every sleep after it") {
   // Task p15-01, and the fault it is named for: a promotion voids the record of the area the old
   // golden image was in, and that area's header sector still holds the markers of the download

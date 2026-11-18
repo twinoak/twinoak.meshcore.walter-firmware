@@ -9,6 +9,7 @@
 // result read through the fixtures' shapes.
 #include <doctest.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -289,6 +290,265 @@ TEST_CASE("twinoak.fw.offer refused: a tampered manifest at check 1, no image fo
     CHECK(bench::member(data, "check") == "3");
     CHECK_FALSE(bench.world.images.read(Which::kCandidate).present);
   }
+}
+
+// -- `into`: the offer that fills the scanner slot (task p16-02) ----------------------------------
+//
+// `twinoak.fw.offer` always filled the candidate, and `fetch scanner` is the console's: a unit on
+// a mast has no console, so it could hold no scanner image and could never be told to measure
+// anything. The payload's one new member says which of the slot's two downloadable images the
+// release's file goes into - absent being the candidate, so an offer of today is byte for byte
+// what it was - and everything else about the offer is as it was: the manifest and its signature,
+// the six checks, the ranges, the progress, the lease and a download taken up again next wake.
+//
+// `store-both` is the release these read against: one manifest, signed once, naming the repeater
+// image and the scanner image of the same board and band, each with a file of its own - 150 000
+// bytes, so that two of the store's 64 KB resume points fall inside one and a wake's budget can
+// stop a download where the next wake can take it up again.
+namespace {
+
+// A release with both images on the scripted server: the manifest and the signature once (either
+// half carries them), and the two files under their own names.
+void serveBoth(AgentBench& bench, const Candidate& repeater, const Candidate& scanner) {
+  bench::serveRelease(bench.world.http.server, repeater);
+  bench.world.http.server.serve(std::string(bench::kBase) + "/files/" +
+                                    bench::swdNameFor(repeater.manifest, "scanner"),
+                                scanner.file, "\"" + bench::sha256Hex(scanner.file) + "\"");
+}
+
+}  // namespace
+
+TEST_CASE("twinoak.fw.offer with into: scanner: the scanner slot filled and the candidate left alone") {
+  AgentBench bench;
+  const Candidate golden("update-golden");
+  const Candidate repeater("store-both-repeater");
+  const Candidate scanner("store-both-scanner");
+  readyUnit(bench, golden);
+  serveBoth(bench, repeater, scanner);
+
+  // A candidate already in the slot, so that "untouched" can be read byte for byte afterwards.
+  const Candidate standing("store-a");
+  REQUIRE(bench.world.images.put(Which::kCandidate, bench::Slot{0}, standing) == bench::StoreError::kNone);
+  const bench::Record before = bench.world.images.read(Which::kCandidate);
+  REQUIRE(before.present);
+
+  bench.server().queue(bench::ownJob(21, agent::kOfferType,
+                                     bench::offerPayload(scanner, agent::kProductRepeater, bench::kBase,
+                                                         nullptr, "scanner"))
+                           .json());
+  (void)bench.oneWake();
+  const std::string result = bench.lastResult(21);
+  REQUIRE_FALSE(result.empty());
+  CHECK(bench::member(result, "outcome") == "ok");
+  const std::string data = bench::objectOf(result, "data");
+  CHECK(bench::member(data, "stored") == "true");
+  CHECK(bench::member(data, "imageId") == "scanner.rak4630-single.868");
+  CHECK(bench::member(data, "sha256") == bench::sha256Hex(scanner.file));
+  CHECK(bench::member(data, "bytes") == std::to_string(scanner.file.size()));
+
+  // The scanner slot holds the scanner image, and it verifies.
+  const bench::Record held = bench.world.images.read(Which::kScanner);
+  CHECK(held.present);
+  CHECK(held.size == scanner.file.size());
+  CHECK(held.descriptor.role == core::image::Role::kScanner);
+  CHECK(bench.world.images.store.verify(Which::kScanner, bench::Slot{0}) == bench::StoreError::kNone);
+
+  // The candidate is what it was: the same version, the same hash, and it still verifies.
+  const bench::Record after = bench.world.images.read(Which::kCandidate);
+  CHECK(after.present);
+  CHECK(std::string(after.version) == std::string(before.version));
+  CHECK(std::memcmp(after.sha256, before.sha256, sizeof after.sha256) == 0);
+  CHECK(bench.world.images.store.verify(Which::kCandidate, bench::Slot{0}) == bench::StoreError::kNone);
+
+  // The scanner's file was asked for and the repeater's was not.
+  const int asked_scanner = bench.server().requestsTo(std::string(bench::kBase) + "/files/" +
+                                                      bench::swdNameFor(repeater.manifest, "scanner"));
+  CHECK(asked_scanner > 0);
+  CHECK(bench.server().requestsTo(std::string(bench::kBase) + "/files/" +
+                                  bench::swdNameFor(repeater.manifest, "repeater")) == 0);
+  CHECK(bench.half().firmware.counters().offers_stored == 1);
+
+  // And `twinoak.fw.state` names it: the slot's third image, beside the golden and the candidate.
+  bench.server().queue(bench::ownJob(22, agent::kStateType, "{}").json());
+  (void)bench.oneWake();
+  const std::string state = bench::objectOf(bench.lastResult(22), "data");
+  REQUIRE_FALSE(state.empty());
+  const std::string held_scanner = bench::objectOf(state, "scanner");
+  REQUIRE_FALSE(held_scanner.empty());
+  CHECK(bench::member(held_scanner, "sha256") == bench::sha256Hex(scanner.file));
+  CHECK(bench::member(held_scanner, "version") == std::string(scanner.version));
+}
+
+TEST_CASE("twinoak.fw.offer: no `into` and `into: candidate` are the same offer, and the scanner slot stays empty") {
+  AgentBench bench;
+  const Candidate golden("update-golden");
+  const Candidate repeater("store-both-repeater");
+  const Candidate scanner("store-both-scanner");
+  readyUnit(bench, golden);
+  serveBoth(bench, repeater, scanner);
+
+  const char* into = nullptr;
+  SUBCASE("the member left out, as every offer of today has it") { into = nullptr; }
+  SUBCASE("the member spelled out") { into = "candidate"; }
+
+  bench.server().queue(
+      bench::ownJob(23, agent::kOfferType,
+                    bench::offerPayload(repeater, agent::kProductRepeater, bench::kBase, nullptr, into))
+          .json());
+  (void)bench.oneWake();
+  const std::string data = bench::objectOf(bench.lastResult(23), "data");
+  REQUIRE_FALSE(data.empty());
+  CHECK(bench::member(data, "stored") == "true");
+  CHECK(bench::member(data, "imageId") == "repeater.rak4630-single.868");
+  CHECK(bench.world.images.read(Which::kCandidate).present);
+  CHECK(bench.world.images.read(Which::kCandidate).size == repeater.file.size());
+  CHECK_FALSE(bench.world.images.read(Which::kScanner).present);
+  CHECK_FALSE(bench.world.images.read(Which::kScanner).transfer);
+}
+
+TEST_CASE("twinoak.fw.offer with into: the slot that already holds the file, and the words that refuse") {
+  AgentBench bench;
+  const Candidate golden("update-golden");
+  const Candidate repeater("store-both-repeater");
+  const Candidate scanner("store-both-scanner");
+  readyUnit(bench, golden);
+  serveBoth(bench, repeater, scanner);
+  const std::string manifest_url = std::string(bench::kBase) + "/manifest.json";
+  const std::string scanner_file =
+      std::string(bench::kBase) + "/files/" + bench::swdNameFor(repeater.manifest, "scanner");
+
+  SUBCASE("stored already: the answer is `stored` and not one range is asked for") {
+    REQUIRE(bench.world.images.put(Which::kScanner, bench::Slot{0}, scanner) == bench::StoreError::kNone);
+    bench.server().queue(bench::ownJob(24, agent::kOfferType,
+                                       bench::offerPayload(scanner, agent::kProductRepeater, bench::kBase,
+                                                           nullptr, "scanner"))
+                             .json());
+    (void)bench.oneWake();
+    const std::string data = bench::objectOf(bench.lastResult(24), "data");
+    REQUIRE_FALSE(data.empty());
+    CHECK(bench::member(data, "stored") == "true");
+    CHECK(bench::member(data, "imageId") == "scanner.rak4630-single.868");
+    CHECK(bench::member(data, "sha256") == bench::sha256Hex(scanner.file));
+    CHECK(bench::member(data, "bytes") == std::to_string(scanner.file.size()));
+    CHECK(bench.server().requestsTo(scanner_file) == 0);
+    // Nor was the manifest fetched: the payload's own hash and the record's settled it.
+    CHECK(bench.server().requestsTo(manifest_url) == 0);
+    CHECK(bench.world.images.read(Which::kScanner).present);
+  }
+
+  SUBCASE("into: golden - an image a download never fills") {
+    bench.server().queue(bench::ownJob(25, agent::kOfferType,
+                                       bench::offerPayload(repeater, agent::kProductRepeater, bench::kBase,
+                                                           nullptr, "golden"))
+                             .json());
+    (void)bench.oneWake();
+    const std::string data = bench::objectOf(bench.lastResult(25), "data");
+    REQUIRE_FALSE(data.empty());
+    CHECK(bench::member(data, "stored") == "false");
+    CHECK(bench::member(data, "reason") ==
+          "`into` names neither the candidate nor the scanner image of the slot");
+    CHECK(bench.server().requestsTo(manifest_url) == 0);
+    CHECK_FALSE(bench.world.images.read(Which::kCandidate).present);
+    CHECK_FALSE(bench.world.images.read(Which::kScanner).present);
+  }
+
+  SUBCASE("a word that is no image of a slot at all") {
+    bench.server().queue(bench::ownJob(26, agent::kOfferType,
+                                       bench::offerPayload(repeater, agent::kProductRepeater, bench::kBase,
+                                                           nullptr, "noisescope"))
+                             .json());
+    (void)bench.oneWake();
+    const std::string data = bench::objectOf(bench.lastResult(26), "data");
+    REQUIRE_FALSE(data.empty());
+    CHECK(bench::member(data, "stored") == "false");
+    CHECK(bench::member(data, "reason") ==
+          "`into` names neither the candidate nor the scanner image of the slot");
+    CHECK(bench.server().requestsTo(manifest_url) == 0);
+  }
+
+  SUBCASE("into: scanner for the Walter's own product - this firmware has no scanner slot") {
+    const Candidate self("self-a");
+    bench.server().queue(
+        bench::ownJob(27, agent::kOfferType,
+                      bench::offerPayload(self, agent::kProductWalter, bench::kBase, nullptr, "scanner"))
+            .json());
+    (void)bench.oneWake();
+    const std::string data = bench::objectOf(bench.lastResult(27), "data");
+    REQUIRE_FALSE(data.empty());
+    CHECK(bench::member(data, "stored") == "false");
+    CHECK(bench::member(data, "reason") ==
+          "the scanner image is the radio's; this unit's own firmware has no scanner slot");
+    CHECK(bench.server().requestsTo(manifest_url) == 0);
+    core::update::SelfPayload none;
+    CHECK_FALSE(bench.v().self.received(&none));
+  }
+}
+
+TEST_CASE("twinoak.fw.offer into: scanner, a release with no scanner image for this board and band") {
+  AgentBench bench;
+  const Candidate golden("update-golden");
+  const Candidate one("store-a");  // its manifest names the repeater image and nothing else
+  readyUnit(bench, golden);
+  bench::serveRelease(bench.world.http.server, one);
+  bench.server().queue(
+      bench::ownJob(28, agent::kOfferType,
+                    bench::offerPayload(one, agent::kProductRepeater, bench::kBase, nullptr, "scanner"))
+          .json());
+  (void)bench.oneWake();
+  const std::string data = bench::objectOf(bench.lastResult(28), "data");
+  REQUIRE_FALSE(data.empty());
+  CHECK(bench::member(data, "stored") == "false");
+  CHECK(bench::member(data, "check") == "3");
+  CHECK_FALSE(bench::member(data, "reason").empty());
+  CHECK_FALSE(bench.world.images.read(Which::kScanner).present);
+  CHECK_FALSE(bench.world.images.read(Which::kScanner).transfer);
+  CHECK(bench.server().requestsTo(std::string(bench::kBase) + "/files/" + bench::swdName(one.manifest)) == 0);
+}
+
+TEST_CASE("twinoak.fw.offer into: scanner stopped by the budget: no result, and the next wake finishes the file") {
+  AgentBench bench;
+  const Candidate golden("update-golden");
+  const Candidate repeater("store-both-repeater");
+  const Candidate scanner("store-both-scanner");
+  readyUnit(bench, golden);
+  serveBoth(bench, repeater, scanner);
+  const std::string payload =
+      bench::offerPayload(scanner, agent::kProductRepeater, bench::kBase, nullptr, "scanner");
+
+  // One range this wake, as the candidate's own resume test sets it: a cap at a range boundary is
+  // a cap that costs nothing, and the bytes fetched in all are then the file's exactly once. The
+  // scanner slot keeps its progress the way the candidate's does.
+  bench.half().backend.setDownloadBytesPerWake(core::net::kRangeBytes);
+  bench.server().queue(bench::ownJob(29, agent::kOfferType, payload).json());
+  interfaces::BackendAnswer out;
+  CHECK(bench.exchange(bench::knowledgeFor(power::Band::kPlenty), 600, &out) == interfaces::Exchanged::kAsked);
+  CHECK(bench.lastResult(29).empty());
+  CHECK(bench.half().firmware.counters().offers_left_leased == 1);
+  const bench::Record stopped = bench.world.images.read(Which::kScanner);
+  CHECK_FALSE(stopped.present);
+  CHECK(stopped.transfer);
+  CHECK(stopped.transferred == core::net::kRangeBytes);
+  CHECK(stopped.transferred < scanner.file.size());
+  const std::uint64_t first = bench.half().firmware.counters().bytes_downloaded;
+  CHECK(first < scanner.file.size());
+
+  // The next wake's claim of the same job continues the file, and the bytes fetched in all are
+  // the file's once.
+  bench.half().backend.setDownloadBytesPerWake(2u * 1024u * 1024u);
+  bench.server().queue(bench::ownJob(29, agent::kOfferType, payload).json());
+  CHECK(bench.exchange(bench::knowledgeFor(power::Band::kPlenty), 600, &out) == interfaces::Exchanged::kAsked);
+  const std::string data = bench::objectOf(bench.lastResult(29), "data");
+  REQUIRE_FALSE(data.empty());
+  CHECK(bench::member(data, "stored") == "true");
+  CHECK(bench::member(data, "imageId") == "scanner.rak4630-single.868");
+  CHECK(bench::member(data, "resumed") == "true");
+  CHECK(bench::member(data, "bytes") == std::to_string(scanner.file.size()));
+  CHECK(bench.world.images.read(Which::kScanner).present);
+  CHECK(bench.world.images.store.verify(Which::kScanner, bench::Slot{0}) == bench::StoreError::kNone);
+  CHECK(bench.half().firmware.counters().bytes_downloaded == scanner.file.size());
+  // The candidate slot was never opened.
+  CHECK_FALSE(bench.world.images.read(Which::kCandidate).present);
+  CHECK_FALSE(bench.world.images.read(Which::kCandidate).transfer);
 }
 
 TEST_CASE("twinoak.fw.apply: committed after a scripted good candidate, the proving period passing, the lease extended") {

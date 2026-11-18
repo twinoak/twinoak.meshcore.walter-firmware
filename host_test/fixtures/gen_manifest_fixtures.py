@@ -417,6 +417,45 @@ def main(argv):
                 "one page, box link 1.1: the radio that answers HELLO with its band",
                 version="0.3.2+golden1", seed=99, link_minor=1)
 
+    # A release with **both** of the slot's images (task p16-02): one manifest, signed once,
+    # naming the repeater image and the scanner image for rak4630-single 868, each with a file
+    # and a descriptor of its own. An offer with `into: scanner` has to pick the scanner's out of
+    # it and leave the candidate slot untouched, which a release with one image cannot show. The
+    # two rows below share the manifest and the signature and differ in the file.
+    def store_pair(name, size, about, version, seed):
+        m = json.loads(json.dumps(repeater))
+        m["version"] = version
+        m["tag"] = "v" + version.split("+")[0]
+        template = m["images"][0]
+        images = []
+        blobs = []
+        for i, role in enumerate(("repeater", "scanner")):
+            desc = manifestref.make_descriptor(role, version, "rak4630-single", "868", 1, 0)
+            blob = manifestref.fake_image(desc, size, 0x400 if size > 0x400 + 96 else 0, seed + i)
+            img = json.loads(json.dumps(template))
+            img["role"] = role
+            img["id"] = "%s.rak4630-single.868" % role
+            for f in img["files"]:
+                f["name"] = "twinoak-%s-rak4630-single-868-%s.%s" % (role, name, f["format"])
+                if f["use"] == "swd":
+                    f["size"] = len(blob)
+                    f["sha256"] = hashlib.sha256(blob).hexdigest()
+            images.append(img)
+            blobs.append(blob)
+        m["images"] = images
+        manifestref.validate(m)
+        signed(name, manifestref.canonical(m), about)
+        for role, blob in zip(("repeater", "scanner"), blobs):
+            row = "%s-%s" % (name, role)
+            write(row + ".bin", blob)
+            store_images.append((row, name + ".json", name + ".json.sig", row + ".bin", len(blob),
+                                 role, version, "868", "%s (the %s half)" % (about, role)))
+
+    store_pair("store-both", 150000,
+               "one manifest with the repeater image and the scanner image of the same board and "
+               "band, each 150 000 bytes: two of the store's 64 KB resume points fall inside one",
+               version="0.3.0+bothimg", seed=110)
+
     # ---- the Walter's own images (task p2-04) ---------------------------------------------------
     # An `ota` file of this firmware's own product - role manager, board walter, band lte-m - with
     # a descriptor that agrees with a manifest of its own, derived from the spec's walter manifest.
