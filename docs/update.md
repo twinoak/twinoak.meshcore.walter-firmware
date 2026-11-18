@@ -261,6 +261,8 @@ with a sentence beside it; none has been held against a real radio yet (`docs/be
 | `kBatteryFallingMvPerHour` | -100 mV/h | a trend steeper than this refuses the update (no trend exists until phase 3) |
 | `kStepIdleMs` | 100 ms | what `rak update` sleeps between steps that only waited |
 | `kEntriesPerRunMax` | 48 | more journal entries than this in one run means something is looping, and the machine stops writing |
+| `kSessionCeilingMs` | 20 min | how long the radio may be a scanner inside a session, counted from the moment one is found (`scanner_session.h`) |
+| `kStepBytes` | 8 192 | the room one step's lines are laid down in, borrowed from the heap for the session |
 
 ### And three that are **not** guesses
 
@@ -282,9 +284,141 @@ windows above. They exist because a caller that runs this machine inside somethi
 wake cycle's step, an apply claimed from the server — needs one number to bound it by, and until
 task p14-04 those callers used numbers that were shorter than a rollback.
 
+## A session: the scanner, a program, and the repeater back (task p16-03)
+
+`rak role scanner` makes the radio a scanner. It stays one until a person types `rak role
+repeater`. On a bench that is a person with a cable; **on a mast it is nobody**, and a board that
+restarts between the two — or a server that stops answering — leaves a site with no repeater.
+
+A **session** is the two switches as one thing with a program between them, and rails that end it
+whatever happens in the middle. `components/core/include/core/update/scanner_session.h` is the
+machine; `rak session <seconds> <command>` is a person's end of it and task p16-04's
+`twinoak.noisescope.session` is the server's.
+
+```
+check ─► flashing-scanner ─► scanner ─► step-1 … step-6 ─► room ─► flashing-golden
+             │                   │                                       │
+             └───────────────────┴──────► (the ceiling) ─────────────────►│
+                                                                         ▼
+                                            booting ─► proving ─► restored
+                                                              └─► stuck ──┐
+                                                                          │
+ (the journal still says open: the next wake takes it up and tries again) ─┘
+```
+
+Those words are the journal's own: one entry of kind `0x000B` before each of them, with the
+command on a `step-N` entry and the room's five figures on the `room` one.
+
+### The rails
+
+1. **Open before the first flash.** The journal says a session is open, under a kind of its own,
+   before the scanner image is flashed. It says **closed** when the golden image is back and
+   proved, and at no other moment — `restored` is the one stage that means closed, and `stuck` does
+   not.
+2. **An open session with nobody running it is ended by the next wake.** After a restart, a crash,
+   the bound on a wake or a power cut, **step 3** of the next wake takes it up (`docs/cycle.md`),
+   after any radio update the journal says is in progress: the golden image is flashed back and
+   proved, and the journal says closed. It needs no server, no uplink and no console.
+3. **Twenty minutes as a scanner at most** (`kSessionCeilingMs`), counted from the moment the
+   scanner is found. Past it the session goes to the switch back, whatever step it is in and
+   whatever its lines are waiting for — so neither a program of six steps asking for 600 s nor a
+   caller that sits on a step's lines can hold the radio off the mesh longer than that.
+4. **Not begun unless it can be ended.** The check holds everything the switch to the scanner
+   checks *and everything the switch back will*: a scanner image that verifies and is the golden
+   image's board and band, a golden image that verifies, the battery's two figures, the link up,
+   this board's clock set, no radio update in progress, this firmware confirmed and not on trial.
+   Each refusal is one word, and nothing is touched when one comes.
+5. **A switch back that is refused or fails leaves the session open**, and every wake tries again.
+   One journal line a try.
+6. **Begun by a person or a job, never by this firmware.** `rak session <seconds> <command>` and
+   task p16-04's job are the only two callers of `start()`, and rail R20 of
+   `tools/check_rails.py` holds it there. What this firmware does by itself is **end** one.
+7. **One a wake, and it is that wake's update** (S-7): no other update step runs in a wake that
+   ran a session, or the other way round.
+
+### The refusals, one word each
+
+| Word | Means |
+|---|---|
+| `noScanner` | no scanner image in the store, one that does not verify, one on the bad list, one that is not a scanner or not this board's — **or one of another band than the golden image's** |
+| `noGolden` | no golden image to come back to, or one that does not verify |
+| `battery` | the battery could not be read, is below `kBatteryMinMv`, or is falling faster than `kBatteryFallingMvPerHour` |
+| `link` | the radio does not answer a `HELLO`, and there is no classified silence that is passed through here: a session is somebody's choice, never the one flash that exists to unbrick a radio |
+| `clock` | this board does not know what time it is, so the greeting would give the scanner no epoch and its lines would be stamped `ts: 0` |
+| `inProgress` | a radio update is journalled unfinished, this firmware is on trial or unconfirmed (S-7), or a session is open already — an open one is **ended**, never begun again |
+| `program` | the program breaks one of the rules below |
+| `noMemory` | the heap has no 8 192-byte block for a step's lines |
+| `journal` | the journal would not take the entry that opens a session. Not one of the eight the task named, and `tasks/phase-16/reports/03.md` says why it is here |
+
+### A step, and what ends it
+
+A step is a command and its seconds, and the rules are held in one place
+(`core::update::judge()`), so a person at a prompt and a payload from the server are refused in
+the same words: **1 to 6 steps**; a command of **1 to 40 characters** of `a`–`z`, `0`–`9`, space
+and the full stop whose **first word** is one of `stat`, `sweep`, `scope`, `hist`, `dwell`, `cad`;
+**5 to 300 seconds** a step and **600 at most** over the program.
+
+Once a scanner is found the greeting is said — `time <epoch>`, `auto 0`, `info` — with the room
+already lent, so its three `ack`s and its `info` line are laid down in it and are handed over
+**with the first step's lines**: the session's lines begin with them.
+
+Then, per step: what the scanner said between steps is thrown away, the command is said
+(`spec/LINK-PROTOCOL.md` §9), and lines are kept whole in the room until one of five things, which
+is how the step **ended**:
+
+| Ended | Means |
+|---|---|
+| `done` | a `done` line for the command's first word |
+| `clock` | its seconds are up (or the ceiling came), and `stop` is said |
+| `full` | the room is used up, and `stop` is said |
+| `refused` | the `ack` said not ok. **The next step still runs** |
+| `silent` | no `ack` came |
+
+The step's lines are then handed to whoever runs the session — the console prints each one whole,
+task p16-04's job posts them — and the next step begins when that returns.
+
+### Its room, and what it cost
+
+One buffer of **8 192 bytes** (`kStepBytes`), taken from `interfaces::Scratch` when the session
+begins and given back when the steps are over. No static storage of that size: every byte of
+`.bss` moves the heap the main task's stack comes out of (`tools/heap_at_start.py`, rail R22). A
+session that cannot have it is refused `noMemory` before anything is touched.
+
+Why 8 192 and no more: the unit in service has said what it has — its report's `restarts` section,
+in November, *heap: 27472 bytes free, largest free block 12288, least free since this boot 25300
+(internal, 8-bit)*. A room of 16 kB is not there to be had, and one of 12 kB would leave nothing
+whole for anybody else.
+
+And **measured at every session**, through the seam `heap` already uses
+(`core/console/heap_report.h`): the free bytes and the largest free block just before the room is
+taken; the largest free block just after; and the least free since boot, read when the steps are
+over. One journal line, `room`, written **before the switch back**, says them, and `rak session`
+prints the same line:
+
+```
+room: 8192 of 27472, block 12288; left block 4096; least free 17108
+```
+
+A build that was handed no heap seam says so in the line instead. **The figures decide nothing**:
+nothing here refuses anything because of them, and they exist so that 8 192 can be raised later
+from what units say. Task p16-05 answers the same seam out of the module's PSRAM.
+
+### What it costs, and what a person sees
+
+Two flashes of about a quarter of an hour (`kFlashWindowMs`) with the program and three minutes of
+proving between them: **about forty minutes off the mesh**, with this board awake for all of it.
+The wake that takes a session up is held open for two passes of the machine above and the ceiling
+— `kSessionBoundMs`, 58 min 40 s — which is the number that set `kRaisedBoundMax` in
+`core/cycle/wake_guard.h`, and a raised bound is still a bound.
+
+A scanner **nobody opened a session for is left alone**, as it always was: a person typed `rak role
+scanner` and means it. `rak watch` says which of the two it sees — *in a session, since …* or
+*running the scanner, left alone* (`docs/supervisor.md`).
+
 ## What is not here (the radio's half)
 
-Deciding *when* to update (phase 3's wake cycle; later the server), fetching a candidate (phase
+Telling a scanner what to measure beyond the six words of a step's first column, a session
+that spans a sleep, and a faster flash. Deciding *when* to update (phase 3's wake cycle; later the server), fetching a candidate (phase
 3's uplink; today `tools/walterctl.py push --as candidate`), and the supervisor that calls `flash
 the golden image` as a rung of its ladder (task p2-05). The Walter's own update follows.
 

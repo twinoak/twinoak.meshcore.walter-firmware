@@ -68,16 +68,32 @@ const char* const kUpdateIncludes[] = {
     "core/update/tls_check.h",
     "interfaces/text_out.h",
     "interfaces/tls_socket.h",
+    // A session of the radio as a scanner (task p16-03): the four fields of a scanner's line it
+    // reads, the heap behind the seam `heap` already uses (the `room` entry's five figures), the
+    // room a step's lines are laid down in - the one thing this part of core/ ever asks the heap
+    // for, and it asks through a pure-virtual seam and gives it back - and the time of day the
+    // greeting gives the scanner.
+    "core/console/heap_report.h",
+    "core/link/client/text_line.h",
+    "core/update/scanner_session.h",
+    "interfaces/scratch.h",
+    "interfaces/wall_clock.h",
 };
 
 }  // namespace
 
 TEST_CASE("nothing under components/core/update/ allocates") {
-  // Twelve files: the journal, the radio's machine, the battery over the link, its last good
-  // reading (task p2-05) and the Walter's own update, each a header and a source, and the
-  // battery and uplink interfaces.
+  // Fourteen files: the journal, the radio's machine, the battery over the link, its last good
+  // reading (task p2-05), the Walter's own update and a session of the radio as a scanner (task
+  // p16-03), each a header and a source, and the battery and uplink interfaces.
+  //
+  // **The session is the one part of this directory that uses the heap at all**, and that is why
+  // it is here rather than an exception to it: it asks `interfaces::Scratch` - a pure-virtual
+  // seam of three calls - for one block for the length of a session and gives it back, and the
+  // word `new` appears in none of its lines. A `malloc` of its own would fail this test, as
+  // would a `std::vector` of a step's lines.
   checks::checkNoAllocation("the updates",
                             checks::filesUnder(kUpdateDirectories,
                                                sizeof kUpdateDirectories / sizeof kUpdateDirectories[0]),
-                            kUpdateIncludes, sizeof kUpdateIncludes / sizeof kUpdateIncludes[0], 12, 1900);
+                            kUpdateIncludes, sizeof kUpdateIncludes / sizeof kUpdateIncludes[0], 14, 2600);
 }

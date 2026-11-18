@@ -58,6 +58,9 @@ const CommandLine kCommandLines[] = {
     {"rak update --first-install", "rak update --first-install"},
     {"rak update status", "rak update status"},
     {"rak role", "rak role scanner"},
+    // The read, which is what a console with no store or no journal answers; a whole session
+    // (`rak session 30 sweep`) is a case of its own on the update bench.
+    {"rak session", "rak session"},
     {"rak watch", "rak watch"},
     {"rak watch reset-caps", "rak watch reset-caps"},
     {"rak ladder", "rak ladder"},

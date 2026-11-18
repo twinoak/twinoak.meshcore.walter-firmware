@@ -46,6 +46,7 @@
 #include "core/supervisor/supervisor.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
+#include "core/update/scanner_session.h"
 #include "core/update/fetch.h"
 #include "core/update/self_update.h"
 #include "core/console/uplink_probe.h"
@@ -149,7 +150,14 @@ class Console final : public ReportSource {
           // lines whole and hands them back before the prompt. A pointer like the rest; a build
           // that was given none answers in one line. It is the last of these because it is the
           // newest.
-          interfaces::Scratch* scratch = nullptr);
+          interfaces::Scratch* scratch = nullptr,
+          // A session of the radio as a scanner (task p16-03,
+          // core/update/scanner_session.h): `rak session`. **The console's verb is one of the
+          // session's two doors** (rail 6, and tools/check_rails.py's R20), the other being
+          // task p16-04's job; nothing else in this firmware may begin one. A pointer like the
+          // rest; a build with no store, no journal or no room to borrow has none and the
+          // command says so in one line. It is the last of these because it is the newest.
+          update::ScannerSession* session = nullptr);
 
   // How this boot happened, and the first prompt (the banner is printed by main before this).
   // Also where an update the journal says was in progress is taken up again (task p2-03):
@@ -276,6 +284,13 @@ class Console final : public ReportSource {
   // §9, the other direction (task p16-01): one line said to a scanner, its `ack`, and the lines
   // of the next five seconds printed whole out of room borrowed from the heap.
   void rakSay(const char* words, std::size_t size);
+  // `rak session` (task p16-03): what the journal says, and a whole session of one step.
+  void rakSession();
+  void rakSessionRun(std::uint32_t seconds, const char* command, std::size_t size);
+  // The one line the `room` entry, `rak session` and the journal's story all print.
+  void printRoomLine(const update::RoomFigures& figures);
+  void printSessionEntry(std::size_t number, const update::Entry& entry,
+                         const update::SessionPayload& payload);
   void printEvent(const link::client::QueuedEvent& event, std::size_t number);
   void printBytes(const char* label, link::Bytes bytes);
   void printText(link::Text text);
@@ -482,6 +497,7 @@ class Console final : public ReportSource {
   HeapReport* heap_ = nullptr;
   health::CoreDump* dumps_ = nullptr;
   interfaces::Scratch* scratch_ = nullptr;
+  update::ScannerSession* session_ = nullptr;
   bool driving_update_ = false;  // `rak update` is running the machine to its end
   bool ticked_ = false;          // the main loop has turned once: the trial's first condition
   // A command of this console is on the stack: `pump()` then reads the radio and leaves the

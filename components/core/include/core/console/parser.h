@@ -275,6 +275,14 @@ enum class Verb : std::uint8_t {
   kRakUpdateStatus,
   kRakRoleScanner,
   kRakRoleRepeater,
+  // A session of the radio as a scanner (task p16-03, core/update/scanner_session.h): the two
+  // switches as one thing. `rak session` alone says whether one is open and what the next wake
+  // will do about it; `rak session <seconds> <command>` runs one of a single step - the seconds
+  // in `seconds` and the command in `text`, as `rak say` has it. The bounds on both are the
+  // session's own (`core::update::judge`), so that a person at a prompt and a payload from the
+  // server are refused in the same words.
+  kRakSession,
+  kRakSessionRun,
   // The supervisor (task p2-05).
   kRakWatch,
   kRakWatchResetCaps,

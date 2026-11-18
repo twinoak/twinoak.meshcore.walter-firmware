@@ -1,5 +1,7 @@
 #include "core/supervisor/supervisor.h"
 
+#include "core/update/scanner_session.h"
+
 #include "core/link/codec/messages.h"
 #include "core/link/codec/wire.h"
 
@@ -625,6 +627,7 @@ bool Supervisor::ask() {
   }
   if (radio_.mode() == link::client::Mode::kText) {
     status_.health = Health::kScanner;
+    readSessionMark();
     return false;
   }
 
@@ -639,6 +642,7 @@ bool Supervisor::ask() {
     acknowledgeAttentions();
     if (radio_.mode() == link::client::Mode::kText) {
       status_.health = Health::kScanner;
+      readSessionMark();
       return false;
     }
     if (!hello.ok()) {
@@ -923,10 +927,24 @@ bool Supervisor::climbing() const {
   return false;
 }
 
+// What the journal says about a session of the radio as a scanner (task p16-03): open, and since
+// when. It decides nothing here - a scanner is left alone either way (§9) - and it is what
+// `rak watch` says to tell *in a session, since ...* from *running the scanner, left alone*.
+void Supervisor::readSessionMark() {
+  status_.session_open = false;
+  status_.session_since_epoch = 0;
+  if (journal_ == nullptr) return;
+  update::Mark mark;
+  if (!update::readMark(*journal_, &mark) || !mark.open) return;
+  status_.session_open = true;
+  status_.session_since_epoch = mark.at_epoch;
+}
+
 Silence Supervisor::classify() {
   // The order matters: each of the first three is an explanation that forbids acting, and the
   // cheapest to be sure of comes first (§9, and ARCHITECTURE §2 rule 5 for the glitch).
   if (status_.health == Health::kScanner || radio_.mode() == link::client::Mode::kText) {
+    readSessionMark();
     return Silence::kScanner;
   }
   // Our own power-up reset the radio (§2 rule 5: a power-up of the ESP32-S3 glitches GPIO1-14 low

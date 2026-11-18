@@ -78,6 +78,9 @@ idf_component_register(
        "update/journal.cpp"
        "update/link_battery.cpp"
        "update/radio_update.cpp"
+       # A session of the radio as a scanner (task p16-03): the two role switches as one thing,
+       # with a program of steps between them and the rails that end it whatever happens.
+       "update/scanner_session.cpp"
        # The Walter's own update (task p2-04): the other slot as a transfer target, the trial.
        "update/self_update.cpp"
        # The supervisor (task p2-05): the radio's heartbeat and the ladder, and the battery's
