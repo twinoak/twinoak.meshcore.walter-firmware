@@ -292,8 +292,8 @@ restarts between the two — or a server that stops answering — leaves a site 
 
 A **session** is the two switches as one thing with a program between them, and rails that end it
 whatever happens in the middle. `components/core/include/core/update/scanner_session.h` is the
-machine; `rak session <seconds> <command>` is a person's end of it and task p16-04's
-`twinoak.noisescope.session` is the server's.
+machine; `rak session <seconds> <command>` is a person's end of it and
+`twinoak.noisescope.session` is the server's (*A session as a job* below).
 
 ```
 check ─► flashing-scanner ─► scanner ─► step-1 … step-6 ─► room ─► flashing-golden
@@ -414,6 +414,49 @@ The wake that takes a session up is held open for two passes of the machine abov
 A scanner **nobody opened a session for is left alone**, as it always was: a person typed `rak role
 scanner` and means it. `rak watch` says which of the two it sees — *in a session, since …* or
 *running the scanner, left alone* (`docs/supervisor.md`).
+
+### A session as a job (task p16-04)
+
+`twinoak.noisescope.session` is the same machine begun by the server instead of by a person at a
+port, which is what a unit on a mast has. **Nothing of the session is decided in the job**: the
+program comes out of the payload and is judged by the rules above (`core::update::judge()`, so a
+prompt and a payload are refused in the same words), `start()` runs the whole check, and the job
+drives `step()` in slices inside the wake exactly as an apply drives its machine.
+
+What the job adds is the three things a mast needs and a cable does not:
+
+- **The lines go to the server, step by step.** When a step hands its lines over they are posted
+  before the next step begins: `POST /agent/v1/jobs/{id}/lines/{from}`, the body the lines as the
+  scanner sent them — each ended with `\n` — in bodies of at most **8 192 bytes cut at a line's
+  end**, with `{from}` counting the lines handed to posts so far. A post nothing answers is sent
+  once more with the same `{from}` and then **counted as unanswered** and left: *they may have
+  arrived*, and the radio is never held for a server. A reply that says `full` — the job's room on
+  the server is used up — stops the posts, and the remaining steps still run. It is a call of its
+  own in the failed-call list and in what a wake was doing (`agent calls`, *scanner lines*).
+- **The lease, and the journal as progress.** Extended before the first byte, for the server's
+  whole ceiling before **each of the two flashes** (`kLeaseFlashSeconds`, as an apply's flash is)
+  and every five minutes otherwise; one `POST /jobs/{id}/progress` per journal line, so the job's
+  page says *flashing-scanner since 10:00* rather than nothing for a quarter of an hour. The
+  `room` line is one of those entries, so the heap's five figures reach the server with **every**
+  session.
+- **A result that outlives a restart.** Before the scanner is flashed the job is journalled as
+  **owed** (`kind::kAgentJob`, as this firmware's own apply is). The result says `restored`,
+  `refused` with one of the words above, or `stuck`, with a row for every step of the payload —
+  how it ended, and what it handed to its posts — the two counts, and the session's journal. A
+  board that restarts in the middle leaves the session open; the next wake ends it (rail 2) and
+  then posts `restored` or `stuck` from the journal it has, with `notRun` for every step it cannot
+  vouch for and counts of nought.
+
+**One attempt, leased an hour from the claim**, and the wake that runs a session is held open for
+its whole bound — which is why the backend exchange's own bound is the session's and a minute
+(`docs/cycle.md`). A session claimed while an update is in progress or while this firmware is on
+trial is `refused` with `inProgress`, and S-7's one-update-step rule counts a session as the
+wake's update step.
+
+**S-12.** A scanner's line goes into a post and nowhere else: not the log, not the journal, not a
+report, not the job's own `log`. The room is read where it lies and nothing of it is copied by
+this firmware — the same rail `rak session`'s printing is held to, and a test searches all five
+places for a line only the scanner would have said.
 
 ## What is not here (the radio's half)
 

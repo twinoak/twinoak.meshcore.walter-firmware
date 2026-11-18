@@ -43,6 +43,9 @@ const char* callKindName(CallKind what) {
     case CallKind::kLease: return "a lease";
     case CallKind::kProgress: return "progress";
     case CallKind::kDownload: return "a download range";
+    // A scanner's lines on their way to the server (task p16-04). Sixteen bytes at most, as
+    // `core/cycle/wake_progress.h` keeps a name: twelve.
+    case CallKind::kLines: return "scanner lines";
     case CallKind::kCount: break;
   }
   return "a call";

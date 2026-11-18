@@ -782,9 +782,19 @@ void AgentBackend::jobs(interfaces::TextOut& out) {
          static_cast<unsigned long>(f.power_cycles_refused), static_cast<unsigned long>(f.progress_posted),
          static_cast<unsigned long>(f.progress_refused),
          static_cast<unsigned long>(f.extends), static_cast<unsigned long>(f.bytes_downloaded));
+    // A fourth line and not a fourth clause of the third, for the reason the three above are
+    // three: 200 bytes is what a line of this port is printed into (task p16-04).
+    sayf(&out, "          %lu session(s), %lu refused; %lu scanner line(s) posted, %lu unanswered\n",
+         static_cast<unsigned long>(f.sessions), static_cast<unsigned long>(f.sessions_refused),
+         static_cast<unsigned long>(f.lines_posted), static_cast<unsigned long>(f.lines_unanswered));
     JobEntry owed;
     if (p_.firmware->resultOwed(&owed)) {
-      sayf(&out, "owed      the result of the Walter's own apply, job %lld, follows its trial\n", owed.job_id);
+      if (owed.product == kProductForSession) {
+        sayf(&out, "owed      the result of a session of the radio as a scanner, job %lld, follows "
+                   "the wake that ends it\n", owed.job_id);
+      } else {
+        sayf(&out, "owed      the result of the Walter's own apply, job %lld, follows its trial\n", owed.job_id);
+      }
     }
   }
   sayLocalDoor(out);

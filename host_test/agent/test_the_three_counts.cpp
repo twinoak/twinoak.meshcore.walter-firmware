@@ -318,7 +318,9 @@ TEST_CASE("a radio of 1.2: no flood object, and nothing of this task can reach t
   REQUIRE(bench.half().floods.survived());
   const std::string before = bodyOf(bench.v().runLine("agent heartbeat"));
   CHECK_FALSE(has(before, "flood"));
-  CHECK_FALSE(has(before, "scope"));
+  // The flood object's own key, and not the bare word: since task p16-04 the job types carry
+  // `twinoak.noisescope.session`, in which `scope` is part of a name.
+  CHECK_FALSE(has(before, "\"scope\":"));
   CHECK(bench.half().mesh.floodScope() == nullptr);
   // And not one frame of §6.5 was sent to a radio that has no capability for it.
   CHECK(bench.world.rak.flood_scope_asks == 0);

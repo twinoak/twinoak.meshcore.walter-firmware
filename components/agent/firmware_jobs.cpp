@@ -147,6 +147,22 @@ const char* name(Refusal refusal) {
   return "";
 }
 
+const char* name(SessionOutcome outcome) {
+  switch (outcome) {
+    case SessionOutcome::kNone: return "";
+    case SessionOutcome::kRestored: return "restored";
+    case SessionOutcome::kRefused: return "refused";
+    case SessionOutcome::kStuck: return "stuck";
+  }
+  return "";
+}
+
+// The five endings are the machine's own words; the sixth - a step the session ended before - is
+// this end's, because the machine has no word for a step that never ran.
+const char* endWord(upd::StepEnd end) {
+  return end == upd::StepEnd::kNone ? kStepNotRun : upd::name(end);
+}
+
 Refusal refusalFor(upd::Reason reason) {
   switch (reason) {
     case upd::Reason::kBatteryUnknown:
@@ -214,6 +230,10 @@ void encode(const JobEntry& e, std::uint8_t out[kJobEntryBytes]) {
   std::memcpy(out + 16, e.hash16, upd::kHash16);
   std::memcpy(out + 32, e.to_version, upd::kShortVersion);
   out[43] = 0;
+  // The first of the four spare bytes (task p16-04): how many steps the session's payload had, so
+  // that a result posted after a restart still carries a row for every one of them. 0 on an
+  // apply's entry, which is what every entry written before this task holds there.
+  out[44] = e.steps;
 }
 
 bool decode(const upd::Entry& entry, JobEntry* out) {
@@ -231,6 +251,7 @@ bool decode(const upd::Entry& entry, JobEntry* out) {
   std::memcpy(out->hash16, p + 16, upd::kHash16);
   std::memcpy(out->to_version, p + 32, upd::kShortVersion);
   out->to_version[upd::kShortVersion - 1] = 0;
+  out->steps = p[44] <= core::update::kStepsMax ? p[44] : 0;
   return true;
 }
 
@@ -255,6 +276,7 @@ const char* FirmwareJobs::type(int i) const {
     case 2: return kStateType;
     case 3: return kPowerCycleType;
     case 4: return kReportType;
+    case 5: return kSessionType;
     default: return "";
   }
 }
@@ -311,6 +333,7 @@ bool FirmwareJobs::run(const mm::ClaimedJob& job, mm::JobContext& ctx, mm::Resul
   if (isType(job.type, kApplyType)) return runApply(job, payload, ctx, out);
   if (isType(job.type, kPowerCycleType)) return runPowerCycle(job, payload, ctx, out);
   if (isType(job.type, kReportType)) return runReport(job, payload, ctx, out);
+  if (isType(job.type, kSessionType)) return runSession(job, payload, ctx, out);
   return false;  // not ours: the runner answers `unsupported`
 }
 
@@ -665,30 +688,37 @@ std::size_t FirmwareJobs::writeOfferResult(bool stored, const char* image_id, co
 
 // The `journal` array, in one place: the result carries it at the end of a run and a progress
 // report carries it as it is written (task p14-04), and the two must be the same shape or a reader
-// who followed the job live would see the story change when it finished.
-void FirmwareJobs::writeJournal(mm::JsonWriter& w) {
-  if (line_count_ == 0) return;
+// who followed the job live would see the story change when it finished. A **free** function over
+// an array of lines (task p16-04), so that an apply's journal, a session's and a test's fixture
+// values all go through the one writer.
+void writeJournalLines(mm::JsonWriter& w, const JobJournalLine* lines, int count) {
+  if (lines == nullptr || count <= 0) return;
   w.key("journal");
   w.beginArray();
-  for (int i = 0; i < line_count_; ++i) {
+  for (int i = 0; i < count; ++i) {
     char at[24];
-    isoOf(lines_[i].at_epoch, at);
+    isoOf(lines[i].at_epoch, at);
     w.comma();
     w.beginObject();
     w.key("at");
     w.string(at);
     w.key("step");
-    w.string(lines_[i].step);
-    if (lines_[i].note[0] != 0) {
+    w.string(lines[i].step);
+    if (lines[i].note[0] != 0) {
       w.key("note");
-      w.string(lines_[i].note);
+      w.string(lines[i].note);
     }
     w.endObject();
   }
   w.endArray();
 }
 
+void FirmwareJobs::writeJournal(mm::JsonWriter& w) { writeJournalLines(w, lines_, line_count_); }
+
 // `{"data":{"journal":[...]},"note":"<the newest line's step>"}`, straight into the envelope half
+// of this object's one buffer. A session's journal goes out through this too (task p16-04): the
+// shape is the same and the reason is the same, which is that a job's page must not say *nothing
+// has come back yet* while a radio is being flashed for a quarter of an hour.
 // of this object's one buffer - which is free for the whole of an apply: `data_` is not written
 // until the result is, and an owed result is posted after the heartbeat, outside any job. The
 // whole body is written by one JsonWriter rather than through `mm::writeProgressReport`, which
@@ -1081,7 +1111,16 @@ bool FirmwareJobs::resultOwed(JobEntry* out) const {
 }
 
 bool FirmwareJobs::owedResultDue() const {
-  if (parts_.journal == nullptr || !resultOwed()) return false;
+  if (parts_.journal == nullptr) return false;
+  JobEntry owed;
+  if (!resultOwed(&owed)) return false;
+  // **A session's owed result is due as soon as the session is not running** (task p16-04). There
+  // is no trial to wait for: step 3 of this wake has either put the golden image back or left the
+  // session open for the next wake to try again, and either of those is an answer the server is
+  // waiting for. A session still in hand is not one: its own run will post the result.
+  if (owed.product == kProductForSession) {
+    return parts_.session == nullptr || !parts_.session->active();
+  }
   upd::Entry owed_entry;
   if (!parts_.journal->lastOf(upd::kind::kAgentJob, &owed_entry)) return false;
   // The self-update's own last word since the switch. `postOwedResult` walks the whole story to
@@ -1102,7 +1141,7 @@ bool FirmwareJobs::owedResultDue() const {
   return p.slot != running.index;
 }
 
-bool FirmwareJobs::lastEnded(JobEntry* out) const {
+bool FirmwareJobs::lastEnded(JobEntry* out, std::uint8_t product) const {
   if (parts_.journal == nullptr || out == nullptr) return false;
   upd::Cursor c;
   upd::Entry e;
@@ -1110,7 +1149,7 @@ bool FirmwareJobs::lastEnded(JobEntry* out) const {
   int steps = 0;
   while (more && steps++ < 1024) {
     JobEntry j;
-    if (decode(e, &j) && j.state == JobEntryState::kEnded) {
+    if (decode(e, &j) && j.state == JobEntryState::kEnded && j.product == product) {
       *out = j;
       return true;
     }
@@ -1122,6 +1161,9 @@ bool FirmwareJobs::lastEnded(JobEntry* out) const {
 bool FirmwareJobs::postOwedResult() {
   JobEntry owed;
   if (!resultOwed(&owed) || parts_.journal == nullptr) return false;
+  // A session this board restarted in the middle of (task p16-04): another journal, another
+  // shape, the same rule - the result is owed and the next answered heartbeat carries it.
+  if (owed.product == kProductForSession) return postOwedSessionResult(owed);
   // The self-update's story since the switch: the entries newer than the owed one, oldest first.
   // The newest says how the trial ended; `switching` and `on trial` alone are a trial still
   // running in this boot, and nothing is posted yet.
@@ -1747,6 +1789,533 @@ bool FirmwareJobs::runReport(const mm::ClaimedJob& job, const char* payload, mm:
   ctx.log(note);
   out.data(buffer_, doc.at);
   out.outcome(mm::Outcome::Ok);
+  return true;
+}
+
+// -- twinoak.noisescope.session (task p16-04) ------------------------------------------------------
+//
+// A session of the radio as a scanner, begun by the server instead of by a person at a port. The
+// machine is task p16-03's and is **not** reimplemented here: the program comes out of the
+// payload and is judged by that task's own rules, `start()` runs the whole check, `step()` is
+// driven in slices inside this wake exactly as an apply's machine is, and what this file adds is
+// the three things a mast needs and a cable does not - the lease, the lines on their way to the
+// server, and a result that outlives a restart.
+//
+// **S-12 is the rail this job is written against.** A scanner's line goes into a post and nowhere
+// else: not the log, not the journal, not a report, not the job's `log`. The room is read where it
+// lies and nothing of it is copied anywhere by this end, and every line this file writes is
+// counts and words of its own.
+
+namespace {
+
+// The journal's word for a step, as the contract's example writes them. Static text, because a
+// journal line keeps a **pointer** to its step word.
+const char* const kSessionStepWords[core::update::kStepsMax] = {"step-1", "step-2", "step-3",
+                                                                "step-4", "step-5", "step-6"};
+
+std::uint32_t saturateBy(std::uint32_t value, std::uint32_t more) {
+  return value + more < value ? 0xFFFFFFFFu : value + more;
+}
+
+}  // namespace
+
+std::size_t writeSessionResult(const SessionResult& result, const JobJournalLine* journal,
+                               int journal_count, char* out, std::size_t cap) {
+  mm::JsonWriter w(out, cap);
+  w.beginObject();
+  w.key("outcome");
+  w.string(name(result.outcome));
+  if (result.scanner != nullptr && result.scanner[0] != 0) {
+    w.key("scanner");
+    w.string(result.scanner);
+  }
+  w.key("steps");
+  w.beginArray();
+  for (std::size_t i = 0; i < result.steps && i < core::update::kStepsMax; ++i) {
+    w.comma();
+    w.beginObject();
+    w.key("ended");
+    w.string(result.step[i].ended != nullptr ? result.step[i].ended : kStepNotRun);
+    w.key("lines");
+    w.integer(static_cast<long long>(result.step[i].lines));
+    w.key("bytes");
+    w.integer(static_cast<long long>(result.step[i].bytes));
+    w.endObject();
+  }
+  w.endArray();
+  w.key("lines");
+  w.integer(static_cast<long long>(result.lines));
+  w.key("linesUnanswered");
+  w.integer(static_cast<long long>(result.lines_unanswered));
+  writeJournalLines(w, journal, journal_count);
+  if (result.refusal != nullptr && result.refusal[0] != 0) {
+    w.key("refusal");
+    w.string(result.refusal);
+  }
+  w.endObject();
+  return w.overflowed() ? 0 : w.length();
+}
+
+bool readSessionPayload(const char* payload, std::size_t len, core::update::Program* program,
+                        long long* slot, const char** why) {
+  const char* reason = "";
+  if (program != nullptr) *program = core::update::Program{};
+  if (program == nullptr) {
+    reason = "this build has nowhere to read a program into";
+  } else if (payload == nullptr || payload[0] == 0 || len == 0) {
+    // An empty text is a payload the claim could not keep: `kExtensionPayloadBytes` is what this
+    // firmware holds of one, and the contract's own ceiling is the same figure.
+    reason = "the payload did not fit the bytes a claim keeps";
+  } else {
+    long long which = 0;
+    if (!json::integer(json::member(payload, len, "slot"), &which)) {
+      reason = "the payload names no slot";
+    } else {
+      if (slot != nullptr) *slot = which;
+      const json::Value steps = json::member(payload, len, "steps");
+      std::size_t count = 0;
+      for (int i = 0; i <= static_cast<int>(core::update::kStepsMax); ++i) {
+        const json::Value one = json::element(steps, i);
+        if (!one.found()) break;
+        if (count >= core::update::kStepsMax) {
+          // One more than the machine runs: the program is refused as a whole, with the rule
+          // that was broken, rather than run as its first six steps.
+          reason = "a program is at most six steps";
+          break;
+        }
+        core::update::ProgramStep& step = program->step[count];
+        const json::Value command = json::member(one.at, one.len, "command");
+        if (!command.found()) {
+          reason = "a step names no command";
+          break;
+        }
+        // `json::text` answers false for a word that does not fit as well as for one that is not
+        // a string, and the buffer is exactly the machine's own 40 characters and a terminator -
+        // so a longer command is refused here in the words the machine would have used.
+        if (!json::text(command, step.command, sizeof step.command)) {
+          reason = "a step's command is at most 40 characters";
+          break;
+        }
+        long long seconds = 0;
+        if (!json::integer(json::member(one.at, one.len, "seconds"), &seconds)) {
+          reason = "a step names no seconds";
+          break;
+        }
+        step.seconds = seconds > 0 && seconds <= 0xFFFFFFFF ? static_cast<std::uint32_t>(seconds) : 0;
+        ++count;
+      }
+      if (reason[0] == 0) {
+        program->count = count;
+        // **Task p16-03's own pass over the program** (deliverable 2): a person at a console and
+        // a payload from the server are refused in the same words, because it is the same code.
+        const char* broken = core::update::whyProgram(*program);
+        if (broken != nullptr) reason = broken;
+      }
+    }
+  }
+  if (why != nullptr) *why = reason;
+  return reason[0] == 0;
+}
+
+// -- the lines on their way to the server ----------------------------------------------------------
+
+std::size_t FirmwareJobs::postSomeLines(long long job_id, const char* lines, std::size_t len,
+                                        std::uint32_t from, std::uint32_t* count, bool* answered,
+                                        bool* full) {
+  *count = 0;
+  *answered = false;
+  *full = false;
+  // **As many whole lines as fit one body** (deliverable 6): the body is cut at a line's end, so
+  // every line the server holds is a line the scanner sent whole. A line longer than a body on
+  // its own cannot be cut at all and goes in a post of its own rather than being split or
+  // dropped: nothing a scanner sends is that long (§9 bounds a line at 7 600 bytes against a
+  // body of 8 192), and losing a measurement would be worse than one body over the bound.
+  std::size_t take = 0;
+  std::uint32_t whole = 0;
+  for (std::size_t at = 0; at < len;) {
+    std::size_t end = at;
+    while (end < len && lines[end] != '\n') ++end;
+    const std::size_t one = (end < len ? end + 1 : len) - at;
+    if (take != 0 && take + one > kLinesPostBytes) break;
+    take += one;
+    ++whole;
+    at += one;
+    if (take >= kLinesPostBytes) break;
+  }
+  if (take == 0 || whole == 0) return 0;
+
+  ModemUplink::LinesReply reply;
+  bool ok = server_.postLines(job_id, from, lines, take, &reply);
+  if (!ok) {
+    // **Once more, with the same `{from}`** (deliverable 6). The server leaves a line it already
+    // holds alone, so a post that arrived and whose answer did not is harmless to repeat; after
+    // this the lines of that post are counted as unanswered - they may have arrived - and this
+    // end goes on to the next ones rather than holding the radio for a server.
+    ok = server_.postLines(job_id, from, lines, take, &reply);
+  }
+  counters_.lines_posted = saturateBy(counters_.lines_posted, whole);
+  *count = whole;
+  *answered = ok;
+  if (ok) {
+    *full = reply.full;
+  } else {
+    counters_.lines_unanswered = saturateBy(counters_.lines_unanswered, whole);
+    LOG_W("jobs: job %lld: %lu line(s) from %lu went unanswered twice; they may have arrived",
+          job_id, static_cast<unsigned long>(whole), static_cast<unsigned long>(from));
+  }
+  return take;
+}
+
+void FirmwareJobs::SessionLines::onStepLines(const core::update::StepReport& report) {
+  const std::size_t which = report.index > 0 && report.index <= core::update::kStepsMax
+                                ? report.index - 1
+                                : 0;
+  // The server said its room for this job is used up: the step still ran and still ended, and
+  // nothing more of it is posted (deliverable 6).
+  if (full) return;
+  std::size_t at = 0;
+  while (at < report.used) {
+    std::uint32_t count = 0;
+    bool answered = false;
+    bool is_full = false;
+    const std::size_t took = jobs_.postSomeLines(job_id_, report.lines + at, report.used - at,
+                                                 handed, &count, &answered, &is_full);
+    if (took == 0) break;
+    handed = saturateBy(handed, count);
+    lines[which] = saturateBy(lines[which], count);
+    bytes[which] = saturateBy(bytes[which], static_cast<std::uint32_t>(took));
+    if (!answered) unanswered = saturateBy(unanswered, count);
+    at += took;
+    if (is_full) {
+      full = true;
+      break;
+    }
+  }
+}
+
+// -- the journal, and the one owed across a restart ------------------------------------------------
+
+void FirmwareJobs::readSessionJournal() {
+  if (parts_.journal == nullptr) return;
+  clearLines();
+  upd::Cursor cursor;
+  upd::Entry entry;
+  std::uint32_t looked = 0;
+  bool more = parts_.journal->first(&cursor, &entry);
+  // Backwards from the newest to the entry that **opened** the session, which is the `check` one,
+  // and no further than a session may ever write (core/update/scanner_session.h). The lines are
+  // put at the front as they are read, so that lines_ ends oldest first as a result's journal is.
+  // The newest `check` is this session's: an open session is ended and never begun again, so two
+  // of them cannot overlap.
+  while (more && looked++ < upd::kEntriesPerSessionMax) {
+    upd::SessionPayload p;
+    if (entry.kind == upd::kind::kScannerSession && upd::decode(entry, &p)) {
+      char note[kJournalNoteBytes];
+      note[0] = 0;
+      const char* word = upd::name(p.stage);
+      if (p.stage == upd::Stage::kStep) {
+        const std::size_t which = p.step > 0 && p.step <= upd::kStepsMax ? p.step - 1u : 0u;
+        word = kSessionStepWords[which];
+        copyText(note, sizeof note, p.command);
+      } else if (p.stage == upd::Stage::kRoom) {
+        (void)upd::roomLine(p.room, note, sizeof note);
+      }
+      // **The journal stamps no time of its own** (core/update/journal.h: an entry is a sequence
+      // number, a kind and a payload), so the epoch every line of a session read back out of
+      // flash carries is the one the session was opened at. It is the honest value this end has
+      // after a restart; the lines of a session posted as it ran carry the moment each was
+      // written.
+      lineAtFront(word, note, p.at_epoch);
+      if (p.stage == upd::Stage::kCheck) break;  // the session's first entry
+    }
+    more = parts_.journal->previous(&cursor, &entry);
+  }
+}
+
+void FirmwareJobs::lineAtFront(const char* step, const char* note, std::uint32_t at_epoch) {
+  const std::size_t cost = std::strlen(step) + (note != nullptr ? std::strlen(note) : 0);
+  if (line_count_ >= kJournalMaxEntries || line_chars_ + cost > kJournalMaxChars) return;
+  for (int i = line_count_; i > 0; --i) lines_[i] = lines_[i - 1];
+  ++line_count_;
+  Line& l = lines_[0];
+  l.at_epoch = at_epoch;
+  l.step = step;
+  copyText(l.note, sizeof l.note, note);
+  line_chars_ += std::strlen(step) + std::strlen(l.note);
+}
+
+bool FirmwareJobs::postOwedSessionResult(const JobEntry& owed) {
+  if (parts_.journal == nullptr) return false;
+  // A session still in hand is one whose own run posts the result: this is for the session a
+  // restart left behind, which step 3 of this wake has already ended one way or the other.
+  if (parts_.session != nullptr && parts_.session->active()) return false;
+  upd::Mark mark;
+  if (!upd::readMark(*parts_.journal, &mark) || !mark.found) return false;
+  readSessionJournal();
+
+  SessionResult result;
+  // **Open means `stuck`** (the contract): the golden image did not come back - this wake tried
+  // and the next one will try again - and the server is told so rather than waiting. Closed means
+  // the repeater is back and proved, whatever became of the program.
+  result.outcome = mark.open ? SessionOutcome::kStuck : SessionOutcome::kRestored;
+  result.scanner = owed.to_version[0] != 0 ? owed.to_version : nullptr;
+  result.steps = owed.steps;
+  // `notRun` for every step, and counts of nought: the payload is gone with the RAM that held it,
+  // and what this end can vouch for is what the journal says (deliverable 9).
+  const std::size_t n = writeSessionResult(result, lines_, line_count_, data_, kDataBytes);
+  if (n == 0) return false;
+
+  char client_id[64];
+  char hash_hex[2 * upd::kHash16 + 1];
+  hexOf(owed.hash16, upd::kHash16, hash_hex);
+  std::snprintf(client_id, sizeof client_id, "%lld-session-%s", owed.job_id, hash_hex);
+  mm::JobReport report;
+  report.clientId = client_id;
+  report.outcome = result.outcome == SessionOutcome::kRestored ? mm::Outcome::Ok : mm::Outcome::Failed;
+  report.startedAt = owed.at_epoch;
+  report.finishedAt = nowEpoch();
+  report.transactions = 0;
+  report.data = data_;
+  report.log = "a session of the radio as a scanner: how it ended, posted from the journal after "
+               "the restart";
+  const std::size_t len = mm::writeJobResult(report, body_, kEnvelopeBytes);
+  if (len == 0) return false;
+  if (!server_.postJobResult(owed.job_id, body_, len)) return false;
+  counters_.owed_posted = saturate(counters_.owed_posted);
+
+  JobEntry posted = owed;
+  posted.state = JobEntryState::kPosted;
+  posted.outcome = result.outcome == SessionOutcome::kRestored ? ApplyOutcome::kCommitted
+                                                               : ApplyOutcome::kStuck;
+  posted.at_epoch = nowEpoch();
+  (void)journal(posted);
+  JobEntry ended = posted;
+  ended.state = JobEntryState::kEnded;
+  (void)journal(ended);
+  LOG_I("jobs: the session of job %lld: %s, posted from the journal after the restart", owed.job_id,
+        name(result.outcome));
+  return true;
+}
+
+// -- the job ---------------------------------------------------------------------------------------
+
+bool FirmwareJobs::refuseSession(mm::ResultWriter& out, upd::Refusal refusal, const char* note,
+                                 std::size_t steps) {
+  counters_.sessions_refused = saturate(counters_.sessions_refused);
+  line("check", note);
+  SessionResult result;
+  result.outcome = SessionOutcome::kRefused;
+  result.steps = steps;
+  // **`journal` is not one of the contract's eight words** (task p16-03's own ninth refusal): a
+  // journal that will not take the entry that opens a session is not a precondition a server can
+  // do anything about, so the outcome is `refused` with no word and the reason is the journal's
+  // `check` line - which is what an apply does with a precondition the server has no word for.
+  result.refusal = refusal == upd::Refusal::kJournal ? nullptr : upd::word(refusal);
+  const std::size_t n = writeSessionResult(result, lines_, line_count_, data_, kDataBytes);
+  if (n != 0) out.data(data_, n);
+  out.outcome(mm::Outcome::Failed);
+  return true;
+}
+
+bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm::JobContext& ctx,
+                              mm::ResultWriter& out) {
+  counters_.sessions = saturate(counters_.sessions);
+  clearLines();
+  // **The program is this call's own** (core/update/scanner_session.h, Program): the machine keeps
+  // a pointer to it for the length of the run and not a copy, and the run ends inside this call.
+  // A few hundred bytes of this frame, where six commands as .bss would be six commands the main
+  // task's stack has to be found around (rail R22).
+  upd::Program program;
+  long long slot = 0;
+  const char* why = "";
+  if (!readSessionPayload(payload, std::strlen(payload), &program, &slot, &why)) {
+    counters_.malformed = saturate(counters_.malformed);
+    ctx.log(why);
+    return refuseSession(out, upd::Refusal::kProgram, why, 0);
+  }
+  const std::size_t rows = program.count;
+  if (parts_.session == nullptr || parts_.store == nullptr) {
+    ctx.log("this build has no session machine (it needs the image store, the journal and room to "
+            "borrow)");
+    out.outcome(mm::Outcome::Failed);
+    return true;
+  }
+  // S-7 as the wake knows it, before the machine's own check, and in the same words an apply
+  // refuses it with: this firmware on trial, or an update of either MCU mid-run.
+  if (context_.on_trial) {
+    return refuseSession(out, upd::Refusal::kInProgress, "this firmware is on trial (S-7)", rows);
+  }
+  if (context_.update_running) {
+    return refuseSession(out, upd::Refusal::kInProgress,
+                         "an update is journalled as in progress (S-7)", rows);
+  }
+  // The slot the payload names has to be one this board has: a single adapter has slot 0 and
+  // nothing else, and a program for a radio that is not there is not a program this unit runs.
+  const core::board::Slot at{static_cast<std::uint8_t>(slot >= 0 && slot < 256 ? slot : 255)};
+  if (slot < 0 || !slots_.exists(at)) {
+    return refuseSession(out, upd::Refusal::kProgram,
+                         "the payload names a slot this board has not", rows);
+  }
+
+  // **The whole check, and the session open in the journal before anything is flashed** - task
+  // p16-03's `start()`, which is the one door a job may open a session by (rail R20). A refusal
+  // leaves the radio, the store and the heap exactly as they were.
+  SessionLines lines(*this, job.id);
+  if (!parts_.session->start(program, at, &lines)) {
+    const upd::Refusal refusal = parts_.session->refusal();
+    char note[kJournalNoteBytes];
+    std::snprintf(note, sizeof note, "%.70s", upd::describe(refusal));
+    parts_.session->clear();
+    return refuseSession(out, refusal, note, rows);
+  }
+
+  // **The lease before the first byte** (deliverable 4), and the wake held open for a whole
+  // session: two passes of the radio's update machine with the twenty-minute ceiling between
+  // them. The guard counts from the **boot** and this machine from here, so what the wake has
+  // already spent is asked for too (`allow()` caps it at kRaisedBoundMax and never lowers a
+  // bound), and the uplink's own deadline goes with it - every post of a line and of the journal
+  // takes what is left of it and no more, which is what keeps a server from holding the radio.
+  extendLease(job.id, ctx);
+  const std::uint64_t began = clock_.nowMs();
+  const std::uint64_t bound = began + kSessionBoundMs;
+  if (parts_.guard != nullptr) parts_.guard->allow(parts_.guard->awakeMs() + kSessionBoundMs);
+  server_.setDeadline(bound);
+  // S-7: a session is two passes of the radio's update machine, so the wake is told its one
+  // update step went (task p16-03's rail 7, `core/cycle/wake_cycle.h`'s step 9).
+  did_.asks = static_cast<std::uint8_t>(did_.asks | interfaces::askBit(interfaces::Ask::kUpdateRadio));
+  did_.carried = interfaces::Ask::kUpdateRadio;
+
+  // The scanner image this session is about to run, for the result's `scanner` and for the entry
+  // the result is owed by.
+  img::Record scanner{};
+  (void)parts_.store->read(img::Which::kScanner, at, &scanner);
+
+  // **The result is owed from here on** (deliverable 9). The scanner is about to go on, and a
+  // board that restarts between the two switches must still tell the server how it ended: the
+  // entry says which job, which slot, how many steps its payload had and which image ran, and
+  // the next boot that reaches the server posts `restored` or `stuck` from it and the session's
+  // own journal.
+  JobEntry owed;
+  owed.job_id = job.id;
+  owed.state = JobEntryState::kOwed;
+  owed.product = kProductForSession;
+  owed.slot = at.index;
+  owed.at_epoch = nowEpoch();
+  owed.steps = static_cast<std::uint8_t>(rows);
+  std::memcpy(owed.hash16, scanner.sha256, upd::kHash16);
+  shortOf(scanner.version, owed.to_version);
+  if (!journal(owed)) {
+    // The session itself is journalled as open - `start()` would not have returned true otherwise
+    // - so the repeater comes back whatever happens next. What a journal that will take no more
+    // entries costs is this one result, and the server hears that from the line below and from
+    // the job's own page when the result goes.
+    ctx.log("the journal would not take the entry a result is owed by: a restart from here would "
+            "leave this session's result untold");
+  }
+
+  // The journal's first line, and the first progress post with it (deliverable 5).
+  char note[kJournalNoteBytes];
+  if (context_.battery_known) {
+    std::snprintf(note, sizeof note, "battery %u mV, link up, clock set",
+                  static_cast<unsigned>(context_.battery_mv));
+  } else {
+    copyText(note, sizeof note, "link up, clock set");
+  }
+  line("check", note);
+  postApplyProgress(job.id);
+
+  bool bounded = false;
+  bool scanner_ran = false;
+  while (parts_.session->active()) {
+    // **The lease before the step, never inside one** (deliverable 4): a flash is one call of the
+    // flasher and a quarter of an hour, and the machine cannot come back to ask for more lease in
+    // the middle of it. `kFlashing` is the scanner image's and the golden image's alike -
+    // whichever of the two kinds the machine is running - and `kRollingBack` is the scanner run
+    // putting the golden image back by itself.
+    const upd::State state = parts_.update != nullptr ? parts_.update->state() : upd::State::kIdle;
+    if (state == upd::State::kFlashing || state == upd::State::kRollingBack) {
+      extendLease(job.id, ctx, kLeaseFlashSeconds);
+    } else if (clock_.nowMs() >= extend_due_ms_) {
+      extendLease(job.id, ctx);
+    }
+    const upd::SessionStep s = parts_.session->step();
+    if (s.changed) {
+      const upd::SessionStatus& status = parts_.session->status();
+      const char* word = upd::name(s.after);
+      note[0] = 0;
+      if (s.after == upd::Stage::kStep) {
+        const std::size_t which =
+            status.step > 0 && status.step <= upd::kStepsMax ? status.step - 1 : 0;
+        word = kSessionStepWords[which];
+        copyText(note, sizeof note, program.step[which].command);
+      } else if (s.after == upd::Stage::kRoom) {
+        // **The room's five figures, out to the server with every session** (deliverable 8): it
+        // is how 8 192 bytes gets raised from what units say rather than from a guess.
+        (void)upd::roomLine(status.room, note, sizeof note);
+      } else {
+        std::snprintf(note, sizeof note, "%.70s", s.note);
+      }
+      line(word, note);
+      postApplyProgress(job.id);
+      if (s.after == upd::Stage::kScanner) scanner_ran = true;
+    }
+    if (s.stalled) break;  // the journal would take no entry: nothing more can be done here
+    if (!parts_.session->active()) break;
+    if (clock_.nowMs() >= bound) {
+      bounded = true;
+      break;
+    }
+    if (s.waited) ctx.platform().delayMs(kSessionIdleMs);
+  }
+  did_.outside_ms += static_cast<std::uint32_t>(clock_.nowMs() - began);
+
+  if (bounded) {
+    // The bound a wake may be held open to passed with the session mid-run. No result can say
+    // what has not happened; the journal says a session is open, step 3 of the next wake ends it
+    // (task p16-03's rail 2), and the entry above is what makes that wake post the result.
+    left_leased_ = job.id;
+    ctx.log("the session ran past the bound on this wake: the journal carries it, and the result "
+            "follows from the next wake that reaches the server");
+    LOG_W("jobs: session %lld: past the wake's bound at %s", job.id,
+          upd::name(parts_.session->stage()));
+    out.outcome(mm::Outcome::Timeout);
+    return true;
+  }
+
+  const upd::SessionStatus& status = parts_.session->status();
+  SessionResult result;
+  result.outcome = status.ending == upd::Ending::kRestored ? SessionOutcome::kRestored
+                                                           : SessionOutcome::kStuck;
+  result.scanner = scanner_ran && scanner.present ? scanner.version : nullptr;
+  result.steps = rows;
+  for (std::size_t i = 0; i < rows && i < upd::kStepsMax; ++i) {
+    // How a step ended is the **machine's** record of it and not this end's; what it handed to
+    // its posts is this end's.
+    result.step[i].ended = endWord(status.step_end[i]);
+    result.step[i].lines = lines.lines[i];
+    result.step[i].bytes = lines.bytes[i];
+  }
+  result.lines = lines.handed;
+  result.lines_unanswered = lines.unanswered;
+
+  JobEntry ended = owed;
+  ended.state = JobEntryState::kEnded;
+  ended.outcome = result.outcome == SessionOutcome::kRestored ? ApplyOutcome::kCommitted
+                                                              : ApplyOutcome::kStuck;
+  ended.at_epoch = nowEpoch();
+  (void)journal(ended);
+
+  char line_text[200];
+  std::snprintf(line_text, sizeof line_text,
+                "the session ended %s: %lu line(s) posted in all, %lu of them unanswered%s",
+                name(result.outcome), static_cast<unsigned long>(result.lines),
+                static_cast<unsigned long>(result.lines_unanswered),
+                lines.full ? "; the server's room for this job was used up" : "");
+  ctx.log(line_text);
+  const std::size_t n = writeSessionResult(result, lines_, line_count_, data_, kDataBytes);
+  if (n != 0) out.data(data_, n);
+  out.outcome(result.outcome == SessionOutcome::kRestored ? mm::Outcome::Ok : mm::Outcome::Failed);
+  parts_.session->clear();
   return true;
 }
 

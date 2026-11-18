@@ -245,10 +245,18 @@ constexpr std::uint32_t kClockBoundMs = 10000;
 // whose outcome the server is not told this wake, however well the lease was held - which is the
 // one thing task p14-04 exists to stop. The minute is the heartbeat and the claim that come before
 // the apply inside the same exchange.
-constexpr std::uint32_t kBackendBoundMs = update::kWholeRunMs + 60000;
+// **And since task p16-04 the longest machine the exchange may run is a session**, not an apply:
+// `twinoak.noisescope.session` is two passes of the radio's update machine with the twenty-minute
+// ceiling between them (`update::kSessionBoundMs`, 58 min 40 s). The number above would have left
+// the library's budget out at the end of a real session - whose two flashes are a quarter of an
+// hour each - and a result made after that budget has run out is kept for the next wake, which
+// for a job leased an hour from the claim is a job the server fails while the radio is perfectly
+// well. So the bound is the session's and a minute, which is the most a wake may ask for bar
+// twenty seconds.
+constexpr std::uint32_t kBackendBoundMs = update::kSessionBoundMs + 60000;
 constexpr std::uint32_t kBackendLeastMs = 30000;
 static_assert(kBackendBoundMs <= kRaisedBoundMax, "the exchange's bound has to be one a wake may ask for");
-static_assert(kBackendBoundMs > update::kWholeRunMs,
+static_assert(kBackendBoundMs > update::kWholeRunMs && kBackendBoundMs > update::kSessionBoundMs,
               "the exchange has to outlast the longest machine it may run inside it");
 
 // Step 10. SLEEP_NOTICE, the modem down, the pads held (core/cycle/sleep.h). Fifteen seconds,

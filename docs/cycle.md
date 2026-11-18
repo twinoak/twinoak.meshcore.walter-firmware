@@ -419,7 +419,7 @@ one of them **raises the bound on the wake** rather than removing it:
 | an **apply** claimed from the server | the same machine, run to its end inside step 8 — and that end may be a **rollback**, which is the flash and the proof twice. The unit's own journal says a flash is 14 min 51 s, so a whole run is `core::update::kWholeRunMs` (task p14-04). At the thirty minutes this used to be, the bound fell in the middle of the second flash: no result could be posted and the lease was left to lapse | 38 min 40 s |
 | a **session** of the radio as a scanner **taken up out of the journal** (step 3) | a session is only ever *begun* by a person or a job, and is **ended by the next wake** whatever ended the last one — a restart, a crash, this bound, a power cut (`docs/update.md`, *A session*). So step 3 may have the golden image's whole way back in hand, and, where the session was still in its steps, the twenty-minute ceiling before it. It is the number that set `kRaisedBoundMax` | 58 min 40 s |
 | a trial | this firmware proving itself (S-6) has to finish before the wake may sleep: a deep sleep during a trial is a rollback of the image being tried. Its loop also asks the backend seam for **one more heartbeat and nothing else** while the third condition is open (task p14-05, `interfaces::Beat`): step 8's one exchange is not enough to condemn an image on, and the implementation's own wait is what paces it | 6 min |
-| a backend exchange | step 8's `exchange()` is given a whole update's deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. It is a minute longer than the apply above, for the heartbeat and the claim that come first — and it is not only the guard's business: the library is given what is left to this deadline as its wake's **budget**, and a result made after that budget has run out is kept rather than posted (task p14-04). The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 39 min 40 s |
+| a backend exchange | step 8's `exchange()` is given the longest machine's deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. It is a minute longer than the longest of them, for the heartbeat and the claim that come first — and it is not only the guard's business: the library is given what is left to this deadline as its wake's **budget**, and a result made after that budget has run out is kept rather than posted (task p14-04). Since task p16-04 the longest is a **session** and not an apply, so the number is the session's and a minute: a real session is two flashes of a quarter of an hour, and a result kept for the next wake on a job leased an hour from the claim is a job the server fails while the radio is perfectly well. The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 59 min 40 s |
 
 The time those take is **outside** the budget, because both machines are already bounded and
 capped by their own rules — and because a wake that spent six minutes on a ladder must still be
@@ -443,7 +443,10 @@ session of the radio as a scanner — the scanner image is on, the golden image 
 the golden image back and proves it, and that counts as this wake's one update step: step 9 then
 refuses the other with `one update a wake, and the other one went`, exactly as it refuses the
 second of the two MCUs. A session is never *begun* in a wake by this firmware; the two things that
-begin one are a typed `rak session` and task p16-04's job.
+begin one are a typed `rak session` and the `twinoak.noisescope.session` job. **A session the job
+began counts the same way** (task p16-04): it is two passes of the radio's update machine, so the
+exchange reports it back as the `Ask` the wake carried out — `update the radio` — and step 9
+refuses anything else.
 
 **Asks do not cross a sleep.** A refused ask is remembered and reported; the ask itself is not.
 A backend that still wants something asks again at the next wake, which is one exchange later and
@@ -578,6 +581,16 @@ the agent on the other side of that line (§13), so each of these now lives **ab
   and the store's own record settle it, and a few hundred kilobytes over a metered link are
   spared. `fetch [base-url] [candidate|scanner]` is the same thing at the console
   ([`console.md`](console.md)), for a unit somebody can reach with a cable.
+- **A session of the radio as a scanner.** `twinoak.noisescope.session` (task p16-04) is the sixth
+  type the extension answers, and it runs `core/update/scanner_session.h`'s machine *inside* the
+  exchange as an apply runs its own: the program comes out of the payload, each step's lines are
+  posted as the step hands them over (`POST /jobs/{id}/lines/{from}`, bodies of at most 8 192
+  bytes cut at a line's end), the journal goes out as progress a line at a time, and the result
+  says `restored`, `refused` or `stuck`. The seam sees it as the one ask it has words for —
+  `update the radio`, because that is what two passes of the radio's update machine are — and
+  S-7's one-update-step rule holds it to one a wake. A board that restarts in the middle owes the
+  result: the wake that ends the session posts it from the journal
+  ([`update.md`](update.md), *A session as a job*).
 - **Partial progress and lease extension.** `agent::FirmwareJobs` (task p4-05) posts `progress`
   and asks `extend` as a `twinoak.fw.offer` downloads in resumable ranges; a wake that runs out of
   download budget stops mid-image, posts no result, and the next wake resumes — into the

@@ -70,9 +70,11 @@
 
 namespace agent {
 
-// Which call it was. The seven of `mm::IUplink` in the order `docs/library.md` §4 lists them, and
-// the download range behind them. The numbers are stored, so they are not reordered: a value this
-// build has no name for reads back as `kUnknown`.
+// Which call it was. The seven of `mm::IUplink` in the order `docs/library.md` §4 lists them, the
+// download range behind them, and - task p16-04 - the post of a scanner's lines, which is this
+// firmware's own call and not the library's. The numbers are stored, so they are not reordered: a
+// value this build has no name for reads back as `kUnknown`. There is room for fifteen: the kind
+// is the low nibble of the stored entry's first byte.
 enum class CallKind : std::uint8_t {
   kUnknown = 0,
   kConfig = 1,
@@ -83,8 +85,11 @@ enum class CallKind : std::uint8_t {
   kLease = 6,
   kProgress = 7,
   kDownload = 8,
+  kLines = 9,
   kCount,
 };
+static_assert(static_cast<std::uint8_t>(CallKind::kCount) <= 16,
+              "a call kind is the low nibble of a stored entry");
 
 // One word, for the console and the report.
 const char* callKindName(CallKind what);

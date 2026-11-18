@@ -1950,6 +1950,29 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       job's page shows no progress and the bytes figure is the file's), because the slot already
       holds that file. Then an offer with `"into":"golden"`: `stored: false` with the reason and
       nothing fetched.
+- [ ] ⚠ **A session from a bench server** (task p16-04; a **bench radio**, not a mast: it costs
+      the site about forty minutes with no repeater, and the scanner image of the item above has
+      to be in the slot). Queue a `twinoak.noisescope.session` whose payload is two steps —
+      `{"slot":0,"steps":[{"command":"stat","seconds":30},{"command":"sweep","seconds":30}]}` —
+      and `agent wake`. It is the whole of task p16-03's first bench item with a server at the
+      other end, so watch the same two things *and* these:
+      **the posts and their `{from}`**, read off `agent calls` afterwards (*scanner lines* among
+      the kinds; the job's page is where the lines themselves are) — the first at `{from}` 0 and
+      the second at the count the first carried, each body the lines whole and ended with a
+      newline; **a progress line for every journal line** as it is written, `room` among them with
+      the heap's five figures; and the **result**: `restored`, the scanner's version, a row for
+      each step with how it ended and what it handed over, `lines` the two posts' counts added up
+      and `linesUnanswered` 0. `agent jobs` then says *1 session(s), 0 refused* and the line
+      count. What to bring back: **the `room` line verbatim** and **the wall-clock time of each of
+      the two flashes** from the job's page (the simulated figures are nothing like a board's),
+      and that a scanner's line is in no other place — `dump` and `journal` on the port must not
+      carry a byte of one (S-12).
+- [ ] ⚠ **The cable pulled while the radio is a scanner, with the job's result owed** (task
+      p16-04). Start the session above and pull the Walter's power while the radio is a scanner
+      (the job's page says `step-1`). Type nothing: the next wake must flash the golden image back
+      by itself and **then post the job's result** — `restored`, with `notRun` for every step and
+      counts of nought, which is what this end can vouch for after a restart. `agent jobs` before
+      that wake says *owed … a session … follows the wake that ends it*.
 - [ ] **An apply that commits.** With the offered image stored (above), queue a `twinoak.fw.apply`,
       then `agent wake`. It flashes the candidate through §9's machine, health-checks it, and the
       result is `committed`; `rak status` shows the radio on the new version. One update step this
@@ -2839,7 +2862,7 @@ how long each step really takes.
 | `kUplinkBoundMs` | `kWakeBudgetMs` | |
 | `kUplinkLeastMs` | `20000` | |
 | `kClockBoundMs` | `10000` | |
-| `kBackendBoundMs` | `kUpdateBoundMs` | |
+| `kBackendBoundMs` | `update::kSessionBoundMs + 60000` | |
 | `kBackendLeastMs` | `30000` | |
 | `kSleepBoundMs` | `15000` | |
 | `kClockSkewS` | `60` | |

@@ -535,7 +535,9 @@ TEST_CASE("the heartbeat advertises twinoak.report, and the four others are unch
                            agent::kPowerCycleType, agent::kReportType}) {
     CHECK(has(body, std::string("\"") + type + "\""));
   }
-  CHECK(bench.half().firmware.typeCount() == 5);
+  // Six since task p16-04, whose own test holds the sixth; this one holds that the five before it
+  // are where they were, because the server routes by the names in this array.
+  CHECK(bench.half().firmware.typeCount() == 6);
   CHECK(std::string(bench.half().firmware.type(4)) == agent::kReportType);
 }
 

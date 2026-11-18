@@ -74,6 +74,7 @@
 #include "core/update/fetch.h"
 #include "core/update/journal.h"
 #include "core/update/radio_update.h"
+#include "core/update/scanner_session.h"
 #include "core/update/self_update.h"
 #include "interfaces/backend.h"
 #include "interfaces/clock.h"
@@ -84,14 +85,18 @@ namespace agent {
 
 namespace lc = core::link::client;
 
-// The five types, as meshmaster.dk's `JobTypes` spells them, and the two products.
+// The six types, as meshmaster.dk's `JobTypes` spells them, and the two products.
 constexpr const char kOfferType[] = "twinoak.fw.offer";
 constexpr const char kApplyType[] = "twinoak.fw.apply";
 constexpr const char kStateType[] = "twinoak.fw.state";
 constexpr const char kPowerCycleType[] = "twinoak.power.cycle";
 // What the unit says about itself (task p13-01): the console's own lines by section, read only.
 constexpr const char kReportType[] = "twinoak.report";
-constexpr int kFirmwareJobTypes = 5;
+// A session of the radio as a scanner (task p16-04): the scanner image, a program of steps whose
+// lines are posted as they come, and the golden image back - `core/update/scanner_session.h`'s
+// machine, which `rak session` is the other door of.
+constexpr const char kSessionType[] = "twinoak.noisescope.session";
+constexpr int kFirmwareJobTypes = 6;
 static_assert(kFirmwareJobTypes <= mm::kMaxExtensionTypes,
               "the heartbeat carries at most kMaxExtensionTypes extension types");
 constexpr const char kProductRepeater[] = "twinoak-repeater-firmware";
@@ -127,7 +132,29 @@ constexpr std::uint32_t kProgressEveryBytes = 2 * 64 * 1024;
 // truncates to this, and the server flags a row that carried more.
 constexpr int kJournalMaxEntries = 40;
 constexpr std::size_t kJournalMaxChars = 2000;
+// A note of 72 bytes, which is also exactly what a session's `room` line needs
+// (core::update::kRoomLineMax), so that the heap's five figures reach the server whole.
 constexpr std::size_t kJournalNoteBytes = 72;
+static_assert(kJournalNoteBytes >= core::update::kRoomLineMax,
+              "a session's room line has to fit a journal note");
+
+// One line of the journal a result and a progress report carry, as this object keeps it. At
+// namespace scope and not inside the class, so that the writer below can be given an array of
+// them by a test with the contract fixture's own values in it (task p16-04).
+//
+// `step` is a **pointer** and not a copy: every step word this firmware writes is static text
+// (`stepWord`, `kSessionStepWords`, the stage names of core/update/), and forty copies of a word
+// would be .bss the main task's stack has to be found around (rail R22).
+struct JobJournalLine {
+  std::uint32_t at_epoch = 0;
+  const char* step = "";
+  char note[kJournalNoteBytes] = {};
+};
+
+// The `journal` array of a result or a progress report, written once: an apply's and a session's
+// are the same shape, and a reader who followed a job live must not see the story change when it
+// finished.
+void writeJournalLines(mm::JsonWriter& w, const JobJournalLine* lines, int count);
 
 // The result's data buffer: a state result is some 700 bytes and an apply's journal at its bound
 // a little over 2 kB with its envelope; 4 kB holds both with room, inside the library's own 8 kB.
@@ -183,6 +210,74 @@ constexpr std::uint32_t kApplyBoundMs = core::update::kWholeRunMs;
 static_assert(kApplyBoundMs <= core::cycle::kRaisedBoundMax,
               "an apply's bound has to be one a wake may ask for");
 
+// -- a session as a job (task p16-04) ------------------------------------------------------------
+//
+// `twinoak.noisescope.session` is `core/update/scanner_session.h`'s machine driven by a claimed
+// job instead of by a typed command: the program comes out of the payload, each step's lines are
+// posted as the step hands them over, the journal goes out as progress a line at a time, and the
+// result says how it ended. **Nothing of the session is decided here** - the machine checks, the
+// machine flashes, the machine ends - and nothing of a scanner's line is kept, logged or
+// journalled by this end (S-12): it goes into a post and nowhere else.
+
+// The slices a session is driven in, and what the wake is held open for while it runs: the
+// machine's own listening idle and two passes of the radio's update machine with the twenty-minute
+// ceiling between them (`core::update::kSessionBoundMs`, 58 min 40 s - the number that set
+// `core/cycle/wake_guard.h`'s ceiling).
+constexpr std::uint32_t kSessionIdleMs = core::update::kListenIdleMs;
+constexpr std::uint32_t kSessionBoundMs = core::update::kSessionBoundMs;
+static_assert(kSessionBoundMs <= core::cycle::kRaisedBoundMax,
+              "a session's bound has to be one a wake may ask for");
+
+// The most one post of a scanner's lines carries, as the contract bounds it. A step's lines are
+// cut into bodies of at most this, **at a line's end**, so that every line the server holds is a
+// line the scanner sent whole. One room of 8 192 bytes is one body; the 64 kB of PSRAM task p16-05
+// gives a step is eight.
+constexpr std::size_t kLinesPostBytes = 8192;
+
+// `NoiseScopeStepEndings`: how a step ended, in the contract's words - the machine's own five
+// (`core::update::name`) and the sixth that is this end's, a step the session ended before. Not
+// an overload of `name()`: the argument's namespace is `core::update`, so a call would find that
+// one too and neither would win.
+constexpr const char kStepNotRun[] = "notRun";
+const char* endWord(core::update::StepEnd end);
+
+// The result's `outcome`: the three ways a session ends (`NoiseScopeSessionOutcomes`).
+enum class SessionOutcome : std::uint8_t { kNone = 0, kRestored = 1, kRefused = 2, kStuck = 3 };
+const char* name(SessionOutcome outcome);
+
+// One row of the result's `steps`, as `NoiseScopeStepResult.json` has it: how the step ended, and
+// what it handed to its posts.
+struct SessionStepResult {
+  const char* ended = kStepNotRun;
+  std::uint32_t lines = 0;
+  std::uint32_t bytes = 0;
+};
+
+// The whole result, as `NoiseScopeSessionResult.json` has it, member for member and in its order.
+// `scanner` and `refusal` are left out when they are null or empty, as the contract says.
+struct SessionResult {
+  SessionOutcome outcome = SessionOutcome::kNone;
+  const char* scanner = nullptr;   // the version of the scanner image that ran
+  SessionStepResult step[core::update::kStepsMax];
+  std::size_t steps = 0;           // one for every step of the payload, in order
+  std::uint32_t lines = 0;         // what the unit handed to posts in all
+  std::uint32_t lines_unanswered = 0;  // ... and of those, the ones in posts nothing answered
+  const char* refusal = nullptr;   // one of the session's own words; absent unless refused
+};
+
+// The result into `out`; the length, or 0 when it did not fit. A free function with the journal
+// passed in, so that a test can write the contract fixture's own values and compare the bytes
+// (host_test/agent/test_a_session_is_a_job.cpp).
+std::size_t writeSessionResult(const SessionResult& result, const JobJournalLine* journal,
+                               int journal_count, char* out, std::size_t cap);
+
+// The payload into a program, by task p16-03's own rules (`core::update::judge`): the slot and one
+// to six steps. False when it is not a program this firmware will run - too many steps, a command
+// that is not a measuring one, seconds outside their bounds, a payload the claim could not keep -
+// and `why` is then the one phrase that says which rule, for the journal's `check` line.
+bool readSessionPayload(const char* payload, std::size_t len, core::update::Program* program,
+                        long long* slot, const char** why);
+
 // -- the words of the result shapes --------------------------------------------------------------
 
 // `FirmwareApplyOutcomes`: the four ways an apply ends.
@@ -213,11 +308,15 @@ const char* stepWord(core::update::State state);
 // -- the journal entry: kind::kAgentJob, 48 bytes ------------------------------------------------
 //
 //    0  job_id      i64   the server's job id
-//    8  state       u8    kOwed: a Walter apply switched and the result is owed to the next boot;
-//                         kPosted: the owed result went; kEnded: an apply ended, for `state`'s
-//                         lastUpdate
-//    9  outcome     u8    an ApplyOutcome (kEnded and kPosted)
-//   10  product     u8    0 the radio's, 1 the Walter's
+//    8  state       u8    kOwed: a Walter apply switched, or a session was opened, and the result
+//                         is owed to the next boot; kPosted: the owed result went; kEnded: an
+//                         apply or a session ended, for `state`'s lastUpdate
+//    9  outcome     u8    an ApplyOutcome (kEnded and kPosted). **A session's three outcomes are
+//                         carried in the same byte** (task p16-04): `restored` is kCommitted,
+//                         `stuck` is kStuck and `refused` is kRefused, and nothing but this
+//                         object's own log line reads it back for a session - the result's word
+//                         is written from the journal's session mark, not from here
+//   10  product     u8    0 the radio's, 1 the Walter's, 2 a session of the radio as a scanner
 //   11  slot        u8
 //   12  at_epoch    u32   0 when the unit had no time of day
 //   16  hash16      16 B  the first sixteen bytes of the image's SHA-256
@@ -234,7 +333,16 @@ struct JobEntry {
   std::uint32_t at_epoch = 0;
   std::uint8_t hash16[core::update::kHash16] = {};
   char to_version[core::update::kShortVersion] = {};
+  // A session's payload had this many steps (task p16-04), in the first spare byte: a result
+  // posted after a restart has no payload to count them from, and the contract wants a row for
+  // every step. 0 on an apply's entry and on every entry written before that task.
+  std::uint8_t steps = 0;
 };
+
+// The `product` byte's three values, for the entries this object writes and reads back.
+constexpr std::uint8_t kProductForRadio = 0;
+constexpr std::uint8_t kProductForWalter = 1;
+constexpr std::uint8_t kProductForSession = 2;
 
 constexpr std::size_t kJobEntryBytes = 48;
 static_assert(kJobEntryBytes <= core::update::kPayloadMax, "the entry has to fit a journal payload");
@@ -309,6 +417,13 @@ struct FirmwareJobCounters {
   // p11-01, where .bss that moved the agent's 20 kB scratch into another heap left the main task
   // 216 bytes. After `malformed` it is free.
   std::uint32_t progress_refused = 0;    // a progress call the server would not take, or did not answer
+  // A session as a job (task p16-04). **Here at the end, and in fours**: the `std::uint64_t`
+  // above means a member added before it costs eight bytes of .bss rather than four, and an odd
+  // number of members after it costs four at the end of the structure.
+  std::uint32_t sessions = 0;            // `twinoak.noisescope.session`: ones begun
+  std::uint32_t sessions_refused = 0;    // ... and ones refused before the radio was touched
+  std::uint32_t lines_posted = 0;        // lines of a scanner handed to a post
+  std::uint32_t lines_unanswered = 0;    // ... of those, the ones in posts nothing answered
 };
 
 class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
@@ -328,6 +443,12 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
     // core/console/report_source.h. Null in a build with no console - every host test but the
     // report's own - and the job then answers `failed` in one sentence.
     core::console::ReportSource* report = nullptr;
+    // A session of the radio as a scanner (task p16-04): **the same object the wake cycle is
+    // given**, which is what makes "one a wake" and "an open one is ended, never begun again"
+    // true of a job and of a typed command together. Null in a build with no store, no journal or
+    // no update machine - every host test but this job's own - and the job then answers `failed`
+    // in one sentence. Rail R20 holds `start()` to this caller and the console's verb.
+    core::update::ScannerSession* session = nullptr;
   };
 
   FirmwareJobs(const Parts& parts, core::board::RadioPins& pins, core::board::SlotLock& slots,
@@ -345,9 +466,11 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   const Did& did() const { return did_; }
 
   // After the loop's wake, when the heartbeat was answered: the result owed for a Walter apply
-  // whose trial has ended since, posted from the journal. True when one went.
+  // whose trial has ended since, or for **a session this board restarted in the middle of** (task
+  // p16-04), posted from the journal. True when one went.
   bool postOwedResult();
-  // Whether a result is owed at all (a Walter apply switched and not yet reported).
+  // Whether a result is owed at all (a Walter apply switched, or a session was opened, and
+  // neither has been reported).
   bool resultOwed(JobEntry* out = nullptr) const;
   // ... and whether the trial it belongs to has **ended**, so the next answered heartbeat can
   // carry it (task p14-05). True at the boot of the old image after a rollback and at the boot
@@ -355,8 +478,11 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   // what makes that boot's first wake one this firmware will not hold a wait against: a result
   // the server is waiting for is the one thing a boot after a restart has to say.
   bool owedResultDue() const;
-  // The last apply that ended, for `state`'s lastUpdate; false when none has.
-  bool lastEnded(JobEntry* out) const;
+  // The last job of this product that ended, for `state`'s lastUpdate; false when none has. The
+  // product is asked for (task p16-04) because the entries of all three share one kind: without
+  // it a session, whose entry is the newest, would hide the radio's last update from
+  // `twinoak.fw.state`.
+  bool lastEnded(JobEntry* out, std::uint8_t product = kProductForRadio) const;
 
   // ------------------------------------------------------------------ mm::IJobExtension
   int typeCount() const override { return kFirmwareJobTypes; }
@@ -372,10 +498,32 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   int journalLines() const { return line_count_; }
 
  private:
-  struct Line {
-    std::uint32_t at_epoch = 0;
-    const char* step = "";
-    char note[kJournalNoteBytes] = {};
+  using Line = JobJournalLine;
+
+  // **Where a step's lines go** (task p16-04): the session hands each step's lines over the
+  // moment the step ends, and this posts them - in bodies of at most kLinesPostBytes, cut at a
+  // line's end - before the next step begins. It is a **local of the job's own call** and not a
+  // member: everything it keeps is wanted only while the session runs and once more for the
+  // result, and every byte of this object is .bss the main task's stack has to be found around
+  // (rail R22). Nothing of a line is copied into it (S-12): the room is read where it lies and
+  // posted from there.
+  class SessionLines final : public core::update::SessionSink {
+   public:
+    SessionLines(FirmwareJobs& jobs, long long job_id) : jobs_(jobs), job_id_(job_id) {}
+
+    void onStepLines(const core::update::StepReport& report) override;
+
+    // What the result reads off it afterwards.
+    std::uint32_t handed = 0;      // lines handed to posts, which is what the next `{from}` is
+    std::uint32_t unanswered = 0;  // ... of those, the ones in posts nothing answered
+    bool full = false;             // the server said its room for this job is used up
+    std::uint32_t lines[core::update::kStepsMax] = {};
+    std::uint32_t bytes[core::update::kStepsMax] = {};
+    core::update::StepEnd end[core::update::kStepsMax] = {};
+
+   private:
+    FirmwareJobs& jobs_;
+    long long job_id_;
   };
 
   bool runOffer(const mm::ClaimedJob& job, const char* payload, mm::JobContext& ctx, mm::ResultWriter& out);
@@ -387,6 +535,26 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   // The console's own lines by section (task p13-01), into the shared result buffer. The length,
   // or 0 when the payload named no sections at all.
   bool runReport(const mm::ClaimedJob& job, const char* payload, mm::JobContext& ctx, mm::ResultWriter& out);
+  // A session of the radio as a scanner (task p16-04): the program out of the payload, task
+  // p16-03's machine driven in slices inside this wake, the lines posted step by step, the
+  // journal posted as it is written, and the result.
+  bool runSession(const mm::ClaimedJob& job, const char* payload, mm::JobContext& ctx, mm::ResultWriter& out);
+  // One refused session: the word, the `check` line and the result, with nothing touched.
+  bool refuseSession(mm::ResultWriter& out, core::update::Refusal refusal, const char* note,
+                     std::size_t steps);
+  // A session's result owed to a later boot (deliverable 9), posted from the journal: `restored`
+  // or `stuck` by what the session mark says now, the session's own entries as the journal, and
+  // `notRun` for every step this end cannot vouch for.
+  bool postOwedSessionResult(const JobEntry& owed);
+  // The session's journal entries, back to the one that opened it, into lines_: the stages as the
+  // journal wrote them, a step's command as its note, the `room` line as the room entry's.
+  void readSessionJournal();
+  // One post of a scanner's lines: at most kLinesPostBytes, cut at a line's end, sent once more
+  // when nothing answers. Answers the **bytes** it took of `lines`, with `*count` the whole lines
+  // in them; `*answered` is false when neither try was answered, and `*full` is what the server
+  // said about its room. 0 when there was nothing to post.
+  std::size_t postSomeLines(long long job_id, const char* lines, std::size_t len,
+                            std::uint32_t from, std::uint32_t* count, bool* answered, bool* full);
 
   // The result shapes, into data_; the length, or 0 when it did not fit.
   std::size_t writeOfferResult(bool stored, const char* image_id, const char* sha256_hex, std::uint64_t bytes,
@@ -406,7 +574,13 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   void writeJournal(mm::JsonWriter& w);
   // One line of the apply's journal, bounded to the shape.
   void line(const char* step, const char* note);
-  // **The journal as it is written** (task p14-04, the contract in tasks/phase-14/04): one
+  // One line at the **front**, with the epoch given rather than read off the clock: a session
+  // read back out of the journal is read newest first, and a result's journal is oldest first
+  // (task p16-04). Bounded as `line()` is, and it drops rather than replacing - what a backwards
+  // walk would drop is the oldest, which is the end to lose.
+  void lineAtFront(const char* step, const char* note, std::uint32_t at_epoch);
+  // **The journal as it is written** (task p14-04, the contract in tasks/phase-14/04; and a
+  // session's journal through the same call, task p16-04): one
   // `POST /agent/v1/jobs/{id}/progress` per journal line of a radio's apply, carrying the lines
   // written so far and the newest one's step as the note - so that the job's page says *flashing
   // since 15:03* instead of *nothing has come back yet* for a quarter of an hour. Called between

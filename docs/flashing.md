@@ -168,8 +168,10 @@ Before pressing anything, three facts about the file:
   wake starts the file again from zero*, and the line the cable shows ends *the next wake starts the
   file again from zero* where a radio image's ends *the next wake continues it* (task p10-04; up to
   v0.1.2 both promised a resume, which was true of a radio image and false of this one). In
-  practice it fits: the exchange is given **39 min 40 s** (`kBackendBoundMs`, which task p14-04
-  lengthened from twenty minutes so that an apply that rolls back can still post its result) and a
+  practice it fits: the exchange is given **59 min 40 s** (`kBackendBoundMs`, which task p14-04
+  lengthened from twenty minutes so that an apply that rolls back can still post its result, and
+  task p16-04 lengthened again to the bound of a session of the radio as a scanner — the longest
+  machine the exchange may now run inside itself) and a
   megabyte a wake (`kWakeDownloadBytes`), and the application is **780 528 bytes** in **twelve
   64 kB ranges**
   (the last one 58 kB), each its own request with its own deadline and three attempts. A range that
