@@ -448,9 +448,11 @@ The interval is step 5's (`docs/power.md`). It is **shortened to five minutes wh
 half done and the band is `plenty`**, so that a release arrives in a morning rather than in a day —
 and **never in `saving` or `critical`**, where the wakes are what the pack can pay for.
 
-*Half done* is the candidate slot answering **a transfer at X of Y with X neither 0 nor Y** — the
-store's own progress markers, and only where no record has ever stood over them
-(`ARCHITECTURE.md` §6). Until task p15-01 a committed radio update left those markers readable in
+*Half done* is **either downloadable slot** — the candidate's or the scanner image's, which an
+offer with `into: scanner` fills by the same ranges — answering **a transfer at X of Y with X
+neither 0 nor Y**: the store's own progress markers, and only where no record has ever stood over
+them (`ARCHITECTURE.md` §6). The golden image is never downloaded into and the base is `rak
+provision`'s, so neither is asked about. Until task p15-01 a committed radio update left those markers readable in
 the area the old golden image had been in, so a unit shortened **every** sleep from its first
 update on: 15 minutes became 5 minutes 40 seconds, and three wakes a quarter-hour where there
 should have been one. The journal's wake line says `the sleep was shortened` when it happens, and
@@ -557,9 +559,21 @@ the agent on the other side of that line (§13), so each of these now lives **ab
   meshmaster.dk's, carried over `agent::ModemUplink` (task p4-03). When a firmware job runs one of
   this firmware's update machines, the exchange reports it back as the `Ask` the wake *carried out
   itself* (`BackendAnswer::did`/`carried`), so S-7 and the journal see it like any other update.
+- **Which slot an offer fills.** `twinoak.fw.offer`'s payload carries `into` (task p16-02):
+  left out or `candidate` it is the offer it always was, and `scanner` sends the same fetch into
+  the **scanner slot**, where the manifest's image whose role is *scanner* is the one chosen for
+  the board and the band. Everything else is unchanged — the manifest and its signature, the six
+  checks, the ranges, the progress, the lease, and a download taken up again at the next wake.
+  A word that is neither, and `scanner` for the Walter's own product, are answered
+  `stored: false` with a reason and nothing is fetched. A slot that already holds the offered
+  file, verified, is answered `stored` without a single range asked for: the hash in the payload
+  and the store's own record settle it, and a few hundred kilobytes over a metered link are
+  spared. `fetch [base-url] [candidate|scanner]` is the same thing at the console
+  ([`console.md`](console.md)), for a unit somebody can reach with a cable.
 - **Partial progress and lease extension.** `agent::FirmwareJobs` (task p4-05) posts `progress`
   and asks `extend` as a `twinoak.fw.offer` downloads in resumable ranges; a wake that runs out of
-  download budget stops mid-image, posts no result, and the next wake resumes. This is
+  download budget stops mid-image, posts no result, and the next wake resumes — into the
+  candidate slot or the scanner's, whichever the offer named. This is
   `spec/proposals/02`'s shape, now built — for a **radio** image. The Walter's own slot keeps no
   progress record and is erased when a write opens on it, so there the next wake starts the file
   again from zero, which is what that branch's messages now say (task p10-04;

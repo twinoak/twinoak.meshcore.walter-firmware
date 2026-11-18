@@ -954,7 +954,14 @@ def rail_token_one_host(r):
 # What components/agent/ may ask the image store for: reading, and the bad list. Everything that
 # writes - a sector erased, a record committed - takes a token of the verdict (R5), and the only
 # thing that makes one is the six checks of spec/FIRMWARE-MANIFEST.md §5, inside core/update/Fetch.
-STORE_READS = ("read", "isBad", "begin", "records", "badCount")
+#
+# `verify` is on this list from task p16-02, and it is a read: `Store::verify` is a const method
+# that reads an area back and compares its SHA-256 with the record's (core/image/store.h). It
+# cannot erase, write or commit anything, and it cannot make an image out of bytes - it can only
+# say that bytes which already passed the six checks still hash to what the record promised. The
+# offer asks it before answering `stored` to a release it already holds, so that a slot whose
+# bytes have rotted is downloaded again rather than promised to the server.
+STORE_READS = ("read", "isBad", "begin", "records", "badCount", "verify")
 
 
 def rail_server_chooses_nothing(r):

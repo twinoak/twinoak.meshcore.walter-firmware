@@ -1902,6 +1902,17 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       manifest's SHA-256, which `agent jobs` shows in the `stored` result. **If the hash is wrong
       after a resume**, a range boundary is off by a byte and nothing before the rig could have
       shown it; stop and report it.
+- [ ] **An offer into the scanner slot** (task p16-02; needs a release with a scanner image for
+      this board and band). Note what `image list` says the candidate is first — its version and
+      its hash. Then queue a `twinoak.fw.offer` whose payload carries `"into":"scanner"` and
+      `agent wake`. Expected: the job answers `stored` with `imageId`
+      `scanner.rak4630-single.868`, `image list` now names the scanner image, and **the candidate
+      is the line it was, character for character** — the one thing to read by eye, because a
+      scanner offer that moved the candidate would take the radio's next update with it. Queue the
+      same offer again and wake: it answers `stored` at once, with **no range asked for** (the
+      job's page shows no progress and the bytes figure is the file's), because the slot already
+      holds that file. Then an offer with `"into":"golden"`: `stored: false` with the reason and
+      nothing fetched.
 - [ ] **An apply that commits.** With the offered image stored (above), queue a `twinoak.fw.apply`,
       then `agent wake`. It flashes the candidate through §9's machine, health-checks it, and the
       result is `committed`; `rak status` shows the radio on the new version. One update step this

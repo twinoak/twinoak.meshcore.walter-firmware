@@ -612,6 +612,33 @@ sentence is what a `twinoak.fw.offer` posts as its `reason`, what the console's 
 `http get` print and what the job's log carries. A `detail` that holds the request's own token is
 dropped whole rather than trimmed.
 
+## Which slot a download fills (task p16-02)
+
+A radio's download goes into one of the slot's **two downloadable images**, and the caller says
+which. The golden image is reached by a promotion and never by a fetch, and the base is `rak
+provision`'s.
+
+| who asks | how it says which |
+|---|---|
+| the console | `fetch [base-url] [candidate\|scanner]` — the word after the URL ([`console.md`](console.md)) |
+| meshmaster.dk | `twinoak.fw.offer`'s `into`: left out or `candidate`, or `scanner` |
+
+The *role* follows the slot and nothing else: a fetch into the candidate chooses the manifest's
+image whose role is `repeater`, and one into the scanner slot the image whose role is `scanner`,
+each for this board and the band the slot already holds (`core/image/receive.cpp`). So a release
+with no scanner image for this board and band is refused at **check 3**, with the reason, and
+nothing is stored. A word in `into` that is neither, and `scanner` offered for the Walter's own
+product — which has no scanner slot — are answered `stored: false` with a reason before a single
+request goes out.
+
+Both slots keep a download's progress the same way, so a wake whose budget ends a scanner
+image's download posts no result, leaves the bytes and the store's progress record, has the next
+sleep shortened in `plenty` and is taken up again by the next wake's claim of the same job
+([`cycle.md`](cycle.md)). And a slot that **already holds the offered file**, its bytes read back
+and hashed, is answered `stored` with no range asked for at all: the server's `expectedSha256`
+and the store's own record settle it, and on a metered link that is the difference between a few
+hundred kilobytes and none.
+
 ## What is not here
 
 Downloading the image (phase 3's uplink; today `walterctl.py push --as self`), deciding when to

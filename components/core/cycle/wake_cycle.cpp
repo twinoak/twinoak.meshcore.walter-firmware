@@ -1283,10 +1283,19 @@ void WakeCycle::stepSleep() {
   // more wakes of a pack that can pay for them.
   std::uint32_t seconds = pass_.interval_s;
   if (pass_.band == power::Band::kPlenty && store_ != nullptr) {
-    image::Record record{};
-    const bool half =
-        store_->read(image::Which::kCandidate, radio_.slot(), &record) == image::StoreError::kNone &&
-        record.transfer && record.transferred != 0 && record.transferred < record.transfer_size;
+    // **Either of the two slots a download may be into** (task p16-02): the candidate's, and the
+    // scanner image's, which an offer with `into: scanner` fills by the same ranges and the same
+    // progress record. A half-fetched scanner image is a download the next wake continues too,
+    // and it is worth the same few extra wakes of a pack that can pay for them. The golden image
+    // is never downloaded into and the base is `rak provision`'s, so neither is asked about.
+    const image::Which downloads[] = {image::Which::kCandidate, image::Which::kScanner};
+    bool half = false;
+    for (image::Which which : downloads) {
+      image::Record record{};
+      half = half ||
+             (store_->read(which, radio_.slot(), &record) == image::StoreError::kNone &&
+              record.transfer && record.transferred != 0 && record.transferred < record.transfer_size);
+    }
     if (half && kDownloadMinutes * 60u < seconds) {
       seconds = kDownloadMinutes * 60u;
       pass_.shortened = true;

@@ -395,6 +395,46 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
     out.outcome(mm::Outcome::Failed);
     return true;
   }
+
+  // **Which of the slot's images the file goes into** (task p16-02): `into`, the one member the
+  // payload gained. Left out it is the candidate, so an offer of today is byte for byte what it
+  // was; `"scanner"` sends the same fetch into the scanner slot, where the manifest's image whose
+  // role is *scanner* is the one chosen for the board and the band (core/image/receive.cpp's
+  // `roleFor`). Everything else about the offer is unchanged: the manifest and its signature, the
+  // six checks, the ranges, the progress, the lease, and a download taken up again at the next
+  // wake. A unit on a mast has no console, and `fetch scanner` is the console's: without this
+  // member such a unit can never hold a scanner image at all.
+  //
+  // `json::text` answers false for a word longer than the buffer as well as for a member that is
+  // not a string, so the member is asked for first and the word only then - otherwise
+  // `"into":"something-very-long"` would read as *absent* and quietly fill the candidate.
+  img::Which into = img::Which::kCandidate;
+  const json::Value into_value = json::member(payload, plen, "into");
+  if (into_value.found()) {
+    char word[16] = {};
+    const bool read = json::text(into_value, word, sizeof word) && img::whichFromName(word, &into);
+    // `whichFromName` knows all four, and only two of them are an offer's: the golden image is
+    // reached by a promotion and the base by `rak provision`, never by a download.
+    if (!read || (into != img::Which::kCandidate && into != img::Which::kScanner)) {
+      counters_.offers_refused = saturate(counters_.offers_refused);
+      const std::size_t n = writeOfferResult(
+          false, nullptr, nullptr, 0, 0,
+          "`into` names neither the candidate nor the scanner image of the slot", false);
+      if (n != 0) out.data(data_, n);
+      out.outcome(mm::Outcome::Failed);
+      return true;
+    }
+    if (into == img::Which::kScanner && walter) {
+      counters_.offers_refused = saturate(counters_.offers_refused);
+      const std::size_t n = writeOfferResult(
+          false, nullptr, nullptr, 0, 0,
+          "the scanner image is the radio's; this unit's own firmware has no scanner slot", false);
+      if (n != 0) out.data(data_, n);
+      out.outcome(mm::Outcome::Failed);
+      return true;
+    }
+  }
+  const bool scanner = into == img::Which::kScanner;
   if (parts_.fetch == nullptr || parts_.store == nullptr || (walter && parts_.self == nullptr)) {
     const std::size_t n = writeOfferResult(false, nullptr, nullptr, 0, 0, "this build has no image store to fetch into", false);
     if (n != 0) out.data(data_, n);
@@ -428,6 +468,48 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
     return true;
   }
 
+  // **Stored already** (task p16-02). The slot may hold this very file: a result that never
+  // reached the server, a release offered to the unit twice, or - the case this task makes
+  // common - the scanner image, which meshmaster.dk offers to every unit that advertises a
+  // session and which a unit that has one would otherwise fetch again at every offer. A few
+  // hundred kilobytes over a metered link, for bytes that are already in the flash.
+  //
+  // What it is keyed on is `expectedSha256`, the one thing in the payload that names a **file**
+  // rather than a release, together with the record's own: a record is written only by commit(),
+  // which takes the token of all six checks, so a present record whose hash is the server's is
+  // that file, stored and judged. `verify()` reads the area back and hashes it before the
+  // promise is made, so a bit that has rotted since is a download and not a lie. A payload that
+  // names no hash skips nothing and is fetched as it always was.
+  if (!walter && expected_hex[0] != 0) {
+    img::Record held{};
+    char hex[2 * img::kSha256Size + 1];
+    if (parts_.store->read(into, radio_.slot(), &held) == img::StoreError::kNone && held.present) {
+      hexOf(held.sha256, img::kSha256Size, hex);
+      const bool same = std::strcmp(expected_hex, hex) == 0;
+      if (same && parts_.store->verify(into, radio_.slot()) == img::StoreError::kNone) {
+        counters_.offers_stored = saturate(counters_.offers_stored);
+        // `<role>.<board>.<band>`, which is what a manifest's own `id` is
+        // (spec/FIRMWARE-MANIFEST.md §4) - the record keeps the three words and not the id.
+        char image_id[64];
+        const char* role = img::role_name(held.descriptor.role);
+        std::snprintf(image_id, sizeof image_id, "%s.%s.%s", role != nullptr ? role : "unknown",
+                      held.descriptor.board, held.descriptor.band);
+        char line[200];
+        std::snprintf(line, sizeof line, "the %s slot already holds %s %s, %lu bytes: nothing fetched",
+                      img::name(into), image_id, held.version, static_cast<unsigned long>(held.size));
+        ctx.log(line);
+        // The ask was carried out - the release the server named is in the slot - and it took no
+        // time outside, which is the whole point of the answer.
+        did_.asks = static_cast<std::uint8_t>(did_.asks | interfaces::askBit(interfaces::Ask::kFetchRelease));
+        if (did_.carried == interfaces::Ask::kNothing) did_.carried = interfaces::Ask::kFetchRelease;
+        const std::size_t n = writeOfferResult(true, image_id, hex, held.size, 0, nullptr, false);
+        if (n != 0) out.data(data_, n);
+        out.outcome(mm::Outcome::Ok);
+        return true;
+      }
+    }
+  }
+
   // What this wake may spend on it: the time to the wake's deadline, and the whole of a radio
   // image in bytes. The lease first: a download is long.
   core::net::Budget budget;
@@ -436,11 +518,13 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
   if (context_.download_bytes != 0) budget.bytes = context_.download_bytes;
   extendLease(job.id, ctx);
 
-  // Resumed: the store (or the slot) holds bytes of this very file from an earlier wake.
+  // Resumed: the store (or the slot) holds bytes of this very file from an earlier wake. The
+  // scanner slot keeps its progress the way the candidate's does - they are two areas of the same
+  // store - so this reads the slot the offer is for and nothing else (task p16-02).
   std::uint32_t held_before = 0;
   if (!walter) {
     img::Record record{};
-    if (parts_.store->read(img::Which::kCandidate, radio_.slot(), &record) == img::StoreError::kNone &&
+    if (parts_.store->read(into, radio_.slot(), &record) == img::StoreError::kNone &&
         !record.present && record.transfer) {
       held_before = record.transferred;
     }
@@ -451,8 +535,7 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
   const char* token = bearer();
   const upd::FetchResult r =
       walter ? parts_.fetch->runInto(base_url_, *parts_.self, budget, token, kFilesDir, &listener)
-             : parts_.fetch->run(base_url_, img::Which::kCandidate, radio_.slot(), budget, token, kFilesDir,
-                                 &listener);
+             : parts_.fetch->run(base_url_, into, radio_.slot(), budget, token, kFilesDir, &listener);
   wipeBearer();
   // **The eighth call this unit makes to that server**, into the same list as the seven of the
   // uplink (task p13-02, walter_agent/call_log.h). It is recorded here and not in `core/net/` for
@@ -492,8 +575,8 @@ bool FirmwareJobs::runOffer(const mm::ClaimedJob& job, const char* payload, mm::
         ctx.log("the file the manifest chose is not the one the server expected; a different choice is not a refusal");
       }
       std::snprintf(line_text, sizeof line_text, "stored %s %s as the %s, %lu bytes%s", r.image_id, r.version,
-                    walter ? "other slot's image" : "candidate", static_cast<unsigned long>(bytes),
-                    resumed ? " (resumed)" : "");
+                    walter ? "other slot's image" : (scanner ? "scanner image" : "candidate"),
+                    static_cast<unsigned long>(bytes), resumed ? " (resumed)" : "");
       ctx.log(line_text);
       const std::size_t n = writeOfferResult(true, r.image_id, hex, bytes, 0, nullptr, resumed);
       if (n != 0) out.data(data_, n);

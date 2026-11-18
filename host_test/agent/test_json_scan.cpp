@@ -5,6 +5,8 @@
 #include <doctest.h>
 
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "agent/meshmaster_script.h"
@@ -15,6 +17,19 @@ namespace json = agent::json;
 namespace {
 
 json::Value whole(const std::string& text, const char* name) { return json::member(text.c_str(), text.size(), name); }
+
+// A shape this end has and meshmaster.dk has not yet (host_test/fixtures/contracts-ahead/README.md).
+std::string aheadFixture(const char* name) {
+  const std::string path =
+      std::string(TWINOAK_REPO_ROOT) + "/host_test/fixtures/contracts-ahead/" + name + ".json";
+  std::ifstream in(path, std::ios::binary);
+  REQUIRE_MESSAGE(in.good(), "cannot read " << path);
+  std::ostringstream out;
+  out << in.rdbuf();
+  std::string text = out.str();
+  while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+  return text;
+}
 
 }  // namespace
 
@@ -37,6 +52,34 @@ TEST_CASE("the offer's payload, field for field, out of the fixture's bytes") {
   REQUIRE(json::integer(whole(text, "size"), &n));
   CHECK(n == 4096);
   CHECK_FALSE(whole(text, "firstInstall").found());
+  // The member task p16-02 added is not in the server's file yet, and an offer without it is the
+  // candidate's: that is what makes the payload of an offer of today byte for byte what it was.
+  CHECK_FALSE(whole(text, "into").found());
+}
+
+TEST_CASE("the offer's payload with `into`: the server's own line and one member more") {
+  // `FirmwareOfferPayloadScanner.json` waits in host_test/fixtures/contracts-ahead/ until
+  // meshmaster.dk's task 235 makes the server's own file (that directory's README, and the
+  // follow-up of tasks/phase-16 that replaces it). It is held here to the one thing the two
+  // piles agreed in words: **the candidate's payload with `into` at its end**, and nothing else
+  // moved - so a transcription error in either file is a failing test and not a wrong download.
+  const std::string candidate = bench::contractFixture("FirmwareOfferPayload");
+  const std::string scanner = aheadFixture("FirmwareOfferPayloadScanner");
+  REQUIRE(candidate.size() > 1);
+  REQUIRE(candidate.back() == '}');
+  CHECK(scanner == candidate.substr(0, candidate.size() - 1) + ",\"into\":\"scanner\"}");
+
+  char s[128];
+  REQUIRE(json::text(whole(scanner, "into"), s, sizeof s));
+  CHECK(std::string(s) == "scanner");
+  // And every other member reads as the candidate's does.
+  long long n = 0;
+  REQUIRE(json::text(whole(scanner, "product"), s, sizeof s));
+  CHECK(std::string(s) == "twinoak-repeater-firmware");
+  REQUIRE(json::text(whole(scanner, "base"), s, sizeof s));
+  CHECK(std::string(s) == "/agent/v1/firmware/7");
+  REQUIRE(json::integer(whole(scanner, "size"), &n));
+  CHECK(n == 4096);
 }
 
 TEST_CASE("the apply's, the state's and the power cycle's payloads") {

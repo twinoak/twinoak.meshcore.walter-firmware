@@ -55,6 +55,24 @@ inline std::string fileName(const std::vector<std::uint8_t>& manifest, const cha
 inline std::string swdName(const std::vector<std::uint8_t>& manifest) { return fileName(manifest, "swd"); }
 inline std::string otaName(const std::vector<std::uint8_t>& manifest) { return fileName(manifest, "ota"); }
 
+// The swd file's name of the image whose `role` is the one asked for (task p16-02). `swdName`
+// above takes the first swd entry of the manifest, which is all a release with one image has;
+// the `store-both` fixture has two - the repeater's image and the scanner's, of the same board
+// and band - and an offer with `into: scanner` has to be served the second. `role` comes before
+// `files` in an image object (spec/fixtures/manifest/manifest-repeater.json), so the first swd
+// entry after it is that image's.
+inline std::string swdNameFor(const std::vector<std::uint8_t>& manifest, const char* role) {
+  const std::string text(manifest.begin(), manifest.end());
+  const std::size_t at = text.find(std::string("\"role\": \"") + role + "\"");
+  REQUIRE(at != std::string::npos);
+  const std::size_t use = text.find("\"use\": \"swd\"", at);
+  REQUIRE(use != std::string::npos);
+  const std::size_t name = text.find("\"name\": \"", use);
+  REQUIRE(name != std::string::npos);
+  const std::size_t begin = name + 9;
+  return text.substr(begin, text.find('"', begin) - begin);
+}
+
 // A release on the scripted server as meshmaster.dk serves one: the manifest and its signature
 // under the base, the file under `{base}/files/{name}`, every answer with a strong ETag and
 // ranges honoured (the scripted server's own range logic). `manifest`/`sig` override the
@@ -73,12 +91,18 @@ inline void serveRelease(sim::ScriptedServer& server, const Candidate& image, co
 
 // The four payloads, as FirmwareOfferPayload.json, FirmwareApplyPayload.json, FirmwareStatePayload.json
 // and PowerCyclePayload.json have them.
+// `into` is the member task p16-02 added, at the end of the payload and left out by default:
+// `FirmwareOfferPayloadScanner.json` of host_test/fixtures/contracts-ahead/ is
+// `FirmwareOfferPayload.json` with exactly that much more.
 inline std::string offerPayload(const Candidate& image, const char* product = agent::kProductRepeater,
-                                const std::string& base = kBase, const std::string* expected = nullptr) {
+                                const std::string& base = kBase, const std::string* expected = nullptr,
+                                const char* into = nullptr) {
   const std::string sha = expected != nullptr ? *expected : sha256Hex(image.file);
-  return std::string("{\"releaseId\":7,\"product\":\"") + product + "\",\"version\":\"" + image.version +
-         "\",\"slot\":0,\"base\":\"" + base + "\",\"expectedSha256\":\"" + sha +
-         "\",\"size\":" + std::to_string(image.file.size()) + "}";
+  std::string out = std::string("{\"releaseId\":7,\"product\":\"") + product + "\",\"version\":\"" +
+                    image.version + "\",\"slot\":0,\"base\":\"" + base + "\",\"expectedSha256\":\"" + sha +
+                    "\",\"size\":" + std::to_string(image.file.size());
+  if (into != nullptr) out += ",\"into\":\"" + std::string(into) + "\"";
+  return out + "}";
 }
 inline std::string applyPayload(const std::string& expected_hex, const char* product = agent::kProductRepeater,
                                 bool first_install = false) {
