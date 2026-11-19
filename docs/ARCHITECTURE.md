@@ -1823,11 +1823,12 @@ they take, and before `app_main` exists. Three things make that moment what it i
 
 **1. The heap is not one pool.** ESP-IDF registers a heap per region of
 `components/heap/port/esp32s3/memory_layout.c`, with the reserved ranges trimmed out of them. On
-this board, with the configuration of `sdkconfig.defaults`, there are four:
+this board, with the configuration of `sdkconfig.defaults`, there are four — the module's 2 MB of
+PSRAM is **not** one of them at this moment, and *The PSRAM, and its one job* below says why:
 
 | | bytes | what it is |
 |---|---|---|
-| `_heap_start`..0x3FCE9710 | ~94 800 | the DIRAM that `.data` and `.bss` did not take. **The only one a 20 kB or 64 kB object can come from** |
+| `_heap_start`..0x3FCE9710 | ~99 800 | the DIRAM that `.data` and `.bss` did not take. **The only one a 20 kB or 64 kB object can come from** |
 | 0x3FCE9710..0x3FCEEE34 | 22 308 | what the ROM used for its own stack. Registered in `main_task` — *after* the main task is created, so it can never hold the main task's own stack |
 | 0x3FCF0000..0x3FCF8000 | 32 768 | the half of the last 64 kB that the 32 kB data cache does not use |
 | 0x600FE060..0x600FFFE8 | 8 072 | RTC fast memory |
@@ -1868,9 +1869,10 @@ to spare and the next could not start, and the difference between them was 1 728
 
 So the figure to watch is not the segment's headroom but **how close the scratch is to not fitting
 in DIRAM**: 1 404 bytes in v0.1.2, −412 in v0.1.3, 356 bytes in 0.1.4, 644 on the `main` of
-19 November, and **12 252 bytes since task p17-01**. That is what `tools/heap_at_start.py` prints
-as *the tightest is N bytes*, and the next 12 253 bytes of `.data` or `.bss` anywhere in this
-firmware will move the scratch and fail the build.
+19 November, 12 252 after task p17-01 gave the manifest's bounds back, and **6 348 since task
+p17-02 spent 5 904 of them on the PSRAM**. That is what `tools/heap_at_start.py` prints as *the
+tightest is N bytes*, and the next 6 349 bytes of `.data` or `.bss` anywhere in this firmware will
+move the scratch and fail the build.
 
 **A bound of the release manifest is static memory, by the kilobyte.** The parser's token table is
 `kMaxJsonTokens` × 20 bytes and a parsed manifest is `kMaxImages` image entries of 768 bytes
@@ -1881,6 +1883,53 @@ specification names at once. Task p17-01 brought them from eight images of seven
 tokens to six of five in 640, which took 11 608 bytes out of that object: the token table 7 680,
 the manifest's image array 3 456, and 240 each in the two accepted-image copies. The verdict was
 35 472 bytes of `.bss` and is 23 864, and the 644 above became 12 252.
+
+### The PSRAM, and its one job (task p17-02)
+
+The module is a Walter N16R2 and has **2 MB of quad PSRAM**, which this firmware left switched off
+from task p0-01 until pile 17 with the note that the first task to need it decides. One thing needs
+it, and it is **the room a step of a NoiseScope session lays a scanner's lines down in**: 64 kB of
+PSRAM where there is PSRAM that answers, and task p16-03's 8 192 bytes of the internal heap where
+there is not (`docs/update.md`, *A session*). That is the whole of it.
+
+**What it is never used for.** No task's stack and not the main task's; no `.bss`, no `.noinit`, no
+instruction and no read-only datum; not `malloc()`, not `new`, and nothing the copied agent core
+allocates — `CONFIG_SPIRAM_USE_CAPS_ALLOC` keeps `heap_caps_malloc_default()` internal, so the one
+thing that gets external memory asks for it **by name**, with `MALLOC_CAP_SPIRAM`, in
+`components/platform/heap.cpp` behind the external half of `interfaces::Scratch`. Rail **R24** of
+`tools/check_rails.py` holds that: ESP-IDF's names for external memory appear in two files of
+`components/` and `main/` and nowhere else, `takeExternal` has one caller, and `sdkconfig.defaults`
+is grepped for each of the five lines above. **Nothing this board needs in order to boot, to keep
+its radio, to update or to reach the server may come to depend on it**, and a board whose PSRAM is
+absent, of the other kind (the 8 MB octal variant, which this configuration does not drive) or no
+longer answering boots, runs and holds its sessions in the 8 192 bytes.
+
+**It is brought up by the room and given back with it.** `CONFIG_SPIRAM_BOOT_INIT` is **off**, so
+the mapping, the memory test and the heap pool are the application's: `takeExternal()` calls
+`esp_psram_init()` and `esp_psram_extram_add_to_heap_allocator()` at the first ask of a boot and
+never again. An ordinary wake maps no page of PSRAM and has no external pool in its heap — which is
+why the table above still has four heaps, why the model is as true of this build as of one with no
+PSRAM at all, and why the four figures of `heap` and the two of the heartbeat are the internal
+heap's during a session as much as outside one. `CONFIG_SPIRAM_BOOT_HW_INIT` stays **on**, because
+the chip's own init reconfigures MSPI timing registers shared with the flash this code runs from
+through ESP-IDF's `*_early` functions; so a boot does read the chip's ID, and on a board with none
+it logs one line and goes on (`CONFIG_SPIRAM_IGNORE_NOTFOUND`). The whole room is written with a
+pattern of each word's own index and read back before a line goes into it, and a room that does not
+hold what was written to it is given back and the session takes the 8 192 bytes.
+`heap room` on the console takes the same room by the same function, prints the session's `room`
+line and gives it straight back, which is how a Walter alone on a cable proves its PSRAM.
+
+**What it costs, and why that was the whole question.** `CONFIG_SPIRAM` itself — the quad driver,
+the MSPI timing tuning the S3 always compiles in with it, and their IRAM-resident code — is
+**5 904 bytes of static DRAM**: 1 984 of `.bss`, 848 of `.data`, 2 924 of IRAM `.text`. There is no
+cheaper door; the leanest arrangement the pinned ESP-IDF offers measures 64 bytes less. Those
+5 904 bytes come straight off *the tightest is N bytes* above, and in pile 16 there were 644 to
+spend: task p16-05 wrote all of this, measured it, booted it in QEMU, and **reverted it**, because
+with the PSRAM on the kept-image scratch no longer fit the DIRAM heap and the main task's stack
+then had no block in any heap. Task p17-01 gave 11 608 bytes back by sizing the manifest's bounds
+to the releases there can be, and p17-02 brought the work back from that commit. The heap model
+knows the arrangement and refuses the two it cannot model: a build that brings the memory up at
+boot (`CONFIG_SPIRAM_BOOT_INIT`), and one that puts `.bss` or `.noinit` in it.
 
 ### `tools/heap_at_start.py`
 
@@ -1895,7 +1944,7 @@ is recorded, and it must be recorded again when ESP-IDF, `sdkconfig.defaults` or
 initialiser of `main/` changes. Since task p11-02 it is a rail of `tools/verify.sh` (below).
 
 **What this means for a task that adds static storage.** A `static` buffer, a bigger ring, a new
-namespace-scope object: the cost is not "bytes out of 37 kB", it is bytes out of 356 before an
+namespace-scope object: the cost is not "bytes out of 37 kB", it is bytes out of 6 348 before an
 image stops starting. Flash is the generous resource here (a 3 MB slot, a quarter used); internal
 RAM at boot is not. `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG` is the cautionary tale: 12 432 bytes of flash
 nobody would notice, and **680 bytes** of static DRAM — 256 of IRAM `.text`, 88 of `.data`, 336 of

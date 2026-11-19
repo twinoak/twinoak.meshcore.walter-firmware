@@ -160,7 +160,7 @@ enum class Refusal : std::uint8_t {
   kNoGolden = 5,    // no golden image to come back to, or it does not verify
   kNoScanner = 6,   // no scanner image, one that does not verify, or one of another board or band
   kProgram = 7,     // the program breaks one of the rules above
-  kNoMemory = 8,    // the heap has no kStepBytes block
+  kNoMemory = 8,    // no external room, and the internal heap has no kStepBytes block either
   // The journal would not take the entry that opens a session. **Not one of the task's eight**
   // (see tasks/phase-16/reports/03.md, *Deviations*): the eight are preconditions a person or a
   // server can do something about, and a journal that will not take a byte is not one of them -

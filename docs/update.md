@@ -262,7 +262,8 @@ with a sentence beside it; none has been held against a real radio yet (`docs/be
 | `kStepIdleMs` | 100 ms | what `rak update` sleeps between steps that only waited |
 | `kEntriesPerRunMax` | 48 | more journal entries than this in one run means something is looping, and the machine stops writing |
 | `kSessionCeilingMs` | 20 min | how long the radio may be a scanner inside a session, counted from the moment one is found (`scanner_session.h`) |
-| `kStepBytes` | 8 192 | the room one step's lines are laid down in, borrowed from the heap for the session |
+| `kStepBytes` | 8 192 | the room one step's lines are laid down in, borrowed from the internal heap for the session where there is no PSRAM |
+| `kStepBytesExternal` | 65 536 | and the room where there is: 64 kB of the module's PSRAM, which asking for it is what brings up (task p17-02) |
 
 ### And three that are **not** guesses
 
@@ -307,7 +308,7 @@ check ─► flashing-scanner ─► scanner ─► step-1 … step-6 ─► roo
 ```
 
 Those words are the journal's own: one entry of kind `0x000B` before each of them, with the
-command on a `step-N` entry and the room's five figures on the `room` one.
+command on a `step-N` entry and the room's figures on the `room` one.
 
 ### The rails
 
@@ -347,7 +348,7 @@ command on a `step-N` entry and the room's five figures on the `room` one.
 | `clock` | this board does not know what time it is, so the greeting would give the scanner no epoch and its lines would be stamped `ts: 0` |
 | `inProgress` | a radio update is journalled unfinished, this firmware is on trial or unconfirmed (S-7), or a session is open already — an open one is **ended**, never begun again |
 | `program` | the program breaks one of the rules below |
-| `noMemory` | the heap has no 8 192-byte block for a step's lines |
+| `noMemory` | neither room could be had: no external room, and the internal heap has no 8 192-byte block for a step's lines |
 | `journal` | the journal would not take the entry that opens a session. Not one of the eight the task named, and `tasks/phase-16/reports/03.md` says why it is here |
 
 ### A step, and what ends it
@@ -379,29 +380,58 @@ task p16-04's job posts them — and the next step begins when that returns.
 
 ### Its room, and what it cost
 
-One buffer of **8 192 bytes** (`kStepBytes`), taken from `interfaces::Scratch` when the session
-begins and given back when the steps are over. No static storage of that size: every byte of
-`.bss` moves the heap the main task's stack comes out of (`tools/heap_at_start.py`, rail R22). A
-session that cannot have it is refused `noMemory` before anything is touched.
+One buffer, taken from `interfaces::Scratch` when the session begins and given back when the steps
+are over. No static storage of that size: every byte of `.bss` moves the heap the main task's stack
+comes out of (`tools/heap_at_start.py`, rail R22). A session that cannot have a room at all is
+refused `noMemory` before anything is touched.
 
-Why 8 192 and no more: the unit in service has said what it has — its report's `restarts` section,
-in November, *heap: 27472 bytes free, largest free block 12288, least free since this boot 25300
-(internal, 8-bit)*. A room of 16 kB is not there to be had, and one of 12 kB would leave nothing
-whole for anybody else.
+**It comes from one of two places, and `takeStepRoom()` is the one function that decides** (and the
+one `heap room` on the console goes through, so that what a person proves on a cable is byte for
+byte what a session gets):
+
+| | bytes | when |
+|---|---|---|
+| the module's PSRAM | **65 536** (`kStepBytesExternal`) | there is PSRAM, it comes up, and it holds what is written to it |
+| the internal heap | **8 192** (`kStepBytes`) | there is none, it does not come up, or it does not hold what is written to it |
+
+**Asking for the external room is what brings the PSRAM up** — nothing else in this firmware ever
+does, and an ordinary wake does not (`ARCHITECTURE.md` §14, *The PSRAM, and its one job*; rail
+R24). Then, **before the first line goes in**, the whole room is written with a pattern of each
+word's own index and read back (`patternHolds()`): a value derived from the index, so that two
+addresses which answer for each other — the commonest way a PSRAM is wrong — are caught rather
+than read back as each other's value. A room that fails is **given back**, and the session takes
+the 8 192 bytes instead. Nothing is kept in the room over a sleep, because a sleep is a boot; and
+nothing that runs with the flash cache off, nor any interrupt handler, holds a pointer into it —
+the step's lines are read where they lie, by the task that printed them or posted them.
+
+Why 64 kB and no more, with 2 MB to choose from: what bounds the room is what leaves the board. Six
+steps of it are 384 kB, inside the 512 kB meshmaster.dk keeps of one session, and every 8 kB of it
+is a post over LTE-M. It is also what a minute of `scope` costs — a frame a second at 250 points is
+about 30 kB — so a minute fits whole.
+
+Why 8 192 and no more for the small room: the unit in service has said what it has — its report's
+`restarts` section, in November, *heap: 27472 bytes free, largest free block 12288, least free
+since this boot 25300 (internal, 8-bit)*. A room of 16 kB is not there to be had, and one of 12 kB
+would leave nothing whole for anybody else. A minute of `scope` then ends `full` after about
+thirteen frames, with every line it kept whole.
 
 And **measured at every session**, through the seam `heap` already uses
 (`core/console/heap_report.h`): the free bytes and the largest free block just before the room is
 taken; the largest free block just after; and the least free since boot, read when the steps are
 over. One journal line, `room`, written **before the switch back**, says them, and `rak session`
-prints the same line:
+and `heap room` print the same line, in one of two shapes:
 
 ```
+room: 65536 psram of 2097152; internal 27472, block 12288; least 25300
 room: 8192 of 27472, block 12288; left block 4096; least free 17108
 ```
 
-A build that was handed no heap seam says so in the line instead. **The figures decide nothing**:
-nothing here refuses anything because of them, and they exist so that 8 192 can be raised later
-from what units say. Task p16-05 answers the same seam out of the module's PSRAM.
+The first says what the room is, where it came from, and what the **internal** heap had while it
+was out — which is the figure that says whether anything else on this board was left short. A build
+that was handed no heap seam says so in the line instead. **The figures decide nothing**: nothing
+here refuses anything because of them, and they exist so that either number can be raised later
+from what units say. An entry written before task p17-02 has a 20-byte body and reads back with the
+PSRAM's size nought, which is the small room — which is what that line always meant.
 
 ### What it costs, and what a person sees
 
@@ -437,7 +467,7 @@ What the job adds is the three things a mast needs and a cable does not:
   whole ceiling before **each of the two flashes** (`kLeaseFlashSeconds`, as an apply's flash is)
   and every five minutes otherwise; one `POST /jobs/{id}/progress` per journal line, so the job's
   page says *flashing-scanner since 10:00* rather than nothing for a quarter of an hour. The
-  `room` line is one of those entries, so the heap's five figures reach the server with **every**
+  `room` line is one of those entries, so the room's figures reach the server with **every**
   session.
 - **A result that outlives a restart.** Before the scanner is flashed the job is journalled as
   **owed** (`kind::kAgentJob`, as this firmware's own apply is). The result says `restored`,

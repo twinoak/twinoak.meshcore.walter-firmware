@@ -137,20 +137,23 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   start rather than against QEMU:
 
   ```
-  heap: 33872 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')
+  heap: 39864 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')
   ```
 
   **Those two figures are the expectation**, and they were measured rather than predicted: this
   firmware, this build, booted in the QEMU the pinned image ships, read at the instruction after
   that `printf` (task p11-02's report has the gdb script). The model's own *what the main task
-  leaves behind* line says 41 144 and 21 504, which is the same arrangement 7 kB earlier - at the
+  leaves behind* line says 47 136 and 21 504, which is the same arrangement 7 kB earlier - at the
   moment the main task is created, where its recording stops - and FreeRTOS's idle and timer
   tasks, the task watchdog and `app_main`'s first lines (the USB console among them) are the
-  difference. So:
+  difference. The free figure **moves with every release**: it was 33 872 up to v0.1.9, task
+  p17-01 freed 11 608 bytes of `.bss` and p17-02 spent 5 904 of them on the PSRAM, so **the next
+  release's line should be about 5.7 kB higher than v0.1.9's and not lower** - which is the item
+  below. So:
 
   | the board says | what it means |
   |---|---|
-  | within a few hundred bytes of **33 872 / 18 432** | the model is right on silicon as well; write both numbers down |
+  | within a few hundred bytes of **39 864 / 18 432** | the model is right on silicon as well; write both numbers down |
   | a kilobyte or more either way | QEMU and the part do not agree about something. Not a reason to stop, but a finding: say what it read, and `ARCHITECTURE.md` §14 and `tools/heap_at_start.py` are what have to account for it |
   | a largest free block **under 16 384** | stop. The image started, so a block was found - but on this part the arrangement is tighter than the model's, and the next release's margin is not what it says. The ROM revision decides `dram0_rtos_reserved_start`, which moves the DIRAM heap's top; keep ESP-IDF's own `heap_init` region table (it prints at `debug`) and hold it against §14's four regions |
 
@@ -158,6 +161,54 @@ Needs: a Walter, a USB-C cable, `esptool` on the laptop (`pip install esptool`),
   it is the free), and the main task's stack - **16384 bytes, N never used**, where QEMU's N at
   this point is 14 776. If `N` ever comes back near 0, the 16 KB stack is not generous and
   whatever made it look spare is what to doubt.
+
+- [ ] ★ **No kilobyte lost against the release before, with the PSRAM switched on** (task p17-02).
+  The release that carries the PSRAM is the first since v0.1.9, and switching `CONFIG_SPIRAM` on
+  costs **5 904 bytes of static DRAM** - which only fits because task p17-01 freed 11 608. So the
+  one thing a board can say about the whole of pile 17 is this line, read on the same board,
+  before and after: flash the release before it, write the `heap:` line down, flash the new one,
+  and read it again. **It must be higher, by about 5.7 kB**, and the largest free block must be
+  the same 18 432. A line that is *lower* than the release before it means the arrangement on
+  silicon is not the model's and the next release's margin is not what §14 says - which is a
+  finding about `tools/heap_at_start.py`, and the figure to put beside it is *the tightest is
+  N bytes* from the build's log (6 348 for this one, against 12 252 with the PSRAM off).
+
+- [ ] **The PSRAM, proved by a Walter with no radio at all** (task p17-02; `docs/console.md`,
+  `heap room`). The module is an N16R2 and has 2 MB of quad PSRAM, and **no test anywhere in this
+  repository can bring one up**: QEMU has none, so this item is the first proof that the chip
+  answers. The room of a NoiseScope session is the only thing in this firmware that ever uses it,
+  and `heap room` takes that room by the same function a session does. Three commands, in order:
+
+  ```
+  > heap
+  > heap room
+  > heap
+  ```
+
+  What should be seen:
+
+  | | |
+  |---|---|
+  | the first `heap` | a `psram:` line reading **`not brought up in this boot`**. Nothing of the boot asked for it, which is the point: an ordinary wake must not |
+  | `heap room` | `room: 65536 psram of 2097152; internal <free>, block <block>; least <least>`, then `65536 bytes, external, written and read back; given back now`. **2097152** is the figure to hold: it is the chip answering with its own size |
+  | the second `heap` | `psram: 2097152 bytes, 2097152 free (a session's room is all that is ever in it)` - the whole of it back. The four internal figures above it must be where the first `heap` left them, bar the usual drift |
+
+  What it means if it is not:
+
+  | | |
+  |---|---|
+  | `psram: none found - it was asked for in this boot and did not come up` | the chip did not answer in quad mode at 40 MHz. The board boots and runs and its sessions get 8 192 bytes - which is the fall-back working - but this module is not the N16R2 the datasheet says, or its PSRAM is dead. Write down what `heap room` printed: it falls back to task p16-03's own line, `8192 of 27472, …`, with no word about a PSRAM in it |
+  | the room line says `psram` but the second `heap` is short of 2 MB | something is holding external memory that should not be. Rail R24 says only the room ever asks; a leak here is a bug in `giveStepRoom` |
+  | `heap room` prints the small room's line on a board whose first `heap` said *not brought up* | the pattern failed: the chip came up and did **not** hold what was written to it (a dead address line is the commonest). The fall-back is correct behaviour; the module is not |
+  | the **first** `heap` already says `2097152 bytes, … free` | something in the boot brought the PSRAM up. That is deliverable 2 of task p16-05 broken, and `sdkconfig.defaults` (`CONFIG_SPIRAM_BOOT_INIT`) and rail R24 are where to look |
+
+- [ ] **A wake with no session is as long as it was, and says nothing about the PSRAM** (task
+  p17-02). `stay off` with no session open and no job to run, then let three wakes go by (or
+  `sleep now`). Each wake must take **the same time it took before this release** - write the
+  figure from §15 or §16 down and compare - and no line of the boot, the wake or `journal` may
+  mention a PSRAM. Then `heap`: still `not brought up in this boot`. A wake that is measurably
+  longer means the memory is being mapped where nothing asked for it, and the battery pays for it
+  every fifteen minutes.
 
 - [ ] **A reset runs the same image** (task p0-01; S-6). Press reset, or unplug and replug, three
   times. Every time the same banner and `running from ota_0`, and the ota state is `valid` from
@@ -908,7 +959,31 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   public key and name as before** and `rak hello` the golden image's version.
   **Write down the wall-clock time of each of the two flashes** and the `room:` line verbatim:
   they are the two numbers this pile exists to replace guesses with (`kFlashWindowMs`, and whether
-  8 192 bytes is the right room).
+  the room is the right size). Since task p17-02 that line should say **`psram`** on a Walter whose
+  PSRAM answers - the item below is the one that holds it - and task p16-03's
+  `8192 of 27472, …` on one whose does not.
+- [ ] **A minute of `scope` in 64 kB of PSRAM** (task p17-02; §1's `heap room` item first, so that
+  the chip is known to answer). Needs the same as the item above. Type:
+
+  ```
+  > rak session 60 scope 863 870 250 0 1000
+  ```
+
+  Expected: the session runs as above, and then **the step's own three things**. Sixty `{"t":…}`
+  frames, each printed whole, one a second; the step **ended `clock`** and not `full`; and the
+  `room:` line saying
+
+  ```
+  room: 65536 psram of 2097152; internal <free>, block <block>; least <least>
+  ```
+
+  about 30 kB of it used by those sixty frames. **`full` after about thirteen frames, with a
+  `room:` line that says `8192 of …`, is the small room** - correct behaviour on a board with no
+  PSRAM, and on one that `heap room` said had 2 MB it means the room was refused between that
+  command and this session: the pattern, or something holding external memory. Write the `room:`
+  line down either way; it is the first figure from a real scanner about whether 64 kB is right,
+  and `agent calls` carries the same line to the server from a session a job started (§18).
+  On a **bench radio**, not a mast: it costs the site about forty minutes with no repeater.
 - [ ] **The cable pulled while the radio is a scanner: the next boot brings the repeater back by
   itself** (task p16-03, rail 2). Start `rak session 300 dwell 869.618 300` and, while the step is
   running (the scanner's lines are coming in), **pull the Walter's USB cable** — or its power.
