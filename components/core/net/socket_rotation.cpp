@@ -8,12 +8,34 @@ namespace net {
 static_assert(kRotationIds == 2, "the rule and its arrays are written for two ids");
 
 // The whole point of keeping an id's accounting in one value is that one task can change it while
-// another is reading it, so it must be a transition the hardware can make in one go rather than
-// something with a lock inside it. Xtensa has the compare-exchange; this is here so that a
-// toolchain which did not would say so at compile time and not on a bench.
-static_assert(std::atomic<CloseState>::is_always_lock_free,
-              "CloseState must be changed by one atomic instruction: the event task and the main "
-              "task both write it");
+// another is reading it, so a step must be indivisible: one naturally aligned 32-bit word, with no
+// lock inside the object. That is what is asserted here, and it holds on the host and on the board.
+//
+// It used to be `std::atomic<CloseState>::is_always_lock_free`, which is a stronger thing and not
+// the thing this code needs - and since task p17-02 it is **false on this board**. Switching the
+// module's PSRAM on makes ESP-IDF add `-mdisable-hardware-atomics`
+// (CONFIG_STDATOMIC_S32C1I_SPIRAM_WORKAROUND, `components/newlib/project_include.cmake` in
+// ESP-IDF v5.5.5, default `SPIRAM && (IDF_TARGET_ESP32 || IDF_TARGET_ESP32S3)`), because Xtensa's
+// `S32C1I` does not work on external RAM. The compiler then calls ESP-IDF's own `__atomic_*`
+// instead of inlining the instruction, and those do one of two things
+// (`components/newlib/priv_include/esp_stdatomic.h`): for an address **outside** external RAM -
+// `_ATOMIC_IF_NOT_EXT_RAM()` - they call straight through to the `S32C1I` implementation, so this
+// code gets the same single instruction behind one call; for one inside it they take a spinlock
+// with interrupts masked (`portENTER_CRITICAL_SAFE`, this chip having two cores). Both are
+// indivisible with respect to the other writer, which is all the rule above asks for, and
+// `state_[]` is never in external memory anyway: the room of a session is the only thing in this
+// firmware that asks for any (rail R24).
+//
+// So the assert is what the code needs, and the line that is **not** here is the one a toolchain
+// without a 32-bit atomic would break: core/ includes nothing of ESP-IDF (R12), so it cannot ask
+// which of the two implementations it got, and `is_always_lock_free` would now refuse the board's
+// own build.
+static_assert(sizeof(CloseState) == 4, "CloseState is one 32-bit word, which is what S32C1I takes");
+static_assert(sizeof(std::atomic<CloseState>) == sizeof(CloseState),
+              "std::atomic<CloseState> must be the word itself, with no lock inside the object: "
+              "the event task and the main task both write it");
+static_assert(alignof(std::atomic<CloseState>) >= 4,
+              "and naturally aligned, or no atomic instruction applies to it");
 
 void SocketRotation::useIds(int first, int second) {
   // The modem has six sockets, so an id is a byte; anything else is a caller's mistake and is

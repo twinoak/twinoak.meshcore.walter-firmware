@@ -229,16 +229,34 @@ check_boot_gate() {
 # Every idf.py of this script, with the one build directory and the three cache variables that
 # must be passed every time. -DPROJECT_VER is always given, even when it is the default: it is a
 # cmake cache variable, and a build that inherited one from an earlier run would say a version
-# nobody asked for. sdkconfig.defaults is the configuration: when it changes, the generated
-# sdkconfig is dropped so that the change takes effect (ESP-IDF only fills in options that are
-# missing from sdkconfig).
+# nobody asked for.
+#
+# **sdkconfig.defaults is the configuration, and a change to it throws the whole build directory
+# away** - not only the generated sdkconfig. ESP-IDF only fills in options that are missing from
+# sdkconfig, so dropping that file is what makes a changed default take effect at all; but it is
+# not enough, because **ESP-IDF puts the compiler flags in response files**
+# (/build/fw/toolchain/cflags, cxxflags) whose *path* is what every compile command line holds
+# and whose *contents* ninja does not hash. So a configuration option that changes a flag changes
+# no command line, and ninja rebuilds only the translation units whose own inputs changed - which
+# for components/core/ is none of them, because core/ includes nothing of ESP-IDF (R12) and so
+# never includes sdkconfig.h. CI starts from an empty volume and compiles everything with the new
+# flags, so the gap shows up there and nowhere else.
+#
+# Task p17-02 is where that cost a round of CI: CONFIG_SPIRAM makes ESP-IDF add
+# `-mdisable-hardware-atomics` (CONFIG_STDATOMIC_S32C1I_SPIRAM_WORKAROUND, newlib's
+# project_include.cmake), which turns std::atomic<T>::is_always_lock_free false - and
+# core/net/socket_rotation.cpp had a static_assert on it. Eight local builds were green over a
+# stale object; the first clean one was CI's. A full rebuild whenever sdkconfig.defaults changes
+# is what that file deserves.
 idf_run() {
   local dir=$BUILD/fw
-  local stamp=$dir/sdkconfig.defaults.sha256
+  local stamp=$BUILD/fw-sdkconfig.defaults.sha256   # outside $dir, which is what gets removed
   local want; want=$(sha256sum sdkconfig.defaults | cut -d' ' -f1)
-  if [ -f "$dir/sdkconfig" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
-    echo "sdkconfig.defaults changed: regenerating sdkconfig"
-    rm -f "$dir/sdkconfig" "$dir/sdkconfig.old"
+  if [ -d "$dir" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
+    echo "sdkconfig.defaults changed: removing $dir and building it again from nothing"
+    echo "  (the flags are in response files ninja does not hash: a changed option must not"
+    echo "   leave one object file behind - tools/verify.sh, idf_run)"
+    rm -rf "$dir"
   fi
   mkdir -p "$dir" && echo "$want" > "$stamp"
   idf.py -B "$dir" -DSDKCONFIG="$dir/sdkconfig" -DPROJECT_VER="$VERSION" \
