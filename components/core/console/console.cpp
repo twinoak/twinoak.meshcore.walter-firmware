@@ -4316,14 +4316,15 @@ void Console::wake() {
   // live pass and not the journal's record, because the record is written at step 10 and this is
   // printed from inside the wake.
   if (cycle_ != nullptr) {
-    const cycle::Pass& pass = cycle_->last();
-    if (pass.jobs_covered != 0) {
+    const interfaces::WakesRoom room = cycle_->roomTookOn();
+    if (room.jobs_covered != 0) {
       printf("  the bound was raised to %lu s for %u job(s)\n",
-             static_cast<unsigned long>(pass.covered_s), static_cast<unsigned>(pass.jobs_covered));
+             static_cast<unsigned long>(g.bound_ms / 1000u),
+             static_cast<unsigned>(room.jobs_covered));
     }
-    if (pass.calls_no_room != 0) {
+    if (room.calls_no_room != 0) {
       printf("  %u call(s) were not begun: the bound had no room to finish one\n",
-             static_cast<unsigned>(pass.calls_no_room));
+             static_cast<unsigned>(room.calls_no_room));
     }
   }
   if (g.staying) {
@@ -4785,7 +4786,7 @@ void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
   // claimed something or ran out of room.
   if (p.jobs_covered != 0) {
     printf("       the bound was raised to %lu s for %u job(s)\n",
-           static_cast<unsigned long>(p.covered_s), static_cast<unsigned>(p.jobs_covered));
+           static_cast<unsigned long>(p.bound_s), static_cast<unsigned>(p.jobs_covered));
   }
   if (p.calls_no_room != 0) {
     printf("       %u call(s) were not begun: the bound had no room to finish one\n",

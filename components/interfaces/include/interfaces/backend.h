@@ -417,20 +417,24 @@ struct BackendAnswer {
   // letter of `wake`'s list is this (core/cycle/wake_reason.h, kDidJobs) and nothing else reads
   // it: it is a count for a person, not a figure anything decides on.
   std::uint8_t jobs_ran = 0;
+};
 
-  // -- the room the wake took on (task p16-06) --------------------------------------------------
-  //
-  // What the exchange did to the bound on the wake it was made in, for the record and nothing
-  // else: the wake cycle does not decide on these, it writes them down. An implementation with
-  // no jobs and no calls leaves all three at 0, which is what this repository's null backend is.
-  //
-  //   jobs_covered   how many claimed jobs the wake's bound was raised to cover the leases of
-  //   covered_s      how far past the claim that bound was made to reach
-  //   calls_no_room  calls not begun because the bound had no room left to finish one -
-  //                  `walter_agent/modem_uplink.h`'s own rule, against the sooner of the
-  //                  exchange's deadline and the wake's bound (`core/cycle/wake_room.h`)
+// -- the room the wake took on (task p16-06) ----------------------------------------------------
+//
+// What the exchange did to the bound on the wake it was made in, for the record and nothing else:
+// the wake cycle does not decide on these, it writes them down.
+//
+//   jobs_covered   how many claimed jobs the wake's bound was raised to cover the leases of
+//                  (`core/cycle/wake_room.h`); 0 is a wake whose claim covered nothing
+//   calls_no_room  calls not begun because the bound had no room left to finish one, which is
+//                  the rule the uplink already had for the exchange's deadline
+//
+// **Asked for and not carried in the answer**, which every other figure of an exchange is: an
+// implementation that has jobs knows these already and this structure is a member of two objects
+// that live for the whole boot, so two bytes in it are eight bytes of the heap the agent's kept
+// scratch is carved out of (tools/heap_at_start.py). A question costs a vtable entry in flash.
+struct WakesRoom {
   std::uint8_t jobs_covered = 0;
-  std::uint32_t covered_s = 0;
   std::uint8_t calls_no_room = 0;
 };
 
@@ -518,6 +522,11 @@ class Backend {
     (void)deadline_ms;
     return Beat::kNone;
   }
+
+  // What the last exchange's claim did to the bound on the wake it was made in (`WakesRoom`
+  // above), asked after it has returned. The default says *nothing was taken on*, which is what a
+  // backend with no jobs did.
+  virtual WakesRoom roomTookOn() const { return WakesRoom{}; }
 };
 
 }  // namespace interfaces

@@ -469,11 +469,10 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   budget.uplinkSeconds = left_s;
   budget.postBytes = kWakePostBytes;
 
-  // **What this wake's claim does to the bound on it is this wake's** (task p16-06): the cover
-  // and the calls that found no room are read out of the uplink after the wake, so the figure of
-  // the wake before cannot be reported as this one's.
-  const std::uint32_t no_room_before = p_.server != nullptr ? p_.server->uplinkCounters().no_room : 0;
-  if (p_.server != nullptr) p_.server->forgetCover();
+  // **What this wake's claim does to the bound on it is this wake's** (task p16-06): the figures
+  // are read out of the uplink after the wake, so the wake before's cannot be reported as this
+  // one's.
+  if (p_.server != nullptr) p_.server->forgetTheWakesRoom();
 
   report_ = p_.loop->wake(intent, budget);
   const bool ran = report_.why[0] == 0;
@@ -546,16 +545,6 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
     out->jobs_ran = report_.jobsRun < 0 ? 0
                     : report_.jobsRun > 0xFF ? 0xFF
                                              : static_cast<std::uint8_t>(report_.jobsRun);
-    // **What the wake took on, and what it had no room for** (task p16-06). The wake cycle writes
-    // these down and decides nothing on them: the bound was already raised by the claim, inside
-    // the exchange, because that is the one moment a lease is known.
-    if (p_.server != nullptr) {
-      const core::cycle::Cover& cover = p_.server->lastCover();
-      out->jobs_covered = cover.covered_s > 0 ? cover.jobs : 0;
-      out->covered_s = cover.covered_s;
-      const std::uint32_t no_room = p_.server->uplinkCounters().no_room - no_room_before;
-      out->calls_no_room = no_room > 0xFF ? 0xFF : static_cast<std::uint8_t>(no_room);
-    }
   }
 
   if (talk != nullptr) printReport(*talk);
@@ -646,6 +635,18 @@ interfaces::Beat AgentBackend::beat(std::uint64_t deadline_ms) {
   takeFloodCounts();
   if (p_.calls != nullptr) (void)p_.calls->save();
   return interfaces::Beat::kFailed;
+}
+
+// **What this wake's claim did to the bound on it** (task p16-06), asked of this seam after the
+// exchange rather than carried in its answer: the uplink keeps the three bytes, because it is the
+// one place on this board where a claim's leases are known, and nothing else keeps a copy.
+interfaces::WakesRoom AgentBackend::roomTookOn() const {
+  interfaces::WakesRoom out;
+  if (p_.server == nullptr) return out;
+  const ModemUplink::WakesRoom& room = p_.server->wakesRoom();
+  out.jobs_covered = room.jobs;
+  out.calls_no_room = room.no_room;
+  return out;
 }
 
 // Why this wake sent nothing, or that it was answered (task p10-02).

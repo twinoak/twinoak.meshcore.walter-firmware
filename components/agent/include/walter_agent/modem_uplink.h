@@ -162,7 +162,6 @@ struct UplinkCounters {
   std::uint32_t payloads_kept = 0;   // extension payloads kept out of claims (task p4-05)
   std::uint32_t payloads_too_long = 0;  // ... and ones that did not fit kExtensionPayloadBytes
   std::uint32_t withheld = 0;        // results not posted because the extension left the job leased
-  std::uint32_t no_room = 0;         // refused: the bound on the wake had no room to finish a call
 };
 
 class ModemUplink final : public mm::IUplink {
@@ -240,10 +239,22 @@ class ModemUplink final : public mm::IUplink {
   // every test that makes an exchange by hand - and then nothing of this applies and a call takes
   // what is left of the deadline, as it did before this task.
   void boundedBy(core::cycle::WakeGuard* guard) { guard_ = guard; }
-  // What the last claim of this wake did to the bound, for the record (task p16-06). Cleared by
-  // `forgetCover()` at the top of every wake.
-  const core::cycle::Cover& lastCover() const { return cover_; }
-  void forgetCover() { cover_ = core::cycle::Cover{}; }
+
+  // **What this wake's claim did to its bound, and what it then had no room for** (task p16-06),
+  // for the record and for nothing this object decides. **Three bytes**, and not a whole
+  // `core::cycle::Cover`: every four bytes of this object are four of the heap the agent's kept
+  // scratch is carved out of (tools/heap_at_start.py), and these are the only figures anything
+  // reads after the claim. *How far the bound reaches* is the bound itself, which the wake record
+  // already carries, and *where a lease was cut to* is said in the log line that cuts it.
+  struct WakesRoom {
+    std::uint8_t jobs = 0;     // claimed jobs the bound was raised to cover; 0: nothing was
+    std::uint8_t no_room = 0;  // calls not begun for want of room, saturating
+    bool cut = false;          // a lease was longer than the wake could be made to cover
+  };
+  const WakesRoom& wakesRoom() const { return room_; }
+  // At the top of every wake, so that the figures of the wake before are not reported as this
+  // one's.
+  void forgetTheWakesRoom() { room_ = WakesRoom{}; }
 
   // The payload text of a `twinoak.*` job of the last claim, by id, or nullptr: what the
   // extension reads its fields from (task p4-05). Empty text is a payload that did not fit.
@@ -342,6 +353,11 @@ class ModemUplink final : public mm::IUplink {
   LinkState link_;
   std::uint64_t deadline_ms_ = 0;
   bool radio_identity_lost_ = false;
+  // **Here, and the guard below with the other pointers** (task p16-06). Every four bytes of this
+  // object are four of the heap the agent's kept scratch is carved out of
+  // (tools/heap_at_start.py), and these two cost none: three bytes of the padding behind that
+  // bool, and the four the eight-byte alignment of `payloads_` left behind the pointers.
+  WakesRoom room_{};
   const core::cycle::WakeTotals* wakes_ = nullptr;
   const FloodTotals* floods_ = nullptr;
   CallLog* calls_ = nullptr;
@@ -349,7 +365,6 @@ class ModemUplink final : public mm::IUplink {
   core::cycle::AgentAttention* attention_ = nullptr;
   ResultGate* gate_ = nullptr;
   core::cycle::WakeGuard* guard_ = nullptr;
-  core::cycle::Cover cover_{};
   KeptPayload payloads_[mm::kClaimMax];
   int payload_count_ = 0;
 

@@ -283,8 +283,8 @@ void encode(const WakePayload& p, std::uint8_t out[kWakePayloadBytes]) {
   out[32] = static_cast<std::uint8_t>(p.reached);
   put32(out + 33, p.owed_s);
   out[37] = p.jobs_covered;
-  out[38] = static_cast<std::uint8_t>(p.covered_s & 0xFF);
-  out[39] = static_cast<std::uint8_t>((p.covered_s >> 8) & 0xFF);
+  out[38] = static_cast<std::uint8_t>(p.bound_s & 0xFF);
+  out[39] = static_cast<std::uint8_t>((p.bound_s >> 8) & 0xFF);
   out[40] = p.calls_no_room;
 }
 
@@ -317,7 +317,7 @@ bool decode(const update::Entry& e, WakePayload* out) {
   out->reached = interfaces::Reached::kUnsaid;
   out->owed_s = 0;
   out->jobs_covered = 0;
-  out->covered_s = 0;
+  out->bound_s = 0;
   out->calls_no_room = 0;
   if (e.size >= kWakePayloadBytesV2) {
     if (e.payload[32] >= static_cast<std::uint8_t>(interfaces::Reached::kCount)) return false;
@@ -326,8 +326,8 @@ bool decode(const update::Entry& e, WakePayload* out) {
   }
   if (e.size >= kWakePayloadBytes) {
     out->jobs_covered = e.payload[37];
-    out->covered_s = static_cast<std::uint16_t>(e.payload[38] |
-                                                (static_cast<std::uint16_t>(e.payload[39]) << 8));
+    out->bound_s = static_cast<std::uint16_t>(e.payload[38] |
+                                              (static_cast<std::uint16_t>(e.payload[39]) << 8));
     out->calls_no_room = e.payload[40];
   }
   return true;
@@ -967,12 +967,12 @@ void WakeCycle::stepBackend() {
   // heartbeated keeps the ordinary bound, or the ladder's if the radio was silent and it climbed.
   if (answer_.outside_ms > 0) allow(kBackendBoundMs);
   // **And what the exchange's own claim did to the bound**, which it did inside the call above and
-  // for the leases it took on (task p16-06): written down here, decided nowhere in this file. The
-  // guard is asked rather than the answer, because `allow()` above and the claim's raise are both
-  // in it and `pass_.bound_ms` is one figure.
-  pass_.jobs_covered = answer_.jobs_covered;
-  pass_.covered_s = answer_.covered_s;
-  pass_.calls_no_room = answer_.calls_no_room;
+  // for the leases it took on (task p16-06): the guard is asked rather than the answer, because
+  // `allow()` above and the claim's raise are both in it and `pass_.bound_ms` is one figure. What
+  // the claim covered and what found no room stay in `answer_`, which is this pass's and is where
+  // the record and the console read them: `interfaces::Backend::roomTookOn()`, a question asked
+  // after the exchange rather than two bytes carried in every object that holds an answer
+  // (tools/heap_at_start.py).
   pass_.bound_ms = duty_.guard().bound();
   // What the exchange carried out itself is the wake's business from here: S-7's one update
   // step a wake is held by `update_ran_`, which step 9 reads, and the record says what went.
@@ -1509,7 +1509,7 @@ void WakeCycle::journalWake() {
   // flag is per wake and not per call. A bound that was *raised* is not news by itself: an
   // ordinary claim of a leased job raises it at every wake that has a job, and seven hundred
   // identical lines are not a page a person can read.
-  if (pass_.calls_no_room != 0) news = true;
+  if (backend_.roomTookOn().calls_no_room != 0) news = true;
   if (!news) return;
 
   WakePayload p{};
@@ -1533,12 +1533,15 @@ void WakeCycle::journalWake() {
   interfaces::WallTime now{};
   p.at_epoch = wall_.now(&now) ? now.epoch : 0;
   p.wakes = pass_.wakes;
-  // The room the wake took on (task p16-06): what the claim raised the bound to cover, and the
-  // calls that found no room inside it.
-  p.jobs_covered = pass_.jobs_covered;
-  p.covered_s = pass_.covered_s > kLastedAtMostS ? static_cast<std::uint16_t>(kLastedAtMostS)
-                                                 : static_cast<std::uint16_t>(pass_.covered_s);
-  p.calls_no_room = pass_.calls_no_room;
+  // The room the wake took on (task p16-06): how many jobs the claim raised the bound for, what
+  // that bound came to, and the calls that found no room inside it. The bound is in seconds from
+  // the boot, clamped as `lasted_s` is - no wake comes near 18 hours, raised or not.
+  const interfaces::WakesRoom room = backend_.roomTookOn();
+  p.jobs_covered = room.jobs_covered;
+  const std::uint32_t bound_s = pass_.bound_ms / 1000u;
+  p.bound_s = bound_s > kLastedAtMostS ? static_cast<std::uint16_t>(kLastedAtMostS)
+                                       : static_cast<std::uint16_t>(bound_s);
+  p.calls_no_room = room.calls_no_room;
   std::uint8_t bytes[kWakePayloadBytes];
   encode(p, bytes);
   (void)journal_->append(update::kind::kWakeCycle, bytes, kWakePayloadBytes);

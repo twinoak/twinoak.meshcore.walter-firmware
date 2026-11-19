@@ -349,12 +349,6 @@ struct Pass {
   std::uint32_t outside_ms = 0;
   std::uint32_t left_ms = kWakeBudgetMs;
   std::uint32_t bound_ms = kWakeBoundMs;  // the guard's, raised or not
-  // **What the exchange took on, and what it had no room for** (task p16-06,
-  // `core/cycle/wake_room.h`). The bound above is raised inside step 8's exchange, by the claim,
-  // to cover the leases of the jobs it took; these three are what the record says about it.
-  std::uint8_t jobs_covered = 0;    // claimed jobs whose leases the bound was raised to cover
-  std::uint32_t covered_s = 0;      // how far past the claim it was made to reach
-  std::uint8_t calls_no_room = 0;   // calls not begun because the bound had no room to finish one
   std::uint32_t awake_s = 0;
   std::uint32_t interval_s = 0;
   std::uint32_t wakes = 0;
@@ -420,7 +414,7 @@ std::size_t describeWhere(const WakeWhere& where, char* out, std::size_t cap);
 //   32  reached     u8   an interfaces::Reached (task p10-02): who was reached, or why nobody was
 //   33  owed_s      u32  the wait still owed, when `reached` is kWait
 //   37  jobs_cover  u8   claimed jobs the bound was raised to cover the leases of (task p16-06)
-//   38  covered_s   u16  how far past the claim it was made to reach
+//   38  bound_s     u16  the bound in force when the wake ended, counted from the boot
 //   40  no_room     u8   calls not begun because the bound had no room to finish one
 //
 // **The five bytes cost nothing**: a journal slot is 64 bytes whatever the payload holds
@@ -481,7 +475,7 @@ struct WakePayload {
   // The room the wake took on (task p16-06): 0 jobs is a wake whose claim covered nothing, which
   // is also what an entry written before that task reads as.
   std::uint8_t jobs_covered = 0;
-  std::uint16_t covered_s = 0;      // clamped to 18 hours, as `lasted_s` is
+  std::uint16_t bound_s = 0;        // the bound in force at the end, from the boot; 0 is not said
   std::uint8_t calls_no_room = 0;
 };
 
@@ -521,6 +515,9 @@ class WakeCycle {
   // What crossed the seam at the last exchange: what `cycle` prints, and what a test reads.
   const interfaces::BackendKnowledge& known() const { return known_; }
   const interfaces::BackendAnswer& answer() const { return answer_; }
+  // And what its claim did to the bound on this wake (task p16-06): asked of the seam, so that
+  // the console and the record read one figure and no object keeps a copy of it.
+  interfaces::WakesRoom roomTookOn() const { return backend_.roomTookOn(); }
 
   // A console command asked for one of the closed set, to be carried out by the next pass. The
   // backend's answer is the other way in; this is "or a console command asked for it" (the task,

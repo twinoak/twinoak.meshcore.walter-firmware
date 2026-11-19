@@ -250,6 +250,9 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   interfaces::Exchanged exchange(const interfaces::BackendKnowledge& known, std::uint64_t deadline_ms,
                                  interfaces::BackendAnswer* out) override;
   interfaces::Beat beat(std::uint64_t deadline_ms) override;
+  // What this wake's claim did to the bound on it (task p16-06): the uplink's own three bytes,
+  // which is where they are already (`walter_agent/modem_uplink.h`, `WakesRoom`).
+  interfaces::WakesRoom roomTookOn() const override;
 
   // ------------------------------------------------------------------ core::console::AgentLoopProbe
   bool wake(interfaces::TextOut& out) override;

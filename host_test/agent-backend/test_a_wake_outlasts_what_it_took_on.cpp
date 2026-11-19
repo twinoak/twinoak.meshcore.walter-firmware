@@ -143,15 +143,16 @@ TEST(AWakeOutlastsWhatItTookOn, AStatusTheRadioNeverAnswersIsToldOfAndTheWakeSle
   // The result went, and it says the radio was not reached.
   EXPECT_EQ(outcomeOf(bench, 32763), "unreachable") << bench.agent.lastResult(32763);
   // The bound covered the four minutes the wake took on, and the calls after them.
-  EXPECT_EQ(pass.jobs_covered, 1);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 1);
   EXPECT_GT(pass.bound_ms, core::cycle::kWakeBoundMs);
-  EXPECT_GE(pass.covered_s, 240u + kRoomOneJobS - kSlackS);
-  EXPECT_LT(pass.covered_s, 240u + kRoomOneJobS + kSlackS);
+  // The bound counts from the boot, so it is the attach, the lease and that room.
+  EXPECT_GE(pass.bound_ms / 1000u, kSlowAttachMs / 1000u + 240u + kRoomOneJobS - kSlackS);
+  EXPECT_LT(pass.bound_ms / 1000u, kSlowAttachMs / 1000u + 240u + kRoomOneJobS + kSlackS);
   // And the wake went to sleep, at its ordinary interval, with no restart asked for.
   EXPECT_EQ(pass.ending, Ending::kSlept);
   EXPECT_FALSE(bench.agent.world.restart_asked);
   EXPECT_EQ(pass.interval_s, 900u);
-  EXPECT_EQ(pass.calls_no_room, 0);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().no_room, 0);
 }
 
 TEST(AWakeOutlastsWhatItTookOn, TheSameWithTheObservationsCallStallingForTheCommandsTimeout) {
@@ -236,7 +237,7 @@ TEST(AWakeOutlastsWhatItTookOn, AJobThatCannotFinishInsideItsLeaseIsReportedTime
   // And it is the cover that made that possible: the wake ran minutes past the ordinary bound,
   // which is where the wakes of 17 November were reset holding this job.
   EXPECT_GT(pass.awake_s * 1000u, core::cycle::kWakeBoundMs);
-  EXPECT_EQ(pass.jobs_covered, 1);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 1);
 }
 
 TEST(AWakeOutlastsWhatItTookOn, AJobLeasedForElevenMinutesThatTakesTenRunsToItsEnd) {
@@ -247,9 +248,9 @@ TEST(AWakeOutlastsWhatItTookOn, AJobLeasedForElevenMinutesThatTakesTenRunsToItsE
   const core::cycle::Pass& pass = bench.agent.oneWake();
 
   EXPECT_EQ(outcomeOf(bench, 810), "ok") << bench.agent.lastResult(810);
-  EXPECT_EQ(pass.jobs_covered, 1);
-  EXPECT_GE(pass.covered_s, 660u + kRoomOneJobS - kSlackS);
-  EXPECT_LT(pass.covered_s, 660u + kRoomOneJobS + kSlackS);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 1);
+  EXPECT_GE(pass.bound_ms / 1000u, kSlowAttachMs / 1000u + 660u + kRoomOneJobS - kSlackS);
+  EXPECT_LT(pass.bound_ms / 1000u, kSlowAttachMs / 1000u + 660u + kRoomOneJobS + kSlackS);
   EXPECT_EQ(pass.ending, Ending::kSlept);
   EXPECT_FALSE(bench.agent.world.restart_asked);
   // And the proof that the cover is what carried it: the wake outlasted the ordinary bound by
@@ -267,10 +268,11 @@ TEST(AWakeOutlastsWhatItTookOn, OfTwoLeasesTheLaterGoverns) {
 
   const core::cycle::Pass& pass = bench.agent.oneWake();
 
-  EXPECT_EQ(pass.jobs_covered, 2);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 2);
   // The later lease and the room for two results and the observations.
-  EXPECT_GE(pass.covered_s, 660u + kRoomTwoJobsS - kSlackS);
-  EXPECT_LT(pass.covered_s, 660u + kRoomTwoJobsS + kSlackS);
+  // The later lease and the room for two results and the observations.
+  EXPECT_GE(pass.bound_ms / 1000u, kSlowAttachMs / 1000u + 660u + kRoomTwoJobsS - kSlackS);
+  EXPECT_LT(pass.bound_ms / 1000u, kSlowAttachMs / 1000u + 660u + kRoomTwoJobsS + kSlackS);
   EXPECT_EQ(pass.ending, Ending::kSlept);
   EXPECT_FALSE(bench.agent.world.restart_asked);
 }
@@ -278,25 +280,17 @@ TEST(AWakeOutlastsWhatItTookOn, OfTwoLeasesTheLaterGoverns) {
 TEST(AWakeOutlastsWhatItTookOn, AnHourLongLeaseIsCutInsideTheCeiling) {
   MeshBench bench;
   theNight(bench);
-  const std::uint32_t at_the_claim = leaseIn(bench, 0);
   bench.agent.server().queue(leasedRead(830, 30, leaseIn(bench, 3600)).json());
 
   const core::cycle::Pass& pass = bench.agent.oneWake();
 
   // The bound went to the ceiling and no further.
   EXPECT_EQ(pass.bound_ms, core::cycle::kRaisedBoundMax);
-  // And the lease the library was handed ended inside it - where the room for the result's call
-  // begins - rather than the hour past the claim the server had put it at.
-  const core::cycle::Cover& cover = bench.agent.half().server.lastCover();
-  EXPECT_TRUE(cover.cut);
-  ASSERT_GT(cover.lease_until_s, at_the_claim);
-  const std::uint32_t lease_in_s = cover.lease_until_s - at_the_claim;
-  EXPECT_LT(lease_in_s * 1000u, core::cycle::kRaisedBoundMax);
-  // ... and it is the ceiling it was cut to and not some other figure: what the wake had already
-  // spent (the seventy-second attach), the lease, and the room for the calls after it are the
-  // hour, to the second.
-  EXPECT_GT(lease_in_s + kRoomOneJobS + kSlowAttachMs / 1000u + kSlackS,
-            core::cycle::kRaisedBoundMax / 1000u);
+  // And the lease the library was handed was **cut**: it ended where the room for the result's
+  // call begins, and not the hour past the claim the server had put it at.
+  // `host_test/core/cycle/test_wake_room.cpp` is where that second is worked out.
+  EXPECT_TRUE(bench.agent.half().server.wakesRoom().cut);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 1);
   // The job ran to its end inside that, was reported, and the wake slept.
   EXPECT_EQ(outcomeOf(bench, 830), "ok") << bench.agent.lastResult(830);
   EXPECT_EQ(pass.ending, Ending::kSlept);
@@ -311,8 +305,8 @@ TEST(AWakeOutlastsWhatItTookOn, AWakeThatClaimsNothingKeepsItsFiveMinutes) {
   const core::cycle::Pass& pass = bench.agent.oneWake();
 
   EXPECT_EQ(pass.bound_ms, core::cycle::kWakeBoundMs);
-  EXPECT_EQ(pass.jobs_covered, 0);
-  EXPECT_EQ(pass.calls_no_room, 0);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 0);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().no_room, 0);
   EXPECT_EQ(pass.ending, Ending::kSlept);
   EXPECT_FALSE(bench.agent.world.restart_asked);
 }
@@ -334,8 +328,8 @@ TEST(AWakeOutlastsWhatItTookOn, ACallTheBoundHasNoRoomToFinishIsNotBegun) {
 
   // The heartbeat was not begun - the bound had no room to finish it - so nothing was claimed and
   // the cover never happened.
-  EXPECT_GE(pass.calls_no_room, 1);
-  EXPECT_EQ(pass.jobs_covered, 0);
+  EXPECT_GE(bench.agent.half().server.wakesRoom().no_room, 1);
+  EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 0);
   EXPECT_EQ(bench.agent.server().heartbeats.size(), 0u);
   EXPECT_EQ(bench.agent.server().claims, 0);
   // What was not sent waits as it does today: the job is still on the server's queue, and the

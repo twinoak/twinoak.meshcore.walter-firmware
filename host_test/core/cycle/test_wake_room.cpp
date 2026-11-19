@@ -237,7 +237,7 @@ TEST_CASE("the journal's wake entry carries the room the wake took on, and an ol
   core::cycle::WakePayload p{};
   p.wake = core::cycle::Wake::kTimer;
   p.jobs_covered = 2;
-  p.covered_s = 750;
+  p.bound_s = 750;
   p.calls_no_room = 1;
   std::uint8_t bytes[core::cycle::kWakePayloadBytes];
   core::cycle::encode(p, bytes);
@@ -249,7 +249,7 @@ TEST_CASE("the journal's wake entry carries the room the wake took on, and an ol
   core::cycle::WakePayload read{};
   REQUIRE(core::cycle::decode(entry, &read));
   CHECK(read.jobs_covered == 2);
-  CHECK(read.covered_s == 750);
+  CHECK(read.bound_s == 750);
   CHECK(read.calls_no_room == 1);
 
   // The entries a unit's flash already holds are still a page a person can read, and what they
@@ -258,7 +258,7 @@ TEST_CASE("the journal's wake entry carries the room the wake took on, and an ol
   core::cycle::WakePayload older{};
   REQUIRE(core::cycle::decode(entry, &older));
   CHECK(older.jobs_covered == 0);
-  CHECK(older.covered_s == 0);
+  CHECK(older.bound_s == 0);
   CHECK(older.calls_no_room == 0);
   CHECK(older.reached == p.reached);  // ... and v2's own two fields still read
 }

@@ -256,7 +256,7 @@ bool ModemUplink::call(CallKind what, const char* endpoint, const std::uint8_t* 
     const std::uint32_t left = room.leftForCallMs(deadline_ms_, &by_the_wake);
     if (left < kLeastCallMs) {
       counters_.budget = saturate(counters_.budget);
-      if (by_the_wake) counters_.no_room = saturate(counters_.no_room);
+      if (by_the_wake && room_.no_room < 0xFF) ++room_.no_room;
       std::snprintf(out.error, sizeof out.error,
                     "%s: %lu ms left of %s, and a call needs %lu to begin",
                     by_the_wake ? "no room" : "budget", static_cast<unsigned long>(left),
@@ -609,21 +609,23 @@ void ModemUplink::coverTheLeases(mm::ClaimedJob* jobs, int count) {
   }
   interfaces::WallTime now{};
   const std::uint32_t epoch = wall_.now(&now) ? now.epoch : 0;
-  const core::cycle::WakeRoom room(guard_, clock_);
-  cover_ = room.tookOn(count, latest, epoch);
-  if (cover_.lease_until_s == 0) return;  // nothing ends this wake, or no lease to cover
+  const core::cycle::WakeRoom wake_room(guard_, clock_);
+  const core::cycle::Cover cover = wake_room.tookOn(count, latest, epoch);
+  room_.jobs = cover.covered_s > 0 ? cover.jobs : 0;
+  room_.cut = cover.cut;
+  if (cover.lease_until_s == 0) return;  // nothing ends this wake, or no lease to cover
   for (int i = 0; i < count; ++i) {
-    if (jobs[i].leaseUntil != 0 && jobs[i].leaseUntil > cover_.lease_until_s) {
-      jobs[i].leaseUntil = cover_.lease_until_s;
+    if (jobs[i].leaseUntil != 0 && jobs[i].leaseUntil > cover.lease_until_s) {
+      jobs[i].leaseUntil = cover.lease_until_s;
     }
   }
-  if (cover_.cut) {
+  if (cover.cut) {
     LOG_W("server: the wake has room for %lu s of jobs, so a lease is cut to there: the library "
           "ends such a job `timeout` and the result goes while there is still room for it",
-          static_cast<unsigned long>(cover_.lease_until_s - epoch));
+          static_cast<unsigned long>(cover.lease_until_s - epoch));
   } else {
     LOG_I("server: the bound on this wake was raised to %lu s for %u job(s)",
-          static_cast<unsigned long>(cover_.bound_ms / 1000u), static_cast<unsigned>(cover_.jobs));
+          static_cast<unsigned long>(cover.bound_ms / 1000u), static_cast<unsigned>(cover.jobs));
   }
 }
 
