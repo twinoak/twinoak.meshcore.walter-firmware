@@ -115,6 +115,7 @@ idf_component_register(
        "power/interval_policy.cpp"
        "cycle/wake_reason.cpp"
        "cycle/wake_guard.cpp"
+       "cycle/wake_room.cpp"
        "cycle/sleep.cpp"
        "cycle/duty_cycle.cpp"
        # Where a wake was when it was ended (task p15-06): one retained line, written as the wake

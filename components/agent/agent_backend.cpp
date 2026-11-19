@@ -111,6 +111,12 @@ void AgentBackend::begin(void (*pump)()) {
   pump = &AgentBackend::pumpAndNote;
   if (p_.server != nullptr && p_.duty != nullptr) {
     p_.server->writeProgressTo(&p_.duty->progress());
+    // **The bound on the wake every call of this uplink is made in** (task p16-06,
+    // `core/cycle/wake_room.h`): the guard, so that a call takes what is left of the sooner of it
+    // and the exchange's deadline, and so that a claim can raise it to cover the leases it took
+    // on. The guard outlives this object - it is the duty cycle's, built before it in main.cpp -
+    // and a build with no duty cycle hands over nothing, which is a wake nothing bounds.
+    p_.server->boundedBy(&p_.duty->guard());
   }
   if (p_.mesh != nullptr && p_.duty != nullptr) {
     p_.mesh->writeProgressTo(&p_.duty->progress());
@@ -463,6 +469,11 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   budget.uplinkSeconds = left_s;
   budget.postBytes = kWakePostBytes;
 
+  // **What this wake's claim does to the bound on it is this wake's** (task p16-06): the figures
+  // are read out of the uplink after the wake, so the wake before's cannot be reported as this
+  // one's.
+  if (p_.server != nullptr) p_.server->forgetTheWakesRoom();
+
   report_ = p_.loop->wake(intent, budget);
   const bool ran = report_.why[0] == 0;
   if (ran) {
@@ -624,6 +635,18 @@ interfaces::Beat AgentBackend::beat(std::uint64_t deadline_ms) {
   takeFloodCounts();
   if (p_.calls != nullptr) (void)p_.calls->save();
   return interfaces::Beat::kFailed;
+}
+
+// **What this wake's claim did to the bound on it** (task p16-06), asked of this seam after the
+// exchange rather than carried in its answer: the uplink keeps the three bytes, because it is the
+// one place on this board where a claim's leases are known, and nothing else keeps a copy.
+interfaces::WakesRoom AgentBackend::roomTookOn() const {
+  interfaces::WakesRoom out;
+  if (p_.server == nullptr) return out;
+  const ModemUplink::WakesRoom& room = p_.server->wakesRoom();
+  out.jobs_covered = room.jobs;
+  out.calls_no_room = room.no_room;
+  return out;
 }
 
 // Why this wake sent nothing, or that it was answered (task p10-02).

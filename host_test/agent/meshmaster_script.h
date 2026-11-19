@@ -160,6 +160,15 @@ class MeshMasterScript {
     const auto at = lines_held_.find(job_id);
     return at == lines_held_.end() ? 0u : at->second;
   }
+  // **The airtime budget the heartbeat's reply hands out** (task p16-06). The unit's own is the
+  // default, 2 a minute with a 20 s gap; a server that gives a tighter one is what makes a job of
+  // a few transactions take the better part of an hour, which is the only way a test can reach
+  // the ceiling on a raised bound without an hour of simulated airtime.
+  void budgetIs(int per_minute, int gap_seconds) {
+    max_per_minute_ = per_minute;
+    gap_seconds_ = gap_seconds;
+  }
+
   // Whether a claim is held to the types the last heartbeat advertised. True is the server.
   bool route_by_job_types = true;
   // The types the last heartbeat offered, in order.
