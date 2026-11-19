@@ -17,6 +17,14 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   8 192, 4 096 and 4 096. The queue's length, the pool's size and the stacks are the library's
   Kconfig. One too few loses a line or an event without a word, so the high-water marks of a
   board come first.
+- [ ] **[later, found by 01] The byte bound refuses a big release before the image bound does, and
+  with the wrong reason.** `kMaxManifestBytes` is 8 192 (`core/image/receive.h` ~L92) and a manifest
+  filled to task 01's bounds — six images of five files — is **10 302 bytes** of canonical JSON, so a
+  release of more than about four images of four files is refused for its size before the parser sees
+  it, rather than at check 2 with the bound it broke. Today's biggest release is two images of four
+  files (3.4 KB), so nothing is refused today. The constant was out of 01's scope; only `receive.h`'s
+  comment, which claimed 8 KB was "anything this firmware could accept", was corrected. Whoever
+  takes this up: the two 8 KB buffers of the item below are the same constant.
 - [ ] **[later] A manifest's bytes seem to be held twice.** `fetch` is 10 104 bytes of `.bss` and
   `receiver` 9 424, and `kMaxManifestBytes` is 8 192 (`core/image/receive.h` ~L92;
   `core/update/fetch.h` ~L145: *static storage: the manifest, its signature, the URL*). The

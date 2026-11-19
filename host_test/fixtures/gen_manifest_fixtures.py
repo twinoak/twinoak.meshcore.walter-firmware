@@ -18,9 +18,11 @@ host_test/CMakeLists.txt runs this at build time. Two things come out:
     app_region lies outside the board profile, one requiring a link major this build does not
     speak, one requiring a newer Walter, ones whose file is the two-descriptor image, the
     broken-descriptor image or an image whose descriptor names another board, one with three
-    images, one with more images than the parser holds - each signed with the specification's
-    test key by spec/tools/manifestref.py, the reference, so that a verdict test can show a
-    refusal at each of the six checks after the signature has passed.
+    images, one with more images than the parser holds, one shaped as a repeater release really
+    is (two images of four files) and one filled to both of the parser's bounds (six images of
+    five) - each signed with the specification's test key by spec/tools/manifestref.py, the
+    reference, so that a verdict test can show a refusal at each of the six checks after the
+    signature has passed, and the bounds can be held against the releases there can be.
 
 The store's images (kStoreImages) are the same thing for task p2-02: a repeater image of a
 chosen size with its own descriptor and a manifest of its own, signed with the test key - so
@@ -42,9 +44,12 @@ sys.path.insert(0, os.path.join(REPO, "spec", "tools"))
 
 import manifestref  # noqa: E402
 
-# One more than core/image/manifest.h's kMaxImages: the "more images than the parser's bound"
-# case. The C++ test holds this against the constant, so a changed bound fails loudly.
-MANY_IMAGES = 9
+# core/image/manifest.h's two bounds, and one more image than the first of them: the "more images
+# than the parser's bound" case. The C++ test holds all three against the constants, so a changed
+# bound fails loudly. (Task p17-01 brought them down from 8 and 7.)
+MAX_IMAGES = 6
+MAX_FILES_PER_IMAGE = 5
+MANY_IMAGES = MAX_IMAGES + 1
 
 # The board region core/flasher/board_profile.h gives rak4630-single, and the one the
 # specification's fixture manifest carries as an example. The second lies inside the first, which
@@ -140,6 +145,10 @@ inline constexpr Variant kVariants[] = {
 };
 inline constexpr std::size_t kVariantCount = %(variant_count)d;
 
+// core/image/manifest.h's two bounds as this generator shaped the fixtures above for them, and one
+// image more than the first: the C++ tests hold each against the constant it mirrors.
+inline constexpr std::size_t kMaxImagesHere = %(max_images)d;
+inline constexpr std::size_t kMaxFilesPerImageHere = %(max_files_per_image)d;
 inline constexpr std::size_t kManyImages = %(many_images)d;
 
 // The images the image store's tests use (task p2-02), in kGeneratedDir: an swd image of a
@@ -357,6 +366,72 @@ def main(argv):
     manifestref.validate(m)
     variants.append(signed("repeater-many-images", manifestref.canonical(m),
                            "%d images, more than the parser holds: check 2" % MANY_IMAGES))
+
+    # ---- the releases there can be (task p17-01) -----------------------------------------------
+    # The bounds are 6 images of 5 files, and what makes them the right bounds is the shape of a
+    # release the tooling really writes. Two fixtures: the repeater's own release, and a manifest
+    # filled to both bounds at once. The spec's manifest-repeater-base.json is the one image with
+    # the four files a repeater release carries (swd, usb-dfu, usb-uf2, provision), so both are
+    # built from it, and manifestref.validate - the reference - passes each before it is signed.
+
+    def shaped_image(template, role, band, extra_debug=False):
+        """A copy of `template`'s image under another role and band, its file names with it."""
+        img = json.loads(json.dumps(template))
+        img["id"] = "%s.rak4630-single.%s" % (role, band)
+        img["role"] = role
+        img["band"] = band
+        for f in img["files"]:
+            if f["use"] != "provision":  # the base is one file under every image of the board
+                f["name"] = f["name"].replace("repeater", role).replace("-868-", "-%s-" % band)
+        if extra_debug:
+            img["files"].append({
+                "use": "debug",
+                "name": "twinoak-%s-rak4630-single-%s-v0.3.0.elf" % (role, band),
+                "format": "elf",
+                "size": 16384,
+                "sha256": hashlib.sha256(("elf %s %s" % (role, band)).encode("ascii")).hexdigest(),
+            })
+        return img
+
+    # The repeater's release as tools/release/build_release.py writes one: two images, four files
+    # each. Read on 19 November out of that repository's own out/release/manifest.json (two images,
+    # repeater and scanner on 868, each swd + usb-dfu + usb-uf2 + provision; 167 jsmn tokens).
+    m = json.loads(json.dumps(repeater_base))
+    m["images"] = [shaped_image(repeater_base["images"][0], "repeater", "868"),
+                   shaped_image(repeater_base["images"][0], "scanner", "868")]
+    manifestref.validate(m)
+    variants.append(signed("repeater-release-shape", manifestref.canonical(m),
+                           "the shape a repeater release has: two images of four files "
+                           "(swd, usb-dfu, usb-uf2, provision): accepted"))
+
+    # Filled to both bounds at once: MAX_IMAGES images - three roles in two bands, which is where
+    # the first bound comes from - of MAX_FILES_PER_IMAGE files, the most uses one image can have.
+    m = json.loads(json.dumps(repeater_base))
+    m["images"] = [shaped_image(repeater_base["images"][0], role, band, extra_debug=True)
+                   for band in ("868", "433") for role in ("repeater", "bridge", "scanner")]
+    assert len(m["images"]) == MAX_IMAGES, len(m["images"])
+    assert all(len(i["files"]) == MAX_FILES_PER_IMAGE for i in m["images"])
+    manifestref.validate(m)
+    variants.append(signed("repeater-bounds-full", manifestref.canonical(m),
+                           "a manifest filled to both bounds: %d images of %d files "
+                           "(swd, usb-dfu, usb-uf2, debug, provision): accepted"
+                           % (MAX_IMAGES, MAX_FILES_PER_IMAGE)))
+
+    # One file over the second bound, in the first image of that same manifest: the reference has
+    # no such rule and validates it, and the parser refuses it before validate() is reached.
+    m = json.loads(json.dumps(m))
+    m["images"][0]["files"].append({
+        "use": "debug",
+        "name": "twinoak-repeater-rak4630-single-868-v0.3.0-sixth.elf",
+        "format": "elf",
+        "size": 16384,
+        "sha256": hashlib.sha256(b"a sixth file").hexdigest(),
+    })
+    assert len(m["images"][0]["files"]) == MAX_FILES_PER_IMAGE + 1
+    manifestref.validate(m)
+    variants.append(signed("repeater-bounds-plus-file", manifestref.canonical(m),
+                           "the same, with a %dth file in its first image: check 2"
+                           % (MAX_FILES_PER_IMAGE + 1)))
 
     # ---- the image store's images (task p2-02) -------------------------------------------------
     # A repeater (or scanner) image of a chosen size, with a descriptor that agrees with a
@@ -686,6 +761,8 @@ def main(argv):
                                                                    c_string(v[5]))
                               for v in variants),
         "variant_count": len(variants),
+        "max_images": MAX_IMAGES,
+        "max_files_per_image": MAX_FILES_PER_IMAGE,
         "many_images": MANY_IMAGES,
         "store_images": "\n".join(
             "    {%s, %s, %s, %s, %d, %s, %s, %s, %s}," % (

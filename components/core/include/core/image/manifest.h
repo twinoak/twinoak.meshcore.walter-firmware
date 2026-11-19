@@ -9,8 +9,13 @@
 // an unknown `schema` or `product` is refused, by validate().
 //
 // The parser is a tokenizer (third_party/jsmn, vendored, no allocation) and a walk over its
-// tokens: the token array is a member of ManifestParser, 20 KB, so a parser lives in static
+// tokens: the token array is a member of ManifestParser, 12.5 KB, so a parser lives in static
 // storage and never on a task's stack (CONFIG_ESP_MAIN_TASK_STACK_SIZE is 3584).
+//
+// The three bounds below are therefore static DRAM at boot, which is this board's scarce resource
+// (docs/ARCHITECTURE.md §14): a token costs 20 bytes, a file 120 and an image 768, so a bound set
+// for a release nobody writes is paid for by every image. Task p17-01 sized them for the releases
+// there can be.
 #pragma once
 
 #include <cstddef>
@@ -24,21 +29,27 @@ namespace image {
 
 // -- the bounds, each with its reasoning -------------------------------------------------------
 
-// Images in one manifest. §2: an image is one role on one board in one band; the family today is
-// a handful of roles (repeater, bridge, scanner; manager for the Walter) on one board in two
-// bands (868, 433). Eight covers that and a dual adapter's second board; the Walter's own
-// manifest has one. A larger release is a release this firmware cannot read, said so at check 2.
-constexpr std::size_t kMaxImages = 8;
+// Images in one manifest. §2: an image is one role on one board in one band, and the roles §2
+// names for the radio are three (repeater, bridge, scanner) in two bands (868, 433) - six. The
+// Walter's own manifest has one image (manager.walter.lte-m), and a dual adapter's second radio
+// is another position for the same six, not a seventh image. Today's biggest release is two
+// images of four files. A larger release is a release this firmware cannot read, said so at
+// check 2 with the bound it broke.
+constexpr std::size_t kMaxImages = 6;
 
-// Files per image. §2 lists seven `use` values (swd, usb-dfu, usb-uf2, ota, factory, debug, and
-// `provision` - the board's base, §4a, from 2026-10-20) and a file is "one way of delivering that
-// image", so one per use is the most a well-formed image has.
-constexpr std::size_t kMaxFilesPerImage = 7;
+// Files per image. §2 lists seven `use` values and a file is "one way of delivering that image",
+// so one per use is the most a well-formed image has - but no board has all seven. `swd`,
+// `usb-dfu`, `usb-uf2` and `provision` (the board's base, §4a) are the radio's and `ota` and
+// `factory` are the Walter's, so with `debug` beside either the most one image can have is five:
+// swd, usb-dfu, usb-uf2, debug, provision on the radio; ota, factory, debug on the Walter. The
+// repeater's release tooling writes four an image, the Walter's two.
+constexpr std::size_t kMaxFilesPerImage = 5;
 
-// JSON tokens the parser can hold: a manifest filled to the two bounds above is ~850 tokens
-// (counted in manifest.cpp); 1024 leaves room for the optional `upstream` object and for fields
-// a later minor version of the schema adds, which §2 says are ignored.
-constexpr std::size_t kMaxJsonTokens = 1024;
+// JSON tokens the parser can hold: a manifest filled to the two bounds above, `upstream` and all,
+// is 569 tokens - the count manifest.cpp makes and asserts. The 71 over it are room for fields a
+// later minor version of the schema adds, which §2 says are ignored: ignored, but tokenized and
+// still counted. The repeater's release today is 167 tokens and the Walter's own 64.
+constexpr std::size_t kMaxJsonTokens = 640;
 
 // A file name: `<product>-<board>-<band>-v<X.Y.Z>[-factory].<ext>` is under 60 characters for
 // every name §2 and the fixtures show. 64 with the terminator. §2: "no path".
@@ -166,8 +177,13 @@ class ManifestParser {
   // default-constructed Manifest (nothing half-parsed escapes).
   ParseResult parse(const char* json, std::size_t size, Manifest* out);
 
+  // How many of kMaxJsonTokens the last parse took; 0 when the tokenizer refused the text. What
+  // makes the bound above checkable against a real release rather than argued about (task p17-01).
+  std::uint16_t tokenCount() const { return token_count_; }
+
  private:
   alignas(4) unsigned char tokens_[kMaxJsonTokens * kJsonTokenBytes];
+  std::uint16_t token_count_ = 0;
 };
 
 // -- validate(): manifestref.validate, rule for rule --------------------------------------------

@@ -16,13 +16,19 @@ namespace image {
 static_assert(sizeof(jsmntok_t) <= kJsonTokenBytes, "kJsonTokenBytes is smaller than a jsmn token");
 static_assert(alignof(jsmntok_t) <= 4, "a jsmn token needs more alignment than the token store gives");
 
-// Where kMaxJsonTokens comes from: a manifest filled to the bounds. Top level: the object, seven
+// Where kMaxJsonTokens comes from: a manifest filled to the bounds. Top level: the object, six
 // scalar fields (two tokens each), `link` (1 + 1 + 4), `upstream` (1 + 1 + 6), `images` (2) = 29.
 // Each image: the object, five strings (10), `app_region` (1 + 1 + 4), `requires` (1 + 1 + 4),
-// `files` (2) = 25, plus per file the object and six fields (13) * kMaxFilesPerImage = 91, so
-// 116 an image, 928 for kMaxImages, 957 in all (task p5-01 made kMaxFilesPerImage seven: §2's
-// seventh `use` is the base). Fields §2 does not know are ignored but still tokenized, so the
-// bound has room over that.
+// `files` (2) = 25, plus per file the object and six fields (13) * kMaxFilesPerImage = 65, so
+// 90 an image, 540 for kMaxImages, 569 in all. Fields §2 does not know are ignored but still
+// tokenized, so the bound has 71 tokens of room over that.
+//
+// Held against the releases there are: ManifestParser::tokenCount() says what a manifest really
+// took, and host_test/core/image/test_manifest.cpp reads the figures out of the fixtures - the
+// Walter's own manifest 64 tokens, the specification's repeater fixture 89, a repeater release of
+// two images of four files 171, a manifest filled to both bounds 569. (The repeater's own
+// out/release/manifest.json, read on 19 November, is 167: the same shape without this fixture's
+// `requires.walter`.)
 static_assert(29 + kMaxImages * (25 + kMaxFilesPerImage * 13) <= kMaxJsonTokens,
               "kMaxJsonTokens cannot hold a manifest filled to kMaxImages and kMaxFilesPerImage");
 
@@ -460,6 +466,7 @@ const char* describe(ParseError error) {
 
 ParseResult ManifestParser::parse(const char* json, std::size_t size, Manifest* out) {
   ParseResult result;
+  token_count_ = 0;
   if (out == nullptr) return result;
   *out = Manifest{};
   if (json == nullptr) {
@@ -478,6 +485,7 @@ ParseResult ManifestParser::parse(const char* json, std::size_t size, Manifest* 
     result.error = ParseError::kNotJson;
     return result;
   }
+  token_count_ = static_cast<std::uint16_t>(count);  // <= kMaxJsonTokens, which is 640
   const Doc doc(json, tokens, count);
   if (!doc.isObject(0) || doc.skip(0) != count) {
     result.error = ParseError::kNotAnObject;

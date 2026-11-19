@@ -902,7 +902,9 @@ line parsed strictly (`ed25519 <16 hex> <base64 of 64 bytes>`, one line, anythin
 signature"; the key chosen by id, an unknown id refused without trying the others); Ed25519 as
 RFC 8032 over a streamed SHA-512, with `S < L` checked before the arithmetic (TweetNaCl does not);
 the manifest parsed by a vendored no-heap tokenizer (jsmn) into fixed-size structures with named
-bounds — eight images, six files an image, 1024 tokens, the descriptor's string sizes — and
+bounds — six images, five files an image, 640 tokens, the descriptor's string sizes, each sized
+for the releases the two repositories' release tooling writes and not for a manifest filled to
+every `use` section 2 names (task p17-01) — and
 validated rule for rule as `manifestref.validate` does; the image chosen by the slot's role,
 board and band and the unit's version and link majors (S-7: a list); the file's size, SHA-256
 and the one descriptor in it checked in one pass over the bytes as they come; and for an `swd`
@@ -1865,9 +1867,20 @@ in neither heap: 16 220 free in DIRAM, 11 540 in DRAM, 16 384 wanted. One image 
 to spare and the next could not start, and the difference between them was 1 728 bytes of `.bss`.
 
 So the figure to watch is not the segment's headroom but **how close the scratch is to not fitting
-in DIRAM**: 1 404 bytes in v0.1.2, −412 in v0.1.3, **356 bytes in 0.1.4**. That is what
-`tools/heap_at_start.py` prints as *the tightest is N bytes*, and the next 357 bytes of `.data` or
-`.bss` anywhere in this firmware will move the scratch and fail the build.
+in DIRAM**: 1 404 bytes in v0.1.2, −412 in v0.1.3, 356 bytes in 0.1.4, 644 on the `main` of
+19 November, and **12 252 bytes since task p17-01**. That is what `tools/heap_at_start.py` prints
+as *the tightest is N bytes*, and the next 12 253 bytes of `.data` or `.bss` anywhere in this
+firmware will move the scratch and fail the build.
+
+**A bound of the release manifest is static memory, by the kilobyte.** The parser's token table is
+`kMaxJsonTokens` × 20 bytes and a parsed manifest is `kMaxImages` image entries of 768 bytes
+each, all of it inside the one `ImageVerdict` the firmware keeps as a static of `app_main`
+(`core/image/manifest.h`, §6 above) — so the three bounds there are sized for the releases the
+two repositories' release tooling really writes, and not for a manifest filled to every `use` the
+specification names at once. Task p17-01 brought them from eight images of seven files in 1 024
+tokens to six of five in 640, which took 11 608 bytes out of that object: the token table 7 680,
+the manifest's image array 3 456, and 240 each in the two accepted-image copies. The verdict was
+35 472 bytes of `.bss` and is 23 864, and the 644 above became 12 252.
 
 ### `tools/heap_at_start.py`
 

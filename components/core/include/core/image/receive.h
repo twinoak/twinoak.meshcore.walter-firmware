@@ -86,9 +86,12 @@ constexpr std::uint8_t kDone = 3;     // stored
 constexpr std::uint8_t kVersion = 2;
 
 // The manifest this firmware will read over the wire. The specification's own manifests are
-// 1.0 to 1.6 KB; a manifest filled to the parser's bounds (eight images of six files) is about
-// 7 KB of JSON, and the parser's token array is sized for it (core/image/manifest.h), so 8 KB is
-// "anything this firmware could accept" and one byte more is refused before it is buffered.
+// 1.0 to 1.6 KB and a repeater release of two images of four files is 3.4 KB, so 8 KB is "a
+// release bigger than any that is published", and one byte more is refused before it is buffered.
+// It is **not** the same bound as the parser's: a manifest filled to the parser's six images of
+// five files is 10 302 bytes of canonical JSON (core/image/manifest.h), so for a release of more
+// than about four images this bound is the one that refuses it, and it refuses it here rather
+// than at check 2 with the bound it broke. tasks/phase-17/FOLLOWUPS.md holds that.
 constexpr std::size_t kMaxManifestBytes = 8192;
 
 // §3: one line of ASCII, `ed25519 <16 hex> <88 characters of base64>` - 114 bytes with its
