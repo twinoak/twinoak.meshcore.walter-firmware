@@ -18,14 +18,30 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   the proof, on a spare board, before the release that carries it. The unit in service is
   covered by the trial and the rollback if a boot fails, and by the fall-back to the heap if
   the PSRAM does not come up; neither is a reason to skip the bench.
+  **Still open, and now about merged firmware** (task p17-02, 19 November): task 05's
+  implementation was reverted for want of 5 256 bytes and is back, so the items exist and are
+  written — `docs/bench.md` §1, *The PSRAM, proved by a Walter with no radio at all* (`heap`,
+  `heap room`, `heap`), *No kilobyte lost against the release before* and *A wake with no session
+  is as long as it was*; §9, *A minute of `scope` in 64 kB of PSRAM*. Nothing has changed about
+  what is unproved: no test in this repository can bring a PSRAM up, and the first proof is a
+  board.
 - [ ] **[later] Where no PSRAM comes up, one step's lines are 8 192 bytes**, because that is
   what the heap of a unit in service has in one piece: *27472 bytes free, largest free block
   12288* by its own report in November. A minute of `scope` at 250 points then ends `full`
   after about thirteen frames. Every session's `room` line says which room it had.
+  **This is now the fall-back and not the rule** (task p17-02, 19 November): a board whose PSRAM
+  answers gets 64 kB, and the 8 192 bytes are what a board with none, with the 8 MB octal
+  variant, or with a chip that fails its pattern still gets. The `room` line of every session
+  says which, so the question *how often is it the small room* is answerable from what units
+  post rather than guessed at — and nothing has measured it yet, because no board has run this.
 - [ ] **[later] 64 kB a step is a choice, not a limit.** The PSRAM has 2 MB. What bounds the
   room is what leaves the board: six steps of it are 384 kB against the 512 kB meshmaster.dk
   keeps of a session, and every 8 kB is a post over LTE-M. A `hist` of the whole band (about
   56 kB) now fits; a `scope` of 2048 points at a frame a second for a minute (160 kB) does not.
+  **True of merged firmware since task p17-02** (19 November), and the one number to change is
+  `core::update::kStepBytesExternal`. What it would cost is the uplink and nothing else: the room
+  itself is external memory with 2 MB behind it, and no byte of static DRAM moves with it. The
+  figure to decide it on is the `room` line units post, which no board has written yet.
 - [ ] **[later] A session lives inside one wake.** A night of sweeps, one every ten minutes
   with the Walter asleep between, is what NoiseScope's `auto` is for and what this pile does
   not do: it would leave the site without a repeater for the night, and the scanner's lines

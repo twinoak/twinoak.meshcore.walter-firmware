@@ -488,8 +488,21 @@ def build_heaps(cfg: dict, sym: dict) -> tuple[list[Heap], list[tuple]]:
         regions.append((0x3FCF0000, 0x8000, DRAM, False))
     if on(cfg, "CONFIG_ESP32S3_DATA_CACHE_16KB"):
         regions.append((0x3C000000, 0x4000, DRAM, False))
-    if on(cfg, "CONFIG_SPIRAM"):
-        raise SystemExit("this build has PSRAM; the model was written for the board, which has none")
+    # PSRAM (task p16-05). This firmware configures the module's 2 MB with CONFIG_SPIRAM_BOOT_INIT
+    # **off**: nothing of the external memory is mapped or registered as a heap at boot, and
+    # esp_psram.c's own ESP_SYSTEM_INIT_FN(add_psram_to_heap) - the function that would add a
+    # region here - is inside `#if CONFIG_SPIRAM_BOOT_INIT`. So at the moment this model is about,
+    # the creation of the main task, the heap is the internal regions below and nothing else, and
+    # the model is as true of this build as of one with no PSRAM at all. A build that brought it
+    # up at boot would have a region the model does not know, and a region the main task's stack
+    # could never come out of either, so it stops rather than guess.
+    if on(cfg, "CONFIG_SPIRAM") and on(cfg, "CONFIG_SPIRAM_BOOT_INIT"):
+        raise SystemExit("this build brings its PSRAM up at boot (CONFIG_SPIRAM_BOOT_INIT); the "
+                         "model does not know that region")
+    if on(cfg, "CONFIG_SPIRAM") and (on(cfg, "CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY")
+                                     or on(cfg, "CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY")):
+        raise SystemExit("this build puts .bss or .noinit in external memory; the model reads "
+                         "them out of the map as internal")
     if on(cfg, "CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP"):
         regions.append((SOC_RTC_DRAM_LOW, 0x2000, RTCRAM, False))
 
