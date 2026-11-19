@@ -3,6 +3,9 @@
 // spec/tools/manifestref.py's validate() gives it, or the parser's own where a bound is exceeded.
 // The refusals are made by editing the fixture's text, so that each is one change away from a
 // manifest that validates.
+//
+// Task p17-01 added the last test case: the three bounds held against the releases the two
+// repositories' release tooling really writes, and against a manifest filled to both of them.
 #include <doctest.h>
 
 #include <cstring>
@@ -42,13 +45,15 @@ std::string edited(const std::string& text, const std::string& from, const std::
 struct Parsed {
   ParseResult result;
   Manifest manifest;
+  unsigned tokens = 0;  // what the tokenizer really took of kMaxJsonTokens
 };
 
 Parsed parse(const std::string& text) {
-  // The parser's tokens are 20 KB: one static, as the firmware will keep it.
+  // The parser's tokens are 12.5 KB: one static, as the firmware will keep it.
   static ManifestParser parser;
   Parsed p;
   p.result = parser.parse(text.data(), text.size(), &p.manifest);
+  p.tokens = parser.tokenCount();
   return p;
 }
 
@@ -352,10 +357,14 @@ TEST_CASE("refused by the parser: not JSON, not one object, and the bounds, each
     CHECK(p.manifest.images[0].file_count == core::image::kMaxFilesPerImage);
   }
   SUBCASE("more tokens than the parser holds") {
+    // A member of kMaxJsonTokens tokens the schema does not know: ignored, but tokenized, and the
+    // table is the bound. 640 of them over a manifest of 89 is well past it.
     std::string big = "\"padding\": [";
     for (std::size_t i = 0; i < core::image::kMaxJsonTokens; ++i) big += (i ? ", 1" : "1");
     big += "], ";
     CHECK(parseErrorOf(edited(r, "\"schema\": 1,", big + "\"schema\": 1,")) == ParseError::kTooManyTokens);
+    CHECK(std::string(core::image::describe(ParseError::kTooManyTokens)) ==
+          "too large: more JSON tokens than this firmware holds");
   }
   SUBCASE("a string longer than its field, naming the field") {
     const Parsed v = parse(edited(r, "0.3.0+abc1234", std::string(core::image::kVersionSize, 'v')));
@@ -384,6 +393,100 @@ TEST_CASE("refused by the parser: not JSON, not one object, and the bounds, each
     REQUIRE_FALSE(p.result.ok);
     const Manifest blank{};
     CHECK(std::memcmp(&p.manifest, &blank, sizeof(Manifest)) == 0);
+  }
+}
+
+TEST_CASE("the bounds are the releases there can be (task p17-01)") {
+  // The three bounds are static DRAM at boot (docs/ARCHITECTURE.md §14), so they are sized for the
+  // releases the two repositories' release tooling really writes - not for a manifest filled to
+  // every `use` section 2 names at once, which no board has. Each fixture here is signed and
+  // validated by spec/tools/manifestref.py, the reference, before it reaches this parser.
+  REQUIRE(core::image::kMaxImages == 6);
+  REQUIRE(core::image::kMaxFilesPerImage == 5);
+  REQUIRE(core::image::kMaxJsonTokens == 640);
+  REQUIRE(fixtures::kMaxImagesHere == core::image::kMaxImages);
+  REQUIRE(fixtures::kMaxFilesPerImageHere == core::image::kMaxFilesPerImage);
+
+  SUBCASE("a repeater release: two images of four files, swd usb-dfu usb-uf2 provision") {
+    // The shape tools/release/build_release.py of the repeater repository writes, one image per
+    // build directory and the vendored base under each (its out/release/manifest.json of
+    // 19 November is two images of exactly these four uses).
+    const Parsed p = parse(fixtures::asText(fixtures::readGenerated("repeater-release-shape.json")));
+    REQUIRE_MESSAGE(p.result.ok, core::image::describe(p.result.error));
+    REQUIRE(p.manifest.image_count == 2);
+    const Use expected[] = {Use::kSwd, Use::kUsbDfu, Use::kUsbUf2, Use::kProvision};
+    for (std::uint8_t i = 0; i < p.manifest.image_count; ++i) {
+      const core::image::ImageEntry& image = p.manifest.images[i];
+      REQUIRE(image.file_count == 4);
+      for (std::size_t f = 0; f < 4; ++f) CHECK(image.files[f].use == expected[f]);
+    }
+    CHECK(std::string(p.manifest.images[0].id) == "repeater.rak4630-single.868");
+    CHECK(std::string(p.manifest.images[1].id) == "scanner.rak4630-single.868");
+    CHECK(validate(p.manifest).ok);
+    CHECK(p.tokens == 171);
+    MESSAGE("a repeater release: 2 images of 4 files, " << p.tokens << " of "
+            << core::image::kMaxJsonTokens << " tokens");
+  }
+  SUBCASE("the Walter's own release: one image, ota and factory") {
+    const Parsed p = parse(walterText());
+    REQUIRE(p.result.ok);
+    REQUIRE(p.manifest.image_count == 1);
+    REQUIRE(p.manifest.images[0].file_count == 2);
+    CHECK(p.manifest.images[0].files[0].use == Use::kOta);
+    CHECK(p.manifest.images[0].files[1].use == Use::kFactory);
+    CHECK(validate(p.manifest).ok);
+    CHECK(p.tokens == 64);
+    MESSAGE("the Walter's own manifest: " << p.tokens << " of " << core::image::kMaxJsonTokens
+            << " tokens");
+  }
+  SUBCASE("the specification's own repeater fixture") {
+    const Parsed p = parse(repeaterText());
+    REQUIRE(p.result.ok);
+    CHECK(p.tokens == 89);
+  }
+  SUBCASE("filled to both bounds: six images of five files, and the token bound holds") {
+    const Parsed p = parse(fixtures::asText(fixtures::readGenerated("repeater-bounds-full.json")));
+    REQUIRE_MESSAGE(p.result.ok, core::image::describe(p.result.error));
+    REQUIRE(p.manifest.image_count == core::image::kMaxImages);
+    const Use expected[] = {Use::kSwd, Use::kUsbDfu, Use::kUsbUf2, Use::kProvision, Use::kDebug};
+    for (std::uint8_t i = 0; i < p.manifest.image_count; ++i) {
+      REQUIRE(p.manifest.images[i].file_count == core::image::kMaxFilesPerImage);
+      for (std::size_t f = 0; f < core::image::kMaxFilesPerImage; ++f) {
+        CHECK(p.manifest.images[i].files[f].use == expected[f]);
+      }
+    }
+    CHECK(validate(p.manifest).ok);
+    // 521 tokens, and manifest.cpp's static_assert allows 569 - the same count with a
+    // `load_address` on every file, which only swd, ota and factory have. Both inside 640.
+    CHECK(p.tokens == 521);
+    const std::size_t generous = 29 + core::image::kMaxImages * (25 + core::image::kMaxFilesPerImage * 13);
+    CHECK(generous == 569);
+    CHECK(generous <= core::image::kMaxJsonTokens);
+    MESSAGE("filled to both bounds: " << p.tokens << " tokens, the counted bound " << generous
+            << ", the table " << core::image::kMaxJsonTokens);
+  }
+  SUBCASE("one image more: too many images; one file more: too many files") {
+    REQUIRE(fixtures::kManyImages == core::image::kMaxImages + 1);
+    CHECK(parseErrorOf(fixtures::asText(fixtures::readGenerated("repeater-many-images.json"))) ==
+          ParseError::kTooManyImages);
+    CHECK(parseErrorOf(fixtures::asText(fixtures::readGenerated("repeater-bounds-plus-file.json"))) ==
+          ParseError::kTooManyFiles);
+    CHECK(std::string(core::image::describe(ParseError::kTooManyImages)) ==
+          "more images than this firmware holds");
+    CHECK(std::string(core::image::describe(ParseError::kTooManyFiles)) ==
+          "more files in one image than this firmware holds");
+  }
+  SUBCASE("what the bounds cost in static storage") {
+    // The figures core/image/manifest.h's reasoning gives, and what task p17-01 gave back: the
+    // token table 20 480 bytes before it and 12 800 after, and a Manifest 8 064 bytes of image
+    // entries before and 4 608 after.
+    CHECK(sizeof(core::image::FileEntry) == 120);
+    CHECK(sizeof(core::image::ImageEntry) == 768);
+    CHECK(core::image::kMaxJsonTokens * core::image::kJsonTokenBytes == 12800u);
+    CHECK(sizeof(ManifestParser) <= 12800u + 8u);
+    MESSAGE("a file " << sizeof(core::image::FileEntry) << " bytes, an image "
+            << sizeof(core::image::ImageEntry) << ", a Manifest " << sizeof(Manifest)
+            << ", the parser " << sizeof(ManifestParser));
   }
 }
 

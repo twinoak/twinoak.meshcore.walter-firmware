@@ -902,7 +902,9 @@ line parsed strictly (`ed25519 <16 hex> <base64 of 64 bytes>`, one line, anythin
 signature"; the key chosen by id, an unknown id refused without trying the others); Ed25519 as
 RFC 8032 over a streamed SHA-512, with `S < L` checked before the arithmetic (TweetNaCl does not);
 the manifest parsed by a vendored no-heap tokenizer (jsmn) into fixed-size structures with named
-bounds — eight images, six files an image, 1024 tokens, the descriptor's string sizes — and
+bounds — six images, five files an image, 640 tokens, the descriptor's string sizes, each sized
+for the releases the two repositories' release tooling writes and not for a manifest filled to
+every `use` section 2 names (task p17-01) — and
 validated rule for rule as `manifestref.validate` does; the image chosen by the slot's role,
 board and band and the unit's version and link majors (S-7: a list); the file's size, SHA-256
 and the one descriptor in it checked in one pass over the bytes as they come; and for an `swd`
