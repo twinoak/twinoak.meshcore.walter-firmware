@@ -259,7 +259,8 @@ class ImageVerdict {
   AcceptedImage accepted_;
   bool has_accepted_ = false;
   // The base's reader and what it last found. ~2.5 KB, which is why an ImageVerdict belongs in
-  // static storage (as it did before: the parser's tokens are 20 KB of it).
+  // static storage (as it did before: the parser's tokens are 12.5 KB of it, and the two
+  // ImageEntry copies below 768 bytes each - task p17-01 took 11 608 bytes out of this object).
   BaseReader base_reader_;
   BaseResult base_result_;
   AcceptedBase accepted_base_;
