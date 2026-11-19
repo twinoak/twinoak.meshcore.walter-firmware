@@ -122,8 +122,10 @@ platform::EspHeap g_heap;
 platform::EspHeapReport g_heap_report;
 // Room borrowed for the length of one command and handed straight back (task p16-01,
 // interfaces/scratch.h): `rak say` takes 8 192 bytes of the internal heap to hold a scanner's
-// lines whole. Like the report above it holds no state and nothing of it is in the start-up
-// arrangement tools/heap_at_start.py judges - what it hands out is taken long after app_main.
+// lines whole, and a step of a session takes 64 kB of the module's PSRAM (task p16-05). Its only
+// state is one flag - whether anything has asked for the PSRAM in this boot - and nothing of it
+// is in the start-up arrangement tools/heap_at_start.py judges: what it hands out, the PSRAM's
+// own mapping and heap pool included, is taken long after app_main.
 platform::EspScratch g_scratch;
 platform::FlashPartition g_rakfw;
 platform::FlashPartition g_journal_partition;
@@ -211,9 +213,12 @@ mm::LogLevel agentLogLevel(core::settings::Level level) {
 // The library's objects that must never be stack locals (docs/library.md §6: the runner alone is
 // tens of kilobytes of buffers every job shares, far more than the task stack). The loop is small
 // - mostly its 64-entry observation ring - and stays at namespace scope. The runner is ~64 kB and
-// the scratch a kept image is built in (agent/IRetained.h) ~20 kB, and this board has no PSRAM
-// (sdkconfig.defaults) and too little internal DRAM to hold both in the static `.bss` segment
-// beside the console and the update verdict. So they are taken from the heap once at boot - never
+// the scratch a kept image is built in (agent/IRetained.h) ~20 kB, and this board has too little
+// internal DRAM to hold both in the static `.bss` segment beside the console and the update
+// verdict. The module's PSRAM is no answer to that: it is switched on for one buffer, the room of
+// a session, and nothing this board needs in order to boot, to keep its radio, to update or to
+// reach the server may come to depend on it (sdkconfig.defaults, rail R24). So they are taken
+// from the heap once at boot - never
 // a local, never freed, so the whole-run lifetime the library asks for still holds - and reached
 // through a namespace-scope pointer. See tasks/phase-4/reports/05.md, decisions.
 //

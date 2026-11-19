@@ -752,8 +752,12 @@ Parsed parseLine(const char* line) {
   // The heap at this moment (task p11-02). No argument: it reads four figures and decides
   // nothing - what decides is tools/heap_at_start.py, before the image is ever flashed.
   if (std::strcmp(verb, "heap") == 0) {
-    if (hasRest) return refuse("heap takes no argument");
-    return accept(Verb::kHeap);
+    if (!hasRest) return accept(Verb::kHeap);
+    // `heap room` (task p16-05): the room a session's step would get, taken, proved and given
+    // back. The only argument, because the only other thing to say about the heap is the figures
+    // the bare word already prints.
+    if (std::strcmp(rest, "room") == 0) return accept(Verb::kHeapRoom);
+    return refuse2("heap takes no argument, or 'room': ", rest);
   }
   // The core dump the panic handler left behind (task p11-03). `coredump` reads; `coredump erase
   // confirm` is the **only** way a dump is ever lost - the one of 9 November was read because
