@@ -52,6 +52,16 @@ std::uint32_t WakeGuard::awakeMs() const {
   return armed_ ? static_cast<std::uint32_t>(clock_.nowMs() - armed_at_ms_) : 0;
 }
 
+std::uint32_t WakeGuard::leftOfBoundMs() const {
+  // The clock now and not `status_.left_ms`, for the reason the header gives: what a wake has
+  // room for is worked out between two ticks (task p16-06). 0 is "the bound has passed", which
+  // the next `tick()` ends the wake on; `boundApplies()` is what tells that from "nothing ends
+  // this wake".
+  if (status_.state != Guard::kArmed) return 0;
+  const std::uint32_t awake = static_cast<std::uint32_t>(clock_.nowMs() - armed_at_ms_);
+  return awake >= bound_ms_ ? 0 : bound_ms_ - awake;
+}
+
 std::uint32_t WakeGuard::endsAfterCableMs() const {
   // `stay` and a disarmed guard are the two states nothing would end.
   if (!armed_ || staying_ || overrun_) return 0;

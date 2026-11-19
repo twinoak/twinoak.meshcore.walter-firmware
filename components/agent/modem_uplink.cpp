@@ -242,21 +242,31 @@ bool ModemUplink::call(CallKind what, const char* endpoint, const std::uint8_t* 
     return false;
   }
 
-  // The wake's deadline: what is left of it is this call's whole, and too little is no call.
+  // **The sooner of the exchange's deadline and the bound on the wake**: what is left of it is
+  // this call's whole, and too little is no call (task p16-06, `core/cycle/wake_room.h`). The
+  // deadline alone was what this read before, and in a wake of the cycle's own the two could be
+  // the better part of an hour apart - which is how the night of 17 November 2026 spent five
+  // minutes inside an exchange that thought it had thirty-nine and was ended by reset. A call
+  // bounded by the wake it is in always finishes inside it, because `total_ms` is what the
+  // transport is given.
   std::uint32_t total_ms = 0;
-  if (deadline_ms_ != 0) {
-    const std::uint64_t now_ms = clock_.nowMs();
-    const std::uint64_t left = now_ms < deadline_ms_ ? deadline_ms_ - now_ms : 0;
+  if (deadline_ms_ != 0 || guard_ != nullptr) {
+    bool by_the_wake = false;
+    const core::cycle::WakeRoom room(guard_, clock_);
+    const std::uint32_t left = room.leftForCallMs(deadline_ms_, &by_the_wake);
     if (left < kLeastCallMs) {
       counters_.budget = saturate(counters_.budget);
+      if (by_the_wake) counters_.no_room = saturate(counters_.no_room);
       std::snprintf(out.error, sizeof out.error,
-                    "budget: %lu ms left of the wake's uplink deadline, and a call needs %lu to begin",
-                    static_cast<unsigned long>(left), static_cast<unsigned long>(kLeastCallMs));
+                    "%s: %lu ms left of %s, and a call needs %lu to begin",
+                    by_the_wake ? "no room" : "budget", static_cast<unsigned long>(left),
+                    by_the_wake ? "the bound on this wake" : "the wake's uplink deadline",
+                    static_cast<unsigned long>(kLeastCallMs));
       LOG_W("server: %s %s", endpoint_, out.error);
       last_call_ = out;
       return false;
     }
-    total_ms = static_cast<std::uint32_t>(left);
+    if (left != core::cycle::kNoLimitMs) total_ms = left;
   }
 
   // The token: the store -> this one buffer -> the request head, and wiped. The pointer the
@@ -567,7 +577,54 @@ bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count) {
     return false;
   }
   offerServerTime(server_time);
+  coverTheLeases(jobs, count);
   return true;
+}
+
+// **The wake's bound made to cover what the claim took on** (task p16-06, `core/cycle/wake_room.h`).
+//
+// Here and nowhere else: this is the one place on this board where a claim's leases are known,
+// and it is before the runner is handed a single one of them. The server's time is offered to the
+// clock one line above, so what the lease is measured against is as fresh as the claim.
+//
+// Two things happen, and the second only when the first was not enough:
+//
+//   the bound   raised to the end of the latest lease among the jobs and the room for the calls
+//               that come after them - a result for each and the observations, each at the modem's
+//               command timeout. `WakeGuard::allow()` never lowers a bound, so an apply, a
+//               session, a climb and the console's `agent wake` keep theirs.
+//   the lease   where `kRaisedBoundMax` cuts the bound short of a lease, **the lease is cut** to
+//               where the room for those calls begins. The copied library then ends the job
+//               `timeout` by its own rule and the result is posted: the server hears that its job
+//               was not done, which is what the night of 17 November 2026 never told it.
+//
+// The leases a *claim* carries are what the server granted; a lease the job then extends is the
+// server's answer and is not written back into the library's copy (`firmware_jobs.cpp`,
+// `extendLease`), so this cut is not undone behind this board's back.
+void ModemUplink::coverTheLeases(mm::ClaimedJob* jobs, int count) {
+  if (jobs == nullptr || count <= 0) return;
+  std::uint32_t latest = 0;
+  for (int i = 0; i < count; ++i) {
+    if (jobs[i].leaseUntil > latest) latest = jobs[i].leaseUntil;
+  }
+  interfaces::WallTime now{};
+  const std::uint32_t epoch = wall_.now(&now) ? now.epoch : 0;
+  const core::cycle::WakeRoom room(guard_, clock_);
+  cover_ = room.tookOn(count, latest, epoch);
+  if (cover_.lease_until_s == 0) return;  // nothing ends this wake, or no lease to cover
+  for (int i = 0; i < count; ++i) {
+    if (jobs[i].leaseUntil != 0 && jobs[i].leaseUntil > cover_.lease_until_s) {
+      jobs[i].leaseUntil = cover_.lease_until_s;
+    }
+  }
+  if (cover_.cut) {
+    LOG_W("server: the wake has room for %lu s of jobs, so a lease is cut to there: the library "
+          "ends such a job `timeout` and the result goes while there is still room for it",
+          static_cast<unsigned long>(cover_.lease_until_s - epoch));
+  } else {
+    LOG_I("server: the bound on this wake was raised to %lu s for %u job(s)",
+          static_cast<unsigned long>(cover_.bound_ms / 1000u), static_cast<unsigned>(cover_.jobs));
+  }
 }
 
 bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t len) {

@@ -4300,9 +4300,31 @@ void Console::wake() {
   printf("awake %lu s: %s\n", static_cast<unsigned long>(g.awake_ms / 1000u),
          cycle::describe(g.state));
   if (g.state == cycle::Guard::kArmed) {
+    // **The bound as it stands, raised or not** (task p16-06). It printed `kWakeBoundMs` whatever
+    // the bound really was, which was wrong the moment anything raised one - and since this task a
+    // claim of a leased job raises it at an ordinary wake.
     printf("  %lu s of the %lu s bound left; after it the wake is ended by a reset\n",
            static_cast<unsigned long>(g.left_ms / 1000u),
-           static_cast<unsigned long>(cycle::kWakeBoundMs / 1000u));
+           static_cast<unsigned long>(g.bound_ms / 1000u));
+    if (g.bound_ms > cycle::kWakeBoundMs) {
+      printf("  it was raised from the ordinary %lu s\n",
+             static_cast<unsigned long>(cycle::kWakeBoundMs / 1000u));
+    }
+  }
+  // **And what this wake took on**, which is what raised it at an ordinary wake (task p16-06):
+  // the leases of the jobs its claim took, and a call the bound then had no room to begin. The
+  // live pass and not the journal's record, because the record is written at step 10 and this is
+  // printed from inside the wake.
+  if (cycle_ != nullptr) {
+    const cycle::Pass& pass = cycle_->last();
+    if (pass.jobs_covered != 0) {
+      printf("  the bound was raised to %lu s for %u job(s)\n",
+             static_cast<unsigned long>(pass.covered_s), static_cast<unsigned>(pass.jobs_covered));
+    }
+    if (pass.calls_no_room != 0) {
+      printf("  %u call(s) were not begun: the bound had no room to finish one\n",
+             static_cast<unsigned>(pass.calls_no_room));
+    }
   }
   if (g.staying) {
     printf("  'stay' is on: %lu s left of it ('stay off' ends it)\n",
@@ -4758,6 +4780,17 @@ void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
   if ((p.flags & cycle::kWakeFlagShortened) != 0) print("; the sleep was shortened");
   if (p.carried != interfaces::Ask::kNothing) printf("; %s", interfaces::describe(p.carried));
   print("\n");
+  // **The room the wake took on** (task p16-06), on a line of its own: the line above is already
+  // near the 200 bytes a console line is printed into, and this clause is only on the wakes that
+  // claimed something or ran out of room.
+  if (p.jobs_covered != 0) {
+    printf("       the bound was raised to %lu s for %u job(s)\n",
+           static_cast<unsigned long>(p.covered_s), static_cast<unsigned>(p.jobs_covered));
+  }
+  if (p.calls_no_room != 0) {
+    printf("       %u call(s) were not begun: the bound had no room to finish one\n",
+           static_cast<unsigned>(p.calls_no_room));
+  }
 }
 
 // ------------------------------------------------------------------------ the mesh client (p4-02)

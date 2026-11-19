@@ -65,6 +65,7 @@
 
 #include "core/cycle/agent_attention.h"
 #include "core/cycle/wake_progress.h"
+#include "core/cycle/wake_room.h"
 #include "core/cycle/wake_counters.h"
 #include "core/net/client.h"
 #include "core/settings/settings.h"
@@ -161,6 +162,7 @@ struct UplinkCounters {
   std::uint32_t payloads_kept = 0;   // extension payloads kept out of claims (task p4-05)
   std::uint32_t payloads_too_long = 0;  // ... and ones that did not fit kExtensionPayloadBytes
   std::uint32_t withheld = 0;        // results not posted because the extension left the job leased
+  std::uint32_t no_room = 0;         // refused: the bound on the wake had no room to finish a call
 };
 
 class ModemUplink final : public mm::IUplink {
@@ -223,6 +225,25 @@ class ModemUplink final : public mm::IUplink {
   void setClock(mm::IClock* clock) { agent_clock_ = clock; }
   // Who may withhold a result (task p4-05): the firmware jobs. nullptr posts every result.
   void setResultGate(ResultGate* gate) { gate_ = gate; }
+
+  // **The bound on the wake these calls are being made in** (task p16-06,
+  // `core/cycle/wake_room.h`). Two things come of it, and `core/cycle/wake_room.h` says why:
+  //
+  //   every call takes what is left of the **sooner** of the deadline above and the bound, so a
+  //   call is never begun that the wake has no room to finish and the wake is never reset in the
+  //   middle of one;
+  //   a claim raises the bound to cover the leases it took on, and cuts a lease the ceiling
+  //   cannot cover down to where the room for the result's call begins.
+  //
+  // The guard and not a room object: the arithmetic is a value built on the stack where it is
+  // needed, and this is the one pointer that costs anything. Null is a build with no duty cycle -
+  // every test that makes an exchange by hand - and then nothing of this applies and a call takes
+  // what is left of the deadline, as it did before this task.
+  void boundedBy(core::cycle::WakeGuard* guard) { guard_ = guard; }
+  // What the last claim of this wake did to the bound, for the record (task p16-06). Cleared by
+  // `forgetCover()` at the top of every wake.
+  const core::cycle::Cover& lastCover() const { return cover_; }
+  void forgetCover() { cover_ = core::cycle::Cover{}; }
 
   // The payload text of a `twinoak.*` job of the last claim, by id, or nullptr: what the
   // extension reads its fields from (task p4-05). Empty text is a payload that did not fit.
@@ -301,6 +322,10 @@ class ModemUplink final : public mm::IUplink {
   // p15-07): the other half of the line above, in the one place every call passes through.
   void noteAnsweredCall(CallKind what);
   void offerServerTime(std::uint32_t epoch);
+  // The wake's bound raised to cover a claim's leases, and a lease cut where it cannot be (task
+  // p16-06). Called by `claimJobs` with the jobs as the library parsed them, before the runner
+  // sees one.
+  void coverTheLeases(mm::ClaimedJob* jobs, int count);
   void wipeSecret();
   void wipeReply();
   // The `twinoak.*` jobs' payloads out of a claim's bytes, before the library parses them in
@@ -323,6 +348,8 @@ class ModemUplink final : public mm::IUplink {
   core::cycle::WakeProgress* progress_ = nullptr;
   core::cycle::AgentAttention* attention_ = nullptr;
   ResultGate* gate_ = nullptr;
+  core::cycle::WakeGuard* guard_ = nullptr;
+  core::cycle::Cover cover_{};
   KeptPayload payloads_[mm::kClaimMax];
   int payload_count_ = 0;
 

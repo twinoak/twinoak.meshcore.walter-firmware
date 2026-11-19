@@ -1,6 +1,7 @@
 #include "core/cycle/wake_cycle.h"
 
 #include "core/cycle/agent_attention.h"
+#include "core/cycle/wake_room.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -281,6 +282,10 @@ void encode(const WakePayload& p, std::uint8_t out[kWakePayloadBytes]) {
   put32(out + 28, p.wakes);
   out[32] = static_cast<std::uint8_t>(p.reached);
   put32(out + 33, p.owed_s);
+  out[37] = p.jobs_covered;
+  out[38] = static_cast<std::uint8_t>(p.covered_s & 0xFF);
+  out[39] = static_cast<std::uint8_t>((p.covered_s >> 8) & 0xFF);
+  out[40] = p.calls_no_room;
 }
 
 bool decode(const update::Entry& e, WakePayload* out) {
@@ -311,10 +316,19 @@ bool decode(const update::Entry& e, WakePayload* out) {
   out->wakes = get32(e.payload + 28);
   out->reached = interfaces::Reached::kUnsaid;
   out->owed_s = 0;
-  if (e.size >= kWakePayloadBytes) {
+  out->jobs_covered = 0;
+  out->covered_s = 0;
+  out->calls_no_room = 0;
+  if (e.size >= kWakePayloadBytesV2) {
     if (e.payload[32] >= static_cast<std::uint8_t>(interfaces::Reached::kCount)) return false;
     out->reached = static_cast<interfaces::Reached>(e.payload[32]);
     out->owed_s = get32(e.payload + 33);
+  }
+  if (e.size >= kWakePayloadBytes) {
+    out->jobs_covered = e.payload[37];
+    out->covered_s = static_cast<std::uint16_t>(e.payload[38] |
+                                                (static_cast<std::uint16_t>(e.payload[39]) << 8));
+    out->calls_no_room = e.payload[40];
   }
   return true;
 }
@@ -920,7 +934,16 @@ void WakeCycle::stepBackend() {
   // its own comes back as `outside_ms` and is outside the ordinary budget, as a climb's and an
   // update's time are; the rest - a heartbeat, a claim - is inside it. Nothing of this moves a null
   // backend: it answers at once.
-  const std::uint64_t deadline = step_began_ms_ + kBackendBoundMs;
+  //
+  // **It is worked out in one place with the bound on the wake** (task p16-06,
+  // `core/cycle/wake_room.h`): what this deadline promises is a ceiling - the exchange's own
+  // number, or the most a wake may ever be raised to if that is sooner - and what actually ends a
+  // call inside it is the bound as it stands, which the claim raises to cover the leases it took
+  // on. Until that task this line promised the better part of an hour to a wake that was reset at
+  // five minutes, which is how the night of 17 November 2026 took a `status` twice and answered it
+  // neither time.
+  const WakeRoom room(&duty_.guard(), clock_);
+  const std::uint64_t deadline = room.deadlineFor(kBackendBoundMs);
   pass_.exchanged = backend_.exchange(known_, deadline, &answer_);
   // Who was reached, or why nobody was (task p10-02). One reading of the pair, here and nowhere
   // else: the journal's flag, the record's clause and `wake`'s letters all come off these three
@@ -943,6 +966,14 @@ void WakeCycle::stepBackend() {
   // is raised to cover it - and only when a machine did run (`outside_ms`), so a wake that merely
   // heartbeated keeps the ordinary bound, or the ladder's if the radio was silent and it climbed.
   if (answer_.outside_ms > 0) allow(kBackendBoundMs);
+  // **And what the exchange's own claim did to the bound**, which it did inside the call above and
+  // for the leases it took on (task p16-06): written down here, decided nowhere in this file. The
+  // guard is asked rather than the answer, because `allow()` above and the claim's raise are both
+  // in it and `pass_.bound_ms` is one figure.
+  pass_.jobs_covered = answer_.jobs_covered;
+  pass_.covered_s = answer_.covered_s;
+  pass_.calls_no_room = answer_.calls_no_room;
+  pass_.bound_ms = duty_.guard().bound();
   // What the exchange carried out itself is the wake's business from here: S-7's one update
   // step a wake is held by `update_ran_`, which step 9 reads, and the record says what went.
   pass_.did = answer_.did;
@@ -1336,6 +1367,7 @@ void WakeCycle::stepSleep() {
   // does not return, and on the host it advances the clock by the interval it was asked for -
   // so a figure taken after it would be the sleep and not the wake.
   pass_.spent_ms = elapsed(began_ms_, clock_.nowMs());
+  pass_.bound_ms = duty_.guard().bound();
   pass_.outside_ms = outside_ms_;
   pass_.left_ms = leftMs();
   pass_.interval_s = pass_.decision.interval_seconds;
@@ -1472,6 +1504,12 @@ void WakeCycle::journalWake() {
   // (core/cycle/wake_reason.h, kAwayBy*). A journal entry for it as well would cost one per
   // failed call on a unit whose line is busy, and say what the record already says.
   if (pass_.reason == Wake::kTimer && pass_.reached == interfaces::Reached::kWait) news = true;
+  // **A call the wake had no room to begin is news** (task p16-06). It is the one thing that says
+  // a wake ran out of room rather than out of work, and it costs at most one entry a wake - the
+  // flag is per wake and not per call. A bound that was *raised* is not news by itself: an
+  // ordinary claim of a leased job raises it at every wake that has a job, and seven hundred
+  // identical lines are not a page a person can read.
+  if (pass_.calls_no_room != 0) news = true;
   if (!news) return;
 
   WakePayload p{};
@@ -1495,6 +1533,12 @@ void WakeCycle::journalWake() {
   interfaces::WallTime now{};
   p.at_epoch = wall_.now(&now) ? now.epoch : 0;
   p.wakes = pass_.wakes;
+  // The room the wake took on (task p16-06): what the claim raised the bound to cover, and the
+  // calls that found no room inside it.
+  p.jobs_covered = pass_.jobs_covered;
+  p.covered_s = pass_.covered_s > kLastedAtMostS ? static_cast<std::uint16_t>(kLastedAtMostS)
+                                                 : static_cast<std::uint16_t>(pass_.covered_s);
+  p.calls_no_room = pass_.calls_no_room;
   std::uint8_t bytes[kWakePayloadBytes];
   encode(p, bytes);
   (void)journal_->append(update::kind::kWakeCycle, bytes, kWakePayloadBytes);

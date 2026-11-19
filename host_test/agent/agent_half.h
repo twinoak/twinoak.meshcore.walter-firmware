@@ -149,11 +149,20 @@ struct AgentHalf {
     }
   }
 
-  // What the library's waits run: the link polled, as the console's pump does on a board.
+  // What the library's waits run: the link polled **and the bound on the wake ticked**, as the
+  // console's pump does on a board (main/main.cpp's `agentPump` -> `Console::pump` ->
+  // `Console::tick` -> `DutyCycle::tick`).
+  //
+  // **The tick is task p16-06's.** Until then this pump only polled the link, so no wake on this
+  // bench was ever ended by its bound from inside an exchange - which is the one thing the night
+  // of 17 November 2026 did. A test of a long job could not tell a wake that reached sleep from
+  // one the bound would have reset, because nothing here could reset one. `host_test/core/cycle`'s
+  // scripted backend ticks the duty cycle itself for the same reason.
   static void pumpAll() {
     if (current_ != nullptr) {
       ++current_->pumps;
       current_->p.link->poll();
+      if (current_->p.duty != nullptr) (void)current_->p.duty->tick();
     }
   }
 

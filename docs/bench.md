@@ -1839,6 +1839,18 @@ everything in §18 needs this section first.
       says of the same packet. Then `dump`: no name there either. An advert from the unit's **own**
       repeater must not be in the ring at all — the counts line says how many were dropped as its
       own.
+- [ ] **A job the radio never answers, in a wake of the cycle's own** (task p16-06). The one item
+      of this section that must **not** go through `agent wake`, because that command raises the
+      bound for the whole exchange and the bench would never meet this. With a `status` of a
+      repeater waiting on the bench server and the radio's link pulled (the D-sub off, or the
+      repeater powered down): `stay off`, then wait out a wake on the timer with nothing on the
+      USB port — a serial log from a second cable is enough, or read it afterwards. What to hold:
+      the job's page on the server shows a **result** and not a lease left to lapse; `wake` after
+      the next boot says the unit woke **by the timer** and not by a watchdog; `journal`'s wake
+      entry carries `the bound was raised to N s for 1 job(s)` with N about the lease the server
+      gave; and the sleep after it is the ordinary interval, not the half-hour a reset buys. A
+      `watchdog` in the list, or thirty minutes of sleep, is the failure of 17 November 2026
+      happening again.
 
 ## 18. A day as an exit node
 

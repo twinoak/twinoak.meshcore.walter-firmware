@@ -419,7 +419,7 @@ one of them **raises the bound on the wake** rather than removing it:
 | an **apply** claimed from the server | the same machine, run to its end inside step 8 — and that end may be a **rollback**, which is the flash and the proof twice. The unit's own journal says a flash is 14 min 51 s, so a whole run is `core::update::kWholeRunMs` (task p14-04). At the thirty minutes this used to be, the bound fell in the middle of the second flash: no result could be posted and the lease was left to lapse | 38 min 40 s |
 | a **session** of the radio as a scanner **taken up out of the journal** (step 3) | a session is only ever *begun* by a person or a job, and is **ended by the next wake** whatever ended the last one — a restart, a crash, this bound, a power cut (`docs/update.md`, *A session*). So step 3 may have the golden image's whole way back in hand, and, where the session was still in its steps, the twenty-minute ceiling before it. It is the number that set `kRaisedBoundMax` | 58 min 40 s |
 | a trial | this firmware proving itself (S-6) has to finish before the wake may sleep: a deep sleep during a trial is a rollback of the image being tried. Its loop also asks the backend seam for **one more heartbeat and nothing else** while the third condition is open (task p14-05, `interfaces::Beat`): step 8's one exchange is not enough to condemn an image on, and the implementation's own wait is what paces it | 6 min |
-| a backend exchange | step 8's `exchange()` is given the longest machine's deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. It is a minute longer than the longest of them, for the heartbeat and the claim that come first — and it is not only the guard's business: the library is given what is left to this deadline as its wake's **budget**, and a result made after that budget has run out is kept rather than posted (task p14-04). Since task p16-04 the longest is a **session** and not an apply, so the number is the session's and a minute: a real session is two flashes of a quarter of an hour, and a result kept for the next wake on a job leased an hour from the claim is a job the server fails while the radio is perfectly well. The bound is raised only when such a machine actually ran, so a wake that only heartbeated keeps the ordinary bound | 59 min 40 s |
+| a backend exchange | step 8's `exchange()` is given the longest machine's deadline, because a `twinoak.fw.*` job (task p4-05, §13) runs one of the update machines above *inside* it, and a `config.read` of a neighbour is eleven minutes of airtime-budgeted transactions. It is a minute longer than the longest of them, for the heartbeat and the claim that come first — and it is not only the guard's business: the library is given what is left to this deadline as its wake's **budget**, and a result made after that budget has run out is kept rather than posted (task p14-04). Since task p16-04 the longest is a **session** and not an apply, so the number is the session's and a minute: a real session is two flashes of a quarter of an hour, and a result kept for the next wake on a job leased an hour from the claim is a job the server fails while the radio is perfectly well. **And since task p16-06 that deadline is a ceiling and not a promise.** It was the better part of an hour while the bound on the wake was five minutes, so an exchange in a wake of the cycle's own was promised thirty-nine minutes and reset at five - which is what the two wakes of 17 November 2026 were. The two are worked out in one place now (`core/cycle/wake_room.h`): the deadline is this number or the most a wake may ever be raised to, whichever is sooner; **every call takes what is left of the sooner of it and the bound**, so no call is begun that the wake has no room to finish and the wake is never reset in the middle of one; and **the claim raises the bound to cover the leases it took on** - the latest of them, and a call for each result and the observations, never past the ceiling. A wake that claims nothing still keeps its five minutes | 59 min 40 s |
 
 The time those take is **outside** the budget, because both machines are already bounded and
 capped by their own rules — and because a wake that spent six minutes on a ladder must still be
@@ -428,6 +428,48 @@ able to reach its uplink and say so.
 A raised bound is still a bound. A wake that overruns even the raised one is ended by a reset, the
 journal carries the unfinished work, and `resume()` takes it up again at the next boot. That is
 the whole reason the reset is safe (`docs/update.md`).
+
+### The bound covers what the wake took on (task p16-06)
+
+In the night of 17 November 2026 this unit took the hourly `status` job of its own repeater at
+01:29:53 UTC and was next heard at 01:34:56, as a new boot; the same at 02:05:24 and 02:10:28. The
+job was leased four minutes, was taken at both wakes and answered at neither, and each reset was
+read as a watchdog and followed by half an hour of sleep: over two hours with nothing measured, and
+a job meshmaster.dk failed for want of an answer.
+
+What those wakes were in is not known — task p15-06 is how the next one says. What is known is the
+arithmetic: an exchange was promised the longest machine's deadline and the wake it was in was
+bounded at five minutes. A job leased four fits inside that only when everything else in the wake
+takes under one — the radio's question, the modem's attach, the heartbeat, the claim, a result's
+call, and an observations call that stalls for the modem's thirty-second command timeout at nearly
+every wake.
+
+**One figure, in one place** (`core/cycle/wake_room.h`):
+
+| | |
+|---|---|
+| the exchange's deadline | its own number (`kBackendBoundMs`), or the most a wake may ever be raised to (`kRaisedBoundMax`) if that is sooner. A **ceiling**: the library's wake budget comes off it, so a result a long job made is posted rather than kept |
+| every call | what is left of the **sooner** of that deadline and the bound as it stands. Too little is no call, by the rule a call already had for the deadline (`kLeastCallMs`), and the transport is given the same figure — so a call is bounded by the wake it is in |
+| a claim | the bound raised to the end of the **latest lease** among the jobs it took, and the calls that come after them: a result for each job and the observations, each at the modem's command timeout. Never past the ceiling. A wake that claims nothing keeps its five minutes |
+| a lease the ceiling cannot cover | **cut**, to where the room for those calls begins. The copied library then ends the job `timeout` by its own rule and the result is posted, which is what the server is owed |
+
+Nothing else moved. An apply still asks for `core::update::kWholeRunMs`, a session for
+`update::kSessionBoundMs`, a climb for the ladder's own, and the console's `agent wake` raises the
+bound for the length of the command and puts it back; `WakeGuard::allow()` only ever raises, so a
+claim made inside one of those leaves it where it was. And the rail is untouched: a wake that hangs
+past its bound, raised or not, is still ended by a reset, and the sleep after a reset is what it
+was.
+
+**What a wake says about it.** The wake's record and `wake`'s own lines carry *the bound was raised
+to N s for 2 jobs* and, where one happened, *1 call(s) were not begun: the bound had no room to
+finish one*. A call with no room is a reason for a journal entry; a bound that was merely raised is
+not, because an ordinary claim of a leased job raises it at every wake that has a job.
+
+**What this does not do.** A job the radio never answers ends `unreachable` and not `timeout`: the
+library gives a login two tries and the job is over in half a minute (`agent/LoginSequence.h`).
+`timeout` is its word for a job the **lease** ended, which is the cut lease above and a job that
+cannot be finished inside the lease it was given. Both are a result the server is told of, which is
+what the night of 17 November never got.
 
 ## Nothing runs twice
 

@@ -349,6 +349,12 @@ struct Pass {
   std::uint32_t outside_ms = 0;
   std::uint32_t left_ms = kWakeBudgetMs;
   std::uint32_t bound_ms = kWakeBoundMs;  // the guard's, raised or not
+  // **What the exchange took on, and what it had no room for** (task p16-06,
+  // `core/cycle/wake_room.h`). The bound above is raised inside step 8's exchange, by the claim,
+  // to cover the leases of the jobs it took; these three are what the record says about it.
+  std::uint8_t jobs_covered = 0;    // claimed jobs whose leases the bound was raised to cover
+  std::uint32_t covered_s = 0;      // how far past the claim it was made to reach
+  std::uint8_t calls_no_room = 0;   // calls not begun because the bound had no room to finish one
   std::uint32_t awake_s = 0;
   std::uint32_t interval_s = 0;
   std::uint32_t wakes = 0;
@@ -413,6 +419,9 @@ std::size_t describeWhere(const WakeWhere& where, char* out, std::size_t cap);
 //   28  wakes       u32  wakes counted since the retained record began
 //   32  reached     u8   an interfaces::Reached (task p10-02): who was reached, or why nobody was
 //   33  owed_s      u32  the wait still owed, when `reached` is kWait
+//   37  jobs_cover  u8   claimed jobs the bound was raised to cover the leases of (task p16-06)
+//   38  covered_s   u16  how far past the claim it was made to reach
+//   40  no_room     u8   calls not begun because the bound had no room to finish one
 //
 // **The five bytes cost nothing**: a journal slot is 64 bytes whatever the payload holds
 // (core/update/journal.h, kEntryBytes), and kPayloadMax is 48. What they *could* have cost is the
@@ -427,7 +436,7 @@ std::size_t describeWhere(const WakeWhere& where, char* out, std::size_t cap);
 // fetch happened; an exchange happened; the wake was a crash or a watchdog. "A page a person can
 // read" is what the task asks `journal` to be after a week on a mast, and seven hundred identical
 // lines are not a page. Said again in tasks/phase-3/reports/05.md under *Deviations*.
-constexpr std::size_t kWakePayloadBytes = 37;
+constexpr std::size_t kWakePayloadBytes = 41;
 static_assert(kWakePayloadBytes <= update::kPayloadMax, "the payload has to fit a journal entry");
 
 // What every build up to and including 0.1.2 wrote. `decode()` accepts it and reads the two
@@ -435,6 +444,12 @@ static_assert(kWakePayloadBytes <= update::kPayloadMax, "the payload has to fit 
 // person can read after this firmware is updated (task p10-02).
 constexpr std::size_t kWakePayloadBytesV1 = 32;
 static_assert(kWakePayloadBytesV1 < kWakePayloadBytes, "v1 is the shorter one");
+
+// And what every build up to and including 0.1.9 wrote, for the same reason: an entry of that
+// length reads back with no room taken on, which is what it honestly says (task p16-06).
+constexpr std::size_t kWakePayloadBytesV2 = 37;
+static_assert(kWakePayloadBytesV1 < kWakePayloadBytesV2 && kWakePayloadBytesV2 < kWakePayloadBytes,
+              "the three lengths are in order");
 
 constexpr std::uint8_t kWakeFlagOnTrial = 0x01;
 constexpr std::uint8_t kWakeFlagClockSet = 0x02;
@@ -463,6 +478,11 @@ struct WakePayload {
   std::uint32_t wakes = 0;
   interfaces::Reached reached = interfaces::Reached::kUnsaid;
   std::uint32_t owed_s = 0;
+  // The room the wake took on (task p16-06): 0 jobs is a wake whose claim covered nothing, which
+  // is also what an entry written before that task reads as.
+  std::uint8_t jobs_covered = 0;
+  std::uint16_t covered_s = 0;      // clamped to 18 hours, as `lasted_s` is
+  std::uint8_t calls_no_room = 0;
 };
 
 void encode(const WakePayload& payload, std::uint8_t out[kWakePayloadBytes]);

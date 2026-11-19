@@ -154,6 +154,15 @@ class WakeGuard {
   // from `arm()` and the machine is not (task p14-04, the agent's apply).
   std::uint32_t awakeMs() const;
 
+  // **Whether anything ends this wake at all**, and what is left of the bound if it does (task
+  // p16-06). `status().left_ms` says 0 for both *nothing ends this wake* and *the bound has
+  // passed*, and it is only as new as the last `tick()`; the arithmetic of what a wake has room
+  // for cannot be worked out from that (`core/cycle/wake_room.h`), so these two read the clock
+  // now and tell the two apart. `false` is a disarmed guard, a person on the port and `stay` -
+  // the states a bench session is in, and the reason none of this touches one.
+  bool boundApplies() const { return status_.state == Guard::kArmed; }
+  std::uint32_t leftOfBoundMs() const;
+
   // How long after the cable goes **now** this wake would last, in milliseconds: the later of
   // the USB grace and what is left of the bound. It is what the console tells a person who is
   // about to pull the cable, and 0 means nothing would end this wake - `stay` is on, or no wake
