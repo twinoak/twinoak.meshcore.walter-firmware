@@ -1971,7 +1971,7 @@ And the board says what it actually got, because a model is worth what a real st
 
 | | what it prints |
 |---|---|
-| `app_main`'s second line: after the banner, with nothing of this task done but opening its port | `heap: 33872 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')` |
+| `app_main`'s second line: after the banner, with nothing of this task done but opening its port | `heap: 39864 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')` |
 | the `heap` command | the same two figures, the least free since this boot, and the main task's stack with how much of it has never been used |
 
 Both are of `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, the capabilities a task stack asks for, and
@@ -1984,7 +1984,7 @@ booted in the pinned image's QEMU rather than reasoned about:
   earlier** — at the moment the main task is created, which is where its recording stops. The
   idle and timer tasks FreeRTOS creates in `vTaskStartScheduler`, the task watchdog, and
   `app_main`'s own first lines (`UsbConsole::begin()` among them) take the difference: the model
-  says 41 144 free where the board's line says 33 872. It is an upper bound, and `docs/bench.md`
+  says 47 136 free where the board's line says 39 864. It is an upper bound, and `docs/bench.md`
   §1 holds the board to the measured figures and not to it.
 * `heap_caps_get_largest_free_block()` is **not** the largest block's size: it is "the largest
   value of `s` for which `heap_caps_malloc(s, caps)` will succeed", which TLSF rounds down to the

@@ -27,7 +27,7 @@ a provisioned unit, line by line, and it is replayed by a host test so that it c
 
 ```
 twinoak-walter 0.0.0-dev
-heap: 33872 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')
+heap: 39864 bytes free, largest free block 18432 (internal, 8-bit), the main task's 16384-byte stack already taken ('heap')
 running from ota_0 at 0x010000 (3072 KB), ota state valid
 image descriptor at 0x3c03ac70: role manager, board walter, band lte-m, version 0.0.0-dev, link 1.3
 settings: nvs namespace 'walter', 11 keys; 'get' prints them, 'set <key> <value>' changes one
