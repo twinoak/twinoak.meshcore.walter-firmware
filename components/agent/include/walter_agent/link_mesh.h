@@ -143,6 +143,8 @@ struct LinkMeshCounters {
   std::uint32_t reply_gets = 0;     // REPLY_GET sent because the event did not come in time
   std::uint32_t lost_events = 0;    // of those, the record was already final: the event was lost
   std::uint32_t cancelled = 0;      // JOB_BEGIN again, to end a wait the RAK was still in
+  std::uint32_t never_awaited = 0;  // of those, ones for a send this end never waited for at all
+                                    // (a console line the repeater answers with nothing)
   std::uint32_t path_reads = 0;     // PATH_GET after a reply to a flooded send
   std::uint32_t counter_reads = 0;  // MESH_COUNTERS
   std::uint32_t restarts = 0;       // the radio restarted under a mesh job: everything forgotten
@@ -411,6 +413,12 @@ class LinkMesh final : public mm::IMesh, public lc::RestartWatcher {
   bool recordFrom(const link::ReplyRecord& record);
   void clearReply();
   void cancelWait();
+  // **A wait this end never made** (the agent library's region loader: a console line the
+  // repeater answers with nothing at all, sent and not waited for - `agent/ConfigApply.h`'s
+  // `awaitReply = false`). The RAK is awaiting from the moment that packet was queued (§6.2) and
+  // would refuse the line after it with `ERR_BUSY`, so the exchange is given up before the next
+  // send the way §6.1 gives one up: `JOB_BEGIN` again, same peer, same path.
+  void forgetAWaitNeverMade();
   void refreshPath();
   void pathSet(std::uint8_t mode);
   void cachePath(const link::Path& path);

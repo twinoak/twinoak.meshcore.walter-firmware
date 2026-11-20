@@ -379,7 +379,9 @@ target_include_directories(core_tests PRIVATE ${AGENT_CORE_HOST}/test)
 # Two more GoogleTest binaries, because the simulated stock repeater they put behind the RAK is
 # the library's FakeMesh, which is written against GoogleTest:
 #
-#   agent_core_runner_link_tests  test_runner.cpp - the library's own 46 cases, **unchanged** -
+#   agent_core_runner_link_tests  test_runner.cpp - the library's own 123 cases, **unchanged**
+#                                 (121 of them run: see LINK_SHIM_SKIPPED at the end of this
+#                                 file for the two a late reply cannot be scripted for here) -
 #                                 compiled with host_test/agent-link/shim/ first on its include
 #                                 path, where `support/FakeMesh.h` and `support/FakePlatform.h`
 #                                 shadow the library's with the same classes behind a simulated
@@ -394,7 +396,7 @@ target_include_directories(core_tests PRIVATE ${AGENT_CORE_HOST}/test)
 #
 # And a third (task p4-03), the same way round for the uplink:
 #
-#   agent_core_loop_uplink_tests  test_loop.cpp - the library's own 47 cases, **unchanged** -
+#   agent_core_loop_uplink_tests  test_loop.cpp - the library's own 74 cases, **unchanged** -
 #                                 compiled with host_test/agent-uplink/shim/ first on its include
 #                                 path, where `support/FakeUplink.h` shadows the library's
 #                                 scripted meshmaster.dk with the same knobs and records behind
@@ -503,8 +505,27 @@ endforeach()
 # The runner's scenarios through the link, and the link's own cases (task p4-02); the loop's
 # scenarios through the modem's uplink (task p4-03); the agent behind the seam with a repeater on
 # the air, and the month (task p4-05).
+#
+# **Two of the library's own cases are not run through the link shim** (the sync task of
+# `agent-core` v0.7.3), and they are the only two of either suite that are not. Both script a
+# reply that came home after its own wait and assert that the wait **goes on** and finds the
+# answer it was waiting for: that is the Heltec's radio, which the library reads itself. §6.2's
+# RAK awaits "until a matching reply arrives or the time is up" and §6.3 reports that outcome
+# **once**, so on this road the exchange a late reply was handed to is over and the reply it
+# waited for is lost - the reading is the same and the library's rule fires exactly as upstream's
+# (the log lines are asserted on either road), but the job pays one more try for it. Both cases
+# run unchanged in upstream's own `agent_core_runner` binary, where they belong, and the Walter's
+# half of each is `host_test/agent-link/test_link_mesh.cpp`'s
+# `ALateRequestReplyEndsTheReLoginsExchangeAndCostsOneMoreTry` and
+# `ALateConsoleReplyEndsTheNextLinesExchangeAndTheValueIsStillItsOwn`.
+set(LINK_SHIM_SKIPPED
+    "-RunnerTest.ALateRequestReplyDuringTheReLoginIsDroppedAndTheJobRunsOn:RunnerTest.AConsoleReplyThatCameTooLateIsNotStoredAsTheNextLinesValue")
 foreach(binary agent_core_runner_link_tests agent_link_tests agent_core_loop_uplink_tests agent_backend_tests)
-  add_test(NAME ${binary} COMMAND ${binary})
+  if(binary STREQUAL agent_core_runner_link_tests)
+    add_test(NAME ${binary} COMMAND ${binary} --gtest_filter=${LINK_SHIM_SKIPPED})
+  else()
+    add_test(NAME ${binary} COMMAND ${binary})
+  endif()
   set_tests_properties(${binary} PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1;UBSAN_OPTIONS=print_stacktrace=1")
 endforeach()

@@ -198,6 +198,28 @@ class SimRak final : public interfaces::ByteStream {
   const char* cliBuffer() const { return cli_; }
   std::size_t cliBufferSize() const { return sizeof cli_; }
 
+  // ---------------------------------------------------------------- a reply that came home late
+  //
+  // §6.2: this radio awaits "from the moment the packet is queued until a matching reply arrives
+  // or the time is up", and §6.3 reports that outcome **once**. A repeater slower than the
+  // Walter's patience answers after the time is up, and the packet comes home with its own
+  // exchange over - which is what parked ten ACL associations on meshmaster.dk on 12 November
+  // 2026 (the agent library's task p1.10-47). What this radio does with it then is §6.2's own
+  // rule: *a response that arrives while a text is awaited, a response with another tag, and
+  // anything from anyone but the peer are dropped unread*. So a late reply is read only where a
+  // later exchange awaits something it matches - and a login awaits tag 0, "the next reply from
+  // the peer", which matches whatever the peer sends. That is the one way the library's own rule
+  // (only a login reply answers a login) is reached through this link, and the reason this radio
+  // models the lateness at all.
+  //
+  // `late_replies` makes the next n answers come home that way, and `late_reply_waits` says in
+  // which exchange: 1 is the next one. The exchange the reply belonged to ends as a **timeout**,
+  // because nothing arrived while it was awaited.
+  int late_replies = 0;
+  int late_reply_waits = 1;
+  std::uint32_t late_read = 0;     // late replies a later exchange matched and was answered with
+  std::uint32_t late_dropped = 0;  // ... and ones dropped unread (§6.2)
+
   // §5.1: a new boot_id, and everything of §6 forgotten - the job, the path, the awaited reply.
   void restart(bool announce = true);
 
@@ -222,9 +244,23 @@ class SimRak final : public interfaces::ByteStream {
     mm::MeshReply reply;  // kind None for states 0-2
   };
 
+  // A reply that is on its way home with its own exchange over (`late_replies`): the record as it
+  // will be reported, and how many more exchanges it is in flight for.
+  struct Late {
+    Record record;
+    int waits = 0;
+  };
+
   bool onRequest(const core::link::Packet& packet, std::vector<std::uint8_t>* payload);
   void tick();  // before every access: the job's idle end, the awaited reply
   void finishWait(bool answered);
+  // §6.2's matching, for a reply that came home late: a text answers a text, a response or a
+  // trace answers an await of its own kind whose tag is the awaited one, and an awaited tag of 0
+  // is "the next reply from the peer". Everything else is dropped unread.
+  bool matchesTheAwait(const Record& late) const;
+  // The late replies whose flight is over, at the top of a wait: the first one this exchange
+  // matches is its outcome, and one it does not match is dropped unread. True when one answered.
+  bool takeALateReply();
   std::vector<std::uint8_t> encodeRecord() const;
   std::vector<std::uint8_t> encodePath() const;
   bool decodePath(const std::uint8_t* at, std::size_t size, std::uint8_t* mode, std::uint8_t* hash_size,
@@ -241,6 +277,7 @@ class SimRak final : public interfaces::ByteStream {
   std::uint64_t last_request_ms_ = 0;
   Awaiting await_;
   Record record_;
+  std::vector<Late> late_;
   std::uint32_t last_unique_ = 0;
 
   std::uint8_t password_[core::link::kMaxPassword + 1] = {};

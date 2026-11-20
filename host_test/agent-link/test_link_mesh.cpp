@@ -521,6 +521,111 @@ TEST_F(LinkMeshTest, AReplyThatArrivesAfterThisEndGaveUpIsDroppedAndCounted) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// A reply that came home late, and what it costs a Walter that a Heltec does not pay
+//
+// The library's own rule is *only a login reply answers a login* and *only a reply carrying this
+// line's prefix is its answer* (its tasks p1.10-47 and p1.10-49): a reply that missed its own
+// wait and turned up in the next one is dropped, and that wait goes on. Through this link the
+// wait cannot go on. §6.2's radio awaits "until a matching reply arrives or the time is up" and
+// §6.3 reports that outcome **once**, so an exchange that was handed a late reply is over and the
+// reply it was waiting for is lost - and what recovers it is the job's own next try, one
+// transaction more than the Heltec pays. The reading is the same; the airtime is not.
+//
+// These two are the Walter's half of the library's own
+// `ALateRequestReplyDuringTheReLoginIsDroppedAndTheJobRunsOn` and
+// `AConsoleReplyThatCameTooLateIsNotStoredAsTheNextLinesValue`, which are the two cases of its
+// runner suite that host_test/CMakeLists.txt does not run through this shim, and for this reason.
+
+TEST_F(LinkMeshTest, ALateRequestReplyEndsTheReLoginsExchangeAndCostsOneMoreTry) {
+  mesh.grant(self(), mm::kPermReadOnly);
+  // The first job opens the session, as the Heltec's own case has it.
+  run(fake::Job(24141, "status").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+  ASSERT_EQ(mesh.logins(), 1);
+  mesh.forgetSends();
+
+  // The second finds the session live, and its request is answered past its own wait: the radio
+  // holds the answer and hands it to the next exchange that §6.2 says may read it, which is the
+  // re-login - a login awaits tag 0, "the next reply from the peer".
+  mesh.deliverTheNextReplyLate(1);
+  const std::string body =
+      run(fake::Job(24142, "status").atClass("acl").leasedUntil(kLease).withAclLevel(mm::kPermReadOnly));
+
+  EXPECT_EQ(outcomeOf(body), "ok") << "the job runs on and the reading is the repeater's: " << body;
+  EXPECT_NE(body.find("\"batteryMv\":4012"), std::string::npos) << body;
+  EXPECT_EQ(member(body, "loggedInAs"), "") << "nothing was granted by that reply";
+  const std::string log = logOf(body);
+  EXPECT_NE(log.find("the late reply to a request this job sent arrived instead"), std::string::npos) << log;
+  EXPECT_NE(log.find("logged in as read-only"), std::string::npos) << log;
+  EXPECT_EQ(log.find("refused"), std::string::npos) << "nothing refused anything: " << log;
+  // The cost: the first login try is the exchange the late reply ended, so there is a second -
+  // where the Heltec's one wait had found the login reply after dropping the late one.
+  EXPECT_EQ(mesh.logins(), 2) << "the re-login twice: the late reply ended the first exchange";
+  EXPECT_EQ(rak().late_read, 1u) << "the radio handed the late reply to an exchange that matched it";
+  EXPECT_EQ(rak().late_dropped, 0u);
+  EXPECT_EQ(link().linkCounters().mismatched, 0u) << "a login awaits tag 0, so this end read it and the library judged it";
+}
+
+TEST_F(LinkMeshTest, ALateConsoleReplyEndsTheNextLinesExchangeAndTheValueIsStillItsOwn) {
+  // `get name` is answered too late for its own wait and for its retry, so the reply turns up
+  // while `get tx` is awaited. The prefix is what tells it from `get tx`'s answer; without it the
+  // node's name would be stored as the transmit power.
+  mesh.deliverTheNextLineRepliesLate("get name", 1, /*waits=*/2);
+
+  const std::string body = run(fake::Job(12390, "config.read")
+                                   .atClass("admin")
+                                   .leasedUntil(kLease)
+                                   .withAdminPassword("adm1n-pass")
+                                   .withPayload("{\"keys\":[\"name\",\"tx\"]}"));
+
+  EXPECT_EQ(outcomeOf(body), "ok") << body;
+  const std::string values = objectOf(body, "values");
+  EXPECT_NE(values.find("\"tx\":\"22\""), std::string::npos) << "read from `get tx`'s own reply: " << values;
+  EXPECT_EQ(values.find("\"tx\":\"Grenaa Chimney #1\""), std::string::npos) << "the swap this prefix exists for: " << values;
+  EXPECT_NE(values.find("\"name\":\"Grenaa Chimney #1\""), std::string::npos) << values;
+  EXPECT_EQ(values.find("|"), std::string::npos) << "and no value keeps a prefix: " << values;
+  const std::string log = logOf(body);
+  EXPECT_NE(log.find("a console reply that does not carry this line's prefix arrived instead"), std::string::npos) << log;
+  // The cost, again one try: `get tx`'s first exchange was ended by the reply it dropped.
+  EXPECT_EQ(mesh.timesSent("get name"), 2) << "no reply once is retried once";
+  EXPECT_EQ(mesh.timesSent("get tx"), 2) << "and the line whose wait the late reply ended is retried too";
+  EXPECT_EQ(rak().late_read, 1u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// A line nobody waits for
+
+TEST_F(LinkMeshTest, ALineNobodyWaitsForDoesNotLeaveTheNextOneErrBusy) {
+  // The region loader is the one sequence whose lines go out bare and unawaited (the library's
+  // `agent/ConfigApply.h`: `awaitReply = false` for a line the firmware answers with nothing at
+  // all). §6.2's radio is awaiting from the moment that packet was queued, so the line after it
+  // would be `ERR_BUSY` - and the apply would stop at the second line of the load with *the
+  // packet could not be built*, which is what this end's `JOB_BEGIN` again prevents (§6.1).
+  const std::string payload =
+      "{\"commands\":["
+      "{\"key\":\"regions\",\"command\":\"region load\",\"lines\":["
+      "{\"line\":\"region load\",\"expect\":null,\"escape\":false},"
+      "{\"line\":\" dk F\",\"expect\":null,\"escape\":false},"
+      "{\"line\":\" \",\"expect\":\"OK - loaded\",\"escape\":true},"
+      "{\"line\":\"region save\",\"expect\":\"OK\"}]}"
+      "],\"planHash\":\"deadbeef\"}";
+  const std::string body = run(fake::Job(126, "config.apply")
+                                   .atClass("admin")
+                                   .leasedUntil(kNow + 3600)
+                                   .withAdminPassword("adm1n-pass")
+                                   .withPayload(payload));
+
+  EXPECT_EQ(outcomeOf(body), "ok") << body;
+  EXPECT_EQ(mesh.repeater().regionsLoaded(), 1) << "the map was loaded, which takes every line: " << body;
+  EXPECT_NE(body.find("OK - loaded 1 regions"), std::string::npos) << body;
+  EXPECT_EQ(body.find("could not be built"), std::string::npos) << body;
+  // Twice: the line after `region load` and the line after ` dk F`, both of which this end had
+  // sent and never waited for.
+  EXPECT_EQ(link().linkCounters().never_awaited, 2u);
+  EXPECT_LE(link().linkCounters().never_awaited, link().linkCounters().cancelled);
+  EXPECT_EQ(rak().refused_busy, 0u) << "and the radio never had to refuse one";
+}
+
+// ---------------------------------------------------------------------------------------------
 // The radio restarts
 
 TEST_F(LinkMeshTest, ABootIdChangeUnderAJobForgetsEverything) {
@@ -746,7 +851,11 @@ TEST_F(LinkMeshTest, LocalModeServesWhatTheLinkCarriesAndFailsTheRest) {
                                    .withAclLevel(mm::kPermReadOnly));
   EXPECT_EQ(outcomeOf(read), "ok") << read;
   EXPECT_NE(read.find("\"name\":\"Grenaa Chimney #1\""), std::string::npos) << read;
-  EXPECT_NE(logOf(read).find("no ACL in this snapshot"), std::string::npos) << "the access list is silence: " << read;
+  // The silence is read off the **result** and not the log: since the library's task p1.10-49
+  // every job's console lines carry a prefix and the read says so in a line of its own, and this
+  // job's log - thirty keys over the local door - is full before the access list is asked for.
+  // `mm::kAclSilentLine` is where the snapshot records it, which is what meshmaster.dk reads.
+  EXPECT_NE(read.find("acl: no reply"), std::string::npos) << "the access list is silence: " << read;
   ASSERT_FALSE(g_setperms.empty());
   EXPECT_EQ(g_setperms.back(), "setperm " + self() + " 1") << "the restore, over the console";
 

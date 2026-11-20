@@ -509,6 +509,7 @@ mm::SendResult LinkMesh::sendLogin(const char* password, std::uint32_t& tag) {
   if (job_.local) {
     return localLogin();
   }
+  forgetAWaitNeverMade();
   // §6.5: the one request that drops the scope goes immediately before this send, and only when
   // this send will flood - a job with a path goes direct, and a path has no scope. Before the
   // password is copied anywhere, so that §6's "in RAM for the length of the send" stays the
@@ -536,6 +537,7 @@ mm::SendResult LinkMesh::sendRequest(std::uint8_t reqType, const std::uint8_t* d
   if (job_.local) {
     return localRequest(reqType, data, len);
   }
+  forgetAWaitNeverMade();
   if (!scopeTheSend(!hasPath())) {
     return sendNotMade();  // §6.5: the FLOOD_SCOPE did not answer; nothing was transmitted
   }
@@ -553,6 +555,7 @@ mm::SendResult LinkMesh::sendCli(const char* text, bool sensitive, std::uint32_t
   if (size < 1 || size > link::kMaxMeshCliText) {
     return mm::SendResult::Failed;  // §6.2: 1 to 148 bytes, and the RAK would say ERR_MALFORMED
   }
+  forgetAWaitNeverMade();
   if (!scopeTheSend(!hasPath())) {
     return sendNotMade();  // §6.5: the FLOOD_SCOPE did not answer; nothing was transmitted
   }
@@ -570,6 +573,7 @@ mm::SendResult LinkMesh::sendDiscovery(std::uint32_t& tag) {
     link_counters_.local_unserved = saturate(link_counters_.local_unserved);
     return mm::SendResult::Failed;  // a flood to oneself discovers nothing
   }
+  forgetAWaitNeverMade();
   // §6.2: a discovery is **always flooded**, path or no path (§6.5 scopes "every
   // SEND_DISCOVERY"), so the question the other three ask about the path is not asked here.
   if (!scopeTheSend(true)) {
@@ -590,6 +594,7 @@ mm::SendResult LinkMesh::sendTrace(const std::uint8_t* roundTripHashes, std::uin
       !link::isTraceHashSize(hashSize)) {
     return mm::SendResult::Failed;  // §6.2: three-byte hashes are ERR_RANGE; refused before a byte goes
   }
+  forgetAWaitNeverMade();
   const lc::Answer<link::SendResponse> answer =
       client_.sendTrace(kSendTimeoutCeilingMs, hashSize, link::Bytes{roundTripHashes, hashBytes});
   return afterSend(answer, Await::kTrace, &tag, nullptr);
@@ -683,6 +688,23 @@ void LinkMesh::cancelWait() {
   if (!note(answer)) {
     job_.begun = false;
   }
+}
+
+// A send with `await_` still set is a send after a line nobody waited for: every wait this end
+// makes ends with `await_` at kNone (`await` below), and a send that was not made leaves it there
+// too. The RAK is still awaiting that line's reply (§6.2: sending and starting to wait are one
+// step) and would answer the next send `ERR_BUSY`, so the exchange is given up first - §6.1's
+// `JOB_BEGIN` again, which is what `cancelWait` does and what the library's region loader needs
+// to get its second line out.
+void LinkMesh::forgetAWaitNeverMade() {
+  if (await_ == Await::kNone || job_.local || !job_.begun) {
+    return;
+  }
+  link_counters_.never_awaited = saturate(link_counters_.never_awaited);
+  cancelWait();
+  await_ = Await::kNone;
+  resolved_ = false;
+  clearReply();
 }
 
 bool LinkMesh::await(bool text, std::uint32_t tag, std::uint32_t timeoutMs, void (*pump)()) {

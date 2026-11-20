@@ -90,6 +90,9 @@ void SimRak::tick() {
     ++jobs_timed_out;
   }
   if (await_.kind == Await::kNone) return;
+  // A reply whose flight is over comes first: it has been on the air the longer (§6.2 decides
+  // whether this exchange may read it at all).
+  if (takeALateReply()) return;
   // The repeater behind this radio delivers on its own clock, which the harness moves with this
   // one: one millisecond of its wait is one look at whether the reply is due.
   const bool answered = await_.kind == Await::kText ? repeater_.awaitText(1, nullptr)
@@ -120,6 +123,21 @@ void SimRak::finishWait(bool answered) {
     if (record_.reply.kind != mm::MeshReply::Kind::Text) record_.tag = record_.reply.tag;
     // A flooded send whose reply taught the repeater a path came back as a returned path.
     record_.via_path = await_.flood && repeater_.hasPath();
+    // The answer the repeater took too long over (`late_replies`): nothing arrived while this
+    // exchange was awaited, so this exchange is a **timeout**, and the packet is still on the
+    // air. §6.2 says what a later exchange may do with it.
+    if (late_replies != 0 && record_.state != link::reply_state::kTimeout) {
+      if (late_replies > 0) --late_replies;
+      Late held;
+      held.record = record_;
+      held.waits = late_reply_waits;
+      late_.push_back(held);
+      record_ = Record{};
+      record_.flood = await_.flood;
+      record_.tag = await_.tag;
+      record_.state = link::reply_state::kTimeout;
+      record_.elapsed_ms = await_.timeout_ms;
+    }
   } else {
     record_.state = link::reply_state::kTimeout;
     record_.elapsed_ms = await_.timeout_ms;
@@ -132,6 +150,54 @@ void SimRak::finishWait(bool answered) {
   }
   radio.sendEventPayload(link::type::kEvMeshReply, encodeRecord(), event_delay_ms);
   ++events_sent;
+}
+
+// §6.2: *a response that arrives while a text is awaited, a response with another tag, and
+// anything from anyone but the peer are dropped unread* - and `tag` 0 is "the next reply from the
+// peer", which a login awaits and which nothing of what the peer sends fails to match.
+bool SimRak::matchesTheAwait(const Record& late) const {
+  switch (late.state) {
+    case link::reply_state::kText:
+      return await_.kind == Await::kText;
+    case link::reply_state::kResponse:
+      return await_.kind == Await::kResponse && (await_.tag == 0 || await_.tag == late.tag);
+    case link::reply_state::kTrace:
+      return await_.kind == Await::kTrace && (await_.tag == 0 || await_.tag == late.tag);
+    default:
+      return false;
+  }
+}
+
+// The top of a wait: a reply whose flight is over is read by this exchange when §6.2 lets it, and
+// dropped unread when it does not. One at a time, oldest first.
+bool SimRak::takeALateReply() {
+  for (std::size_t i = 0; i < late_.size(); i++) {
+    if (late_[i].waits > 0) continue;  // still on the air
+    const Record late = late_[i].record;
+    const bool read = matchesTheAwait(late);
+    late_.erase(late_.begin() + static_cast<long>(i));
+    if (!read) {
+      ++late_dropped;
+      return false;  // dropped unread: this exchange goes on waiting for its own reply
+    }
+    ++late_read;
+    // §6.3: the record is the reply's own - its tag above all, which is how the Walter's end
+    // tells it from the answer to what it asked - with this exchange's flood and the time it has
+    // been waiting.
+    record_ = late;
+    record_.flood = await_.flood;
+    record_.elapsed_ms = static_cast<std::uint32_t>(clock_.nowMs() - await_.sent_at_ms);
+    await_ = Awaiting{};
+    if (lose_all_events || lose_events > 0) {
+      if (lose_events > 0) --lose_events;
+      ++events_lost;
+      return true;
+    }
+    radio.sendEventPayload(link::type::kEvMeshReply, encodeRecord(), event_delay_ms);
+    ++events_sent;
+    return true;
+  }
+  return false;
 }
 
 // §6.3's record: state, tag, via_path, snr_q4, rssi, elapsed_ms, then the state's own fields.
@@ -221,6 +287,9 @@ void SimRak::forgetJob() {
   job_ = false;
   await_ = Awaiting{};
   record_ = Record{};
+  // §6.1 and the repeater's own rule (its IMesh::endJob): a reply still on its way home belongs
+  // to a job that is over, and nothing of it is read.
+  late_.clear();
 }
 
 void SimRak::restart(bool announce) {
@@ -262,7 +331,13 @@ bool SimRak::onRequest(const link::Packet& packet, std::vector<std::uint8_t>* pa
       // §6.1: ends any job in progress first, then makes this key the peer.
       await_ = Awaiting{};
       record_ = Record{};
+      const std::string was = peer_hex_;
       peer_hex_ = toHex(at, link::kPubkeySize);
+      // A reply still on the air (`late_replies`) is not a record this radio holds, so JOB_BEGIN
+      // with the same peer - which is how the Walter's end gives up a wait it never awaited
+      // (§6.1, LinkMesh) - does not make the air go quiet. Another peer does: §6.2 reads nothing
+      // from anybody but the peer.
+      if (peer_hex_ != was) late_.clear();
       const bool begun = mode == link::path_mode::kHops
                              ? repeater_.beginJob(peer_hex_.c_str(), hashes.data(), hop_count, hash_size)
                              : repeater_.beginJob(peer_hex_.c_str(), nullptr, 0, 0);
@@ -390,16 +465,32 @@ bool SimRak::onRequest(const link::Packet& packet, std::vector<std::uint8_t>* pa
       }
       std::memcpy(cli_, at, size);
       cli_[size] = 0;
-      const std::string line(cli_, size);
+      std::string line(cli_, size);
       // §5.7: the line is run; nothing of it is kept here but what the test asked to see. The
       // buffer is wiped whatever the line was - this end cannot know which line is a password.
       wipe(cli_, sizeof cli_);
-      cli_lines.push_back(line);
+      // **The prefix this node reflects**, which is the front door of its console and not the
+      // business of whatever answers the line: `if (strlen(command) > 4 && command[2] == '|')
+      // { memcpy(reply, command, 3); reply += 3; command += 3; }` -
+      // examples/simple_repeater/MyMesh.cpp:1211-1215 of MeshCore at the pin
+      // (`companion-v1.18.0`, 81dbae59), there since commit 1209d54d of 27 February 2025. Since
+      // the agent library's task p1.10-49 every console line of a job carries one, and a reply
+      // that does not carry the line's own is not that line's answer - so a radio that did not
+      // reflect it would make every job's first console line go unanswered. The same function's
+      // skip of leading spaces is not modelled: the lines that carry one are a region load's,
+      // which `handleCommand` takes verbatim in its load branch and returns before the skip.
+      std::string reflected;
+      if (line.size() > 4 && line[2] == '|') {
+        reflected = line.substr(0, 3);
+        line.erase(0, 3);
+      }
+      cli_lines.push_back(line);  // the line as this node runs it, the prefix off
       std::string reply = "Unknown command";
       if (console && !console(line, &reply)) {
         payload->clear();  // a line that restarts the node: no response, none owed
         return true;
       }
+      reply = reflected + reply;
       if (reply.size() > link::kMaxCliReply) reply.resize(link::kMaxCliReply);
       *payload = statusOnly(link::status::kOk);
       payload->insert(payload->end(), reply.begin(), reply.end());
@@ -581,6 +672,10 @@ std::vector<std::uint8_t> SimRak::send(const link::Packet& packet) {
 
   record_ = Record{};
   if (timeout_ms > 0) {
+    // One exchange nearer home for a reply that is still on the air (`late_replies`).
+    for (Late& held : late_) {
+      if (held.waits > 0) --held.waits;
+    }
     // Sending and starting to wait are one step (§6.2).
     await_.kind = kind;
     await_.tag = tag;
