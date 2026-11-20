@@ -98,6 +98,14 @@ class ObservationRing {
   uint32_t dropped() const { return dropped_; }
   uint32_t heard() const { return heard_; }
 
+  // Which advert is the oldest, as a number that only ever grows: 0 on a fresh ring, and one
+  // more for every entry that has left the **front** of it - consumed by a batch the server
+  // took, dropped because a push found the ring full, or cleared. A pending batch is the ring's
+  // `batchCount` oldest entries, so this number not having moved is what says they are still
+  // those entries and the batch is still that batch (task p1.13-55, AgentLoop::buildBatch).
+  // `dropNewest` does not move it: it takes from the other end.
+  uint32_t oldestSeq() const { return oldestSeq_; }
+
   void clear();
 
  private:
@@ -106,6 +114,7 @@ class ObservationRing {
   size_t size_ = 0;
   uint32_t dropped_ = 0;
   uint32_t heard_ = 0;
+  uint32_t oldestSeq_ = 0;
 };
 
 // A batch goes when it would hold twenty, or when the oldest entry has waited sixty seconds,

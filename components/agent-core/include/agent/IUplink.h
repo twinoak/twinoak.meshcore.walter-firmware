@@ -10,6 +10,12 @@
 // Two of the seven the reference agent never makes but the protocol has (API §3):
 // `POST /agent/v1/jobs/{id}/extend` and `POST /agent/v1/jobs/{id}/progress`, for a job that runs
 // past its lease and wants to say so. Nothing on the Heltec calls them yet.
+//
+// **One call has a body here and is not pure interface**: `postUpdateResult`, the result of an
+// update the server asked for (task p1.15-61). A consumer that cannot be updated from the server
+// implements nothing, compiles unchanged and is never asked - the loop makes the call only for a
+// consumer that gave it an `IUpdateProvider`. It is the one way to add a call to this seam without
+// breaking every tree that pins it (docs/library.md §10).
 
 #pragma once
 
@@ -91,6 +97,24 @@ class IUplink {
   // POST /agent/v1/jobs/{id}/progress. `body` is what writeProgressReport() made: an
   // intermediate `data` and a note, kept on the job and replaced by the next; not a result.
   virtual bool postProgress(long long jobId, const char* body, size_t len) = 0;
+
+  // POST /agent/v1/updates/{id}/result (task p1.15-61): the one result of an update the server
+  // asked for, as `writeUpdateResult` wrote it. True when the server answered 200, which it also
+  // does for a result it already has - the first one stands - so this is safe to retry, and the
+  // loop does retry it at every heartbeat's turn until it is taken.
+  //
+  // `notFound` is the one 404: an id that is not this exit node's, or is no ask at all. It is the
+  // other way a result stops being posted, and it is **not** a failure to back off from.
+  //
+  // **Defaulted on purpose**: a consumer with no `IUpdateProvider` is never asked to make this
+  // call, so it need not implement it and its tree compiles unchanged.
+  virtual bool postUpdateResult(long long updateId, const char* body, size_t len, bool& notFound) {
+    (void)updateId;
+    (void)body;
+    (void)len;
+    notFound = false;
+    return false;
+  }
 
   virtual bool hasConfig() const = 0;
   virtual const AgentConfig& config() const = 0;

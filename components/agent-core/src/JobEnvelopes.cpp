@@ -128,9 +128,19 @@ bool canRun(const ClaimedJob& job, char* why, size_t whyCap) {
   return true;
 }
 
-bool readsFirmwareVersion(const ClaimedJob& job) {
+bool readsOwnerInfo(const ClaimedJob& job) {
   if (std::strcmp(job.type, "status") != 0) return false;
-  return job.credentialClass == CredentialClass::Acl && job.statusVersion;
+  return job.statusVersion;
+}
+
+bool servedWholeAtGuest(const char* type) {
+  if (type == nullptr) return false;
+  return std::strcmp(type, "status") == 0 || std::strcmp(type, "neighbours") == 0;
+}
+
+bool guestIsEnough(const char* type, CredentialClass credentialClass, uint8_t grantedRole) {
+  return credentialClass == CredentialClass::Acl && servedWholeAtGuest(type) &&
+         (grantedRole & kPermRoleMask) == kPermGuest;
 }
 
 bool sharesLogin(const ClaimedJob& a, const ClaimedJob& b) {
@@ -425,6 +435,20 @@ size_t writeJobResult(const JobReport& r, char* out, size_t cap) {
   if (r.failedAt != nullptr) {
     w.key("failedAt");
     w.string(r.failedAt);
+  }
+  // Last but two, as `JobResultReport`'s own parameter order has it (meshmaster.dk's task
+  // p4.30-180).
+  if (r.loggedInAs != nullptr) {
+    w.key("loggedInAs");
+    w.string(r.loggedInAs);
+  }
+  // And the pair the login showed, last of all and **together or not at all** (meshmaster.dk's
+  // task p4.37-210): one of them alone is a 400 on `repeaterClockS`, so the one flag writes both.
+  if (r.hasClock) {
+    w.key("repeaterClockS");
+    w.integer(r.repeaterClockS);
+    w.key("agentClockS");
+    w.integer(r.agentClockS);
   }
   w.endObject();
   return w.overflowed() ? 0 : w.length();

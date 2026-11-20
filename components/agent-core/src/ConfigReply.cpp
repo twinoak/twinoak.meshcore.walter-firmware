@@ -100,6 +100,34 @@ bool parseHeartbeatReply(const char* json, size_t len, HeartbeatReply& out, char
     return false;
   }
   r.jobsWaiting = jw.as<bool>();
+  // The ask, when there is one (task p1.15-61). Every member is required inside the object, and
+  // an object that is missing one is **dropped with the reply still taken**: the header says why.
+  JsonObjectConst u = obj["update"];
+  if (!u.isNull()) {
+    UpdateAsk ask;
+    JsonVariantConst id = u["id"];
+    JsonVariantConst releaseId = u["releaseId"];
+    JsonVariantConst size = u["size"];
+    const char* product = u["product"];
+    const char* version = u["version"];
+    const char* base = u["base"];
+    const char* sha = u["expectedSha256"];
+    if (!id.is<long long>() || !releaseId.is<long long>() || !size.is<long long>() || product == nullptr ||
+        version == nullptr || base == nullptr || sha == nullptr) {
+      r.updateRefused = true;
+    } else {
+      ask.id = id.as<long long>();
+      ask.releaseId = releaseId.as<long long>();
+      const long long bytes = size.as<long long>();
+      ask.size = bytes > 0 ? static_cast<uint32_t>(bytes) : 0;
+      std::snprintf(ask.product, sizeof ask.product, "%s", product);
+      std::snprintf(ask.version, sizeof ask.version, "%s", version);
+      std::snprintf(ask.base, sizeof ask.base, "%s", base);
+      std::snprintf(ask.expectedSha256, sizeof ask.expectedSha256, "%s", sha);
+      r.hasUpdate = true;
+      r.update = ask;
+    }
+  }
   out = r;
   return true;
 }

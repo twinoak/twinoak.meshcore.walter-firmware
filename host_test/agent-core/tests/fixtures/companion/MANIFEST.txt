@@ -1,5 +1,5 @@
 # The transcribed companion frames, copied - never edited here.
-# source: twinoak/meshmaster.dk/tests/fixtures/companion at commit f518ebd10883a41703f56de80addf1d21210eb8c
+# source: twinoak/meshmaster.dk/tests/fixtures/companion at commit 28daabd1d3426989a50e579963710d58de7e39cd
 # written by tools/sync-fixtures.ps1; see README.md in this directory
 #
 # sha256                                                           bytes  name

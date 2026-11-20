@@ -37,6 +37,8 @@ namespace {
 #define g_command (scratch_.command)
 #define g_applyOutcome (scratch_.applyOutcome)
 #define g_secretLine (scratch_.secretLine)
+#define g_cliPrefix (scratch_.cliPrefix)
+#define g_line (scratch_.line)
 constexpr size_t kDataCap = JobRunner::kDataCap;
 constexpr size_t kBodyCap = JobRunner::kBodyCap;
 // How long a line that expects no reply is given to leave the radio before the next is queued:
@@ -157,7 +159,149 @@ bool JobRunner::spend(const ClaimedJob& job, Context& ctx, bool escape) {
   return true;
 }
 
+// ------------------------------------------------------------------ the tags this job sent
+
+void JobRunner::Context::rememberTag(uint32_t tag) {
+  if (tag == 0 || sentTag(tag)) return;
+  sentTags[sentTagNext] = tag;
+  sentTagNext = static_cast<uint8_t>((sentTagNext + 1) % kSentTagCap);
+  if (sentTagCount < kSentTagCap) sentTagCount++;
+}
+
+bool JobRunner::Context::sentTag(uint32_t tag) const {
+  if (tag == 0) return false;
+  for (uint8_t i = 0; i < sentTagCount; i++) {
+    if (sentTags[i] == tag) return true;
+  }
+  return false;
+}
+
 // ------------------------------------------------------------------ the login
+
+// **Only a login reply answers a login** (task p1.10-47; meshmaster.dk's task p4.32-186 is the
+// server's half, which protects an exit node nobody has flashed).
+//
+// A login reply starts with the **repeater's** clock and carries no tag of ours: `handleLoginReq`
+// writes `getCurrentTimeUnique()` into the four bytes `handleRequest` reflects the sender's
+// timestamp into (examples/simple_repeater/MyMesh.cpp at 81dbae59, lines 133-135 against 214). So
+// a login is awaited with tag 0 - *the next response from this peer* - and until this task
+// whatever came next was taken as the login's answer. On a job whose request had just timed out,
+// what comes next is that **request's late reply**. meshmaster.dk, 12 November 2026: every one of
+// the ten times an active ACL association was parked as *the ACL entry is gone* has this log
+// (jobs 24142, 21783, 8293, 19065), and in 24142 the same key had been answered *logged in as
+// read-write* three minutes before:
+//
+//     session reused (acl, read-write, 147 s old);
+//     neighbours page at 0 try 1: no reply (direct);
+//     no reply on a reused session: logging in again once;
+//     login (acl) try 1: refused
+//
+// So a response that is not a login reply no longer ends the wait: it is dropped, the job's log
+// says a reply to something else arrived, and the wait goes on to its end. Then it is *no reply* -
+// which is what stock firmware answers a login it will not take anyway - and the second try
+// follows as for any silence. Two tests of what a login reply is, and the first is the one a
+// parse cannot make:
+//
+//   - **a tag this job sent** (`Context::sentTag`): a response carrying one is that request's
+//     reply, whatever it parses as. A neighbour page of a repeater with no neighbours is
+//     `total(i16)` and `returned(i16)`, four zero bytes, zero-padded to the cipher block by
+//     `Utils::encrypt` - and `parseLoginReply` reads a first byte of zero as *login ok*, the
+//     fourth as the permissions and the ninth as the firmware level, so that page arrives as
+//     *logged in as guest, firmware level 0*. A status reply can do the same: its first field is
+//     the battery in millivolts, little-endian, so one reading in 256 (4096 mV, 3840 mV) has a
+//     low byte of zero, and the two bytes after it are the transmit queue length, whose high
+//     byte is the role - guest on any queue below 256;
+//   - **bytes that are not a login reply at all**: another kind (a trace, a CLI text) or a
+//     response `parseLoginReply` does not know.
+//
+// Here, in the library, and not only in `AgentMesh`: the Walter has its own `IMesh`, and the rule
+// has to hold with one that hands every response through. Nothing is lost by dropping these,
+// because **nothing of MeshCore at the pin refuses a login**: `handleLoginReq` answers
+// RESP_SERVER_LOGIN_OK or `return 0`, and so do `simple_room_server` and `simple_sensor`. The
+// companion's `PUSH_CODE_LOGIN_FAIL` (examples/companion_radio/MyMesh.cpp:716-721) is emitted for
+// exactly the response this drops - which is the .NET agent's half of the same bug.
+bool JobRunner::awaitLoginReply(const ClaimedJob& job, Context& ctx, const char* what, LoginReply& out) {
+  // A bound on the drops of one wait, not on the wait itself: eight late replies while one login
+  // is awaited is a repeater talking about something else, and the login was not answered.
+  constexpr int kDropsPerWait = 8;
+  const uint32_t deadline = millis() + loginWaitMs(job);
+  for (int dropped = 0; dropped < kDropsPerWait; dropped++) {
+    const int32_t left = static_cast<int32_t>(deadline - millis());
+    if (left <= 0) return false;
+    if (!mesh_->awaitReply(0, static_cast<uint32_t>(left), pump_)) return false;
+    const MeshReply& reply = mesh_->reply();
+    const bool ours = reply.kind == MeshReply::Kind::Response && ctx.sentTag(reply.tag);
+    if (!ours && reply.kind == MeshReply::Kind::Response && parseLoginReply(reply.data, reply.len, out)) {
+      // This reply, and nothing else that arrived in this wait, is the login's: so these four
+      // bytes, and no others, are the repeater's own clock (meshmaster.dk's task p4.37-210).
+      noteRepeaterClock(job, ctx, what, reply.tag);
+      return true;
+    }
+    if (ours) {
+      g_log.add("%s: the late reply to a request this job sent arrived instead; dropped, and the login's wait goes "
+                "on (task p1.10-47)",
+                what);
+      LOG_I("jobs: job %lld: %s: a late reply to one of this job's own requests was dropped", job.id, what);
+    } else {
+      g_log.add("%s: a reply that is not a login reply arrived instead; dropped, and the login's wait goes on "
+                "(task p1.10-47)",
+                what);
+      LOG_I("jobs: job %lld: %s: a reply that is not a login reply was dropped", job.id, what);
+    }
+  }
+  return false;
+}
+
+// **The clock a login showed, kept** (meshmaster.dk's task p4.37-210, EXIT-NODES §7 *What a
+// login reply says besides yes*). `handleLoginReq` writes `getRTCClock()->getCurrentTimeUnique()`
+// into the four bytes every response begins with, so a login reply's `tag` - the one field of a
+// reply this firmware has always read and always thrown away - is the repeater's own clock in
+// Unix seconds. It costs no request and no airtime, and it is the only reading there is of a
+// repeater whose battery-backed clock started again from an old date after a power loss.
+//
+// **Two numbers, no arithmetic here**: the repeater's as the reply gave it, and this board's own
+// at that moment, which the server subtracts one from the other and stores. The log says the
+// difference because a bench reads the log, and that sentence is no part of the result.
+//
+// The two refusals are for want of a number and not by policy:
+//
+//   - a job the mesh **answers without the air** (IMesh::answersLocally, task p1.10-40) logs in
+//     to a door at this end, which answers the login itself: the four bytes are the door's and
+//     the repeater behind it was never asked what time it thinks it is;
+//   - a board whose own clock is **not set** has no second number to put beside the first, and
+//     one of the pair alone is a 400 on the result (API §3).
+//
+// A job that made no login of its own - a reused session, a `trace`, a job nothing was sent for -
+// never reaches here, which is the third absence and needs no test of its own.
+// **It says nothing in the job's log**, which is the one decision here that is not the spec's.
+// That log is 1 024 bytes and whole entries fall off the front of it when it fills (JobLog), and
+// a long job - a 34-line `config.read`, an `acl.set` confirmed by a blank login - spends the
+// whole of it on what it did. A line per answered login would push that evidence out to say
+// again what the result already carries as two numbers, which is the one place the server reads
+// it. So the reading goes to the **console**, where a bench reads it, and the job's log is left
+// exactly as long as it was.
+void JobRunner::noteRepeaterClock(const ClaimedJob& job, Context& ctx, const char* what, uint32_t fromReply) {
+  if (mesh_->answersLocally()) {
+    // Every job of a unit's own repeater does this, so it is debug and not info.
+    LOG_D("jobs: job %lld: %s: the door at this end answered it, so there is no repeater's clock to report", job.id,
+          what);
+    return;
+  }
+  if (!clock_->hasTime()) {
+    LOG_I("jobs: job %lld: %s: this board's own clock is not set, so the repeater's clock is not reported", job.id,
+          what);
+    return;
+  }
+  ctx.hasRepeaterClock = true;
+  ctx.repeaterClockS = fromReply;
+  ctx.agentClockS = clock_->now();
+  // The difference is the console's, for a bench; the result carries the two numbers and nothing
+  // worked out from them.
+  const long long difference = static_cast<long long>(ctx.repeaterClockS) - static_cast<long long>(ctx.agentClockS);
+  LOG_I("jobs: job %lld: %s: the repeater's clock says %lu and ours %lu, which is %lld s %s; both go in the result",
+        job.id, what, static_cast<unsigned long>(ctx.repeaterClockS), static_cast<unsigned long>(ctx.agentClockS),
+        difference < 0 ? -difference : difference, difference < 0 ? "behind" : "ahead");
+}
 
 const char* JobRunner::loginMaterial(const ClaimedJob& job) {
   // Which material a class logs in with - the password, the blank login of `acl`, `none` and the
@@ -191,7 +335,11 @@ JobRunner::LoginResult JobRunner::loginOnce(const ClaimedJob& job, Context& ctx,
   }
   char shape[48];
   describeSend(sent, mode, shape, sizeof shape);
-  if (!mesh_->awaitReply(tag, loginWaitMs(job), pump_)) {
+  // Only a login reply ends this wait (task p1.10-47, awaitLoginReply above): a late reply to
+  // something else is dropped and the wait goes on, so what comes back here is a login reply or
+  // the silence that is all a login can be refused with.
+  LoginReply login;
+  if (!awaitLoginReply(job, ctx, what, login)) {
     // Stock firmware answers a login it will not take with **silence** (`handleLoginReq`
     // returns 0): a key its ACL does not hold on a blank login, a password that is neither of
     // its two on a password login. It cannot be told from a repeater that is off the air.
@@ -203,21 +351,42 @@ JobRunner::LoginResult JobRunner::loginOnce(const ClaimedJob& job, Context& ctx,
     ctx.hasRtt = true;
     ctx.rttMs = static_cast<int>(millis() - started);
   }
-  const MeshReply& reply = mesh_->reply();
-  LoginReply login;
-  if (reply.kind != MeshReply::Kind::Response || !parseLoginReply(reply.data, reply.len, login)) {
-    g_log.add("%s: refused", what);
-    sessions_.invalidate(job.repeaterKey);
-    return LoginResult::Refused;
-  }
   const uint8_t permissions = login.hasAclPermissions ? login.aclPermissions : login.role();
   const RepeaterSession* stored = sessions_.put(job.repeaterKey, job.credentialClass, permissions, millis());
   const uint8_t granted = stored != nullptr ? stored->role() : login.role();
   char level[24] = {0};
   if (login.hasFirmwareLevel) {
     std::snprintf(level, sizeof level, ", firmware level %u", static_cast<unsigned>(login.firmwareLevel));
+    // Kept for the owner-info request, which no repeater below kOwnerInfoVerLevel knows (task
+    // p4.30-181). Set whatever the login came to: a reply answered below the class the job asked
+    // for still told us the level, and the job that follows it on the same repeater may use it.
+    ctx.hasFirmwareLevel = true;
+    ctx.firmwareLevel = login.firmwareLevel;
   }
   if (stored == nullptr || !stored->satisfies(job.credentialClass)) {
+    // **Guest is enough to read with** (meshmaster.dk's task p4.30-180, EXIT-NODES §7). The
+    // answer is still the evidence it was - an `acl` login answered at guest says the entry our
+    // grant wrote is gone or demoted, and the result carries the tier so the server reads it
+    // exactly as it reads the `unauthorized` - but `handleRequest` checks no permission at all
+    // for the status request ("guests can also access this now") or for the neighbour request, so
+    // the read the job was created for is still there to be made. AAR_LH, 10 November 2026: two
+    // *Read the neighbours* of a repeater whose pair was still being proved were lost at this
+    // line to a request the firmware would have answered. `telemetry` is not one of the two: a
+    // guest sender gets `perm_mask = 0x00` and the base channels only, and a read that dropped
+    // the sensors would look like the sensors had gone.
+    if (stored != nullptr && guestIsEnough(job.type, job.credentialClass, granted)) {
+      ctx.hasSession = true;
+      ctx.sessionRole = granted;
+      ctx.sessionWasFresh = true;
+      ctx.ranBelowClass = true;
+      ctx.ranBelowClassRole = granted;
+      g_log.add("%s: logged in as %s, below the %s this job asked for%s: the ACL entry of this exit node's key is "
+                "gone or demoted, and the result says so - but this firmware answers a %s request to any login, so "
+                "the read runs at %s (task p4.30-180)",
+                what, permissionName(granted), permissionName(roleNeededFor(job.credentialClass)), level, job.type,
+                permissionName(granted));
+      return LoginResult::Ok;
+    }
     // A login judged against the class it was for, the moment it comes back (task p3.5-41):
     // answered below what the job needs is the refusal it is, and the level travels in the
     // result so the server can tell a demoted entry from one that is gone (task p4.1-60).
@@ -280,7 +449,6 @@ class JobRunner::LoginOnTheAir : public LoginExchange {
 
   ProbeAnswer probe(uint8_t& role) override {
     if (!runner_.probeReachable(job_, ctx_)) return ProbeAnswer::NoReply;
-    if (ctx_.probeRefused) return ProbeAnswer::Refused;
     role = ctx_.probeAnsweredRole;
     return ProbeAnswer::Answered;
   }
@@ -334,7 +502,6 @@ Outcome JobRunner::ensureSession(const ClaimedJob& job, Context& ctx) {
 }
 
 bool JobRunner::probeReachable(const ClaimedJob& job, Context& ctx) {
-  ctx.probeRefused = false;
   ctx.probeAnsweredRole = 0;
   if (!spend(job, ctx)) {
     g_log.add("reachability probe (blank login): not sent, the lease ran out");
@@ -350,7 +517,12 @@ bool JobRunner::probeReachable(const ClaimedJob& job, Context& ctx) {
   }
   char how[48];
   describeSend(sent, mode, how, sizeof how);
-  if (!mesh_->awaitReply(tag, loginWaitMs(job), pump_)) {
+  // The same rule as every other login of this file (task p1.10-47): a response that is not a
+  // login reply is dropped and the wait goes on, so this probe is answered or silent and never
+  // *refused* - the word would have made a late reply to something else into evidence about a
+  // password, which is the reading task p4.7-95's silence-after-a-reachable-probe stands on.
+  LoginReply login;
+  if (!awaitLoginReply(job, ctx, "reachability probe (blank login)", login)) {
     g_log.add("reachability probe (blank login): no reply (%s)", how);
     g_log.add("the blank login was not answered either: nothing is known about the password - the repeater is off "
               "the air, or it has a guest password set and no entry for this exit node's key (task p4.7-95)");
@@ -360,16 +532,6 @@ bool JobRunner::probeReachable(const ClaimedJob& job, Context& ctx) {
   flood_.answered();
   // No session is stored from this reply, whatever it says: the next job is a candidate job and
   // logs in afresh, and a session another login opened would make its verdict a lie.
-  const MeshReply& reply = mesh_->reply();
-  LoginReply login;
-  if (reply.kind != MeshReply::Kind::Response || !parseLoginReply(reply.data, reply.len, login)) {
-    ctx.probeRefused = true;
-    g_log.add("reachability probe (blank login): refused (%s)", how);
-    g_log.add("the repeater is on the air: it refused the blank login, so a silence to the new candidate right after "
-              "it is a refusal (task p4.7-95)");
-    LOG_I("jobs: job %lld: reachability probe (blank login): refused; the repeater is on the air", job.id);
-    return true;
-  }
   const uint8_t permissions = login.hasAclPermissions ? login.aclPermissions : login.role();
   ctx.probeAnsweredRole = static_cast<uint8_t>(permissions & kPermRoleMask);
   const char* tier = permissionName(ctx.probeAnsweredRole);
@@ -404,15 +566,25 @@ Outcome JobRunner::exchange(const ClaimedJob& job, Context& ctx, const char* wha
       g_log.add("%s try %d: the packet could not be built", what, attempt);
       return Outcome::Failed;
     }
+    // The tag this attempt went out with, kept for the rest of the job (task p1.10-47): a
+    // response carrying it later is this request's reply, however late, and must not be taken
+    // for the answer to the re-login below. A CLI line is not one of them - its reply is a
+    // TXT_MSG that carries no tag at all, and the timestamp it drew is the repeater's replay
+    // mark and never a response's four bytes.
+    if (!text) ctx.rememberTag(tag);
     char shape[48];
     describeSend(sent, mode, shape, sizeof shape);
-    const bool answered = text ? mesh_->awaitText(requestWaitMs(job), pump_) : mesh_->awaitReply(tag, requestWaitMs(job), pump_);
+    // A console reply belongs to its line (task p1.10-49, awaitCliReply below): a text that does
+    // not carry the prefix this attempt went out with is a late reply to another line, dropped
+    // while the wait goes on. The reply that is this line's is in `g_cliReply` by then, with its
+    // prefix taken off.
+    const bool answered =
+        text ? awaitCliReply(job, what, attempt) : mesh_->awaitReply(tag, requestWaitMs(job), pump_);
     if (answered) {
       flood_.answered();
       ctx.hasRtt = true;
       ctx.rttMs = static_cast<int>(millis() - started);
       g_log.add("%s try %d: ok (%s, %lu ms)", what, attempt, shape, static_cast<unsigned long>(ctx.rttMs));
-      if (text) std::memcpy(g_cliReply, mesh_->reply().text, sizeof g_cliReply);
       return Outcome::Ok;
     }
     g_log.add("%s try %d: no reply (%s)", what, attempt, shape);
@@ -434,21 +606,112 @@ Outcome JobRunner::request(const ClaimedJob& job, Context& ctx, const char* what
                   [&](uint32_t& tag) { return mesh_->sendRequest(reqType, data, len, tag); });
 }
 
+// ------------------------------------------------------------------ a console reply belongs to its line
+//
+// **A console reply carries no tag, so the line carries one of its own** (task p1.10-49;
+// agent/CliReplies.h holds the reading of the firmware). Until this task the first text of CLI
+// data from the peer while one was awaited was the answer, whatever it answered - so on this
+// mesh, where replies arrive later than this board waits (task p1.10-47, and meshmaster.dk's
+// task 187 has the numbers), the reply to `get name` could arrive while `get radio` was awaited
+// and be stored as the radio. A configuration read is thirty such lines in a row, and nothing
+// would show a swapped value either: a `get` answers a value and not the key it belongs to.
+//
+// `handleCommand` reflects a two-character prefix and a `|`, so `a7|get name` is answered
+// `a7|> …`. Every console line of a job now carries one, counted out per line and per try, and
+// only a reply that starts with it is the answer; another prefix or none is a late reply,
+// dropped with a line in the job's log while the wait goes on. Where the prefix cannot be used -
+// a repeater whose firmware level this job does not know, a line the firmware reads before it
+// reads a prefix, a line whose reply fills the repeater's reply window - the line goes exactly
+// as it did before, which is what `cliLineTakesPrefix` and `kCliPrefixVerLevel` decide.
+//
+// Nobody has seen a swapped value. 47 and 48 are the two that were seen; this is the third.
+
+void JobRunner::nextCliPrefix(const ClaimedJob& job, Context& ctx, const char* command, bool escape) {
+  g_cliPrefix[0] = '\0';
+  // An escape line ends a mode the repeater is in, and `handleCommand` answers it **before** it
+  // reads a prefix (the region loader's branch returns at MyMesh.cpp:1231): the region
+  // terminator is one space, which `cliLineTakesPrefix` would refuse anyway, and any other line
+  // the server marks as one is refused here for the same reason.
+  if (escape || !cliLineTakesPrefix(command)) return;
+  // Nothing looser than the level the login named (agent/CliReplies.h): not knowing is a line
+  // sent as it was sent before this task, never a guess.
+  if (!ctx.hasFirmwareLevel || ctx.firmwareLevel < kCliPrefixVerLevel) {
+    if (!ctx.cliPrefixNoted) {
+      ctx.cliPrefixNoted = true;
+      g_log.add("this job has not been told the repeater's firmware level, so its console lines carry no prefix: a "
+                "reply that arrives late cannot be told from this line's own (task p1.10-49)");
+    }
+    return;
+  }
+  if (!ctx.hasCliPrefixSeq) {
+    ctx.hasCliPrefixSeq = true;
+    uint8_t seed = 0;
+    randomBytes(&seed, 1);
+    ctx.cliPrefixSeq = seed;
+  }
+  cliPrefixFor(ctx.cliPrefixSeq++, g_cliPrefix, sizeof g_cliPrefix);
+  if (!ctx.cliPrefixNoted) {
+    ctx.cliPrefixNoted = true;
+    g_log.add("every console line of this job carries the firmware's two-character prefix, so only a reply that "
+              "carries this line's own is its answer (task p1.10-49)");
+    LOG_I("jobs: job %lld: console lines carry a prefix: firmware level %u", job.id,
+          static_cast<unsigned>(ctx.firmwareLevel));
+  }
+}
+
+bool JobRunner::awaitCliReply(const ClaimedJob& job, const char* what, int attempt) {
+  // A bound on the drops of one wait, as a login's has (task p1.10-47): eight late console
+  // replies while one line is awaited is a repeater answering something else, and this line was
+  // not answered. The drops do not extend the wait.
+  constexpr int kDropsPerWait = 8;
+  const uint32_t deadline = millis() + requestWaitMs(job);
+  for (int dropped = 0; dropped < kDropsPerWait; dropped++) {
+    const int32_t left = static_cast<int32_t>(deadline - millis());
+    if (left <= 0) return false;
+    if (!mesh_->awaitText(static_cast<uint32_t>(left), pump_)) return false;
+    const char* mine = cliReplyBehindPrefix(mesh_->reply().text, g_cliPrefix);
+    if (mine != nullptr) {
+      std::snprintf(g_cliReply, sizeof g_cliReply, "%s", mine);
+      return true;
+    }
+    // No byte of the dropped reply is printed: a console reply can be the echo of a `password`
+    // line, and no reply's bytes are ever a log line's argument.
+    g_log.add("%s try %d: a console reply that does not carry this line's prefix arrived instead; dropped, and the "
+              "wait goes on (task p1.10-49)",
+              what, attempt);
+    LOG_I("jobs: job %lld: %s try %d: a console reply that was not this line's was dropped", job.id, what, attempt);
+  }
+  return false;
+}
+
 Outcome JobRunner::cliLine(const ClaimedJob& job, Context& ctx, const char* what, const char* command, bool retry,
                            uint32_t* timestampUsed, bool sensitive, bool escape) {
   g_cliReply[0] = '\0';
   // Each attempt is its own sender timestamp, strictly above the last: the mesh draws it from the
   // one series every tag and every line of this board come from and hands it back (IMesh::sendCli,
   // task p1.5-15), because the repeater answers an equal one with nothing and runs nothing, and
-  // drops a lower one. A CLI reply carries no tag, so the timestamp stands in for one here.
-  return exchange(
+  // drops a lower one. A CLI reply carries no tag, so the timestamp stands in for one here - and
+  // the prefix, which the repeater reflects, stands in for one on the way back (task p1.10-49).
+  const Outcome got = exchange(
       job, ctx, what, retry, true,
       [&](uint32_t& tag) {
-        const SendResult sent = mesh_->sendCli(command, sensitive, tag);
+        // A fresh prefix per attempt, so a late reply to try 1 is not the answer to try 2 of a
+        // line that is not safe to run twice.
+        nextCliPrefix(job, ctx, command, escape);
+        const char* line = command;
+        if (g_cliPrefix[0] != '\0') {
+          std::snprintf(g_line, sizeof g_line, "%s%s", g_cliPrefix, command);
+          line = g_line;
+        }
+        const SendResult sent = mesh_->sendCli(line, sensitive, tag);
         if (timestampUsed != nullptr) *timestampUsed = tag;
         return sent;
       },
       escape);
+  // `g_line` carried the bytes of a `password` or `set guest.password` line, as `g_secretLine`
+  // did: gone the moment the exchange is over, and under the same rule.
+  if (sensitive) wipeBytes(g_line, sizeof g_line);
+  return got;
 }
 
 Outcome JobRunner::adminSession(const ClaimedJob& job, Context& ctx) {
@@ -462,13 +725,173 @@ Outcome JobRunner::adminSession(const ClaimedJob& job, Context& ctx) {
   return Outcome::Ok;
 }
 
-// ------------------------------------------------------------------ the restore (task p4.1-60)
+// ------------------------------------------------------------------ a line that cannot be asked twice
+//
+// **`setperm <our own key> <level>` is sent once, and its silence is checked with a blank login**
+// (task p1.10-48; meshmaster.dk's tasks p4.32-188 and p4.32-189 are the server's half).
+//
+// The line runs on a session whose key is, at that moment, admin, and on stock firmware the
+// session *is* the ACL entry: `ClientACL::applyPermissions` writes the `ClientInfo` the login
+// filled (src/helpers/ClientACL.cpp:121-144 at 81dbae59). So once the line has run the key is at
+// `<level>`, and `onPeerDataRecv` runs a console line only for a sender that `isAdmin()`,
+// dropping every further line from this key without a word
+// (examples/simple_repeater/MyMesh.cpp:702). The retry of EXIT-NODES §5 is therefore
+// unanswerable, and until this task the job ended `unreachable` with the line having done its
+// work: meshmaster.dk, 12 November 2026, 32 grants confirmed and 20 failed this way after an
+// answered admin login (jobs 4558, 4568, 4590, 4644, 21870, 26068), and the restore after an
+// admin job the same - association 3 found *elevated* seven times in 39 days.
+//
+// What the line did is read back instead, with a **blank login**: this board's own key, no secret
+// at all, one transaction, and a reply that carries the entry's own permission byte
+// (`handleLoginReq`: a blank password is the ACL lookup alone, and `reply_data[7]` is
+// `client->permissions`, MyMesh.cpp:91-99 and 135-144).
+//
+//   answered at the level asked for   the line ran, and its "OK" was lost: confirmed, by the
+//                                     login and not by an "OK"
+//   answered at admin                 the line did not arrive. The session is admin again, so
+//                                     the line is sent once more and checked once more. **Two
+//                                     rounds at most**
+//   answered at guest, level 0        the confirmation that the key is off: `applyPermissions`
+//                                     **deletes** a guest-role entry, so the blank login falls
+//                                     through to the password compare and a repeater with no
+//                                     guest password answers it at guest
+//   no answer                         not confirmed. A repeater with a guest password answers a
+//                                     key it does not hold with silence, and so does one that is
+//                                     off the air: nothing is known, and the result says the line
+//                                     went out and could not be confirmed
+//
+// Level 0 has a reason of its own to need this. `applyPermissions` deletes the entry by moving
+// the later ones down, while `onPeerDataRecv` holds a pointer into the slot the sender had
+// *before* `handleCommand` ran (`client = acl.getClientByIdx(i)`, MyMesh.cpp:670) and addresses
+// the reply to whatever sits in it afterwards (MyMesh.cpp:751). Unless our own entry was the last
+// one in the table, the "OK" is addressed to another client and cannot reach us at all. That is
+// how the pinned source reads; nobody has tried it on a board, and `test/support/FakeMesh.h` is
+// the second reading of it.
+
+bool JobRunner::readOwnEntryLevel(const ClaimedJob& job, Context& ctx, const char* what, uint8_t& role) {
+  role = 0;
+  if (!spend(job, ctx)) {
+    g_log.add("%s: not sent, the lease ran out", what);
+    return false;
+  }
+  uint32_t tag = 0;
+  const FloodMode mode = scopeTheNextSend();
+  const SendResult sent = mesh_->sendLogin("", tag);
+  noteSend(sent, mode);
+  if (sent == SendResult::Failed) {
+    g_log.add("%s: the packet could not be built", what);
+    return false;
+  }
+  char how[48];
+  describeSend(sent, mode, how, sizeof how);
+  // The wait every login of this file shares (task p1.10-47), and nowhere does it matter more:
+  // the reply this one may have to drop is the very "OK" whose loss it is checking, and a text
+  // frame read as a login reply would have made its bytes into the entry's level. `ctx.stage` is
+  // deliberately left where the line put it - this login is the *check* and not the job's own,
+  // so a job that fails here still reports the step it failed at (task p1.7-28).
+  LoginReply login;
+  if (!awaitLoginReply(job, ctx, what, login)) {
+    g_log.add("%s: no reply (%s)", what, how);
+    return false;
+  }
+  flood_.answered();
+  // No session is stored from this reply, whatever it says: a grant keeps none and a restore
+  // stores its own at the level it put back.
+  const uint8_t permissions = login.hasAclPermissions ? login.aclPermissions : login.role();
+  role = static_cast<uint8_t>(permissions & kPermRoleMask);
+  g_log.add("%s: answered at %s%s (%s)", what, permissionName(role), login.legacy ? " (a legacy reply)" : "", how);
+  LOG_I("jobs: job %lld: %s: answered at %s", job.id, what, permissionName(role));
+  return true;
+}
+
+JobRunner::OwnEntryWrite JobRunner::writeOwnEntry(const ClaimedJob& job, Context& ctx, const char* command, int level,
+                                                  const char* what) {
+  OwnEntryWrite wrote;
+  // The rounds and the checks between them are one flooded transaction's retries
+  // (agent/FloodScope.h): nestable, so each line's own transaction nests inside this one.
+  const FloodTransaction transaction(flood_);
+  const uint8_t asked = static_cast<uint8_t>(level & kPermRoleMask);
+  for (int round = 1; round <= 2; round++) {
+    // **Sent once.** `retry` false, because the retry is the whole fault: it can be answered
+    // only if the line never arrived, which is the one case the check below finds out about
+    // anyway - and then the line goes again, deliberately, with the session known to be admin.
+    const Outcome sent = cliLine(job, ctx, what, command, false);
+    wrote.sent = sent;
+    if (sent != Outcome::Ok && sent != Outcome::Unreachable) return wrote;  // nothing went out
+    wrote.wentOut = true;
+    trimInPlace(g_cliReply);
+    if (sent == Outcome::Ok) {
+      g_log.add("the repeater answered '%s'", g_cliReply);
+      wrote.confirmed = startsWithOk(g_cliReply);
+      return wrote;
+    }
+    g_log.add("%s: no answer, and this line cannot be asked twice - if it ran, this key is no longer admin and the "
+              "repeater drops a retry from it without a word. What it did is read back with a blank login instead "
+              "(task p1.10-48)",
+              what);
+    uint8_t role = 0;
+    if (!readOwnEntryLevel(job, ctx, "the entry check (blank login)", role)) {
+      g_log.add("the blank login was not answered either: a repeater with a guest password answers a key it does "
+                "not hold with silence, and so does one that is off the air - nothing is known, and the line went "
+                "out and could not be confirmed (task p1.10-48)");
+      return wrote;
+    }
+    if (role == asked) {
+      wrote.confirmed = true;
+      wrote.byLogin = true;
+      if (level == 0) {
+        g_log.add("the blank login was answered at guest, which is what a repeater answers a key its access list "
+                  "does not hold: this exit node's key is off it, so the line ran - confirmed by the login and not "
+                  "by an \"OK\" (task p1.10-48)");
+      } else {
+        g_log.add("the blank login was answered at %s, which is the level the line asked for: the line ran and its "
+                  "\"OK\" was lost - confirmed by the login and not by an \"OK\" (task p1.10-48)",
+                  permissionName(asked));
+      }
+      return wrote;
+    }
+    if (role == kPermAdmin) {
+      if (round == 1) {
+        g_log.add("the blank login was answered at admin: the line did not arrive, and the session is admin again - "
+                  "sending it once more (task p1.10-48)");
+        continue;
+      }
+      g_log.add("the blank login was answered at admin again: the line did not arrive twice, so it is not confirmed "
+                "(task p1.10-48)");
+      return wrote;
+    }
+    g_log.add("the blank login was answered at %s, which is neither %s nor admin: the line is not confirmed "
+              "(task p1.10-48)",
+              permissionName(role), permissionName(asked));
+    return wrote;
+  }
+  return wrote;
+}
+
+// ------------------------------------------- the restore, and the removal that stands in for it
+//                                             (tasks p4.1-60 and p1.10-50)
+//
+// The claim's `acl` level is what this exit node's own key should be at on the repeater once the
+// session is over, and since meshmaster.dk's task p4.33-191 it can be **0**: *you should hold
+// nothing here*. An admin-password login writes our key into the ACL **at admin** and saves it to
+// flash (`handleLoginReq`), so where there is no grant of ours to put back nothing has ever taken
+// that entry off - a guest association whose exit node carries the daily configuration read, a
+// flow that stopped before its grant, a one-off admin job through an exit node with no
+// association at all. The session's last command is then `setperm <own key> 0` rather than a
+// restore: the same one line, sent once and read back the same way (task p1.10-48), and the
+// session goes with the entry.
+//
+// 1 when the entry is where the claim says it should be, 0 when the line could not be confirmed,
+// -1 when there was nothing to send. A `config.read` reports that as `aclRestored` - what became
+// of this exit node's own entry after the read, which for a level of 0 is whether the key came
+// off (meshmaster.dk's `ConfigReadResult`).
 
 int JobRunner::restoreAcl(const ClaimedJob& job, Context& ctx, Outcome outcome) {
   if (ctx.aclRestoreDone) return -1;
-  // Nothing to restore unless the claim carried a grant below admin and the session in force is
-  // admin - by the admin password, which rewrote our entry to admin on stock firmware, or a
-  // blank login answered admin because an earlier session died before its restore.
+  // Nothing is sent unless the claim carried a level below admin - a grant to put back, or the 0
+  // of a key that should hold nothing - and the session in force is admin: by the admin password,
+  // which rewrote our entry to admin on stock firmware, or by a blank login answered admin
+  // because an earlier session died before its restore.
   //
   // **The claim's level is the whole gate, and that is what a local job turns on** (task
   // p1.10-41, checking task p4.1-60's rule once more): the local door answers every login at
@@ -476,55 +899,132 @@ int JobRunner::restoreAcl(const ClaimedJob& job, Context& ctx, Outcome outcome) 
   // no grant (meshmaster.dk's task p4.27-173), `hasAclLevel` is false, and the first clause ends
   // it. Nothing is restored on a repeater the unit *is*, and no `setperm` goes over its console.
   // A local job that somehow does carry a level is restored exactly as an over-the-air one is:
-  // the level the server granted is the level the server expects to find.
-  if (!job.hasAclLevel || job.aclLevel >= kPermAdmin || job.aclLevel < kPermReadOnly || !ctx.hasSession ||
+  // the level the server granted is the level the server expects to find. A level of 0 is the one
+  // exception, and it is the next clause but one.
+  if (!job.hasAclLevel || job.aclLevel >= kPermAdmin || job.aclLevel < kPermGuest || !ctx.hasSession ||
       ctx.sessionRole != kPermAdmin) {
+    return -1;
+  }
+  // **A removal is the admin password's own doing, so only an admin-class job sends one** (task
+  // p1.10-50). The server says the same - `acl: 0` rides beside an admin password, and an
+  // `acl`-class claim carries the level its own login expects and never 0 - and the difference
+  // matters for the one job that could reach here otherwise: a blank login answered **above** the
+  // grant, which is put back by the job that made it (EXIT-NODES §7, the third rule). Such a
+  // login is no evidence that this key should hold nothing, and a job carrying no admin password
+  // is not the job to decide that it should.
+  const bool removal = job.aclLevel == kPermGuest;
+  if (removal && job.credentialClass != CredentialClass::Admin) {
+    g_log.add("the claim says this exit node's key should hold nothing on this repeater, but this job's class is %s "
+              "and not admin: nothing is sent, and taking the key off is an admin job's last command (task "
+              "p1.10-50)",
+              credentialClassName(job.credentialClass));
+    return -1;
+  }
+  // **And never over a local door.** A unit logs in to its own repeater as the repeater it *is*
+  // (meshmaster.dk's p4.25-170), so `setperm <own key> 0` there is the repeater asked to forget
+  // itself - and nothing on the other side of that line could put it back. The server sends no
+  // level at all over the box link, so nothing it claims reaches this; it is here because
+  // following such a claim would be worse than refusing it.
+  if (removal && mesh_->answersLocally()) {
+    g_log.add("no removal over the local door: a unit logs in to its own repeater as the repeater it is, so taking "
+              "that key off would be the repeater forgetting itself (task p1.10-50)");
     return -1;
   }
   ctx.aclRestoreDone = true;
   const char* granted = permissionName(static_cast<uint8_t>(job.aclLevel));
   if (outcome == Outcome::Unreachable || outcome == Outcome::Timeout) {
-    // The repeater stopped answering, or the lease is spent: a restore sent now would go into
-    // the same silence. The session is dropped, and the next login from this key - a blank
-    // login answered admin - puts the entry back on that job's account (the third rule of §7).
-    g_log.add("the ACL entry of this exit node's key may still be at admin: the job ended %s, so the restore is not "
-              "sent; the session is dropped, and the next login from this key will put it right (task 60)",
-              outcomeName(outcome));
+    // The repeater stopped answering, or the lease is spent: a line sent now would go into the
+    // same silence. The session is dropped, and the next login from this key - a blank login
+    // answered admin - puts the entry back on that job's account (the third rule of §7). A
+    // **removal** has no such remedy, because no login takes an entry off: the key stays at admin
+    // until an admin job through this exit node carries the level again, which is the daily
+    // config probe of a guest primary, or meshmaster.dk's own revoke.
+    if (removal) {
+      g_log.add("this exit node's key may still be in the repeater's access list at admin, where this session's "
+                "login put it: the job ended %s, so the removal is not sent; no login takes an entry off, so the "
+                "next admin job here is what takes it (task p1.10-50)",
+                outcomeName(outcome));
+    } else {
+      g_log.add("the ACL entry of this exit node's key may still be at admin: the job ended %s, so the restore is not "
+                "sent; the session is dropped, and the next login from this key will put it right (task 60)",
+                outcomeName(outcome));
+    }
     sessions_.invalidate(job.repeaterKey);
     ctx.hasSession = false;
     return 0;
   }
   if (publicKey_ == nullptr || std::strlen(publicKey_) != kPublicKeyHexLen) {
-    g_log.add("the ACL entry cannot be put back: this board's own public key is unknown");
+    if (removal) {
+      g_log.add("the ACL entry cannot be taken off: this board's own public key is unknown");
+    } else {
+      g_log.add("the ACL entry cannot be put back: this board's own public key is unknown");
+    }
     sessions_.invalidate(job.repeaterKey);
     ctx.hasSession = false;
     return 0;
   }
   std::snprintf(g_command, sizeof g_command, "setperm %s %d", publicKey_, job.aclLevel);
   char what[48];
-  std::snprintf(what, sizeof what, "restore: cli 'setperm <own key> %d'", job.aclLevel);
-  const Outcome sent = cliLine(job, ctx, what, g_command, false);
-  trimInPlace(g_cliReply);
-  if (sent == Outcome::Ok && startsWithOk(g_cliReply)) {
+  std::snprintf(what, sizeof what, "%s: cli 'setperm <own key> %d'", removal ? "removal" : "restore", job.aclLevel);
+  // One line, and its silence checked with a blank login (task p1.10-48): this is the same line
+  // as the grant and it cannot be asked twice, which is where meshmaster.dk's *elevated* came
+  // from - association 3 seven times in 39 days, each of them a restore that very likely ran and
+  // an "OK" nobody heard.
+  const OwnEntryWrite wrote = writeOwnEntry(job, ctx, g_command, job.aclLevel, what);
+  if (wrote.confirmed && removal) {
+    // The entry is off the device and this session went with it: `applyPermissions` deleted the
+    // very `ClientInfo` the login filled, so there is nothing left to keep and the next job for
+    // this repeater logs in for itself. Nothing of ours is left behind, which is the whole of it.
+    sessions_.invalidate(job.repeaterKey);
+    ctx.hasSession = false;
+    g_log.add("this exit node's key is off the repeater's access list%s: nothing of ours is left behind, and the "
+              "session is gone with the entry (task p1.10-50)",
+              wrote.byLogin ? ", which the blank login answered at guest confirmed and no \"OK\" did" : "");
+    return 1;
+  }
+  if (wrote.confirmed) {
     // On stock firmware the entry *is* the session (ClientACL::applyPermissions finds the same
     // ClientInfo the login filled): the repeater now holds us at the granted level and the cache
-    // says so - reusable by the next acl-class job, invisible to an admin-class one.
+    // says so - reusable by the next acl-class job, invisible to an admin-class one. The restore
+    // **keeps** its session whichever way it was confirmed, because the blank login that
+    // confirmed it was itself a login at that very level.
     sessions_.put(job.repeaterKey, CredentialClass::Acl, static_cast<uint8_t>(job.aclLevel), millis());
     ctx.sessionRole = static_cast<uint8_t>(job.aclLevel);
-    g_log.add("the ACL entry of this exit node's key is back at %s, as granted; the session is now %s (task 60)",
-              granted, granted);
+    g_log.add("the ACL entry of this exit node's key is back at %s, as granted%s; the session is now %s (task 60)",
+              granted, wrote.byLogin ? ", which the blank login confirmed and no \"OK\" did" : "", granted);
     return 1;
   }
   sessions_.invalidate(job.repeaterKey);
   ctx.hasSession = false;
-  if (sent == Outcome::Ok) {
+  if (removal) {
+    if (!wrote.wentOut) {
+      g_log.add("this exit node's key is still in the repeater's access list at admin: the removal got %s before the "
+                "line went out, so no part of it was sent; the next admin job here takes it off (task p1.10-50)",
+                outcomeName(wrote.sent));
+    } else if (wrote.sent == Outcome::Ok) {
+      g_log.add("this exit node's key may still be in the repeater's access list at admin: the repeater answered "
+                "'%s' to the removal; the next admin job here takes it off (task p1.10-50)",
+                g_cliReply);
+    } else {
+      g_log.add("it is not known whether this exit node's key came off the repeater's access list: the line went out, "
+                "its answer was not heard and the check could not confirm it either; the next admin job here takes "
+                "it off (tasks p1.10-48 and p1.10-50)");
+    }
+    return 0;
+  }
+  if (!wrote.wentOut) {
+    g_log.add("the ACL entry of this exit node's key may still be at admin: the restore got %s before the line went "
+              "out; the session is dropped, and the next login from this key will put it right (task 60)",
+              outcomeName(wrote.sent));
+  } else if (wrote.sent == Outcome::Ok) {
     g_log.add("the ACL entry of this exit node's key may still be at admin: the repeater answered '%s'; the session "
               "is dropped, and the next login from this key will put it right (task 60)",
               g_cliReply);
   } else {
-    g_log.add("the ACL entry of this exit node's key may still be at admin: the restore got %s; the session is "
-              "dropped, and the next login from this key will put it right (task 60)",
-              outcomeName(sent));
+    g_log.add("the ACL entry of this exit node's key is not known to be back at %s: the line went out, its answer "
+              "was not heard and the check could not confirm it either; the session is dropped, and the next login "
+              "from this key will put it right (tasks 60 and p1.10-48)",
+              granted);
   }
   return 0;
 }
@@ -546,25 +1046,48 @@ Outcome JobRunner::runStatus(const ClaimedJob& job, Context& ctx, size_t& dataLe
     return Outcome::Failed;
   }
 
-  char firmware[kMaxFirmwareVersionLen + 1] = {0};
-  if (readsFirmwareVersion(job)) {
-    // The verify step of an association records the firmware it proved the ACL login on
-    // (EXIT-NODES §4.1 step 5); the version string is only readable through the owner-info
-    // request, one more transaction, so it is fetched for acl-class reads alone - and since
-    // meshmaster.dk's task p4.3-68 only when the claim asks for it, which is when the server's
-    // record is stale or this pair has recorded none. Forty-seven of a repeater's forty-eight
-    // daily reads are one transaction instead of two.
-    if (request(job, ctx, "owner info (firmware)", kReqTypeGetOwnerInfo, nullptr, 0) == Outcome::Ok) {
-      const MeshReply& owner = mesh_->reply();
-      parseOwnerInfoFirmware(owner.data, owner.len, firmware, sizeof firmware);
+  OwnerInfoReply owner;
+  bool haveOwner = false;
+  if (readsOwnerInfo(job)) {
+    // **The owner-info request**, one more transaction (EXIT-NODES §7). Its reply is three lines -
+    // `FIRMWARE_VERSION\nnode_name\nowner_info` - and this library kept the first until
+    // meshmaster.dk's task p4.30-181. The verify step of an association records the firmware it
+    // proved the ACL login on (§4.1 step 5), which is why it was fetched at all; the other two
+    // are what a repeater's owner put on the air for anybody who logs in, which a person wants
+    // for somebody else's repeater above all.
+    //
+    // Since meshmaster.dk's task p4.3-68 it is made only when the claim asks for it - the
+    // server's record of one of the three is stale, or this pair has recorded no version - and
+    // since 181 at **every class**, because `handleRequest` checks no permission for this
+    // request. A payload that says nothing is an older server and still means "read it".
+    if (ctx.hasFirmwareLevel && ctx.firmwareLevel < kOwnerInfoVerLevel) {
+      // No repeater below that level knows the request, and an unknown request is answered with
+      // silence: asking would buy one timeout and nothing else.
+      g_log.add("owner info not asked for: the login said firmware level %u, and the request arrived at level %u",
+                static_cast<unsigned>(ctx.firmwareLevel), static_cast<unsigned>(kOwnerInfoVerLevel));
+    } else if (request(job, ctx, "owner info", kReqTypeGetOwnerInfo, nullptr, 0) == Outcome::Ok) {
+      const MeshReply& reply2 = mesh_->reply();
+      haveOwner = parseOwnerInfo(reply2.data, reply2.len, owner);
+      if (haveOwner) {
+        if (owner.nodeNameCut) {
+          g_log.add("the node name was longer than the %u characters the firmware's field holds, and the rest is "
+                    "dropped",
+                    static_cast<unsigned>(kMaxNodeNameLen));
+        }
+        if (owner.ownerInfoCut) {
+          g_log.add("the owner info was longer than the %u characters the firmware's field holds, and the rest is "
+                    "dropped",
+                    static_cast<unsigned>(kMaxOwnerInfoLen));
+        }
+      }
     } else {
-      g_log.add("the firmware version was not read; the status itself stands");
+      g_log.add("the owner info was not read; the status itself stands");
     }
   }
 
   ErrorCounter errors[kMaxStatusErrors];
   const int errorCount = statusErrors(reading, errors, kMaxStatusErrors);
-  dataLen = writeStatusResult(reading, errors, errorCount, firmware[0] != '\0' ? firmware : nullptr, g_data, kDataCap);
+  dataLen = writeStatusResult(reading, errors, errorCount, haveOwner ? &owner : nullptr, g_data, kDataCap);
   return dataLen > 0 ? Outcome::Ok : Outcome::Failed;
 }
 
@@ -633,7 +1156,13 @@ Outcome JobRunner::runNeighbours(const ClaimedJob& job, Context& ctx, size_t& da
   }
   if (collected < total) g_log.add("%d of the repeater's %d neighbour(s) reported", collected, total);
 
-  dataLen = writeNeighboursResult(g_neighbours, collected, g_data, kDataCap);
+  // The repeater's own count goes into the result, and not into the log alone (task p1.15-56):
+  // the server reads a result and cannot read a log, so without it a list that stopped at a page
+  // is nine neighbours with nothing to tell it from a whole list of nine, and the eight that were
+  // not read are counted as gone and found again as new at the next listing. It is the figure the
+  // **last page that was read** gave - every page carries it - so a repeater that gained a
+  // neighbour between two pages is reported at its newer count.
+  dataLen = writeNeighboursResult(g_neighbours, collected, total, g_data, kDataCap);
   return dataLen > 0 ? Outcome::Ok : Outcome::Failed;
 }
 
@@ -822,6 +1351,7 @@ Outcome JobRunner::runDiscover(const ClaimedJob& job, Context& ctx, size_t& data
   const FloodMode mode = scopeTheNextSend();
   const SendResult sent = mesh_->sendDiscovery(tag);
   noteSend(sent, mode);
+  ctx.rememberTag(tag);  // a request of this job's, like any other (task p1.10-47)
   if (sent == SendResult::Failed) {
     g_log.add("path discovery request: the packet could not be built");
     dataLen = writeDiscoverResult(false, nullptr, 0, nullptr, 0, nullptr, g_data, kDataCap);
@@ -860,34 +1390,65 @@ Outcome JobRunner::runAclSet(const ClaimedJob& job, Context& ctx, size_t& dataLe
   std::snprintf(g_command, sizeof g_command, "setperm %s %d", job.aclSetKey, job.aclSetLevel);
   char what[48];
   std::snprintf(what, sizeof what, "cli 'setperm %.12s... %d'", job.aclSetKey, job.aclSetLevel);
-  const Outcome sent = cliLine(job, ctx, what, g_command, true);
-  if (sent != Outcome::Ok) {
-    dataLen = writeAclSetResult(job.aclSetKey, job.aclSetLevel, false, nullptr, g_data, kDataCap);
-    return sent;
-  }
-  trimInPlace(g_cliReply);
-  g_log.add("the repeater answered '%s'", g_cliReply);
-  const bool confirmed = startsWithOk(g_cliReply);
-  if (confirmed && sameKey(job.aclSetKey, publicKey_)) {
-    // The entry that was just written is our own session: on stock firmware `applyPermissions`
-    // finds the same ClientInfo the login filled, so from here the repeater holds this exit node
-    // at the level sent - read-only after a grant, nothing after a revoke - and the cache must
-    // say the same, or the next admin-class job would reuse a session the repeater no longer
-    // honours at admin. No second setperm follows: the command is the level.
-    if (job.aclSetLevel == 0) {
-      sessions_.invalidate(job.repeaterKey);
-      ctx.hasSession = false;
-    } else {
-      sessions_.put(job.repeaterKey, CredentialClass::Acl, static_cast<uint8_t>(job.aclSetLevel), millis());
-      ctx.sessionRole = static_cast<uint8_t>(job.aclSetLevel);
+
+  if (!sameKey(job.aclSetKey, publicKey_)) {
+    // Somebody else's key. The line does not touch our own entry, so the session is still admin
+    // after it and the bounded retry of EXIT-NODES §5 can be answered: the line goes out as it
+    // always did. (An association's grant and its revoke are always this exit node's own key -
+    // EXIT-NODES §4.1 step 3 - so this is the branch nothing of meshmaster.dk takes.)
+    const Outcome sent = cliLine(job, ctx, what, g_command, true);
+    if (sent != Outcome::Ok) {
+      dataLen = writeAclSetResult(job.aclSetKey, job.aclSetLevel, false, nullptr, g_data, kDataCap);
+      return sent;
     }
-    ctx.aclRestoreDone = true;
-    g_log.add("the entry set is this exit node's own: the session is now %s",
-              job.aclSetLevel == 0 ? "gone" : permissionName(static_cast<uint8_t>(job.aclSetLevel)));
+    trimInPlace(g_cliReply);
+    g_log.add("the repeater answered '%s'", g_cliReply);
+    const bool confirmed = startsWithOk(g_cliReply);
+    dataLen = writeAclSetResult(job.aclSetKey, job.aclSetLevel, confirmed, g_cliReply, g_data, kDataCap);
+    if (dataLen == 0) return Outcome::Failed;
+    return confirmed ? Outcome::Ok : Outcome::Failed;
   }
-  dataLen = writeAclSetResult(job.aclSetKey, job.aclSetLevel, confirmed, g_cliReply, g_data, kDataCap);
+
+  // **Our own key: the line is sent once and its silence checked with a blank login** (task
+  // p1.10-48, writeOwnEntry above). The entry the line writes is this session, so a retry of it
+  // reaches a repeater that has just stopped seeing this key as admin.
+  const OwnEntryWrite wrote = writeOwnEntry(job, ctx, g_command, job.aclSetLevel, what);
+  ctx.aclRestoreDone = true;  // no second setperm follows this one: the command is the level
+  if (!wrote.wentOut) {
+    // Nothing went out, so there is nothing for the server to settle and this result carries no
+    // `AclSetResult` at all: it is there with `confirmed: false` **exactly** when the line went
+    // out, which is what meshmaster.dk's p4.32-188 reads to tell a grant that may be on the
+    // device from one that cannot be.
+    g_log.add("the line never went out, so this exit node's own entry is untouched and this result carries no "
+              "grant to settle (task p1.10-48)");
+    return wrote.sent;
+  }
+  // The repeater answered the line and did nothing (`Err - ...`): the entry is where it was, and
+  // this session is still the admin one that sent the line. Anything else - the line confirmed,
+  // or its fate unknown - leaves a session this board must not spend as admin again.
+  const bool refused = wrote.sent == Outcome::Ok && !wrote.confirmed;
+  if (!refused) {
+    // **A grant drops the session** (EXIT-NODES §4.1 steps 3 and 4, task p1.10-48): after a
+    // confirmed `acl.set` on our own key the session is not kept, so the verify that follows
+    // logs in with this board's own key - which is the thing that verify exists to prove, and
+    // the transaction the spec prices for it. On meshmaster.dk's job 26077 it reused the grant's
+    // session instead (*session reused (acl, read-only, 146 s old)*) and the pair went active as
+    // *acl login ok* with no login made. After a revoke there is no entry to log in with at all,
+    // and after a line whose fate is unknown a kept admin session would be a guess.
+    sessions_.invalidate(job.repeaterKey);
+    ctx.hasSession = false;
+    g_log.add("the entry set is this exit node's own: the session is %s, so the next job for this repeater logs in "
+              "by key (task p1.10-48)",
+              job.aclSetLevel == 0 ? "gone with the entry" : "not kept");
+  }
+  dataLen = writeAclSetResult(job.aclSetKey, job.aclSetLevel, wrote.confirmed,
+                              g_cliReply[0] == '\0' ? nullptr : g_cliReply, g_data, kDataCap);
   if (dataLen == 0) return Outcome::Failed;
-  return confirmed ? Outcome::Ok : Outcome::Failed;
+  if (wrote.confirmed) return Outcome::Ok;
+  // The line went out and nothing confirms it: `unreachable` with `confirmed: false`, which is
+  // the grant meshmaster.dk's p4.32-188 carries on to the verify rather than failing outright. A
+  // line the repeater refused is `failed`, as it always was.
+  return refused ? Outcome::Failed : wrote.sent;
 }
 
 // ------------------------------------------------------------------ config.read (CONFIGURATION §3, §8)
@@ -1054,7 +1615,9 @@ Outcome JobRunner::runConfigRead(const ClaimedJob& job, Context& ctx, size_t& da
 
   // The session's last command, and this result says what became of it (task p4.1-60): the ACL
   // just read lists our own key at admin, because this read's login put it there, and the server
-  // must not read that as a session that died before its restore.
+  // must not read that as a session that died before its restore. Where the claim says this key
+  // should hold **nothing** that command is its removal (task p1.10-50), and `aclRestored` is then
+  // whether the key came off - the same question asked of the same entry.
   const int restored = restoreAcl(job, ctx, Outcome::Ok);
   snapshot.hasAclRestored = restored >= 0;
   snapshot.aclRestored = restored == 1;
@@ -1332,10 +1895,18 @@ Outcome JobRunner::runReboot(const ClaimedJob& job, Context& ctx, size_t& dataLe
   // session after a reboot to send it on, and it cannot go before the reboot either - on stock
   // firmware the entry *is* the session, so `setperm <own key> 1` first would leave a read-only
   // session, and onPeerDataRecv drops a CLI line from anybody below admin without a word. The
-  // entry stays at admin until the next login from this key puts it back.
+  // entry stays at admin until the next login from this key puts it back - and a **removal** is
+  // held off for the same reason (task p1.10-50), with nothing to put it right afterwards: no
+  // login takes an entry off, so the key waits at admin for the next admin job here.
   ctx.aclRestoreDone = true;
-  g_log.add("no restore on this session: the repeater is asked to reboot on it, and a restore before the command would "
-            "make the command unanswerable; the next login from this key puts the entry back (task 60)");
+  if (job.hasAclLevel && job.aclLevel == kPermGuest) {
+    g_log.add("no restore and no removal on this session: the repeater is asked to reboot on it, and either line "
+              "before the command would make the command unanswerable; this exit node's key stays in the access list "
+              "at admin until the next admin job here takes it off (tasks 60 and p1.10-50)");
+  } else {
+    g_log.add("no restore on this session: the repeater is asked to reboot on it, and a restore before the command "
+              "would make the command unanswerable; the next login from this key puts the entry back (task 60)");
+  }
 
   // `reboot` is `_board->reboot()`, which does not return (CommonCLI.cpp:196-197): silence is
   // the expected answer, and the next status read confirms it by the uptime, on the server.
@@ -1664,6 +2235,8 @@ void JobRunner::runClaimed(int i) {
   // whatever the job came to. A config.read has sent it already, for its result's sake; a
   // password.set has sent it after its password line and dropped the session; a reboot has
   // said why it sends none; an acl.set on our own key *is* the level and needs no second one.
+  // **And a claim that says level 0 ends the session by taking this exit node's key off the
+  // repeater instead** (task p1.10-50): the same line, in the same place, after the job's own.
   if (std::strcmp(job.type, "acl.set") != 0) restoreAcl(job, ctx, outcome);
 
   // The password's job is over. Whatever the outcome, and before anything is posted.
@@ -1678,8 +2251,7 @@ void JobRunner::runClaimed(int i) {
     // The candidate's silence right after a blank login the repeater answered (task p1.3-13):
     // the server reads `reason` and treats it exactly as a refusal, notes the candidate
     // refused, and hands the next attempt the old one (CONFIGURATION §7 step 4).
-    dataLen = writeLoginSilentResult(
-        ctx.probeRefused ? kProbeAnsweredRefused : permissionName(ctx.probeAnsweredRole), g_data, kDataCap);
+    dataLen = writeLoginSilentResult(permissionName(ctx.probeAnsweredRole), g_data, kDataCap);
   }
 
   // The path the mesh holds *after* the exchange, which is the claim's own unless a flooded
@@ -1713,6 +2285,20 @@ void JobRunner::runClaimed(int i) {
   report.data = dataLen > 0 ? g_data : nullptr;
   report.log = g_log.text();
   report.failedAt = failedAt;
+  // **The tier a job that ran below its class ran at** (meshmaster.dk's task p4.30-180): the
+  // `guest` of an `acl`-class `status` or `neighbours` the firmware answered to a guest login.
+  // Whatever the outcome, as the .NET runner reports `RanBelowClassAs`: what the login was is a
+  // fact about the login, and a request that failed afterwards does not unsay it. Absent on every
+  // other job, which is every job that ran at the class it asked for.
+  report.loggedInAs = ctx.ranBelowClass ? permissionName(ctx.ranBelowClassRole) : nullptr;
+  // **The clock the last answered login of this job showed, and ours at that moment**
+  // (meshmaster.dk's task p4.37-210). Whatever the outcome, as `loggedInAs` is: a login that was
+  // answered said what time the repeater thought it was, and a request lost after it does not
+  // unsay it. Absent for a job that made no login of its own, one the mesh answered without the
+  // air, and a board whose own clock is not set (`noteRepeaterClock`).
+  report.hasClock = ctx.hasRepeaterClock;
+  report.repeaterClockS = ctx.repeaterClockS;
+  report.agentClockS = ctx.agentClockS;
 
   LOG_I("jobs: job %lld: %s after %d transaction(s)%s%s", job.id, outcomeName(outcome), ctx.transactions,
         failedAt == nullptr ? "" : ", failed at the ", failedAt == nullptr ? "" : failedAt);

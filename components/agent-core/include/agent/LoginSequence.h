@@ -15,7 +15,7 @@
 // node's own key and no password, the `acl` login every status read makes. `handleLoginReq`'s
 // first statement answers it at the ACL entry's level for any key the ACL holds, and its second
 // answers *guest* (and writes a guest entry) on a repeater with no guest password set. Answered at
-// any level - a refusal is an answer too - the repeater is on the air, and a second silence to
+// any level the repeater is on the air, and a second silence to
 // the candidate right after it is the password's silence: `unauthorized`, with `LoginSilentResult`
 // as the data so the server can tell it from a refusal the repeater spoke and from a silence that
 // taught nothing. Silent too, nothing is known: `unreachable`, as before. The **second** try is
@@ -24,6 +24,17 @@
 //
 // One transaction more, on that path only. The probe stores no session: the next job is a
 // candidate job and logs in afresh anyway.
+//
+// **What ends a login's wait** (task p1.10-47; meshmaster.dk's task p4.32-186 is the server's
+// half). A login reply carries the repeater's own clock and no tag of ours, so a login is awaited
+// with tag 0 - and until this task whatever the peer sent next was taken as its answer, which on
+// a job whose request had just timed out was that request's **late** reply. The runner therefore
+// drops a response that is not a login reply and waits on
+// (`JobRunner::awaitLoginReply`): what reaches `login()` and `probe()` below is a login reply or a
+// silence, and never a third thing. So nothing here says *refused* of a login the repeater did not
+// answer - `Refused` is a login answered **below the class it was for** and nothing else, and
+// nothing of MeshCore at the pin sends a refusal to a login at all (`handleLoginReq` answers
+// RESP_SERVER_LOGIN_OK or `return 0`).
 //
 // The policy is here, on a host, so that every path can be walked against a scripted exchange
 // (test/test_rotation_probe); the board supplies the logins (JobRunner.cpp's LoginOnTheAir),
@@ -81,16 +92,18 @@ namespace mm {
 constexpr size_t kLoginNoteCap = 160;
 const char* loginMaterialFor(const ClaimedJob& job, bool answeredLocally, char* note, size_t noteCap);
 
-// What one login came to - the runner's own reading of a reply. `Refused` is a reply that was
-// not a login-ok, and a login answered below the class it was for (task p3.5-41); `NoReply` is
-// what stock firmware answers a key and password it does not accept; `Failed` is a packet that
-// could not be built; `Timeout` is the lease running out before the send.
+// What one login came to - the runner's own reading of a reply. `Refused` is a login the repeater
+// **answered below the class it was for** (task p3.5-41) and, since task p1.10-47, nothing else:
+// a response that is not a login reply is dropped and the wait goes on, so it never arrives here.
+// `NoReply` is what stock firmware answers a key and password it does not accept; `Failed` is a
+// packet that could not be built; `Timeout` is the lease running out before the send.
 enum class LoginTry : uint8_t { Ok, Refused, NoReply, Failed, Timeout };
 
-// What the blank login came to. `Refused` is the legacy PUSH_CODE_LOGIN_FAIL frame, which a stock
-// repeater never sends and which is an answer all the same; `NoReply` is also what the gate's
+// What the blank login came to: a login reply, at the level it granted, or silence. There is no
+// third value (task p1.10-47) - nothing of MeshCore at the pin refuses a login, and a response
+// that is not a login reply never ends the probe's wait. `NoReply` is also what the gate's
 // refusal (the lease ran out) comes to, because either way nothing was learned.
-enum class ProbeAnswer : uint8_t { NoReply, Answered, Refused };
+enum class ProbeAnswer : uint8_t { NoReply, Answered };
 
 // What the board supplies: a login with the job's material, a blank login, and the job's log.
 class LoginExchange {
@@ -100,7 +113,7 @@ class LoginExchange {
   // bookkeeping a reply implies.
   virtual LoginTry login(int attempt) = 0;
   // One blank login: counted, logged, and **no session stored** whatever came back. `role` is
-  // the role byte the reply carried when it was `Answered` (kPermGuest .. kPermAdmin).
+  // the role byte the login reply carried when it was `Answered` (kPermGuest .. kPermAdmin).
   virtual ProbeAnswer probe(uint8_t& role) = 0;
   virtual void log(const char* line) = 0;
 };
@@ -111,8 +124,7 @@ struct LoginVerdict {
   // The candidate's second try was silent right after a blank login the repeater answered: the
   // outcome is `unauthorized` and the result's data is LoginSilentResult.
   bool silentAfterReachable = false;
-  // How the probe was answered, when it was: the legacy refusal, or a login at `probeAnsweredRole`.
-  bool probeRefused = false;
+  // The level the probe's login reply granted, when it was answered at all.
   uint8_t probeAnsweredRole = 0;
 };
 
@@ -128,9 +140,11 @@ bool probesBetweenTries(const char* credentialCandidate, const char* material);
 // after a silent one or none.
 LoginVerdict loginSequence(LoginExchange& exchange, bool probes);
 
-// The tier the probe was answered at, in the server's words: `guest`, `read-only`, `read-write`,
-// `admin` (permissionName of the role), or `refused` for the legacy frame.
+// The tier the probe was answered at, in the server's words: `guest`, `read-only`, `read-write`
+// or `admin` - `permissionName` of the role its login reply granted. The fifth value this had
+// until task p1.10-47, `refused`, is gone: the probe cannot be refused, so the word was never a
+// reading of anything this firmware saw. `LoginSilentResult.probeAnsweredAs` still carries it in
+// the protocol, for an agent whose companion emits PUSH_CODE_LOGIN_FAIL.
 const char* probeAnsweredAs(const LoginVerdict& verdict);
-extern const char kProbeAnsweredRefused[];
 
 }  // namespace mm

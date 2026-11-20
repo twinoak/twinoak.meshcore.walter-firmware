@@ -7,8 +7,6 @@
 
 namespace mm {
 
-const char kProbeAnsweredRefused[] = "refused";
-
 namespace {
 
 void note(char* out, size_t cap, const char* text) {
@@ -90,16 +88,13 @@ LoginVerdict loginSequence(LoginExchange& exchange, bool probes) {
     }
     if (probes && attempt == 1) {
       // The blank login, between the first silence and the second try: answered at any level,
-      // the repeater is listening, and the second try is judged in that light.
+      // the repeater is listening, and the second try is judged in that light. A login reply or
+      // silence, and nothing in between (task p1.10-47).
       uint8_t role = 0;
       switch (exchange.probe(role)) {
         case ProbeAnswer::Answered:
           reachable = true;
           verdict.probeAnsweredRole = static_cast<uint8_t>(role & kPermRoleMask);
-          break;
-        case ProbeAnswer::Refused:
-          reachable = true;
-          verdict.probeRefused = true;
           break;
         case ProbeAnswer::NoReply:
           break;
@@ -124,8 +119,6 @@ LoginVerdict loginSequence(LoginExchange& exchange, bool probes) {
   return verdict;
 }
 
-const char* probeAnsweredAs(const LoginVerdict& verdict) {
-  return verdict.probeRefused ? kProbeAnsweredRefused : permissionName(verdict.probeAnsweredRole);
-}
+const char* probeAnsweredAs(const LoginVerdict& verdict) { return permissionName(verdict.probeAnsweredRole); }
 
 }  // namespace mm

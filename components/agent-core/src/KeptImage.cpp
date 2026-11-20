@@ -13,7 +13,7 @@ constexpr size_t kAtCrc = 4;
 constexpr size_t kAtVersion = 8;
 constexpr size_t kAtResultCount = 10;
 constexpr size_t kAtAdvertCount = 12;
-constexpr size_t kAtReserved = 14;
+constexpr size_t kAtBatchCount = 14;  // version 1's `reserved`, which that version wrote 0
 constexpr size_t kAtLength = 16;
 constexpr size_t kAtResultsDropped = 20;
 constexpr size_t kAtObservationsDropped = 24;
@@ -61,10 +61,34 @@ uint32_t crc32Of(const uint8_t* bytes, size_t len) {
 KeptImageWriter::KeptImageWriter(uint8_t* out, size_t cap)
     : out_(out), cap_(out == nullptr ? 0 : cap), len_(cap_ >= kKeptImageHeaderLen ? kKeptImageHeaderLen : 0) {}
 
+void KeptImageWriter::setPendingBatch(const char* id, size_t count) {
+  pendingCount_ = 0;
+  tail_ = 0;
+  pendingId_[0] = '\0';
+  if (finished_ || len_ == 0 || id == nullptr || id[0] == '\0' || count == 0) return;
+  if (count > kObservationBatchSize) return;  // a batch is never larger than that
+  // A cut id is another batch to the server, so an id the block cannot hold whole - with its NUL
+  // - is no id at all here rather than a shortened one.
+  const size_t idLen = std::strlen(id);
+  if (idLen >= kKeptBatchIdLen) return;
+  // The block is held back from here on, so a record only goes in when it fits beside it: the
+  // id has to reach the store or the batch is not kept at all.
+  if (kKeptBatchIdLen > cap_ - len_) return;
+  std::memcpy(pendingId_, id, idLen + 1);
+  pendingCount_ = count;
+  tail_ = kKeptBatchIdLen;
+}
+
+void KeptImageWriter::forgetPendingBatch() {
+  pendingCount_ = 0;
+  tail_ = 0;
+  pendingId_[0] = '\0';
+}
+
 bool KeptImageWriter::addResult(long long jobId, const char* body, size_t len) {
   if (finished_ || len_ == 0 || adverts_ > 0 || body == nullptr || len == 0) return false;
   if (results_ >= ResultBuffer::kMaxResults || results_ >= 0xFFFFu) return false;
-  if (kKeptResultHeaderLen + len > cap_ - len_) return false;
+  if (kKeptResultHeaderLen + len > cap_ - len_ - tail_) return false;
   uint8_t* at = out_ + len_;
   put64(at, static_cast<uint64_t>(jobId));
   put32(at + 8, static_cast<uint32_t>(len));
@@ -77,7 +101,7 @@ bool KeptImageWriter::addResult(long long jobId, const char* body, size_t len) {
 bool KeptImageWriter::addAdvert(const HeardAdvert& a, uint32_t heardAtEpoch) {
   if (finished_ || len_ == 0) return false;
   if (adverts_ >= ObservationRing::kCapacity || adverts_ >= 0xFFFFu) return false;
-  if (kKeptAdvertLen > cap_ - len_) return false;
+  if (kKeptAdvertLen > cap_ - len_ - tail_) return false;
   uint8_t* at = out_ + len_;
   std::memset(at, 0, kKeptAdvertLen);
   std::memcpy(at, a.publicKey, kPublicKeyLen);
@@ -101,11 +125,22 @@ bool KeptImageWriter::addAdvert(const HeardAdvert& a, uint32_t heardAtEpoch) {
 size_t KeptImageWriter::finish(uint32_t resultsDropped, uint32_t observationsDropped, uint32_t imagesRefused) {
   if (len_ == 0) return 0;
   finished_ = true;
+  // The pending batch, last of all, and **only when every advert of it is in the image**: the
+  // batch is the first `pendingCount_` adverts of the ring, so an image that stopped short of
+  // them does not hold that batch and the id would have the server de-duplicate away a batch it
+  // never saw whole (task p1.13-55). What is left of the ring then goes out as a new batch.
+  batchCount_ = pendingCount_ > 0 && pendingCount_ <= adverts_ ? pendingCount_ : 0;
+  if (batchCount_ > 0) {
+    std::memset(out_ + len_, 0, kKeptBatchIdLen);
+    std::memcpy(out_ + len_, pendingId_, std::strlen(pendingId_));  // the NUL is one of the zeros
+    len_ += kKeptBatchIdLen;
+  }
+  tail_ = 0;
   put32(out_ + kAtMagic, kKeptImageMagic);
   put16(out_ + kAtVersion, kKeptImageVersion);
   put16(out_ + kAtResultCount, static_cast<uint16_t>(results_));
   put16(out_ + kAtAdvertCount, static_cast<uint16_t>(adverts_));
-  put16(out_ + kAtReserved, 0);
+  put16(out_ + kAtBatchCount, static_cast<uint16_t>(batchCount_));
   put32(out_ + kAtLength, static_cast<uint32_t>(len_));
   put32(out_ + kAtResultsDropped, resultsDropped);
   put32(out_ + kAtObservationsDropped, observationsDropped);
@@ -122,10 +157,16 @@ const char* KeptImageReader::check(const uint8_t* image, size_t len) {
   length_ = 0;
   resultCount_ = 0;
   advertCount_ = 0;
+  batchCount_ = 0;
+  batchId_[0] = '\0';
   if (image == nullptr || len < kKeptImageHeaderLen) return "shorter than a header";
   if (get32(image + kAtMagic) != kKeptImageMagic) return "not a kept image";
   version_ = get16(image + kAtVersion);
-  if (version_ != kKeptImageVersion) return "written by another version of the image";
+  // Version 1 is read as what it is: the same records, and no batch kept (task p1.13-55). Any
+  // other version is refused whole, because nothing here knows what its bytes mean.
+  if (version_ != kKeptImageVersion && version_ != kKeptImageVersionWithoutBatch) {
+    return "written by another version of the image";
+  }
   const uint32_t length = get32(image + kAtLength);
   if (length < kKeptImageHeaderLen || length > len) return "torn: its length runs past what the store holds";
   crc_ = get32(image + kAtCrc);
@@ -136,6 +177,10 @@ const char* KeptImageReader::check(const uint8_t* image, size_t len) {
   const size_t results = get16(image + kAtResultCount);
   const size_t adverts = get16(image + kAtAdvertCount);
   if (results > ResultBuffer::kMaxResults || adverts > ObservationRing::kCapacity) return "its counts do not add up";
+  // Version 1 wrote 0 here and called it `reserved`; a reader of that version ignored it, so one
+  // is ignored here too rather than read as a batch that version never kept.
+  const size_t batch = version_ == kKeptImageVersion ? get16(image + kAtBatchCount) : 0;
+  if (batch > adverts || batch > kObservationBatchSize) return "its counts do not add up";
   size_t at = kKeptImageHeaderLen;
   size_t bodyBytes = 0;
   for (size_t i = 0; i < results; i++) {
@@ -146,11 +191,23 @@ const char* KeptImageReader::check(const uint8_t* image, size_t len) {
     if (bodyBytes > ResultBuffer::kCapacityBytes) return "its records do not add up";
     at += kKeptResultHeaderLen + bodyLen;
   }
-  if ((length - at) != adverts * kKeptAdvertLen) return "its records do not add up";
+  const size_t batchBlock = batch > 0 ? kKeptBatchIdLen : 0;
+  if ((length - at) != adverts * kKeptAdvertLen + batchBlock) return "its records do not add up";
   for (size_t i = 0; i < adverts; i++) {
     const uint8_t* a = image + at + i * kKeptAdvertLen;
     if (a[60] > kMaxObservationPathBytes || a[61] > 3) return "its records do not add up";
   }
+  if (batch > 0) {
+    // The id is a string the loop puts on the wire again: it has to end inside its own block,
+    // and an empty one is no id at all.
+    const uint8_t* id = image + at + adverts * kKeptAdvertLen;
+    if (id[0] == '\0') return "its records do not add up";
+    size_t n = 0;
+    while (n < kKeptBatchIdLen && id[n] != '\0') n++;
+    if (n == kKeptBatchIdLen) return "its records do not add up";
+    std::memcpy(batchId_, id, n + 1);
+  }
+  batchCount_ = batch;
   image_ = image;
   length_ = length;
   resultCount_ = results;

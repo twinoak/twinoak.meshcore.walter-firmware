@@ -91,6 +91,13 @@ constexpr uint8_t kReqTypeGetTelemetry = 0x03;
 constexpr uint8_t kReqTypeGetNeighbours = 0x06;
 constexpr uint8_t kReqTypeGetOwnerInfo = 0x07;
 
+// The FIRMWARE_VER_LEVEL the owner-info request arrived at: `#define REQ_TYPE_GET_OWNER_INFO
+// 0x07 // FIRMWARE_VER_LEVEL >= 2` of the same file, whose `FIRMWARE_VER_LEVEL` is 2. A login
+// reply carries the repeater's own level (ReplyCodec.h's LoginReply), and a repeater below this
+// one answers the request with silence rather than with a refusal, so asking buys a timeout and
+// nothing else (meshmaster.dk's task p4.30-181, OpCodes.OwnerInfoVerLevel there).
+constexpr uint8_t kOwnerInfoVerLevel = 2;
+
 class IMesh {
  public:
   virtual ~IMesh() = default;

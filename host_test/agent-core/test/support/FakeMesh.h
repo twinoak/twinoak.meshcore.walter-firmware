@@ -21,7 +21,10 @@
 // loader. A reply arrives after `directLatencyMs` or `floodLatencyMs` **on the fake clock**
 // (support/FakePlatform.h), so a wait is asserted rather than slept, and every send is recorded
 // with that clock's time - which is what *one send per command*, the minimum gap and the
-// per-minute cap are asserted against.
+// per-minute cap are asserted against. One reply can be **late** rather than lost
+// (`deliverTheNextReplyLate`, task p1.10-47, and `deliverTheNextLineRepliesLate` for a named
+// console line, task p1.10-49): it misses its own request's wait and turns up in the next one,
+// which is the only timing of the air this fake models beyond a latency.
 //
 // ---- answers (the manifest) ------------------------------------------------------------------
 //
@@ -32,7 +35,7 @@
 // answer: login-password        cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:100-128 MyMesh::handleLoginReq -- the admin password is admin, the guest password is guest, and the password rewrites the entry's role
 // answer: login-silent-password cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:106-111 MyMesh::handleLoginReq -- a password that is neither is `return 0`, which is silence and not a refusal
 // answer: login-silent-replay   cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:113-117 MyMesh::handleLoginReq -- a sender timestamp at or below the last one is silence
-// answer: login-refused         cite: fixture login-failed.hex
+// answer: login-another-reply   cite: fw companion-v1.18.0 81dbae59 examples/companion_radio/MyMesh.cpp:716-721 MyMesh::onContactResponse -- a response that is neither "OK" nor RESP_SERVER_LOGIN_OK is what the companion turns into PUSH_CODE_LOGIN_FAIL: no firmware at the pin sends a refusal to a login, so this is a reply to something else and the agent must not read it as one (task p1.10-47)
 // answer: status                cite: fixture status-response.hex
 // answer: status                cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:216-240 MyMesh::handleRequest -- REQ_TYPE_GET_STATUS answers every login, guests included
 // answer: telemetry             cite: fixture telemetry-response.hex
@@ -54,6 +57,8 @@
 // answer: cli-retry             cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:709-740 MyMesh::onPeerDataRecv -- a sender timestamp equal to the last is a retry: nothing is run and the empty reply is not sent, and one below it is a replay
 // answer: cli-reply             cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:741-758 MyMesh::onPeerDataRecv -- a non-empty reply is a TXT_MSG of the repeater's own clock, TXT_TYPE_CLI_DATA in the flags byte, then the text
 // answer: cli-setperm           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:1241-1262 MyMesh::handleCommand -- `setperm <pubkey-hex> <level>` answers OK, or Err - bad params / Err - bad pubkey / Err - invalid params
+// answer: cli-setperm-zero      cite: fw companion-v1.18.0 81dbae59 src/helpers/ClientACL.cpp:122-134 ClientACL::applyPermissions -- a setperm at the guest role **deletes** the entry and moves the later ones down; it is not an entry held at guest, and a second setperm for the same key is then `Err - invalid params`
+// answer: cli-setperm-zero      cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:670-751 MyMesh::onPeerDataRecv -- the reply is addressed to `client`, a pointer into the slot the sender held **before** handleCommand ran, so a deletion at or below that slot sends the "OK" to whichever client now sits in it and it never reaches us (task p1.10-48)
 // answer: cli-region-load       cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:1199-1231 MyMesh::handleCommand -- in load mode a region line is answered with nothing and the blank line ends the load with `OK - loaded N regions`
 // answer: cli-reboot            cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:196-197 CommonCLI::handleCommand -- `reboot` is _board->reboot(), which does not return: the silence is the answer
 // answer: cli-advert            cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:202-209 CommonCLI::handleCommand -- `advert` answers `OK - Advert sent` and `advert.zerohop` answers `OK - zerohop advert sent`
@@ -65,6 +70,7 @@
 // answer: cli-get               cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:701-834 CommonCLI::handleGetCmd -- a key it knows is `> <value>` and one it does not is `??: <key>`
 // answer: cli-set               cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:486-699 CommonCLI::handleSetCmd -- a value it took is `OK` (`OK - repeat is now ON`/`OFF` for repeat), a key it does not know is `unknown config: <rest>`
 // answer: cli-guest-password    cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:513-516 CommonCLI::handleSetCmd -- `set guest.password <new>` answers OK
+// answer: cli-prefix            cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:1233-1239 MyMesh::handleCommand -- a line longer than four characters whose third character is `|` has its first three characters reflected at the head of the reply and the rest is run; the region-load branch returns before this, so a line sent in load mode keeps its prefix (task p1.10-49)
 // answer: cli-region            cite: fw companion-v1.18.0 81dbae59 src/helpers/CommonCLI.cpp:889-988 CommonCLI::handleRegionCmd -- `region` exports the map into 160 characters, `region default` answers ` default scope is <name>`, `region load` answers nothing and `region save` answers OK
 // answer: trace                 cite: fixture trace-data.hex
 // answer: trace                 cite: fw companion-v1.18.0 81dbae59 src/Mesh.cpp:42-67 Mesh::onRecvPacket -- a TRACE states its hash size as an exponent in the flags byte and carries one SNR a hop, the final one measured on the packet home
@@ -85,6 +91,7 @@
 #include <utility>
 #include <vector>
 
+#include <agent/CliReplies.h>
 #include <agent/IMesh.h>
 #include <agent/Observations.h>
 #include <agent/ReplyCodec.h>
@@ -125,7 +132,12 @@ struct Send {
   bool direct = false;  // else flooded
   uint32_t tag = 0;     // the tag, or for a CLI line the sender timestamp the mesh drew
   uint8_t reqType = 0;  // Request only
-  std::string text;     // Cli only
+  // Cli only: the line **as the repeater ran it**, which is what went out with its reflected
+  // prefix taken off again - so `timesSent` and the fault knobs are about the command, as they
+  // were before there were prefixes. `prefix` is the three characters the line went out with
+  // (`a7|`) and is empty for a line that went bare; the bytes on the air are the two joined.
+  std::string text;
+  std::string prefix;
   bool sensitive = false;
   // Login only: the login carried a password, rather than the empty material of the ACL login,
   // the guest door or a job the mesh answers locally (task p1.10-41). The **value** is never
@@ -238,6 +250,15 @@ class FakeMesh : public mm::IMesh {
   uint32_t repeaterClock() const { return repeaterNow_; }
   void setStatusBytes(std::vector<uint8_t> bytes) { stats_ = std::move(bytes); }
   void setTelemetryBytes(std::vector<uint8_t> bytes) { telemetry_ = std::move(bytes); }
+  // FIRMWARE_VER_LEVEL, which the login reply carries and which the owner-info request needs 2
+  // of (meshmaster.dk's task p4.30-181 gave the fake companion the same knob). A repeater below
+  // that level does not know the request **at all**, so this fake answers it with the silence
+  // `handleRequest`'s `return 0` is - which is what makes a test of the skip worth writing: the
+  // library must not spend a timeout finding out.
+  void setFirmwareVerLevel(uint8_t level) { firmwareVerLevel_ = level; }
+  // The owner-info reply, for a repeater whose three lines are not this fixture's three: an
+  // owner info of two lines, an empty one, a reply with the version alone.
+  void setOwnerInfoReply(const std::string& text) { ownerInfo_.assign(text.begin(), text.end()); }
   bool repeaterRebooted() const { return rebooted_; }
   int adverts() const { return adverts_; }
   int floodAdverts() const { return floodAdverts_; }
@@ -253,6 +274,8 @@ class FakeMesh : public mm::IMesh {
   // A line the test answers itself, whatever the firmware would have said; and a line the
   // repeater is silent to, whatever it is.
   void answerLine(const std::string& line, const std::string& reply) { scripted_[line] = reply; }
+  // A line this repeater never answers: it is a **silence on the air**, which with a prefix on
+  // the line is no longer the same as a handler that writes an empty reply (task p1.10-49).
   void silenceLine(const std::string& line) { silentLines_.insert(line); }
 
   // ------------------------------------------------------------------ the faults, on cue
@@ -266,7 +289,54 @@ class FakeMesh : public mm::IMesh {
   void replyWithTheWrongTag(int sends) { wrongTagSends_ = sends; }
   void replySlowly(int sends) { slowSends_ = sends; }  // the reply arrives past the wait
   void forgetTheSession() { forgotten_ = true; }       // the login table lost us
-  void refuseTheNextLogin(int logins) { refuseLogins_ = logins; }
+  // **The next n logins are answered with a response that is not a login reply.** Stock firmware
+  // sends no such thing to a login - `handleLoginReq` answers RESP_SERVER_LOGIN_OK or nothing -
+  // so what this stands for is the reply to something *else* arriving while a login is awaited,
+  // which is the whole of task p1.10-47. Consumed before `beSilentToTheNextLogins` below, so a
+  // test can script "login one answers this, and the rest are silent".
+  void answerTheNextLoginWithSomethingElse(int logins) { somethingElseLogins_ = logins; }
+  // The next n logins get no reply at all, whatever this repeater's ACL and passwords say: the
+  // mesh ate the reply. `beSilent` above cannot say it, because it counts every send.
+  void beSilentToTheNextLogins(int logins) { silentLogins_ = logins; }
+  // **The next n replies arrive after the wait for their own request has ended** (task
+  // p1.10-47): the reply is not lost, as `replySlowly` loses it, but held and delivered during
+  // the *next* wait of the job - which is what a repeater slower than this board's patience
+  // really does, and what parked ten ACL associations on meshmaster.dk on 12 November 2026. A
+  // late reply survives the sends that follow it, so the login after a timed-out request finds
+  // it waiting.
+  void deliverTheNextReplyLate(int sends) { lateSends_ = sends; }
+  // **The next `times` sends of this line never reach the repeater**: not run, not answered -
+  // the line lost on the way out. `silenceLine` above is a line the repeater has and will not
+  // answer, and `beSilent` counts every send, which a line checked by a login between two lines
+  // cannot use (task p1.10-48).
+  void loseTheNextLines(const std::string& line, int times) { lostLines_[line] = times; }
+  // **The next `times` sends of this line run and their replies never come home**: the lost "OK"
+  // of a line that cannot be asked twice, which is 20 of meshmaster.dk's 52 failed grants of 12
+  // November 2026. Not `silenceLine` (the line never ran) and not `replySlowly` (which counts
+  // every reply, a login's included).
+  void loseTheNextLineReplies(const std::string& line, int times) { lostLineReplies_[line] = times; }
+  // **The neighbours page at `page` and every page after it goes unanswered** (task p1.15-56):
+  // the list stops where a page was lost, which is what a repeater with more neighbours than one
+  // page does on a mesh that drops one. 1 is the first page. `beSilent` above cannot say it,
+  // because it counts every send and the login and the pages before this one were answered.
+  void silenceTheNeighboursPageFrom(int page) { silentNeighboursPage_ = page; }
+  // **The neighbours page at `page` comes home too short to be a page**: fewer than the four
+  // bytes of `total(i16)` and `returned(i16)`, which is what `parseNeighboursPage` refuses. A
+  // reply is only ever that short with the padding off (`setPadding`), which is how a test that
+  // wants a page the reader cannot make sense of asks for one.
+  void truncateTheNeighboursPage(int page) { shortNeighboursPage_ = page; }
+  // **What this repeater says its neighbour count is, from `page` on**: every page carries the
+  // count, and a repeater that heard a new neighbour between two pages says a larger one in the
+  // second. Without this the count is the length of the list the test set.
+  void sayTheNeighbourTotalFromPage(int page, int total) { pageTotals_[page] = total; }
+  // **The next `times` replies to this line arrive after their own wait has ended** (task
+  // p1.10-49): held, not lost, and delivered `waits` waits later - 1 is the wait after its own,
+  // and 2 is the one after that, which for a line the library **retries** is the next line's
+  // wait, where the reply to `get name` can be stored as the radio. The line is named as the
+  // repeater **ran** it, without the prefix the line went out with.
+  void deliverTheNextLineRepliesLate(const std::string& line, int times, int waits = 1) {
+    lateLineReplies_[line] = {times, waits};
+  }
 
   void setLatency(uint32_t directMs, uint32_t floodMs) {
     directLatencyMs_ = directMs;
@@ -321,6 +391,23 @@ class FakeMesh : public mm::IMesh {
       if (s.kind == Send::Kind::Cli) out.push_back(s.text);
     }
     return out;
+  }
+  // The prefix every console line went out with, in order (task p1.10-49): `a7|`, or the empty
+  // string for a line that went bare. One entry per CLI send, so it lines up with `lines()`.
+  std::vector<std::string> linePrefixes() const {
+    std::vector<std::string> out;
+    for (const Send& s : sends_) {
+      if (s.kind == Send::Kind::Cli) out.push_back(s.prefix);
+    }
+    return out;
+  }
+  // The prefix a named line went out with on its nth send (0-based), or "" if there was none.
+  std::string prefixOf(const std::string& line, int nth = 0) const {
+    for (const Send& s : sends_) {
+      if (s.kind != Send::Kind::Cli || s.text != line) continue;
+      if (nth-- == 0) return s.prefix;
+    }
+    return std::string();
   }
   // The sender timestamps of the CLI lines, in the order they went: the series the repeater's
   // replay check reads, which must be strictly increasing.
@@ -415,6 +502,9 @@ class FakeMesh : public mm::IMesh {
     outPathLen_ = 0;
     outPath_.clear();
     pending_ = Pending();
+    // No job in flight: a reply still on its way home belongs to a job that is over, and this
+    // mesh releases a response from anybody between jobs (IMesh::endJob).
+    late_.clear();
     reply_ = mm::MeshReply();
   }
 
@@ -453,13 +543,18 @@ class FakeMesh : public mm::IMesh {
     const mm::SendResult how = direct ? mm::SendResult::Direct : mm::SendResult::Flood;
     if (!reachable()) return how;
 
-    if (refuseLogins_ > 0) {
-      refuseLogins_--;
-      // answer: login-refused — a reply that is not a login-ok at all. Stock firmware never
-      // sends one (a wrong password is silence); the legacy frame and any firmware that does
-      // send one land here, and the runner reads it as `Refused`.
+    if (somethingElseLogins_ > 0) {
+      somethingElseLogins_--;
+      // answer: login-another-reply — a response that is not a login-ok at all. Stock firmware
+      // never sends one to a login (a wrong password is silence), so what arrives on the air in
+      // this shape is the reply to something else; the runner drops it and waits on (task
+      // p1.10-47), where it used to read it as `Refused`.
       arm(response({0x7F, 0x01}, senderTimestamp, /*repeaterStamps=*/true));
       return how;
+    }
+    if (silentLogins_ > 0) {
+      silentLogins_--;
+      return how;  // the mesh ate the login's reply: silence, which is all a login can be refused with
     }
 
     AclEntry* client = nullptr;
@@ -496,7 +591,7 @@ class FakeMesh : public mm::IMesh {
     body.push_back((client->permissions & mm::kPermRoleMask) == mm::kPermAdmin ? 1 : 0);
     body.push_back(client->permissions);
     for (int i = 0; i < 4; i++) body.push_back(0xAB);  // the random blob that makes the hash unique
-    body.push_back(kFirmwareVerLevel);
+    body.push_back(firmwareVerLevel_);
     arm(response(body, senderTimestamp, /*repeaterStamps=*/true));
     return how;
   }
@@ -532,10 +627,22 @@ class FakeMesh : public mm::IMesh {
     if (!peerSet_ || text == nullptr || text[0] == '\0') return mm::SendResult::Failed;
     timestamp = unique();
     const bool direct = note(Send::Kind::Cli, timestamp);
-    sends_.back().text = text;
+    // answer: cli-prefix — the optional prefix, in handleCommand's own order: it is read
+    // **after** the region-load branch has returned, so a line sent while the repeater is
+    // loading regions keeps its prefix and is read as a region, and the condition is on the
+    // whole line's length and the third character.
+    std::string wire = text;
+    std::string prefix;
+    if (!regionLoadActive_ && wire.size() > 4 && wire[2] == '|') {
+      prefix = wire.substr(0, mm::kCliPrefixLen);
+      wire.erase(0, mm::kCliPrefixLen);
+    }
+    sends_.back().text = wire;
+    sends_.back().prefix = prefix;
     sends_.back().sensitive = sensitive;
     const mm::SendResult how = direct ? mm::SendResult::Direct : mm::SendResult::Flood;
     if (!reachable()) return how;
+    if (consume(lostLines_, wire)) return how;  // the line never arrived: nothing ran
     if (!knownSender()) {
       // answer: forgotten-session
       return how;
@@ -551,12 +658,41 @@ class FakeMesh : public mm::IMesh {
       return how;
     }
     client->lastTimestamp = timestamp;
-    const std::string answer = cliReply(text);
-    if (answer.empty()) {
+    // A line the test says this repeater is silent to: it ran, or did not, and **nothing comes
+    // home** - which is not the same as a handler that writes an empty reply, because the
+    // reflected prefix alone would make that one a packet.
+    if (silentLines_.count(wire) > 0) return how;
+    const bool wasRebooted = rebooted_;
+    const std::string answer = cliReply(wire);
+    // answer: cli-reboot — the board is gone before `strlen(reply)` is reached, so a rebooting
+    // line is answered with nothing whether it carried a prefix or not.
+    if (rebooted_ && !wasRebooted) return how;
+    // answer: cli-setperm-zero — the "OK" was addressed to the slot our entry used to hold, so
+    // it reaches another client and never us, prefix or not.
+    if (replyWentElsewhere_) {
+      replyWentElsewhere_ = false;
+      return how;
+    }
+    // answer: cli-prefix — the reflected prefix is written into the reply buffer before the
+    // command runs, so a command that answers nothing is still a reply of three characters and
+    // `if (text_len > 0)` sends it. That is why no caller prefixes a line it awaits nothing for.
+    if (answer.empty() && prefix.empty()) {
       // answer: cli-reply — an empty reply is not sent at all
       return how;
     }
-    arm(asText(answer));
+    // The line **ran** and its reply is lost on the way home (task p1.10-48), which for a
+    // `setperm` on our own key is the fault the whole task is about.
+    if (consume(lostLineReplies_, wire)) return how;
+    // **This line's reply misses its own wait** (task p1.10-49): held and delivered in the next
+    // one, which for a console line is the wait of the *next* line - where only its prefix can
+    // tell it from that line's answer. The same mechanism `deliverTheNextReplyLate` uses.
+    const auto late = lateLineReplies_.find(wire);
+    if (late != lateLineReplies_.end() && late->second.first > 0) {
+      late->second.first--;
+      lateSends_++;
+      lateWaits_ = late->second.second;
+    }
+    arm(asText(prefix + answer));
     return how;
   }
 
@@ -614,6 +750,10 @@ class FakeMesh : public mm::IMesh {
     uint32_t deliverAtMs = 0;
     bool neverArrives = false;
     bool teachesPath = false;  // it comes home as a returned path, which teaches the way out
+    size_t sendIndex = 0;      // which send this answers, for `Send::answered`
+    // How many more waits this reply is not delivered in (`deliverTheNextReplyLate`): 1 is its
+    // own request's wait, so the one after it is where it turns up.
+    int waitsToSkip = 0;
   };
 
   // ---------------------------------------------------------------- the clocks and the record
@@ -679,6 +819,21 @@ class FakeMesh : public mm::IMesh {
       if (e.key == keyHex) return &e;
     }
     return nullptr;
+  }
+  // Which slot of the table a key sits in, or -1: what `ClientACL::getClient` answers as a
+  // pointer, and what the deletion of a level-0 setperm has to move the later entries into.
+  int indexOf(const std::string& keyHex) const {
+    for (size_t i = 0; i < acl_.size(); i++) {
+      if (acl_[i].key == keyHex) return static_cast<int>(i);
+    }
+    return -1;
+  }
+  // One of the counted, line-keyed faults above: true when this line is to be lost this time.
+  static bool consume(std::map<std::string, int>& faults, const std::string& line) {
+    const auto it = faults.find(line);
+    if (it == faults.end() || it->second <= 0) return false;
+    it->second--;
+    return true;
   }
   uint8_t levelOrZero(const std::string& keyHex) const {
     const AclEntry* e = find(keyHex);
@@ -746,12 +901,24 @@ class FakeMesh : public mm::IMesh {
     }
     const bool flood = !sends_.empty() && !sends_.back().direct;
     p.deliverAtMs = platform_.millis() + (flood ? floodLatencyMs_ : directLatencyMs_);
+    p.sendIndex = sends_.empty() ? 0 : sends_.size() - 1;
     if (slowSends_ > 0) {
       slowSends_--;
       p.neverArrives = true;  // past every wait, which from here is a silence
     }
     // A flooded request is answered with a path return, which teaches the way home.
     p.teachesPath = flood && !returnPath_.empty();
+    if (lateSends_ > 0) {
+      lateSends_--;
+      // Late, not lost (task p1.10-47): it misses its own request's wait and waits for the next
+      // one, in a list of its own so that the sends between cannot evict it the way one send's
+      // reply evicts the last.
+      p.waitsToSkip = lateWaits_;
+      lateWaits_ = 1;
+      late_.push_back(p);
+      pending_ = Pending();
+      return;
+    }
     pending_ = p;
   }
 
@@ -785,12 +952,24 @@ class FakeMesh : public mm::IMesh {
       if (len < 6 || data == nullptr || data[0] != 0) return {};
       const int want = data[1];
       const int offset = data[2] | (data[3] << 8);
+      // Which page this is, counting from one: the runner asks `want` at a time and moves the
+      // offset on by what came back, so the offset says it. The three faults above are keyed to
+      // it, and a page asked for a second time is the same page (task p1.15-56).
+      const int page = want > 0 ? offset / want + 1 : 1;
+      if (silentNeighboursPage_ > 0 && page >= silentNeighboursPage_) return {};
+      if (shortNeighboursPage_ == page) return {0, 0, 0};
       int prefixLen = data[5];
       if (prefixLen > static_cast<int>(mm::kPublicKeyLen)) prefixLen = static_cast<int>(mm::kPublicKeyLen);
       std::vector<uint8_t> entries;
       int returned = 0;
-      const int total = static_cast<int>(neighbours_.size());
-      for (int i = 0; i < want && i + offset < total; i++) {
+      // What the page **says** the repeater has, and what it can hand over, are two numbers: a
+      // scripted count is the repeater's own figure and never an index into this list.
+      const int held = static_cast<int>(neighbours_.size());
+      int total = held;
+      for (const auto& said : pageTotals_) {
+        if (page >= said.first) total = said.second;
+      }
+      for (int i = 0; i < want && i + offset < held; i++) {
         if (entries.size() + static_cast<size_t>(prefixLen) + 5 > kNeighbourResults) break;
         const NeighbourEntry& n = neighbours_[static_cast<size_t>(i + offset)];
         for (int b = 0; b < prefixLen; b++) {
@@ -809,6 +988,9 @@ class FakeMesh : public mm::IMesh {
       return body;
     }
     if (reqType == mm::kReqTypeGetOwnerInfo) {
+      // answer: request-silent - REQ_TYPE_GET_OWNER_INFO is FIRMWARE_VER_LEVEL >= 2, and a
+      // repeater that does not know a request type answers it with nothing at all.
+      if (firmwareVerLevel_ < mm::kOwnerInfoVerLevel) return {};
       // answer: owner-info
       return ownerInfo_;
     }
@@ -819,7 +1001,6 @@ class FakeMesh : public mm::IMesh {
   // The CLI, in handleCommand's own order. An empty string is "the firmware answers nothing",
   // which on the air is silence.
   std::string cliReply(const std::string& command) {
-    if (silentLines_.count(command) > 0) return "";
     const auto scripted = scripted_.find(command);
     if (scripted != scripted_.end()) return scripted->second;
 
@@ -853,12 +1034,26 @@ class FakeMesh : public mm::IMesh {
       // our own key moves the session with it (task p4.1-60).
       const std::string target = resolve(hex);
       if (target.empty()) return "Err - invalid params";
-      if (level == 0) {
-        for (AclEntry& e : acl_) {
-          if (e.key == target) e.permissions = 0;
-        }
-      } else {
+      if (level != 0) {
         grant(target, static_cast<uint8_t>(level));
+        return "OK";
+      }
+      // answer: cli-setperm-zero - the guest role is not an entry: `applyPermissions` **deletes**
+      // the entry and moves the later ones down, so a key taken off at level 0 is not in the
+      // table at all afterwards (which is why the blank login that follows falls through to the
+      // password compare) and a second level-0 line for the same key finds nothing.
+      const int gone = indexOf(target);
+      if (gone < 0) return "Err - invalid params";  // getClient found no such entry
+      const int ours = indexOf(selfKey_);
+      const int held = static_cast<int>(acl_.size());
+      acl_.erase(acl_.begin() + gone);
+      // And the reply is addressed to the slot the sender held before the line ran: unless our
+      // own entry was the last one in the table, a deletion at or below it sends the "OK" to
+      // whichever client sits in that slot now, and we never hear it (task p1.10-48). From here
+      // that is a silence, exactly as a lost reply is.
+      if (gone <= ours && ours != held - 1) {
+        replyWentElsewhere_ = true;
+        return "";
       }
       return "OK";
     }
@@ -961,44 +1156,65 @@ class FakeMesh : public mm::IMesh {
   bool await(Awaiting what, uint32_t tag, uint32_t timeoutMs, void (*pump)()) {
     reply_ = mm::MeshReply();
     const uint32_t deadline = platform_.millis() + timeoutMs;
-    while (static_cast<int32_t>(platform_.millis() - deadline) < 0) {
+    bool got = false;
+    while (!got && static_cast<int32_t>(platform_.millis() - deadline) < 0) {
       loop();
       if (pump != nullptr) pump();
+      // A reply held over from an earlier request comes first: it has been due the longer.
+      for (size_t i = 0; i < late_.size(); i++) {
+        Pending& p = late_[i];
+        if (p.waitsToSkip > 0 || p.neverArrives || static_cast<int32_t>(platform_.millis() - p.deliverAtMs) < 0) {
+          continue;
+        }
+        const bool taken = deliver(p, what, tag);
+        const size_t which = p.sendIndex;
+        late_.erase(late_.begin() + static_cast<long>(i));
+        if (taken) {
+          if (which < sends_.size()) sends_[which].answered = true;
+          counters_.rx++;
+          got = true;
+        }
+        break;
+      }
+      if (got) break;
       if (pending_.has && !pending_.neverArrives &&
           static_cast<int32_t>(platform_.millis() - pending_.deliverAtMs) >= 0) {
-        if (deliver(what, tag)) {
-          if (!sends_.empty()) sends_.back().answered = true;
+        const bool taken = deliver(pending_, what, tag);
+        const size_t which = pending_.sendIndex;
+        pending_ = Pending();
+        if (taken) {
+          if (which < sends_.size()) sends_[which].answered = true;
           counters_.rx++;
-          return true;
+          got = true;
+          break;
         }
       }
       platform_.delayMs(1);
     }
-    return false;
+    // One wait of this mesh is over, delivered or not: a late reply is a wait nearer its turn.
+    for (Pending& p : late_) {
+      if (p.waitsToSkip > 0) p.waitsToSkip--;
+    }
+    return got;
   }
 
   // AgentMesh's own reading: a reply of the wrong kind, or with a tag that is not the one being
-  // waited for, is dropped and not read, and the wait goes on into silence.
-  bool deliver(Awaiting what, uint32_t tag) {
-    const mm::MeshReply& p = pending_.reply;
+  // waited for, is dropped and not read, and the wait goes on into silence. A login waits with
+  // tag 0, so **every** response reaches the library there - which is where task p1.10-47's rule
+  // lives, and the reason this fake hands one through rather than filtering it here.
+  bool deliver(const Pending& held, Awaiting what, uint32_t tag) {
+    const mm::MeshReply& p = held.reply;
     const bool isText = p.kind == mm::MeshReply::Kind::Text;
-    if ((what == Awaiting::Text) != isText) {
-      pending_ = Pending();
-      return false;
-    }
-    if (what == Awaiting::Response && tag != 0 && p.tag != tag) {
-      pending_ = Pending();
-      return false;
-    }
+    if ((what == Awaiting::Text) != isText) return false;
+    if (what == Awaiting::Response && tag != 0 && p.tag != tag) return false;
     reply_ = p;
-    if (pending_.teachesPath && returnPathSize_ > 0) {
+    if (held.teachesPath && returnPathSize_ > 0) {
       // answer: path-return
       outPath_ = returnPath_;
       outPathLen_ =
           static_cast<uint8_t>(((returnPathSize_ - 1) << 6) | (returnPath_.size() / returnPathSize_));
       havePath_ = true;
     }
-    pending_ = Pending();
     return true;
   }
 
@@ -1065,6 +1281,7 @@ class FakeMesh : public mm::IMesh {
   std::vector<uint8_t> stats_;
   std::vector<uint8_t> telemetry_;
   std::vector<uint8_t> ownerInfo_;
+  uint8_t firmwareVerLevel_ = kFirmwareVerLevel;
   std::string firmware_ = "v1.17.1 (Build: 27 Sep 2025)";
   std::string board_ = "Heltec";
   std::string regionListing_ = "* F\n dk F\n";
@@ -1091,11 +1308,24 @@ class FakeMesh : public mm::IMesh {
 
   // the faults
   int silentSends_ = 0;
+  int silentNeighboursPage_ = 0;
+  int shortNeighboursPage_ = 0;
+  std::map<int, int> pageTotals_;  // from this page on, the repeater says this many neighbours
   bool silentAlways_ = false;
   int wrongTagSends_ = 0;
   int slowSends_ = 0;
   bool forgotten_ = false;
-  int refuseLogins_ = 0;
+  int somethingElseLogins_ = 0;
+  int silentLogins_ = 0;
+  int lateSends_ = 0;
+  int lateWaits_ = 1;  // how many waits the next late reply misses (task p1.10-49)
+  std::map<std::string, int> lostLines_;
+  std::map<std::string, int> lostLineReplies_;
+  std::map<std::string, std::pair<int, int>> lateLineReplies_;  // times, and the waits it misses
+  // The last line's reply was addressed to another client and never comes home (task p1.10-48's
+  // reading of `applyPermissions` and `onPeerDataRecv`), which is a silence and not an empty
+  // reply: with a prefix on the line the two are no longer the same thing.
+  bool replyWentElsewhere_ = false;
   uint32_t directLatencyMs_ = 400;
   uint32_t floodLatencyMs_ = 1500;
   bool pad_ = true;
@@ -1114,6 +1344,8 @@ class FakeMesh : public mm::IMesh {
   uint8_t returnPathSize_ = 2;
   mm::MeshReply reply_;
   Pending pending_;
+  // The replies that missed their own request's wait and are still on their way home.
+  std::vector<Pending> late_;
   uint32_t lastUnique_ = 0;
   std::vector<Send> sends_;
 };
