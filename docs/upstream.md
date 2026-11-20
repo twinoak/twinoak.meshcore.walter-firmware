@@ -15,15 +15,15 @@ This firmware is built **against** that library, not forked from it. The pin is
 one line, twice:
 
 ```
-components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit 6290e092…
-host_test/agent-core/MANIFEST.txt    # source: … at commit 6290e092…
+components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit b6d4cfb2…
+host_test/agent-core/MANIFEST.txt    # source: … at commit b6d4cfb2…
 ```
 
-`6290e092` is **eight commits past `v0.6.0`**, which is what `AGENT_CORE_VERSION`
-in the copy says: the pin is a *commit* and not always a tag, because the work a
-consumer needs is sometimes in the library before its next release. Task p9-05
+`b6d4cfb2` is the tag **`v0.7.3`** itself, which is what `AGENT_CORE_VERSION` in
+the copy says. The pin is a *commit* and not always a tag, because the work a
+consumer needs is sometimes in the library before its next release: task p9-05
 is the first such pin — the exit-node firmware's tasks p1.10-40 and p1.10-41,
-which the local door could not do without — and task p10-01 is the second, for
+which the local door could not do without — and task p10-01 was the second, for
 p1.10-42 and p1.10-43, which the unit's nights could not do without. The two manifests are the
 only places the commit is written down, and
 `host_test/rails/test_rail_agent_core.cpp` fails if they disagree: the board
@@ -45,7 +45,7 @@ dependencies:
   twinoak/agent-core:
     git: https://github.com/twinoak/twinoak.meshmaster.exitnode-firmware.git
     path: lib/agent-core
-    version: 6290e0927a99d252ddcec7929f63719cbb32332d
+    version: b6d4cfb242cee93c2be5adfbdaa54bf8ef42c60b
 ```
 
 **That repository is private.** The component manager resolves a `git` source by
@@ -108,7 +108,7 @@ mornings and on demand:
 1. `tools/upstream-check.ps1` reads the exit-node repository's `v*` tags and
    compares the newest with the version in the copy. Nothing newer: it says so
    and stops. **It compares versions and not commits**, so a pin taken past a
-   tag — as task p10-01's is, eight commits past `v0.6.0` — reads as *up to date*
+   tag — as task p10-01's was, eight commits past `v0.6.0` — reads as *up to date*
    until the next tag is cut. That is the right answer for a watch whose job is
    to notice releases, and it is why the row in *The pin's history* below carries
    the commit as well as the version.
@@ -229,7 +229,7 @@ this firmware is [`ARCHITECTURE.md`](ARCHITECTURE.md) §13.
 | Tag | Commit | When | Why |
 |---|---|---|---|
 <!-- upstream.yml inserts the newest row directly under this line -->
-| `v0.7.3` | `b6d4cfb242cee93c2be5adfbdaa54bf8ef42c60b` | 20 November 2026 | the weekly bump (`upstream.yml`), pull request below |
+| `v0.7.3` | `b6d4cfb2` | 20 November 2026 | the weekly bump (`upstream.yml`, pull request #87), red in CI and taken by the sync pile's task 01. Thirteen of upstream's tasks and four releases; **no interface moved and no constant of `MeshReply` moved**, so nothing of this repository stopped compiling. What it cost: the shim of the library's loop suite grew the four knobs the original grew (an update asked for in a heartbeat's reply, and a batch whose answer was lost); the kept image is **version 2** and `mm::kMaxKeptImageLen` is **19 368** bytes, 40 more than before, which this repository now reads off the library instead of adding up itself (`agent::kLargestKeptImage`; the scratch of 19 456 holds it with 88 bytes over); every console line of a job now carries a prefix the repeater reflects, which the simulated RAK had to learn; and a console line nobody waits for - the region loader's - needed `LinkMesh` to give up the exchange before the next send, or the radio answers it `ERR_BUSY`. The contract fixtures moved to meshmaster.dk `28daabd` (95 files) and the companion frames are the same bytes at that commit. ArduinoJson is still 7.4.3. +10 224 bytes of image |
 | `v0.6.0`+8 | `6290e092` | 8 November 2026 | task p10-01, for the night of 8 November: `AgentLoop::restore` gained a second parameter, *how long the board was away*, and takes it off a hold or a `Retry-After` (p1.10-42) — without which one failed call bought six hours of silence at the unit's hourly wake. `IMesh::answersLocallyFor(key)` came with it (p1.10-43), so the wake prices a job the local door answers at its reply waits instead of at airtime gaps it never spends, and `cliReplyValue` reads a bare `>` as the empty value rather than a raw line (p1.10-44). No release between the two pins, so `AGENT_CORE_VERSION`, `library.json`, `idf_component.yml` and ArduinoJson's 7.4.3 are all unmoved: this bump is three commits of behaviour and not one byte of version |
 | `v0.6.0`+4 | `8c24da5b` | 8 November 2026 | task p9-05, and the first pin that is not a tag: `IMesh` gained `answersLocally()` (p1.10-40) and `loginMaterialFor` a second parameter (p1.10-41), which together are the local door's *no airtime, no password* — the work the unit needed four commits before the library's next release. Three releases came with it (`v0.3.1` the UTF-8 strings, `v0.4.0` the heartbeat's observer and `failedAt`, `v0.5.0` the flood scope and the neighbours, `v0.6.0` a lighter TLS on a Heltec), every one of them additive: nothing of this repository changed to compile against them |
 | `v0.3.0` | `cc5a3436` | 22 October 2026 | the pin task p4-01 landed with (its second session): `IRetained` and the image a sleep keeps, a wake that keeps its budget, `IMesh::supports()`, `MeshReply` without `viaPath`/`snr`, and both of p4-01's upstream findings taken — so this repository compiles the library in its own dialect and exempts no warning of it |

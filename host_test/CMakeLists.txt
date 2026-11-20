@@ -267,8 +267,8 @@ target_include_directories(agent_core SYSTEM PUBLIC ${ARDUINOJSON}/src)
 twinoak_ours(agent_core)
 
 # -- the library's own suites, here (task p4-01) ------------------------------------------------
-# test/test_runner (46 cases: all thirteen job types, one send per command, the credential wiped,
-# the lease, the offline buffer) and test/test_loop (47: the loop, the heartbeat's bytes, the
+# test/test_runner (123 cases: all thirteen job types, one send per command, the credential wiped,
+# the lease, the offline buffer) and test/test_loop (74: the loop, the heartbeat's bytes, the
 # backoff, the reboot guard, every wake case, and what a sleep keeps - the image's bytes, a torn
 # one refused whole, the uplink's ledger), copied under host_test/agent-core/ with the four
 # fakes and both fixture sets beside them, at upstream's own paths - run here against the

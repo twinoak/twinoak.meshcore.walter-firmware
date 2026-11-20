@@ -38,4 +38,19 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   `{"data":{"journal":[…]},"note":…}`; there it is the `data` object alone. The same wire
   under one name for two things, most likely; to be confirmed against what the unit posts.
   The six waiting files of pile 16 and the two of pile 13 are the same bytes as meshmaster.dk's.
+  **Confirmed from the other side** by the sync pile's task 01 (20 November): the copy of
+  agent-core at `v0.7.3` brings meshmaster.dk's own file for all nine of the waiting ones, and
+  this is the only one whose bytes differ - in exactly that way. Nothing fails on it: the four
+  tests that read the waiting files read them by name out of `host_test/fixtures/contracts-ahead/`,
+  and no test or rail counts either fixture set. Moving the eight that agree over to the copy's
+  own directory is a task of its own.
+- [ ] **[later, found by the sync pile's 01] The kept image may grow 88 bytes before the scratch
+  must.** `agent::kKeptScratchBytes` is 19 456 and the largest image agent-core can write is now
+  `mm::kMaxKeptImageLen` = **19 368** (it was 19 328; upstream's p1.13-55 appended the 40 bytes of
+  a pending batch's client id). The margin was 128 bytes and is 88. The figure is read off the
+  library now rather than added up here, so the next growth fails the `static_assert` in
+  `walter_agent/agent_backend.h` instead of quietly dropping the tail of what a sleep keeps - but
+  whoever has to raise it should know that 19 456 is the top of the allocator's bucket (anything
+  from 18 433 to 19 456 takes the same block), so the next byte above it costs a bigger block in
+  the heap the main task's stack comes out of (rail R22, and phase 13's item above).
 - [ ] **[later] Piles 12 to 16 are not reviewed.**
