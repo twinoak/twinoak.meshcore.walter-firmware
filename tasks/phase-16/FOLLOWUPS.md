@@ -58,3 +58,41 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   of an apply (`core/update/journal.h` ~L86), written by
   `components/agent/firmware_jobs.cpp`; `Console::printJournalEntry` (`console.cpp` ~L4243) has
   no case for it, and `core` cannot read the agent's payload as things are.
+
+## The review of 01–06 (19 November)
+
+All six merged with CI green (#79 to #84); in no release yet (`VERSION` 0.1.9, ten notes
+waiting). 05 merged its report alone and its two open criteria are met by phase 17's task 02;
+06's open *CI green* was the pull request's, which merged.
+
+Read: every report's deviations; the header of `core/update/scanner_session.h` and, in
+`scanner_session.cpp`, the refusals at `start()`, `resume()` and the whole of `stepBack()`; how
+a wake takes an open session up (`core/cycle/wake_cycle.cpp` ~L650–722) and the bounds of
+`wake_guard.h`. Not read line by line: the steps of a session, `firmware_jobs`' half of 04, 01's
+text mode, 02's store path, the tests. Nothing found that has to be settled before a release.
+The rail that matters holds as written: the journal says open before the first flash, every
+wake's step 3 takes an open session up and is allowed `kSessionBoundMs` for it (~L712), and the
+switch back does not depend on a battery reading that a scanner cannot give (report 03's first
+deviation, which found that hole itself).
+
+- [ ] **[Thomas, before a session on a mast] No session has run on hardware.** Two flashes over
+  SWD with a program between them, and a repeater that is off the mesh until the second has
+  proved. `docs/bench.md` has the walk; the first sessions belong on a radio on a desk, with the
+  power pulled once in each flash, before *Start a session* is pressed for TwinOak Bellevue.
+- [ ] **[later] 03: a session that cannot be switched back is tried again at every wake, at full
+  length, for ever.** `stepBack()` ends `stuck` and the next wake's step 3 takes it up again
+  (`scanner_session.cpp` ~L972–1034; `wake_cycle.cpp` ~L707–722). That is the rail, and right
+  for a flash that failed once. A radio that cannot be flashed at all costs a quarter of an hour
+  awake at every wake, and while the radio is a scanner nothing can read the battery it is
+  spending. After some tries in a row the tries could be further apart; the journal has an
+  entry for each.
+- [ ] **[none] 04: the lines are posted as `application/json` though they are NDJSON** (report
+  04's fifth deviation, left for this comparison). meshmaster.dk's route reads the body as text
+  whatever the header says (`AgentV1.cs` ~L142–147 at 28daabd). Nothing to do.
+- [ ] **[later] The six fixtures of 02 and 04 still wait, and are the same bytes as
+  meshmaster.dk's** (compared on 19 November, with the two `UnitReport*`).
+  `FirmwareApplyProgress.json` of phase 14 is not. *Corrected on 20 November:* this was
+  written as if a sync turned `main` red by a tripwire, as in the exit-node firmware's
+  repository. There is no such test here. The four tests read the waiting directory by its
+  path, and nothing fails when the copied tree holds the same files too. They move when a
+  task moves them (the exit-node's pile 1.16, task 62, is the pattern for the tests).

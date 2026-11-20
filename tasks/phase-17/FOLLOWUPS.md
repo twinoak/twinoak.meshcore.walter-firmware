@@ -39,3 +39,58 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
   under one name for two things, most likely; to be confirmed against what the unit posts.
   The six waiting files of pile 16 and the two of pile 13 are the same bytes as meshmaster.dk's.
 - [ ] **[later] Piles 12 to 16 are not reviewed.**
+
+## The review of 01–02 (19 November)
+
+Both merged with CI green (#85, #86); in no release yet. 02 closes the two criteria phase 16's
+task 05 left open: the start FITS with the PSRAM configured, 6 348 bytes to spare where there
+were 644.
+
+Read: both reports; `components/core/net/socket_rotation.cpp` ~L10–36 (the assert that was
+replaced, and why); every `std::atomic` of ours (nine objects, in `core/net/call_record.h`
+~L344–346 and `socket_rotation.h` ~L234–244; none is touched from an interrupt, and this
+firmware has no interrupt handler or IRAM code of its own); `components/platform/heap.cpp`
+(`bringUp` ~L122, `takeExternal` ~L147, the figures read at the internal capabilities); the nine
+`CONFIG_SPIRAM*` lines of `sdkconfig.defaults`. Nothing found. What the reasoning about the
+atomics stands on is ESP-IDF's own `__atomic_*` for an address outside external RAM, which is in
+the build's image and not in this repository: read in report 02, not checked again here.
+
+- [ ] **[Thomas, at the bench, before the release] The PSRAM has never been brought up on a
+  board.** QEMU has none, so every test of 02 scripts it. `docs/bench.md` ~L177–193: `heap`,
+  `heap room`, `heap` on a spare Walter, and the line it must print
+  (*room: 65536 psram of 2097152 …*). A module whose PSRAM does not answer takes the 8 192-byte
+  room, and says so.
+- [ ] **[Thomas, at the bench] The sleep current, once, with this image.** The chip's PSRAM
+  hardware is now initialised at every boot (`CONFIG_SPIRAM_BOOT_HW_INIT`), the memory only for
+  a session. Nothing here says the current asleep changed; nothing measured it either, and the
+  unit lives on its battery. One reading against 0.1.9's.
+- [ ] **[none] 02: every atomic of the firmware is compiled as a call now**
+  (`-mdisable-hardware-atomics`), and `tools/verify.sh` builds from nothing when
+  `sdkconfig.defaults` changes, which is what would have shown the failed assert before CI did.
+  Read and agreed with; kept here so that the next person who meets `is_always_lock_free` false
+  on this board finds why.
+
+## The library watch, run for the first time (20 November)
+
+- [ ] **[none] `upstream.yml` had never run past its first step.** Until `AGENT_CORE_READ_TOKEN`
+  was set, every run stopped green at the credential. Run #5 (20 November, by hand) was the
+  first to go on, and failed at *Is there a newer tag?*: the options were splatted as an array,
+  which hands `-GitHubOutput` over as a value (*A positional parameter cannot be found*). The
+  step now splats a hashtable (changed by hand, 20 November; no task). The run after it
+  went through and opened pull request #87, *agent-core v0.7.3*, 63 files.
+- [ ] **[none] The steps after it ran for the first time in that run:** the re-copy, the pull
+  request's body, the push and `gh pr create`. All four did what they say.
+- [ ] **[next, the sync task of #87] The bump is red, and not by what was written here first.**
+  This item said the waiting fixtures' tripwire would fail. There is no tripwire in this
+  repository; that was the exit-node firmware's. Run 44695217610 stops in `host-tests` on
+  compile errors: the library's loop suite, as copied, uses four members that
+  `host_test/agent-uplink/shim/support/FakeUplink.h` does not have (`askForAnUpdate`,
+  `updateResults`, `loseTheAnswerToObservations`, `seenBatches`). `tasks/sync/01-agent-core-v0-7-3.md`
+  has it, with what else was read. The copy does bring meshmaster.dk's own file for each of
+  the nine that wait in `host_test/fixtures/contracts-ahead/` (eight the same bytes;
+  `FirmwareApplyProgress.json` the post's `data` member), and nothing fails on that.
+- [ ] **[later] The nine waiting fixtures can move now.** The four tests that read them
+  (`test_unit_report.cpp`, `test_an_apply_keeps_its_lease.cpp`, `test_json_scan.cpp`,
+  `test_a_session_is_a_job.cpp`) read the copied files instead, the post of
+  `FirmwareApplyProgress` is made from the copied `data` member, and the waiting files go. A
+  small task once the bump is on `main`.

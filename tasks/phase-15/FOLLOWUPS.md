@@ -80,3 +80,37 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
 - [ ] **[later] A call that worked, of the kind that fails.** Task 07 prints the calls a report
   can see, which are the ones before it in the wake. An answered observations call is after it
   and is not kept: keeping it would be a write to flash at every good wake.
+
+## The review of piles 12 to 15 (19 November)
+
+A lighter review than the piles of this week got, and it says so: these four have been in
+service since 0.1.9 (18 November, on the unit at TwinOak Bellevue), so they are held here to
+their reports and to what the unit has shown, not read line by line. Read: every report's
+deviations and open criteria of 12/01–02, 13/01–02, 14/01–06 and 15/01–07; `firmware_jobs.cpp`
+where a lease is extended (~L307–318, ~L915–935); the waiting fixtures against meshmaster.dk's
+master at 28daabd. Nothing found that asks for a task.
+
+- [ ] **[later] `FirmwareApplyProgress.json` is one name for two things** (pile 14, task 04).
+  The file waiting in `host_test/fixtures/contracts-ahead/` is the whole post,
+  `{"data":{"journal":[…]},"note":"flashing-candidate"}`; meshmaster.dk's file of that name is
+  the `data` member alone, because its fixtures are one a record and the post's record is
+  `ProgressReport`. The wire is the same: the file here is byte for byte
+  `{"data":` + theirs + `,"note":"flashing-candidate"}` (checked). Neither side is wrong. When
+  the waiting fixtures are reconciled, the test here makes the post from the copied
+  `FirmwareApplyProgress.json` and does not keep a second file under that name.
+- [ ] **[Thomas] 15/04 has not run**: it waits for a release of the exit-node firmware's
+  library, which is now the release after that repository's pile 1.16. The bump then brings
+  the batch id kept over a sleep (its 55), a listing's `total` (56) and the update members of
+  the heartbeat (61, which a unit does not send).
+- [ ] **[none] What the unit has shown.** 14/04: the apply of 18 November (job 34584, the
+  Walter's own image) went through and its trial was confirmed; no apply of a radio image has
+  been watched since the task. A lease that cannot be extended is logged and the apply goes on
+  (~L310–316). 14/06: woken on request on 17 November, heard six minutes later. 13/01–02: the
+  reports of 18 November, read whole. 15/06: `wakesMidway` 0 since the update. 15/07: the
+  answered call beside the failed one, which is what `claude/walter-observation-stall.md` in
+  the project was written from.
+- [ ] **[none, parked] 15/03 did not end the lost answer.** `httpFailures` still rises by one a
+  heartbeat (+88 in a day on 18 November). It waits for the bench with the new adapter board
+  (Thomas, 18 November), and nothing here should be read as a cure.
+- [ ] **[none] 15/06's two open criteria:** the heap margin 80 bytes below main's is long
+  overtaken by pile 17's 11 608 bytes, and *CI green* was the pull request's, which merged.

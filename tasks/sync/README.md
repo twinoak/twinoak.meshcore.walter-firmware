@@ -36,7 +36,4 @@ order.
 
 | # | Task | Tag | Why it needed a session |
 |---|---|---|---|
-
-Empty: the agent core has had two releases a consumer may pin (`v0.2.0` and
-`v0.3.0`, and task p4-01 took them both — the second before it landed), so there
-has not been a bump through the watch at all yet, let alone a red one.
+| 01 | [agent-core-v0-7-3](01-agent-core-v0-7-3.md) | v0.7.3 | CI red on pull request #87 |
