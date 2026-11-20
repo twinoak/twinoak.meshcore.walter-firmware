@@ -133,8 +133,10 @@ jobs:
         shell: pwsh
         run: |
           # Not $args: that is PowerShell's own automatic variable for a script's arguments.
-          $options = @('-Upstream', '/tmp/upstream', '-GitHubOutput')
-          if ($env:PRETEND_VERSION) { $options += @('-Version', $env:PRETEND_VERSION) }
+          # A hashtable, and not an array: splatting an array hands its elements over by
+          # position, so '-GitHubOutput' arrived as a value and the script refused it.
+          $options = @{ Upstream = '/tmp/upstream'; GitHubOutput = $true }
+          if ($env:PRETEND_VERSION) { $options['Version'] = $env:PRETEND_VERSION }
           ./tools/upstream-check.ps1 @options
 
       - name: Nothing newer
