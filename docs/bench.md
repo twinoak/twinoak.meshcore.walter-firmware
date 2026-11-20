@@ -2761,6 +2761,33 @@ server see them.
       already*. Six wakes in a row sending 13, 14, 15, 16, 17 and 18 adverts for 19 distinct
       neighbours was the failure of 16 November 2026 that this is the fix for.
 
+## 27. A batch waiting for its answer
+
+Task p15-04, the half of the kept batch id that is this board's. The library keeps the batch
+across the sleep; this firmware says **since which wake** it has been waiting, in `agent obs` and
+so in the report's `observations` section. Tested here against a scripted meshmaster.dk whose
+answer to one post is lost on purpose; what a real unit adds is a real lost answer, which is the
+one thing no simulator decides (§13's ★ line and `tasks/phase-15/FOLLOWUPS.md` are still where
+the cause of that is chased).
+
+- [ ] **`agent obs` names the batch that is waiting.** On the unit in service, over a night of
+      hourly wakes: *Fetch now* on the Diagnostics tab and read the `observations` section. While
+      a post's answer is being lost there is one line more -
+      `a batch is waiting for its answer: N advert(s) since wake 1214, as obs-…` - and the wake
+      it names must be the **same number** as the `observations` entry of `agent calls` for the
+      failure that lost that answer, or earlier. A line that moves its wake forward at every wake
+      would mean the batch is being rebuilt rather than kept, which is the failure of
+      16 November 2026 coming back.
+
+- [ ] **It goes when the batch goes.** The wake after the one whose post the server answers: no
+      such line at all, and the ring back to `0 of 64 waiting`. The value behind it
+      (`agent_batch`) is erased then, so a unit whose posts are all answered carries none.
+
+- [ ] **The exit node's page.** Over the same night, the count of distinct neighbours in the
+      unit's newest hundred rows against the count of adverts its heartbeats say it heard. They
+      must agree: that is §26's third item read from the other side, and the number that was
+      three times too high before.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the

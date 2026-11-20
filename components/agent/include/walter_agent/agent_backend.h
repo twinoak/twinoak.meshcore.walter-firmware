@@ -73,6 +73,7 @@
 #include "walter_agent/link_mesh.h"
 #include "walter_agent/modem_uplink.h"
 #include "walter_agent/observations.h"
+#include "walter_agent/pending_batch.h"
 #include "walter_agent/walter_platform.h"
 
 namespace agent {
@@ -218,6 +219,10 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
     // none, and then the heartbeat carries the library's own counts since boot - which on a board
     // that boots at every wake is what this task exists to stop sending.
     FloodCounters* floods = nullptr;
+    // Since which wake a batch has been waiting for its answer (task p15-04). The batch itself is
+    // the library's, in the image a sleep keeps; the wake is this board's, and null keeps none -
+    // `agent obs` then says a batch is waiting and not since when.
+    PendingBatch* batch = nullptr;
     mm::IRetained* kept = nullptr;
     std::uint8_t* kept_scratch = nullptr;
     std::size_t kept_scratch_len = 0;

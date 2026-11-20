@@ -47,6 +47,7 @@
 #include "walter_agent/mesh_probe.h"
 #include "walter_agent/modem_uplink.h"
 #include "walter_agent/observations.h"
+#include "walter_agent/pending_batch.h"
 #include "walter_agent/region_store.h"
 #include "walter_agent/uplink_probe.h"
 #include "walter_agent/walter_platform.h"
@@ -107,6 +108,10 @@ struct AgentHalf {
   // key-value store, as main.cpp builds it - so the totals cross a sleep, a restart and a power
   // cut on this bench exactly as they do on a board.
   agent::FloodCounters floods{p.state_store};
+  // Since which wake a batch has been waiting for its answer (task p15-04): the life's object
+  // over the world's key-value store, as main.cpp builds it - so the figure crosses a sleep, a
+  // restart and a power cut on this bench exactly as it does on a board.
+  agent::PendingBatch batch{p.state_store};
   mm::JobRunner jobs;
   mm::AgentLoop loop;
   std::uint8_t kept_scratch[agent::kKeptScratchBytes];
@@ -137,6 +142,8 @@ struct AgentHalf {
     // The console's `agent heartbeat` carries the same `flood` object a wake posts (task p14-02):
     // the runner's rule and the kept totals, as main.cpp hands them over.
     identity_probe.countFloodsFrom(&jobs, &floods.totals());
+    // ... and the batch waiting for its answer, as main.cpp hands it over (task p15-04).
+    identity_probe.readTheWaitingBatchFrom(&batch);
     current_ = this;
     backend.begin(&pumpAll);
   }
@@ -193,6 +200,7 @@ struct AgentHalf {
     b.state_store = p.state_store;
     b.calls = &calls;
     b.floods = &floods;
+    b.batch = &batch;
     b.kept = kept.usable() ? &kept : nullptr;
     b.kept_scratch = kept_scratch;
     b.kept_scratch_len = sizeof kept_scratch;

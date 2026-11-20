@@ -31,6 +31,9 @@ idf_component_register(
        "mesh_probe.cpp"
        "modem_uplink.cpp"
        "observations.cpp"
+       # Since which wake a batch has been waiting for its answer (task p15-04): the one thing
+       # the kept image cannot carry, because a wake is not a notion the library has.
+       "pending_batch.cpp"
        "region_store.cpp"
        "uplink_probe.cpp"
        "walter_platform.cpp"

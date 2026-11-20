@@ -157,6 +157,10 @@ void AgentBackend::begin(void (*pump)()) {
   }
   state_survived_ = loadState();
   if (p_.kept != nullptr && p_.loop->restoreKept()) counters_.kept_restored = saturate(counters_.kept_restored);
+  // **After the kept image**, because the batch this is about comes out of it (task p15-04): the
+  // image carries the id and how many adverts the batch holds, the store carries since which
+  // wake it has been waiting, and the one is only read against the other.
+  if (p_.batch != nullptr) p_.batch->begin(p_.loop);
   begun_ = true;
 }
 
@@ -424,6 +428,9 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   // The wake's number the failures of this wake are stamped with (task p13-02): the duty cycle's
   // own count, which `wake`'s list and a journal entry are read against.
   if (p_.calls != nullptr) p_.calls->atWake(known.wake.wakes);
+  // The same number for the batch a failed observations call leaves waiting (task p15-04), so
+  // that `agent obs`'s *since wake N* and `agent calls`'s entry for that failure are the same N.
+  if (p_.batch != nullptr) p_.batch->atWake(known.wake.wakes);
   const bool radio_known = knowTheRadio();
   const bool radio_up = p_.identity->sessionUp();
   sayRadio(radio_known, radio_up);
@@ -517,6 +524,14 @@ interfaces::Exchanged AgentBackend::run(const interfaces::BackendKnowledge& know
   // nothing failed writes nothing here, which is the fourth deliverable of that task.
   takeFloodCounts();
   if (p_.calls != nullptr) (void)p_.calls->save();
+  // ... and the wake a batch still waiting for its answer has been waiting since (task p15-04),
+  // **only when that answer changed**: a wake whose post the server took, and a wake whose post
+  // failed again under the same id, both write nothing here. Not in `beat()` below, whose body
+  // cap of one byte stops every observation batch, so no trial heartbeat can move this.
+  if (p_.batch != nullptr) {
+    p_.batch->note();
+    (void)p_.batch->save();
+  }
 
   // The answer: what the jobs did, and how long to sleep at least.
   if (out != nullptr) {

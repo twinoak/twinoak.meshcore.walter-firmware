@@ -23,6 +23,7 @@
 #include "walter_agent/identity.h"
 #include "walter_agent/link_mesh.h"
 #include "walter_agent/observations.h"
+#include "walter_agent/pending_batch.h"
 #include "walter_agent/walter_platform.h"
 
 namespace agent {
@@ -68,6 +69,13 @@ class IdentityProbe final : public core::console::AgentProbe {
     floods_ = floods;
   }
 
+  // The batch that has gone out and is still waiting for an answer, so that `agent obs` and the
+  // report's `observations` section name it (task p15-04). One pointer and not two: the object
+  // reads the loop for the count and the id - which are the library's, in RAM and in the image a
+  // sleep keeps - and holds the wake itself. Null says nothing of a batch, which is a build with
+  // no backend behind the console.
+  void readTheWaitingBatchFrom(const PendingBatch* batch) { batch_ = batch; }
+
  private:
   Identity& identity_;
   LinkMesh& mesh_;
@@ -76,6 +84,7 @@ class IdentityProbe final : public core::console::AgentProbe {
   core::cycle::DutyCycle* duty_ = nullptr;
   const mm::IJobExtension* extension_ = nullptr;
   const core::cycle::WakeTotals* wakes_ = nullptr;
+  const PendingBatch* batch_ = nullptr;
   const mm::JobRunner* jobs_ = nullptr;
   const FloodTotals* floods_ = nullptr;
   // The body is built here and not on the caller's stack: the main task's stack is 3584 bytes

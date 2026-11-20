@@ -1603,6 +1603,20 @@ once, so that a loss one hop away is still a number on the unit's page. **An adv
 no line of any log**: §7 says neither end logs it, so it goes into the ring and out again in the
 batch the agent posts, and `agent obs` prints the key, the age, the signal and the role.
 
+**A batch waiting for its answer** (task p15-04). A batch that reaches meshmaster.dk and whose
+answer never comes back must go out again **under the id it was built with**, because the server
+de-duplicates on that id. The library keeps the batch - since agent-core 0.7.3 its id and how many
+of the ring's oldest adverts it holds are in the image a sleep keeps (`agent/KeptImage.h`, version
+2); before that they lived only in its RAM, and this board boots at every wake, so every wake
+posted everything it held as a new batch and the server stored it again. What is left for this
+firmware is **since which wake** a batch has been waiting, which the library has no notion of:
+`agent::PendingBatch` (`walter_agent/pending_batch.h`) over one small value of the settings store,
+`agent_batch` - a version byte, the wake's number and a 32-bit fingerprint of the id, so that the
+figure is only ever read against the batch it is about. It is written when a batch starts waiting
+or stops, and at no other wake, so a unit whose posts are answered never writes it; `agent obs`
+and the report's `observations` section print one line while a batch waits and nothing when none
+does.
+
 **The Walter's own attention** (`core/cycle/agent_attention.h`). Two things the agent can learn
 that no radio can tell us: a `401` — the token was refused, and the library halts — and a restart
 it asked for and did not get. Each raises a bit of the duty cycle's retained record, which the
