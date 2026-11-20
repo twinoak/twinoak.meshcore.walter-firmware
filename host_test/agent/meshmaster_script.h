@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -143,6 +144,13 @@ class MeshMasterScript {
     next_fail_count_ = count;
     next_fail_retry_after_ = retry_after;
   }
+  // **The next `count` observation posts are stored and their answers lost** (task p15-04): the
+  // batch reaches this server and goes into its own memory, and then the TLS refuses before the
+  // reply - which is the failure of 16 November 2026 as the unit met it (*the connection closed
+  // before the body was complete*, `tasks/phase-15/reports/02.md`). The knob and its name are
+  // upstream's own `FakeUplink::loseTheAnswerToObservations`, so that a case here reads as the
+  // library's own case for the same thing.
+  void loseTheAnswerToObservations(int calls) { obs_answer_lost_ = calls; }
   // The next `count` result posts answer `status` (a server that takes everything but results).
   void failResults(int status, int count) {
     result_fail_status_ = status;
@@ -195,6 +203,21 @@ class MeshMasterScript {
   std::map<long long, std::vector<SeenLines>> lines;  // the posts of a scanner's lines, in order
   int lines_unanswered = 0;                           // ... and the ones this script never answered
   std::vector<std::string> batches;               // observation batches, the bodies
+  // **What this server stored, de-duplicated on the batch's `clientId`**, which is what
+  // meshmaster.dk does with one (task p15-04): the ids it has seen, and how many adverts came in
+  // under an id it had not seen before. A batch posted again under its own id adds nothing to
+  // either - so `storedAdverts()` is the count of distinct adverts a unit's rows would show, and
+  // it is the number that was too high before the library kept a batch's id over a sleep.
+  const std::set<std::string>& seenBatches() const { return seen_batches_; }
+  std::size_t storedAdverts() const { return stored_adverts_; }
+  // The `clientId` of a batch body, as the library writes it.
+  static std::string clientIdOf(const std::string& batch) {
+    const std::size_t at = batch.find("\"clientId\":\"");
+    if (at == std::string::npos) return "";
+    const std::size_t begin = at + 12;
+    const std::size_t end = batch.find('"', begin);
+    return end == std::string::npos ? std::string() : batch.substr(begin, end - begin);
+  }
   std::vector<std::string> calls;                 // every agent route reached, in order
   int configs = 0;
   int claims = 0;
@@ -371,7 +394,23 @@ class MeshMasterScript {
     }
     if (path == "/agent/v1/observations") {
       batches.push_back(request.body);
-      reply->body = "{\"accepted\":" + std::to_string(countItems(request.body)) + ",\"duplicate\":false}";
+      // The server de-duplicates on the batch's own `clientId` (task p15-04): a batch it has
+      // already stored is answered *had it already* and stored nothing twice. The store happens
+      // **before** the answer can be lost, because that is the failure the library's kept batch
+      // id exists for - the rows are on the server and the unit does not know it.
+      const std::string id = clientIdOf(request.body);
+      const bool had_it = !id.empty() && seen_batches_.count(id) != 0;
+      if (!had_it) {
+        if (!id.empty()) seen_batches_.insert(id);
+        stored_adverts_ += static_cast<std::size_t>(countItems(request.body));
+      }
+      if (obs_answer_lost_ != 0) {
+        --obs_answer_lost_;
+        reply->no_response = true;
+        return true;
+      }
+      reply->body = "{\"accepted\":" + std::to_string(had_it ? 0 : countItems(request.body)) +
+                    ",\"duplicate\":" + (had_it ? "true" : "false") + "}";
       return true;
     }
     if (path == "/agent/v1/jobs/claim") {
@@ -512,6 +551,11 @@ class MeshMasterScript {
   std::vector<std::string> silent_routes_;
   int result_fail_status_ = 503;
   int result_fail_count_ = 0;
+  // Task p15-04: how many more observation posts are stored and then left unanswered, and what
+  // this server has stored.
+  int obs_answer_lost_ = 0;
+  std::set<std::string> seen_batches_;
+  std::size_t stored_adverts_ = 0;
   // A scanner's lines (task p16-04): how many posts to leave unanswered, the room one job's lines
   // have, and how many this server holds of each.
   int silent_lines_ = 0;

@@ -3924,6 +3924,22 @@ void Console::agentObs(bool pull) {
   printf("agent obs: %lu of %lu waiting, %lu heard, %lu dropped (the heartbeat's figure)\n",
          static_cast<unsigned long>(v.count), static_cast<unsigned long>(v.capacity),
          static_cast<unsigned long>(v.heard), static_cast<unsigned long>(v.dropped));
+  // **A batch that has gone out and is waiting for its answer** (task p15-04), and nothing at all
+  // when none is. Those adverts are the oldest of the figures above - the ring keeps them until
+  // the server says it has them - and the id is what the server de-duplicates on, so this line is
+  // what a person reads the exit node's rows against. The wake it has been waiting since is the
+  // same number `agent calls` stamps the failure that lost its answer with.
+  if (v.batch_count != 0) {
+    print("  a batch is waiting for its answer: ");
+    if (v.batch_since_known) {
+      printf("%lu advert(s) since wake %lu, as ", static_cast<unsigned long>(v.batch_count),
+             static_cast<unsigned long>(v.batch_since_wake));
+    } else {
+      printf("%lu advert(s), since a wake this unit did not keep, as ",
+             static_cast<unsigned long>(v.batch_count));
+    }
+    printf("%s\n", v.batch_id);
+  }
   printf("  the radio: %lu dropped since it booted, %u still waiting there, %lu pull(s) made",
          static_cast<unsigned long>(v.radio_dropped), static_cast<unsigned>(v.remaining),
          static_cast<unsigned long>(v.pulls));

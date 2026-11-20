@@ -120,6 +120,9 @@ const char* const kAgentIncludes[] = {
     // library's own rule and counts they are added to.
     "agent/FloodScope.h",
     "walter_agent/flood_counters.h",
+    // Task p15-04: since which wake a batch has been waiting for its answer, which is the one
+    // thing about a pending batch the library's kept image cannot carry.
+    "walter_agent/pending_batch.h",
 };
 
 }  // namespace

@@ -188,6 +188,15 @@ void IdentityProbe::observations(core::console::AgentObservationsView* out) {
   out->unreadable = counted.unreadable;
   out->radio_dropped = counted.radio_dropped;
   out->remaining = counted.remaining;
+  // The batch still waiting for its answer, if any (task p15-04). **Above the ring**, because a
+  // build whose loop owns no ring at all still has a loop that can be holding one - the early
+  // return below is about the ring and not about the batch.
+  if (batch_ != nullptr && batch_->waiting()) {
+    out->batch_count = static_cast<std::uint16_t>(batch_->count());
+    out->batch_id = batch_->id();
+    out->batch_since_known = batch_->sinceKnown();
+    out->batch_since_wake = batch_->sinceWake();
+  }
   const mm::ObservationRing* ring = observations_.ring();
   if (ring == nullptr) return;
   out->ring = true;

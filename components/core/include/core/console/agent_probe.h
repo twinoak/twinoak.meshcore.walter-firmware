@@ -123,6 +123,26 @@ struct AgentObservationsView {
   std::uint32_t own_key = 0;
   std::uint32_t unreadable = 0;
 
+  // **A batch that has gone out and is still waiting for its answer** (task p15-04): how many of
+  // the ring's oldest adverts it holds, the client id meshmaster.dk de-duplicates on, and since
+  // which wake it has been waiting. All three are 0 or "" when none waits, which is a unit whose
+  // posts are being answered, and `agent obs` then prints no line about it at all.
+  //
+  // `batch_id` is a pointer into the agent's loop, as `row[i].role` is one into the library's
+  // table of role names: it is read in the same breath as this structure is filled, and the loop
+  // outlives the console. The id is no secret - it is a random number this board made up for the
+  // batch (agent/IRetained.h) - and it is the one thing that can be read against the server's own
+  // row.
+  // Sixteen bits each and not the widths their neighbours have: a batch holds at most
+  // `mm::kObservationBatchSize` adverts and the wake is clamped to 0xFFFF where it is kept
+  // (walter_agent/pending_batch.h), and this structure is a member of the console, which is in
+  // static storage - every four bytes of it move the heap the kept scratch is carved out of
+  // (tools/heap_at_start.py, docs/ARCHITECTURE.md §14).
+  std::uint16_t batch_count = 0;
+  std::uint16_t batch_since_wake = 0;
+  bool batch_since_known = false;  // false: a store that kept nothing, so the wake cannot be said
+  const char* batch_id = "";
+
   // The last five, newest first.
   static constexpr std::size_t kRows = 5;
   std::size_t rows = 0;

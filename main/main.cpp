@@ -648,6 +648,11 @@ extern "C" void app_main() {
   // `begin()` the backend does below and handed to the uplink there - which is the one seam the
   // heartbeat's bytes pass through.
   static agent::FloodCounters g_flood_counters(g_nvs.ready() ? &g_nvs : nullptr);
+  // And since which wake a batch has been waiting for its answer (task p15-04,
+  // walter_agent/pending_batch.h): one more value, written only when a batch starts or stops
+  // waiting - so a unit whose posts are answered never writes it - read back at the `begin()`
+  // the backend does below, after the kept image the batch itself comes out of.
+  static agent::PendingBatch g_pending_batch(g_nvs.ready() ? &g_nvs : nullptr);
   static agent::WalterPlatform agent_platform(g_clock, g_wall, g_entropy, g_heap,
                                               &agent_attention);
   static agent::Identity agent_identity(radio, core::version());
@@ -672,6 +677,9 @@ extern "C" void app_main() {
   // ... and the runner's rule and the kept totals with them, so that the body `agent heartbeat`
   // prints carries the same `flood` object a wake posts (task p14-02).
   identity_probe.countFloodsFrom(g_agent_jobs, &g_flood_counters.totals());
+  // ... and the batch waiting for its answer, so that `agent obs` and the report's
+  // `observations` section name it (task p15-04).
+  identity_probe.readTheWaitingBatchFrom(&g_pending_batch);
   // What a sleep keeps: the window after the image store's layout in the `rakfw` partition
   // (core/image/store.h, kStoreBytes), when the partition is there and has room.
   agent::RegionStore* kept = nullptr;
@@ -695,6 +703,7 @@ extern "C" void app_main() {
   agent_parts.state_store = g_nvs.ready() ? &g_nvs : nullptr;
   agent_parts.calls = &g_calls;
   agent_parts.floods = &g_flood_counters;
+  agent_parts.batch = &g_pending_batch;
   agent_parts.kept = kept;
   agent_parts.kept_scratch = g_kept_scratch;
   agent_parts.kept_scratch_len = agent::kKeptScratchBytes;
