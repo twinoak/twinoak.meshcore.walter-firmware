@@ -95,7 +95,7 @@ the build's image and not in this repository: read in report 02, not checked aga
   went through and opened pull request #87, *agent-core v0.7.3*, 63 files.
 - [ ] **[none] The steps after it ran for the first time in that run:** the re-copy, the pull
   request's body, the push and `gh pr create`. All four did what they say.
-- [ ] **[next, the sync task of #87] The bump is red, and not by what was written here first.**
+- [x] **[next, the sync task of #87] The bump is red, and not by what was written here first.**
   This item said the waiting fixtures' tripwire would fail. There is no tripwire in this
   repository; that was the exit-node firmware's. Run 44695217610 stops in `host-tests` on
   compile errors: the library's loop suite, as copied, uses four members that
@@ -104,8 +104,39 @@ the build's image and not in this repository: read in report 02, not checked aga
   has it, with what else was read. The copy does bring meshmaster.dk's own file for each of
   the nine that wait in `host_test/fixtures/contracts-ahead/` (eight the same bytes;
   `FirmwareApplyProgress.json` the post's `data` member), and nothing fails on that.
+  *Done in the sync phase, task 01: the shim has the four, and pull request #87 is merged.*
 - [ ] **[later] The nine waiting fixtures can move now.** The four tests that read them
   (`test_unit_report.cpp`, `test_an_apply_keeps_its_lease.cpp`, `test_json_scan.cpp`,
   `test_a_session_is_a_job.cpp`) read the copied files instead, the post of
   `FirmwareApplyProgress` is made from the copied `data` member, and the waiting files go. A
   small task once the bump is on `main`.
+
+## The review of the sync's task 01 (20 November)
+
+Merged at 19:13 CET (#87, main 803088f), 97 minutes, five of five criteria. **The sync path ran
+for the first time and worked from end to end:** the watch opened the pull request, the task
+was generated, the session worked on `upstream/v0.7.3` and merged it. Read: the whole report.
+No code was read. The copy is at `b6d4cfb2`, 0.7.3.
+
+- [ ] **[none] What the session had to answer, by its report.** The shim's four knobs; nothing
+  built for an update (no provider is handed to the loop, so a heartbeat is byte for byte what
+  it was); `kLargestKeptImage` now reads the library's constant, 19 368 bytes in a scratch of
+  19 456; the simulated RAK reflects a console line's prefix as stock firmware does.
+- [ ] **[none] A bug of this firmware's own, found by upstream's new test and cured.** A line
+  nobody waits for left the radio awaiting and the next send was `ERR_BUSY`, so a region map
+  could not be loaded into a repeater through a Walter (since p4-02). `LinkMesh` gives such an
+  exchange up before the next send. Eighty bytes, the only firmware change of the bump.
+- [ ] **[later] Two of the library's 123 runner cases are not run through the link shim.** On
+  this road a reply that comes late ends the exchange that is then waiting, and the job pays
+  one more try, where the Heltec's wait goes on. They are replaced by two cases of this
+  repository's own that say so. Whether the link should let a wait go on is LINK-PROTOCOL §6.2
+  and §6.3, in the design repository.
+- [ ] **[none] The image is 10 224 bytes larger** (847 744), all but 80 the library's. The heap
+  at the start holds: 15 636 bytes over in the main stack's heap, 6 308 in the tightest.
+- [ ] **[next] Task 15/04 can run now.** The bump did one of its three things, the scratch held
+  to the library's figure. What a sleep keeps of a batch's id, and `agent obs` naming a
+  waiting batch, are still its own.
+- [ ] **[Thomas, on a board] The three items of `docs/bench.md` §26:** a `config.read`'s values
+  under their own keys (the one that needs a real repeater: it rests on stock firmware
+  reflecting the prefix), a region map loaded by a `config.apply`, and the same adverts not
+  stored twice after a night of hourly wakes.
