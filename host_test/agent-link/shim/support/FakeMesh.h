@@ -13,7 +13,7 @@
 //
 // So a scenario's `mesh.sendLogin(...)` is a SEND_LOGIN frame, its reply an EV_MESH_REPLY event,
 // and `mesh.sends()` what the repeater on the far side was asked for - the same assertions, now
-// through the framing. The 46 cases of test_runner.cpp are compiled a second time against this
+// through the framing. The 123 cases of test_runner.cpp are compiled a second time against this
 // directory (host_test/CMakeLists.txt, `agent_core_runner_link_tests`), unchanged.
 //
 // Two things this class adds to every scenario, because the task asks for them in every one: at
@@ -26,6 +26,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <string>
 
 #include <support/FakePlatform.h>  // host_test/shim's: fake::FakePlatform carries the link's clock
 
@@ -66,6 +68,27 @@ class FakeMesh : public FakeMeshRepeater {
       key[i] = static_cast<uint8_t>((high << 4) | low);
     }
     world_.mesh.setOwnKey(key);
+  }
+
+  // **A reply that comes home late** (the library's tasks p1.10-47 and p1.10-49). The original
+  // holds it in a list of its own and delivers it in the job's next wait, counting waits as calls
+  // of its own `await()`. Through the RAK a wait is a thousand of those - the radio polls the
+  // repeater a millisecond at a time (sim/sim_rak.h) - so the original's count would be spent
+  // inside the request's own wait and the reply would not be late at all. So the lateness is
+  // modelled where a wait is a wait on this road: the **radio** holds the answer and §6.2 decides
+  // which later exchange may read it (`rak.late_replies`), and the repeater answers as it always
+  // does. What a Walter then does with it is this firmware's own, and differs from the Heltec's:
+  // §6.3 reports one outcome per exchange, so an exchange that was handed a late reply is over
+  // and the reply it was waiting for is lost - the job's own retry is what recovers it.
+  void deliverTheNextReplyLate(int sends) {
+    world_.rak.late_replies = sends;
+    world_.rak.late_reply_waits = 1;
+  }
+  // The same for a named console line (task p1.10-49): armed at the send, because the radio knows
+  // a line's bytes and not the key the library gave it, and the line is named here as the
+  // repeater **ran** it - without the prefix the line went out with, which is the original's rule.
+  void deliverTheNextLineRepliesLate(const std::string& line, int times, int waits = 1) {
+    lateLines_[line] = {times, waits};
   }
 
   // The link under the runner, for the tests of components/agent/ that want its knobs.
@@ -124,6 +147,7 @@ class FakeMesh : public FakeMeshRepeater {
     return world_.mesh.sendRequest(reqType, data, len, tag);
   }
   mm::SendResult sendCli(const char* text, bool sensitive, uint32_t& timestamp) override {
+    armALateLineReply(text);
     return world_.mesh.sendCli(text, sensitive, timestamp);
   }
   mm::SendResult sendDiscovery(uint32_t& tag) override { return world_.mesh.sendDiscovery(tag); }
@@ -138,6 +162,21 @@ class FakeMesh : public FakeMeshRepeater {
   const mm::MeshReply& reply() const override { return world_.mesh.reply(); }
 
  private:
+  // `deliverTheNextLineRepliesLate`, at the send: this line's reply is to come home late, and the
+  // radio is armed for the one answer that follows. The line the library sends carries its
+  // two-character prefix and a `|` (agent/CliReplies.h); the repeater runs what is behind it, and
+  // that is the name a test uses.
+  void armALateLineReply(const char* text) {
+    if (text == nullptr || lateLines_.empty()) return;
+    const char* bar = std::strchr(text, '|');
+    const std::string ran = bar == nullptr ? std::string(text) : std::string(bar + 1);
+    const std::map<std::string, LateLine>::iterator it = lateLines_.find(ran);
+    if (it == lateLines_.end() || it->second.times == 0) return;
+    it->second.times--;
+    world_.rak.late_replies = 1;
+    world_.rak.late_reply_waits = it->second.waits;
+  }
+
   static int hexNibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -202,8 +241,14 @@ class FakeMesh : public FakeMeshRepeater {
     EXPECT_NE(world_.mesh.radioTx(), reported) << when << ": the radio's tx (forwards included) must not be the mesh's";
   }
 
+  struct LateLine {
+    int times = 0;
+    int waits = 1;
+  };
+
   Inner inner_;
   sim::MeshWorld world_;
+  std::map<std::string, LateLine> lateLines_;
 };
 
 }  // namespace fake

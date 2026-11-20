@@ -6,7 +6,8 @@
 //
 //   StatusResult(int? BatteryMv, int? NoiseFloorDbm, int? LastRssi, double? LastSnr, long? UptimeS,
 //                int? TxQueueLen, PacketCounters? Packets, long? AirtimeS, DuplicateCounters? Dups,
-//                IReadOnlyDictionary<string,long>? Errors, string? Firmware)
+//                IReadOnlyDictionary<string,long>? Errors, string? Firmware, string? NodeName,
+//                string? OwnerInfo)
 //   PacketCounters(long? Recv, long? Sent, long? RecvFlood, long? RecvDirect, long? SentFlood, long? SentDirect)
 //   DuplicateCounters(long? Flood, long? Direct)
 //   TelemetryResult(IReadOnlyList<LppChannel> Channels); LppChannel(int Channel, string Type, double Value, string? Unit)
@@ -39,13 +40,29 @@ namespace mm {
 constexpr int kMaxStatusErrors = 3;
 int statusErrors(const StatusReading& s, ErrorCounter* out, int max);
 
-// `firmware` is nullptr for every class but `acl`, where the owner-info request fetched it.
-size_t writeStatusResult(const StatusReading& s, const ErrorCounter* errors, int errorCount, const char* firmware,
-                         char* out, size_t cap);
+// `owner` is what the owner-info request answered (agent/ReplyCodec.h), or **nullptr** for a
+// read that did not make it - a claim that said the reply is not wanted, or a repeater whose
+// login said a firmware level below kOwnerInfoVerLevel. All three of `firmware`, `nodeName` and
+// `ownerInfo` are then absent from the result, and absent is what the server stores nothing for.
+//
+// A line the reply **carried empty** is written as `""` and not left out: that is the difference
+// between *the owner has written nothing* and *nobody has asked*, and the server keeps the two
+// apart (meshmaster.dk's task p4.30-181). Both values are JSON-escaped like every other string
+// here, so the newline of a two-line owner info travels as `\n`.
+size_t writeStatusResult(const StatusReading& s, const ErrorCounter* errors, int errorCount,
+                         const OwnerInfoReply* owner, char* out, size_t cap);
 
 size_t writeTelemetryResult(const LppReading* readings, int count, char* out, size_t cap);
 
-size_t writeNeighboursResult(const Neighbour* neighbours, int count, char* out, size_t cap);
+// `total` is **how many neighbours the repeater said it has** - the figure every page of the
+// reply carries (agent/ReplyCodec.h, `NeighboursPage::total`), as the last page that was read
+// gave it. It is written after the array, always, and it is what tells a whole list from one
+// that stopped: `count` entries and a larger `total` is a list the reading did not finish,
+// because a page went unanswered after an earlier one came back or because the list was cut at
+// `kMaxNeighbours`. Without it nine neighbours that are the whole list and nine that are where
+// the list stopped are the same bytes, and the server counts the missing eight as gone
+// (task p1.15-56; meshmaster.dk's task 239, which reads it). 0 beside an empty list.
+size_t writeNeighboursResult(const Neighbour* neighbours, int count, int total, char* out, size_t cap);
 
 // The hops of the outward trace, the repeater last; the SNR each hop measured goes with it.
 size_t writeTraceResult(const TraceHop* hops, int count, char* out, size_t cap);

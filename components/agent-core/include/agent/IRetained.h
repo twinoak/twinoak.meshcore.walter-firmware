@@ -15,10 +15,14 @@
 // version and its checksum are the library's (agent/KeptImage.h); the store carries bytes and
 // says how many it can carry.
 //
-//   capacity()   the most bytes an image may be. The loop writes no image larger than this (nor
-//                larger than the scratch it was handed, AgentLoop::setRetained), and sizes what it
-//                keeps to it: the kept results first, oldest first, as many whole ones as fit; then
-//                the ring's waiting adverts, as many as fit after them. What does not fit is
+//   capacity()   the most bytes an image may be, and `mm::kMaxKeptImageLen` is the largest the
+//                library can ever write (agent/KeptImage.h), so a region of that size is never
+//                itself the reason something is dropped. The loop writes no image larger than
+//                this (nor larger than the scratch it was handed, AgentLoop::setRetained), and
+//                sizes what it keeps to it: the kept results first, oldest first, as many whole
+//                ones as fit; then the ring's waiting adverts, as many as fit after them; then
+//                the client id of a batch still waiting for an answer, when the image turned out
+//                to hold every advert of it (task p1.13-55). What does not fit is
 //                dropped from RAM too and counted in the counters the heartbeat already carries
 //                (`resultsDropped`, `observationsDropped`), so that the buffer and the image agree
 //                and a loss is a figure on the exit node's page and not a surprise
@@ -37,8 +41,9 @@
 // result now and then writes a few images a day. Size a flash region for that, not for a write a
 // wake.
 //
-// **Nothing secret goes to storage.** The image holds result bodies as they would be posted, and
-// the adverts as the ring holds them - a public key, a path, a name, a position, a role. The
+// **Nothing secret goes to storage.** The image holds result bodies as they would be posted, the
+// adverts as the ring holds them - a public key, a path, a name, a position, a role - and the
+// client id of a pending batch, which is a random number this board made up for it. The
 // runner's rule already keeps every credential out of a result (agent/Credentials.h: a password
 // is in a job's fixed buffer for the job and wiped before the result is written; a `password.set`
 // records `<set>` and never the value), so **the image may hold nothing a result does not**, and

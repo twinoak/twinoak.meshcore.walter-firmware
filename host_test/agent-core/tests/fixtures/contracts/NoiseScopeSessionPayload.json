@@ -1,0 +1,1 @@
+{"slot":0,"steps":[{"command":"stat","seconds":30},{"command":"sweep","seconds":30},{"command":"hist 869.4 869.8 25","seconds":40},{"command":"dwell 869.618 60","seconds":70},{"command":"scope 863 870 250 0 1000 max","seconds":20},{"command":"cad","seconds":20}]}

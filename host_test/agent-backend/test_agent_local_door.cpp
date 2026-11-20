@@ -433,7 +433,11 @@ TEST(AgentLocalDoor, With11TheSameThreeJobsAreExactlyWhatTheyWereBefore12) {
   EXPECT_TRUE(has(bench::member(status, "log"), "the packet could not be built")) << status;
   EXPECT_EQ(bench::member(neighbours, "outcome"), "failed") << neighbours;
   EXPECT_EQ(bench::member(read, "outcome"), "ok") << read;
-  EXPECT_TRUE(has(bench::member(read, "log"), "no ACL in this snapshot")) << read;
+  // Off the **result** and not the log: a read of twenty-nine keys over the local door fills the
+  // library's job log before the access list is asked for, the more so since its task p1.10-49
+  // added a line of its own about the prefix. `mm::kAclSilentLine` is where the snapshot records
+  // the silence, and that is what meshmaster.dk reads.
+  EXPECT_TRUE(has(read, "acl: no reply")) << read;
   // The counters of the three unserved sends and the two silences the access list's retry makes.
   EXPECT_EQ(bench.agent.half().mesh.linkCounters().local_unserved, 2u)
       << "the status and the neighbour read; the owner info is never asked after a failed status";

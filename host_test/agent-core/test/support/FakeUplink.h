@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,7 +48,7 @@ struct PostedResult {
 class FakeUplink : public mm::IUplink {
  public:
   // What the server answered, where it was not 200.
-  enum class Fault : uint8_t { None, Unreachable, Unauthorized, RateLimited, ServerError, Discard };
+  enum class Fault : uint8_t { None, Unreachable, Unauthorized, RateLimited, ServerError, Discard, NotFound };
 
   explicit FakeUplink(FakePlatform& platform) : platform_(platform) {
     configJson_ = contract("AgentConfig");
@@ -96,6 +97,38 @@ class FakeUplink : public mm::IUplink {
 
   void setServerTime(uint32_t epoch) { serverEpoch_ = epoch; }
 
+  // A reply that carries an **ask for an update** (task p1.15-61): the members of the contract
+  // fixture `tests/fixtures/contracts/HeartbeatReplyUpdate.json`, with this fake's own
+  // server time so that nothing of the clock moves, and `jobsWaiting` as a test wants it - the
+  // real server sends an exit node no job while an ask is out, and the board's own hold is what
+  // these tests are for.
+  void askForAnUpdate(long long id, long long releaseId, bool jobsWaiting = false) {
+    char iso[32];
+    mm::formatUtc(serverEpoch_ != 0 ? serverEpoch_ : platform_.clock().now(), iso, sizeof iso);
+    char json[640];
+    std::snprintf(json, sizeof json,
+                  "{\"serverTime\":\"%s\",\"budget\":{\"maxTransactionsPerMinute\":60,"
+                  "\"minGapSeconds\":1},\"pollIntervalS\":30,\"jobsWaiting\":%s,"
+                  "\"update\":{\"id\":%lld,\"releaseId\":%lld,"
+                  "\"product\":\"twinoak-exitnode-firmware\",\"version\":\"0.8.0\","
+                  "\"base\":\"/agent/v1/firmware/%lld\",\"expectedSha256\":"
+                  "\"3b1f0c4e5d6a79880817a6b5c4d3e2f1a0b9c8d7e6f5041322314051607f8e9d\","
+                  "\"size\":1432000}}",
+                  iso, jobsWaiting ? "true" : "false", id, releaseId, releaseId);
+    heartbeatReplyJson_ = json;
+  }
+
+  // The next `calls` posts of an update's result answer this instead of 200. `Fault::NotFound` is
+  // the one 404 - an id that is not this exit node's - which is an answer and not a failure.
+  void failUpdateResults(Fault fault, int calls) {
+    updateFault_ = fault;
+    updateFaultCalls_ = calls;
+  }
+
+  // Every batch id this fake has been handed, whether its answer reached the board or not: a
+  // post under an id that is in here is answered *had it already*, as the server answers one.
+  const std::set<std::string>& seenBatches() const { return seenBatches_; }
+
   // ------------------------------------------------------------------ the faults, on cue
 
   // The next `calls` calls answer this instead of 200.
@@ -110,6 +143,7 @@ class FakeUplink : public mm::IUplink {
   void answerAgain() {
     fault_ = Fault::None;
     faultCalls_ = 0;
+    obsAnswerLost_ = 0;
   }
   // The next `calls` **result** posts answer this, whatever the other calls do: the offline
   // buffer is what a server that went away under a running job fills, and the claim that handed
@@ -118,6 +152,11 @@ class FakeUplink : public mm::IUplink {
     resultFault_ = fault;
     resultFaultCalls_ = calls;
   }
+  // The next `calls` **observation** posts are taken and stored by the server and the answer
+  // never reaches the board - the Walter's failure of 16 November 2026, and the one a batch's
+  // client id exists for (task p1.13-55). A later post under the same id is answered *had it
+  // already*, with nothing stored twice.
+  void loseTheAnswerToObservations(int calls) { obsAnswerLost_ = calls; }
   void setRetryAfter(uint32_t seconds) { retryAfterS_ = seconds; }
   void setCallMs(uint32_t ms) { callMs_ = ms; }
   // A slow call: this long on the clock, once.
@@ -130,8 +169,11 @@ class FakeUplink : public mm::IUplink {
   const std::vector<std::string>& observations() const { return observations_; }
   const std::vector<std::pair<long long, std::string>>& extends() const { return extends_; }
   const std::vector<std::pair<long long, std::string>>& progress() const { return progress_; }
+  // Every result of an update this fake was handed, whatever it answered (task p1.15-61).
+  const std::vector<std::pair<long long, std::string>>& updateResults() const { return updateResults_; }
   // The order of the calls, as words: "config", "heartbeat", "result", "claim", "observations",
-  // "extend", "progress". What EXIT-NODES §5's order inside one pass is asserted against.
+  // "extend", "progress", "update-result". What EXIT-NODES §5's order inside one pass is
+  // asserted against.
   const std::vector<std::string>& calls() const { return calls_; }
   int configCalls() const { return configCalls_; }
   int claimCalls() const { return claimCalls_; }
@@ -189,9 +231,18 @@ class FakeUplink : public mm::IUplink {
 
   bool postObservations(const char* body, size_t len, int& accepted, bool& duplicate) override {
     observations_.emplace_back(body, len);
+    const std::string posted = clientIdOf(std::string(body, len));
+    // An answer that was lost on the way back: the server has the batch, the board does not know
+    // it (loseTheAnswerToObservations). It is remembered **before** the call fails, because the
+    // server stored it and the next post of the same id is a duplicate to it.
+    if (obsAnswerLost_ != 0) seenBatches_.insert(posted);
     if (!begin("observations")) return false;
-    accepted = countItems(std::string(body, len));
-    duplicate = false;
+    // The server de-duplicates on the batch's client id (EXIT-NODES section 6). A batch whose id
+    // it has seen before is answered 200 with nothing stored and `duplicate` set - which is what
+    // the board gets when the answer to the first post was lost on the way back (task p1.13-55).
+    duplicate = seenBatches_.count(posted) != 0;
+    accepted = duplicate ? 0 : countItems(std::string(body, len));
+    seenBatches_.insert(posted);
     return true;
   }
 
@@ -250,6 +301,16 @@ class FakeUplink : public mm::IUplink {
     return true;
   }
 
+  bool postUpdateResult(long long updateId, const char* body, size_t len, bool& notFound) override {
+    updateResults_.emplace_back(updateId, std::string(body, len));
+    notFound = false;
+    if (!begin("update-result")) {
+      notFound = call_.httpStatus == 404;
+      return false;
+    }
+    return true;
+  }
+
   bool postProgress(long long jobId, const char* body, size_t len) override {
     progress_.emplace_back(jobId, std::string(body, len));
     if (!begin("progress")) return false;
@@ -287,6 +348,12 @@ class FakeUplink : public mm::IUplink {
     if (std::strcmp(what, "result") == 0 && resultFaultCalls_ != 0) {
       fault = resultFault_;
       if (resultFaultCalls_ > 0) resultFaultCalls_--;
+    } else if (std::strcmp(what, "update-result") == 0 && updateFaultCalls_ != 0) {
+      fault = updateFault_;
+      if (updateFaultCalls_ > 0) updateFaultCalls_--;
+    } else if (std::strcmp(what, "observations") == 0 && obsAnswerLost_ != 0) {
+      fault = Fault::Unreachable;
+      if (obsAnswerLost_ > 0) obsAnswerLost_--;
     } else if (faultCalls_ != 0) {
       fault = fault_;
       if (faultCalls_ > 0) faultCalls_--;
@@ -317,6 +384,11 @@ class FakeUplink : public mm::IUplink {
         call_.httpStatus = 422;
         std::snprintf(call_.error, sizeof call_.error, "http 422");
         return false;
+      case Fault::NotFound:
+        call_.reachable = true;
+        call_.httpStatus = 404;
+        std::snprintf(call_.error, sizeof call_.error, "http 404");
+        return false;
       case Fault::None:
       default:
         break;
@@ -325,6 +397,15 @@ class FakeUplink : public mm::IUplink {
     call_.ok = true;
     call_.httpStatus = 200;
     return true;
+  }
+
+  // The batch's `clientId`, which is what the server de-duplicates on.
+  static std::string clientIdOf(const std::string& batch) {
+    const size_t at = batch.find("\"clientId\":\"");
+    if (at == std::string::npos) return "";
+    const size_t from = at + 12;
+    const size_t end = batch.find('"', from);
+    return end == std::string::npos ? "" : batch.substr(from, end - from);
   }
 
   static int countItems(const std::string& batch) {
@@ -349,7 +430,10 @@ class FakeUplink : public mm::IUplink {
   Fault fault_ = Fault::None;
   int faultCalls_ = 0;
   Fault resultFault_ = Fault::None;
+  int obsAnswerLost_ = 0;
   int resultFaultCalls_ = 0;
+  Fault updateFault_ = Fault::None;
+  int updateFaultCalls_ = 0;
   uint32_t retryAfterS_ = 0;
   uint32_t callMs_ = 120;
   uint32_t slowCallMs_ = 0;
@@ -358,8 +442,10 @@ class FakeUplink : public mm::IUplink {
   std::vector<std::string> heartbeats_;
   std::vector<PostedResult> results_;
   std::vector<std::string> observations_;
+  std::set<std::string> seenBatches_;
   std::vector<std::pair<long long, std::string>> extends_;
   std::vector<std::pair<long long, std::string>> progress_;
+  std::vector<std::pair<long long, std::string>> updateResults_;
   int configCalls_ = 0;
   int claimCalls_ = 0;
   std::vector<int> claimMaxes_;

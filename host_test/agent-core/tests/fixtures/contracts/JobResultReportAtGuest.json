@@ -1,0 +1,1 @@
+{"clientId":"e7c3","outcome":"ok","startedAt":"2026-11-10T13:02:00Z","finishedAt":"2026-11-10T13:02:06Z","pathUsed":["a1","7f"],"hops":2,"rttMs":5600,"transactions":2,"data":{"neighbours":[{"prefix":"a1b2c3d4e5f60718","lastHeardS":342,"snr":7.25}]},"log":"login (acl) try 1: ok; logged in as guest, below the read-only this job asked for; neighbours page at 0","loggedInAs":"guest"}

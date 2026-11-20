@@ -217,6 +217,70 @@ size_t writeHeartbeat(const Heartbeat& hb, char* out, size_t cap) {
     w.integer(f.unanswered);
     w.endObject();
   }
+  // The update, last (task p1.15-61): nothing at all for a consumer that gave the loop no
+  // provider, and then the heartbeat is byte for byte what it was. `table` is always written -
+  // it is the record's non-nullable string - and the ask's two are written only while there is
+  // an ask, which is what the server reads as *an update is in hand here*.
+  if (hb.update != nullptr) {
+    const HeartbeatUpdate& u = *hb.update;
+    w.key("update");
+    w.beginObject();
+    w.key("table");
+    w.string(u.table == nullptr ? "" : u.table);
+    if (u.hasAsk) {
+      w.key("id");
+      w.integer(u.id);
+      w.key("step");
+      w.string(u.step == nullptr ? "" : u.step);
+    }
+    w.endObject();
+  }
+  w.endObject();
+  return w.overflowed() ? 0 : w.length();
+}
+
+size_t writeUpdateResult(const UpdateResult& result, char* out, size_t cap) {
+  JsonWriter w(out, cap);
+  w.beginObject();
+  w.key("outcome");
+  w.string(result.outcome == nullptr ? "" : result.outcome);
+  w.key("fromVersion");
+  w.string(result.fromVersion == nullptr ? "" : result.fromVersion);
+  w.key("toVersion");
+  w.string(result.toVersion == nullptr ? "" : result.toVersion);
+  // A refusal, and the number of the check that refused it, are the two members only a refusal
+  // has: a null is left out entirely, as every null of these records is.
+  if (result.refusal != nullptr) {
+    w.key("refusal");
+    w.string(result.refusal);
+  }
+  if (result.hasCheck) {
+    w.key("check");
+    w.integer(result.check);
+  }
+  // The journal, oldest first, and always written: the record's list is not nullable, so a result
+  // with nothing to say carries an empty array and not an absent member.
+  w.key("journal");
+  w.beginArray();
+  const int count = result.journal != nullptr ? result.journal->count() : 0;
+  for (int i = 0; i < count; i++) {
+    uint32_t when = 0;
+    const char* step = nullptr;
+    const char* note = nullptr;
+    if (!result.journal->at(i, when, step, note)) break;
+    w.comma();
+    w.beginObject();
+    w.key("at");
+    writeTime(w, when);
+    w.key("step");
+    w.string(step == nullptr ? "" : step);
+    if (note != nullptr && note[0] != '\0') {
+      w.key("note");
+      w.string(note);
+    }
+    w.endObject();
+  }
+  w.endArray();
   w.endObject();
   return w.overflowed() ? 0 : w.length();
 }

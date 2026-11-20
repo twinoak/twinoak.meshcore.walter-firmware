@@ -16,7 +16,7 @@
 // So a scenario's `server.queue(job)` is a claim answered over the wire with that job's bytes,
 // its `failWith(Unauthorized, 1)` a real 401 the uplink reads into the Call record, and
 // `server.results()` what reached the server as the body of `POST /agent/v1/jobs/{id}/result` -
-// the same assertions, now through the framing. The 47 cases of test_loop.cpp are compiled a
+// the same assertions, now through the framing. The 74 cases of test_loop.cpp are compiled a
 // second time against this directory (host_test/CMakeLists.txt, `agent_core_loop_uplink_tests`),
 // unchanged: the loop does not know which uplink it has.
 //
@@ -26,6 +26,16 @@
 // the original's (the queue's oldest batch, `max` of it, the rest left queued), the cost of a
 // call on the clock is the original's `callMs` (spent by the fake socket's connect, tied to the
 // platform's clock), and the Call record is now ModemUplink's own.
+//
+// **One call of the seam has no road here**, and it is the one exception to the line above:
+// `postUpdateResult` (upstream's task p1.15-61, `POST /agent/v1/updates/{id}/result`). The
+// library gives it a body of its own so that a consumer which cannot be updated from the server
+// implements nothing and is never asked, and this firmware is such a consumer - an update is
+// never asked of a Walter, it is asked of an exit node running the exit-node firmware's own
+// product, so `agent::ModemUplink` takes the library's default and nothing of this repository
+// hands the loop an `mm::IUpdateProvider`. The suite's own update cases do hand it one, so this
+// shim answers that one call itself, with the original's own `Call` record (`updateCall_`
+// below), rather than putting a request the firmware never makes on the wire.
 #pragma once
 
 #include <gtest/gtest.h>
@@ -34,6 +44,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -80,8 +91,8 @@ class WallOverPlatform final : public interfaces::WallClock {
 
 class FakeUplink : public mm::IUplink {
  public:
-  // What the server answered, where it was not 200 (the original's five).
-  enum class Fault : uint8_t { None, Unreachable, Unauthorized, RateLimited, ServerError, Discard };
+  // What the server answered, where it was not 200 (the original's six).
+  enum class Fault : uint8_t { None, Unreachable, Unauthorized, RateLimited, ServerError, Discard, NotFound };
 
   explicit FakeUplink(FakePlatform& platform)
       : platform_(platform),
@@ -151,6 +162,26 @@ class FakeUplink : public mm::IUplink {
 
   void setServerTime(uint32_t epoch) { serverEpoch_ = epoch; }
 
+  // A reply that carries an **ask for an update** (upstream's task p1.15-61), the original's
+  // knob: the members of the contract fixture `tests/fixtures/contracts/HeartbeatReplyUpdate.json`
+  // with this fake's own server time, and `jobsWaiting` as a test wants it. Copied from the
+  // original line for line - the bytes go out over the wire here, which is the only difference.
+  void askForAnUpdate(long long id, long long releaseId, bool jobsWaiting = false) {
+    char iso[32];
+    mm::formatUtc(serverEpoch_ != 0 ? serverEpoch_ : platform_.clock().now(), iso, sizeof iso);
+    char json[640];
+    std::snprintf(json, sizeof json,
+                  "{\"serverTime\":\"%s\",\"budget\":{\"maxTransactionsPerMinute\":60,"
+                  "\"minGapSeconds\":1},\"pollIntervalS\":30,\"jobsWaiting\":%s,"
+                  "\"update\":{\"id\":%lld,\"releaseId\":%lld,"
+                  "\"product\":\"twinoak-exitnode-firmware\",\"version\":\"0.8.0\","
+                  "\"base\":\"/agent/v1/firmware/%lld\",\"expectedSha256\":"
+                  "\"3b1f0c4e5d6a79880817a6b5c4d3e2f1a0b9c8d7e6f5041322314051607f8e9d\","
+                  "\"size\":1432000}}",
+                  iso, jobsWaiting ? "true" : "false", id, releaseId, releaseId);
+    heartbeatReplyJson_ = json;
+  }
+
   // ------------------------------------------------------------------ the faults, on cue
 
   void failWith(Fault fault, int calls) {
@@ -164,11 +195,25 @@ class FakeUplink : public mm::IUplink {
   void answerAgain() {
     fault_ = Fault::None;
     faultCalls_ = 0;
+    obsAnswerLost_ = 0;
   }
   void failResults(Fault fault, int calls) {
     resultFault_ = fault;
     resultFaultCalls_ = calls;
   }
+  // The next `calls` posts of an update's result answer this instead of 200 (the original's
+  // knob). `Fault::NotFound` is the one 404 - an id that is not this exit node's - which is an
+  // answer and not a failure.
+  void failUpdateResults(Fault fault, int calls) {
+    updateFault_ = fault;
+    updateFaultCalls_ = calls;
+  }
+  // The next `calls` **observation** posts are taken and stored by the server and the answer
+  // never reaches the board - the Walter's failure of 16 November 2026, and the one a batch's
+  // client id exists for (upstream's task p1.13-55). A later post under the same id is answered
+  // *had it already*, with nothing stored twice. The original's knob, and here the answer is
+  // lost by the TLS refusing after the request went: `begin()` below.
+  void loseTheAnswerToObservations(int calls) { obsAnswerLost_ = calls; }
   void setRetryAfter(uint32_t seconds) { retryAfterS_ = seconds; }
   void setCallMs(uint32_t ms) {
     callMs_ = ms;
@@ -183,6 +228,12 @@ class FakeUplink : public mm::IUplink {
   const std::vector<std::string>& observations() const { return observations_; }
   const std::vector<std::pair<long long, std::string>>& extends() const { return extends_; }
   const std::vector<std::pair<long long, std::string>>& progress() const { return progress_; }
+  // Every result of an update this fake was handed, whatever it answered (the original's record,
+  // upstream's task p1.15-61).
+  const std::vector<std::pair<long long, std::string>>& updateResults() const { return updateResults_; }
+  // Every batch id this fake has been handed, whether its answer reached the board or not: a
+  // post under an id that is in here is answered *had it already*, as the server answers one.
+  const std::set<std::string>& seenBatches() const { return seenBatches_; }
   const std::vector<std::string>& calls() const { return calls_; }
   int configCalls() const { return configCalls_; }
   int claimCalls() const { return claimCalls_; }
@@ -220,6 +271,12 @@ class FakeUplink : public mm::IUplink {
 
   bool postObservations(const char* body, size_t len, int& accepted, bool& duplicate) override {
     observations_.emplace_back(body, len);
+    // An answer that was lost on the way back: the server has the batch, the board does not know
+    // it (loseTheAnswerToObservations). It is remembered **before** the call fails, because the
+    // server stored it and the next post of the same id is a duplicate to it. The server's own
+    // half - the de-duplication on the id, and the 200 that says *had it already* - is in
+    // `answer()` below, where every other route's answer is.
+    if (obsAnswerLost_ != 0) seenBatches_.insert(clientIdOf(std::string(body, len)));
     begin("observations");
     return uplink_.postObservations(body, len, accepted, duplicate);
   }
@@ -256,18 +313,74 @@ class FakeUplink : public mm::IUplink {
     return uplink_.postProgress(jobId, body, len);
   }
 
+  // The one call with no road (the header says why): recorded and answered here, with the
+  // original's own Call record rather than the modem's, because no request is made. The
+  // original's `begin()` decided the fault and filled that record, so `begin()` below does the
+  // first and this does the second.
+  bool postUpdateResult(long long updateId, const char* body, size_t len, bool& notFound) override {
+    updateResults_.emplace_back(updateId, std::string(body, len));
+    notFound = false;
+    const bool taken = begin("update-result");
+    updateCall_ = Call();
+    updateCall_.atMillis = platform_.millis();
+    updateCall_.atEpoch = platform_.clock().now();
+    updateCall_.via = "the shim's own answer";
+    updateCall_.rateLimitRemaining = 119;
+    ownsLastCall_ = true;
+    if (taken) {
+      updateCall_.reachable = true;
+      updateCall_.ok = true;
+      updateCall_.httpStatus = 200;
+      return true;
+    }
+    switch (pending_) {
+      case Fault::Unauthorized:
+        updateCall_.reachable = true;
+        updateCall_.httpStatus = 401;
+        break;
+      case Fault::RateLimited:
+        updateCall_.reachable = true;
+        updateCall_.httpStatus = 429;
+        updateCall_.retryAfterS = retryAfterS_;
+        break;
+      case Fault::ServerError:
+        updateCall_.reachable = true;
+        updateCall_.httpStatus = 503;
+        updateCall_.retryAfterS = retryAfterS_;
+        break;
+      case Fault::Discard:
+        updateCall_.reachable = true;
+        updateCall_.httpStatus = 422;
+        break;
+      case Fault::NotFound:
+        updateCall_.reachable = true;
+        updateCall_.httpStatus = 404;
+        notFound = true;
+        break;
+      case Fault::Unreachable:
+      case Fault::None:
+      default:
+        break;  // no reply at all, which is what `reachable = false` says
+    }
+    std::snprintf(updateCall_.error, sizeof updateCall_.error, "http %d", updateCall_.httpStatus);
+    return false;
+  }
+
   bool hasConfig() const override { return uplink_.hasConfig(); }
   const mm::AgentConfig& config() const override { return uplink_.config(); }
   const Outcome& last() const override { return uplink_.last(); }
-  const Call& lastCall() const override { return uplink_.lastCall(); }
+  // The modem's, for every call that went over the wire; the shim's own for the one that did not.
+  const Call& lastCall() const override { return ownsLastCall_ ? updateCall_ : uplink_.lastCall(); }
   const mm::RateLimiter& limiter() const override { return uplink_.limiter(); }
 
  private:
   // One call is about to be made: counted in the order the original counted it, and the fault
   // and the cost of this one decided before the wire is touched - the original's `begin()`,
-  // less the Call record, which is the uplink's own now.
-  void begin(const char* what) {
+  // less the Call record, which is the uplink's own now. True when the call is to be answered
+  // 200, which only `postUpdateResult` (no wire, no Call record of the modem's) reads.
+  bool begin(const char* what) {
     calls_.emplace_back(what);
+    ownsLastCall_ = false;
     uint32_t cost = callMs_;
     if (slowCallMs_ > 0) {
       cost = slowCallMs_;
@@ -279,6 +392,16 @@ class FakeUplink : public mm::IUplink {
     if (std::strcmp(what, "result") == 0 && resultFaultCalls_ != 0) {
       pending_ = resultFault_;
       if (resultFaultCalls_ > 0) resultFaultCalls_--;
+    } else if (std::strcmp(what, "update-result") == 0 && updateFaultCalls_ != 0) {
+      pending_ = updateFault_;
+      if (updateFaultCalls_ > 0) updateFaultCalls_--;
+    } else if (std::strcmp(what, "observations") == 0 && obsAnswerLost_ != 0) {
+      // The original's `Fault::Unreachable`: nothing comes back. The script never sees this
+      // request - the TLS is refused before it goes - so the batch is written into the server's
+      // own memory by `postObservations` above instead, which is what *stored, and the answer
+      // lost* has to mean on this road.
+      pending_ = Fault::Unreachable;
+      if (obsAnswerLost_ > 0) obsAnswerLost_--;
     } else if (faultCalls_ != 0) {
       pending_ = fault_;
       if (faultCalls_ > 0) faultCalls_--;
@@ -286,6 +409,7 @@ class FakeUplink : public mm::IUplink {
     // Unreachable is no reply at all: the handshake fails, after the connect's cost on the
     // clock, and the uplink reads it as `reachable = false` (a TLS failure on the modem).
     http_.socket.refuse_tls = pending_ == Fault::Unreachable;
+    return pending_ == Fault::None;
   }
 
   // The server's side of one request: the fault decided in begin(), else the script's answer
@@ -315,6 +439,10 @@ class FakeUplink : public mm::IUplink {
         reply->status = 422;
         reply->body = "{\"title\":\"Unprocessable\"}";
         return true;
+      case Fault::NotFound:
+        reply->status = 404;
+        reply->body = "{\"title\":\"Not Found\"}";
+        return true;
       case Fault::None:
       default:
         break;
@@ -330,8 +458,15 @@ class FakeUplink : public mm::IUplink {
       return true;
     }
     if (path == "/agent/v1/observations") {
-      // The original: every item taken, and never a duplicate.
-      reply->body = "{\"accepted\":" + std::to_string(countItems(request.body)) + ",\"duplicate\":false}";
+      // The server de-duplicates on the batch's client id (EXIT-NODES §6, and the original's own
+      // rule since upstream's task p1.13-55). A batch whose id it has seen before is answered 200
+      // with nothing stored and `duplicate` set - which is what the board gets when the answer to
+      // the first post was lost on the way back.
+      const std::string posted = clientIdOf(request.body);
+      const bool duplicate = seenBatches_.count(posted) != 0;
+      reply->body = "{\"accepted\":" + std::to_string(duplicate ? 0 : countItems(request.body)) +
+                    ",\"duplicate\":" + (duplicate ? "true" : "false") + "}";
+      seenBatches_.insert(posted);
       return true;
     }
     if (path == "/agent/v1/jobs/claim") {
@@ -404,6 +539,15 @@ class FakeUplink : public mm::IUplink {
     return n;
   }
 
+  // The batch's `clientId`, which is what the server de-duplicates on (the original's helper).
+  static std::string clientIdOf(const std::string& batch) {
+    const size_t at = batch.find("\"clientId\":\"");
+    if (at == std::string::npos) return "";
+    const size_t from = at + 12;
+    const size_t end = batch.find('"', from);
+    return end == std::string::npos ? "" : batch.substr(from, end - from);
+  }
+
   FakePlatform& platform_;
   fakes::SimKeyValue kv_;
   core::settings::Settings settings_;
@@ -421,6 +565,9 @@ class FakeUplink : public mm::IUplink {
   int faultCalls_ = 0;
   Fault resultFault_ = Fault::None;
   int resultFaultCalls_ = 0;
+  Fault updateFault_ = Fault::None;
+  int updateFaultCalls_ = 0;
+  int obsAnswerLost_ = 0;
   Fault pending_ = Fault::None;
   uint32_t retryAfterS_ = 0;
   uint32_t callMs_ = 120;
@@ -430,8 +577,13 @@ class FakeUplink : public mm::IUplink {
   std::vector<std::string> heartbeats_;
   std::vector<PostedResult> results_;
   std::vector<std::string> observations_;
+  std::set<std::string> seenBatches_;
   std::vector<std::pair<long long, std::string>> extends_;
   std::vector<std::pair<long long, std::string>> progress_;
+  std::vector<std::pair<long long, std::string>> updateResults_;
+  // The one call this shim answers itself, and whether the last call was it (the header says why).
+  Call updateCall_;
+  bool ownsLastCall_ = false;
   int configCalls_ = 0;
   int claimCalls_ = 0;
   std::vector<int> claimMaxes_;

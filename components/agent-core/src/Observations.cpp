@@ -21,6 +21,7 @@ void ObservationRing::push(const HeardAdvert& advert) {
     first_ = (first_ + 1) % kCapacity;
     size_--;
     dropped_++;
+    oldestSeq_++;
   }
   items_[(first_ + size_) % kCapacity] = advert;
   size_++;
@@ -35,6 +36,7 @@ void ObservationRing::consume(size_t count) {
   if (count > size_) count = size_;
   first_ = (first_ + count) % kCapacity;
   size_ -= count;
+  oldestSeq_ += static_cast<uint32_t>(count);
 }
 
 void ObservationRing::dropNewest(size_t count) {
@@ -44,6 +46,7 @@ void ObservationRing::dropNewest(size_t count) {
 }
 
 void ObservationRing::clear() {
+  oldestSeq_ += static_cast<uint32_t>(size_);
   first_ = 0;
   size_ = 0;
 }

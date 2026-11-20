@@ -107,6 +107,69 @@ mm::HeardAdvert advert(uint8_t n, uint32_t heardAtMs) {
   return a;
 }
 
+// How many items a batch body carries, counted the way the fake server counts them.
+int itemsIn(const std::string& batch) {
+  int n = 0;
+  size_t at = 0;
+  while ((at = batch.find("\"publicKey\":", at)) != std::string::npos) {
+    n++;
+    at += 12;
+  }
+  return n;
+}
+
+// A kept image of **version 1**, written here byte for byte as the library wrote one before task
+// p1.13-55 - the header with `reserved` 0 and no block for a pending batch, then the results,
+// then the adverts - so that what the reader is held to is the format as it was shipped and not
+// today's writer with a field turned off. The fixture of the acceptance criterion.
+std::vector<uint8_t> versionOneImage(long long jobId, const std::string& body, const std::vector<mm::HeardAdvert>& adverts,
+                                     uint32_t heardAtEpoch) {
+  const auto put16 = [](std::vector<uint8_t>& out, size_t at, uint16_t v) {
+    out[at] = static_cast<uint8_t>(v);
+    out[at + 1] = static_cast<uint8_t>(v >> 8);
+  };
+  const auto put32 = [](std::vector<uint8_t>& out, size_t at, uint32_t v) {
+    for (size_t i = 0; i < 4; i++) out[at + i] = static_cast<uint8_t>(v >> (8 * i));
+  };
+  std::vector<uint8_t> img(32, 0);
+  img[0] = 0x4B;  // "KEPT"
+  img[1] = 0x45;
+  img[2] = 0x50;
+  img[3] = 0x54;
+  put16(img, 8, 1);                                        // version 1
+  put16(img, 10, 1);                                       // one result
+  put16(img, 12, static_cast<uint16_t>(adverts.size()));   // the adverts
+  put16(img, 14, 0);                                       // `reserved`, which version 1 wrote 0
+
+  img.resize(img.size() + 12);
+  put32(img, img.size() - 12, static_cast<uint32_t>(jobId));
+  put32(img, img.size() - 8, static_cast<uint32_t>(jobId >> 32));
+  put32(img, img.size() - 4, static_cast<uint32_t>(body.size()));
+  img.insert(img.end(), body.begin(), body.end());
+
+  for (const mm::HeardAdvert& a : adverts) {
+    const size_t at = img.size();
+    img.resize(at + 108, 0);
+    std::memcpy(&img[at], a.publicKey, mm::kPublicKeyLen);
+    put32(img, at + 32, heardAtEpoch);
+    std::memcpy(&img[at + 36], a.pathBytes, mm::kMaxObservationPathBytes);
+    img[at + 60] = a.pathByteLen;
+    img[at + 61] = a.pathHashSize;
+    img[at + 62] = a.hops;
+    img[at + 63] = static_cast<uint8_t>(a.snrQ4);
+    put16(img, at + 64, static_cast<uint16_t>(a.rssi));
+    img[at + 66] = a.advType;
+    img[at + 67] = a.hasPosition ? 1 : 0;
+    put32(img, at + 68, static_cast<uint32_t>(a.latE6));
+    put32(img, at + 72, static_cast<uint32_t>(a.lonE6));
+    std::memcpy(&img[at + 76], a.name, mm::kMaxObservationNameLen);
+  }
+
+  put32(img, 16, static_cast<uint32_t>(img.size()));
+  put32(img, 4, mm::crc32Of(img.data() + 8, img.size() - 8));
+  return img;
+}
+
 std::string memberOf(const std::string& json, const std::string& key) {
   const std::string needle = "\"" + key + "\":";
   const size_t found = json.find(needle);
@@ -900,6 +963,257 @@ TEST_F(LoopTest, AProviderThatSaysNoLeavesTheMemberOutAndMovesNothingElse) {
   EXPECT_EQ(members, fake::keysOf(without));
 }
 
+// ---------------------------------------------------------------------------------------------
+// The update in the heartbeat, the ask in its reply, and the result's post (task p1.15-61;
+// meshmaster.dk's task p4.42-244)
+//
+// The loop knows nothing about slots, releases, signatures or trials: a consumer that can be
+// updated from the server hands it an `IUpdateProvider`, and the loop carries three things
+// between it and the server - the member it writes, the ask it reads, and the one result it
+// posts - and decides none of them. These tests are the seam, not the machine: the machine is
+// test/test_update_ask's and the bytes are test/test_envelopes'.
+
+// A provider as thin as the interface allows: it answers what the test told it to and writes down
+// everything the loop handed it.
+class FakeUpdateProvider : public mm::IUpdateProvider {
+ public:
+  bool describeUpdate(mm::HeartbeatUpdate& out) override {
+    asked++;
+    if (!canBeUpdated) return false;
+    out.table = table;
+    out.hasAsk = hasAsk;
+    out.id = id;
+    out.step = step;
+    return true;
+  }
+
+  void onUpdateAsk(const mm::UpdateAsk& ask) override { asks.push_back(ask); }
+
+  void onHeartbeatAnswered(const mm::HeartbeatUpdate& posted) override {
+    answered++;
+    lastAnsweredStep = posted.step == nullptr ? "" : posted.step;
+    lastAnsweredId = posted.hasAsk ? posted.id : 0;
+  }
+
+  bool resultToPost(long long& outId, const char*& body, size_t& len) override {
+    if (!resultWaits) return false;
+    outId = id;
+    body = result.c_str();
+    len = result.size();
+    return true;
+  }
+
+  void onResultPosted(long long postedId, bool taken, bool notFound) override {
+    posted.push_back({postedId, taken, notFound});
+    if (taken || notFound) resultWaits = false;
+  }
+
+  bool holdsJobs() const override { return holds; }
+
+  struct Posted {
+    long long id;
+    bool taken;
+    bool notFound;
+  };
+
+  bool canBeUpdated = true;
+  const char* table = "two";
+  bool hasAsk = false;
+  long long id = 17;
+  const char* step = nullptr;
+  bool holds = false;
+  bool resultWaits = false;
+  std::string result = R"({"outcome":"committed","fromVersion":"0.7.2","toVersion":"0.8.0","journal":[]})";
+
+  int asked = 0;
+  int answered = 0;
+  std::string lastAnsweredStep;
+  long long lastAnsweredId = 0;
+  std::vector<mm::UpdateAsk> asks;
+  std::vector<Posted> posted;
+};
+
+TEST_F(LoopTest, AHeartbeatWithNoUpdateProviderIsTheHeartbeatItAlwaysWas) {
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_EQ(server.heartbeats().size(), 1u);
+  const std::string hb = server.heartbeats()[0];
+  EXPECT_EQ(hb.find("update"), std::string::npos) << hb;
+  EXPECT_TRUE(fake::followsShapeOf(hb, fake::contract("AgentHeartbeatNoWake"))) << hb;
+
+  // And a reply that carries an ask is read by nobody and breaks nothing: a consumer that cannot
+  // be updated takes the rest of the reply as it always did.
+  server.askForAnUpdate(17, 9);
+  while (server.heartbeats().size() < 2 && untilACall()) {
+  }
+  ASSERT_EQ(server.heartbeats().size(), 2u);
+  EXPECT_TRUE(server.updateResults().empty());
+}
+
+TEST_F(LoopTest, AProvidersMemberGoesIntoTheHeartbeatAndTheAskInTheReplyGoesToTheProvider) {
+  FakeUpdateProvider provider;
+  provider.table = "one";
+  loop.setUpdateProvider(&provider);
+  server.askForAnUpdate(17, 9);
+
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_EQ(server.heartbeats().size(), 1u);
+  const std::string hb = server.heartbeats()[0];
+  EXPECT_EQ(provider.asked, 1) << "asked once per heartbeat, and only at a heartbeat";
+  EXPECT_NE(hb.find("\"update\":{\"table\":\"one\"}"), std::string::npos) << hb;
+
+  // The ask arrives as it came, and the loop decided nothing about it.
+  ASSERT_EQ(provider.asks.size(), 1u);
+  EXPECT_EQ(provider.asks[0].id, 17);
+  EXPECT_EQ(provider.asks[0].releaseId, 9);
+  EXPECT_STREQ(provider.asks[0].product, "twinoak-exitnode-firmware");
+  EXPECT_STREQ(provider.asks[0].version, "0.8.0");
+  EXPECT_STREQ(provider.asks[0].base, "/agent/v1/firmware/9");
+  EXPECT_EQ(provider.asks[0].size, 1432000u);
+
+  // And the member the loop wrote is handed back when that heartbeat was answered, which is how a
+  // trial's third condition can be *a heartbeat that said `proving`* without this library knowing
+  // there is a trial.
+  EXPECT_EQ(provider.answered, 1);
+  EXPECT_EQ(provider.lastAnsweredId, 0) << "nothing was in hand at that heartbeat";
+
+  // The next heartbeat asks again and takes the answer as it is then.
+  provider.table = "two";
+  provider.hasAsk = true;
+  provider.step = "proving";
+  while (server.heartbeats().size() < 2 && untilACall()) {
+  }
+  ASSERT_EQ(server.heartbeats().size(), 2u);
+  const std::string again = server.heartbeats()[1];
+  EXPECT_NE(again.find("\"update\":{\"table\":\"two\",\"id\":17,\"step\":\"proving\"}"), std::string::npos)
+      << again;
+  EXPECT_EQ(provider.answered, 2);
+  EXPECT_EQ(provider.lastAnsweredStep, "proving");
+  EXPECT_EQ(provider.lastAnsweredId, 17);
+  // The same ask came again, and the loop handed it over again: what is new is the provider's to
+  // decide, because only it knows what it has in hand.
+  EXPECT_EQ(provider.asks.size(), 2u);
+}
+
+// A provider that answers false is a build with no release key: the member is left out exactly as
+// it is for a consumer that never had one, and nothing else of the body moves with it.
+TEST_F(LoopTest, AnUpdateProviderThatSaysNoLeavesTheMemberOutAndMovesNothingElse) {
+  FakeUpdateProvider provider;
+  loop.setUpdateProvider(&provider);
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_EQ(server.heartbeats().size(), 1u);
+  const std::string with = server.heartbeats()[0];
+  EXPECT_NE(with.find("\"update\""), std::string::npos) << with;
+
+  provider.canBeUpdated = false;
+  while (server.heartbeats().size() < 2 && untilACall()) {
+  }
+  ASSERT_EQ(server.heartbeats().size(), 2u);
+  const std::string without = server.heartbeats()[1];
+  EXPECT_EQ(without.find("update"), std::string::npos) << without;
+  EXPECT_EQ(provider.answered, 1) << "a heartbeat that carried no member is not handed back";
+
+  std::vector<std::string> members = fake::keysOf(with);
+  ASSERT_FALSE(members.empty());
+  EXPECT_EQ(members.back(), "update") << "the update is the record's last member";
+  members.pop_back();
+  EXPECT_EQ(members, fake::keysOf(without));
+}
+
+// Deliverable 6: the result goes out at each heartbeat's turn until the server takes it.
+TEST_F(LoopTest, TheResultIsPostedAtEachHeartbeatsTurnUntilItIsTaken) {
+  FakeUpdateProvider provider;
+  provider.resultWaits = true;
+  loop.setUpdateProvider(&provider);
+  server.failUpdateResults(fake::FakeUplink::Fault::Unreachable, 2);
+
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  while (server.updateResults().size() < 3 && untilACall()) {
+  }
+  ASSERT_EQ(server.updateResults().size(), 3u);
+  EXPECT_EQ(server.updateResults()[0].first, 17);
+  EXPECT_EQ(server.updateResults()[0].second, provider.result) << "the bytes the provider gave, unchanged";
+  ASSERT_EQ(provider.posted.size(), 3u);
+  EXPECT_FALSE(provider.posted[0].taken);
+  EXPECT_FALSE(provider.posted[0].notFound);
+  EXPECT_TRUE(provider.posted[2].taken);
+
+  // And then no more: the result was taken and the provider stopped offering it.
+  const size_t taken = server.updateResults().size();
+  for (int i = 0; i < 20 && untilACall(); i++) {
+  }
+  EXPECT_EQ(server.updateResults().size(), taken);
+
+  // The post goes **after** the heartbeat that armed it and before any claim, which is the order
+  // of one pass: nothing is said about an update that the heartbeat has not already carried.
+  const std::vector<std::string>& calls = server.calls();
+  const auto heartbeat = std::find(calls.begin(), calls.end(), "heartbeat");
+  const auto result = std::find(calls.begin(), calls.end(), "update-result");
+  ASSERT_NE(heartbeat, calls.end());
+  ASSERT_NE(result, calls.end());
+  EXPECT_LT(heartbeat - calls.begin(), result - calls.begin());
+}
+
+// The one 404 stops it, and it is not a failure: the loop does not back off over it.
+TEST_F(LoopTest, AResultAnsweredWithTheOneFourOhFourIsNotPostedAgain) {
+  FakeUpdateProvider provider;
+  provider.resultWaits = true;
+  loop.setUpdateProvider(&provider);
+  server.failUpdateResults(fake::FakeUplink::Fault::NotFound, 1);
+
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  while (server.updateResults().empty() && untilACall()) {
+  }
+  ASSERT_EQ(server.updateResults().size(), 1u);
+  ASSERT_EQ(provider.posted.size(), 1u);
+  EXPECT_FALSE(provider.posted[0].taken);
+  EXPECT_TRUE(provider.posted[0].notFound);
+  EXPECT_EQ(loop.counters().httpFailures, 0u) << "the one 404 is an answer, not a failure to count";
+  EXPECT_EQ(loop.retrySeconds(), 0u) << "and it earns no backoff";
+
+  for (int i = 0; i < 20 && untilACall(); i++) {
+  }
+  EXPECT_EQ(server.updateResults().size(), 1u);
+}
+
+// Deliverable 7: no claim while the provider holds the jobs, and the claim the server asked for is
+// made once it lets go. The observation batch still goes out meanwhile.
+TEST_F(LoopTest, NoClaimIsMadeWhileTheProviderHoldsTheJobsAndTheOneAskedForFollowsAfter) {
+  FakeUpdateProvider provider;
+  provider.holds = true;
+  loop.setUpdateProvider(&provider);
+  server.askForAnUpdate(17, 9, /*jobsWaiting=*/true);
+  server.queue(fake::Job(16001, "status").leasedUntil(kLease).json());
+
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_EQ(server.heartbeats().size(), 1u);
+
+  // The adverts the radio heard still go out while an update is in hand: this board is still an
+  // exit node and what it heard is not the update's business.
+  for (uint8_t i = 0; i < mm::kObservationBatchSize; i++) loop.ring().push(advert(i, platform.millis()));
+  for (int i = 0; i < 30 && untilACall(); i++) {
+  }
+  EXPECT_EQ(server.claimCalls(), 0) << "no job is claimed while an update is in hand";
+  EXPECT_FALSE(server.observations().empty()) << "and the observation batch still goes out";
+
+  // The update ends. The claim the heartbeat asked for is made now, without the server having to
+  // say so again.
+  provider.holds = false;
+  while (server.claimCalls() == 0 && untilACall()) {
+  }
+  EXPECT_EQ(server.claimCalls(), 1);
+  EXPECT_EQ(server.queuedJobs(), 0u);
+}
+
 TEST_F(LoopTest, AWakeAsksForNoMoreJobsThanItsCapCanRunAndLeavesTheRestOnTheServer) {
   // Three traces waiting and a cap of two transactions: a trace is one transaction and no login
   // (EXIT-NODES §7), but the claim is sized before any type is known, so the cap buys one job at
@@ -994,8 +1308,9 @@ TEST_F(LoopTest, AJobTheWakesTransactionCapHasNoRoomForIsFailedTheSameWay) {
           .withAclLevel(mm::kPermReadOnly)
           .json(),
   });
-  // Four transactions buy two jobs at the cheapest price, and the first spends three of them -
-  // a login, the status request and the ACL restore - so the second will not fit.
+  // Four transactions buy two jobs at the cheapest price, and the first is priced at all four of
+  // them - a login, the status request, and the ACL restore with the blank login that checks it
+  // (task p1.10-48) - so the second will not fit. What it *spends* is the two it needed.
   const mm::WakeReport report = loop.wake(hourly(4), mm::Budget());
 
   ASSERT_EQ(server.claimMaxes().size(), 1u);
@@ -1007,6 +1322,52 @@ TEST_F(LoopTest, AJobTheWakesTransactionCapHasNoRoomForIsFailedTheSameWay) {
   EXPECT_EQ(memberOf(server.results()[1].body, "outcome"), "failed");
   EXPECT_NE(server.results()[1].body.find("wake budget"), std::string::npos) << server.results()[1].body;
   EXPECT_LE(report.transactionsSpent, 4) << "the cap was not exceeded";
+}
+
+TEST_F(LoopTest, AWakePricesTheRemovalOfOurOwnKeyAsItPricesTheRestore) {
+  // `acl: 0` is the removal that stands in for the restore where this exit node's key should hold
+  // nothing (task p1.10-50): one more line on the air, and the wake's estimate counts it exactly
+  // as it counts a restore - `transactionsOf` asks whether the claim carried a level and not what
+  // the level was, and `kTransactionsForAclRestore` is the line **and** the blank login that
+  // checks it when the line is not answered (task p1.10-48). So this job is priced at four and a
+  // cap of three has no room for it, and the reason the server is told names the number.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.queue(fake::Job(14032, "cli")
+                   .atClass("admin")
+                   .leasedUntil(kLease)
+                   .withAdminPassword("adm1n-pass")
+                   .withAclLevel(0)
+                   .withPayload("{\"command\":\"set tx 20\"}")
+                   .json());
+
+  const mm::WakeReport refused = loop.wake(hourly(3), mm::Budget());
+
+  EXPECT_EQ(refused.jobsClaimed, 1);
+  EXPECT_EQ(refused.jobsRun, 0);
+  EXPECT_EQ(refused.jobsNotRun, 1);
+  EXPECT_EQ(refused.jobs, mm::StepOutcome::NoBudget);
+  EXPECT_EQ(mesh.sends().size(), 0u) << "nothing went on the air for it";
+  ASSERT_EQ(server.results().size(), 1u) << "a job claimed is always answered";
+  EXPECT_EQ(memberOf(server.results()[0].body, "outcome"), "failed");
+  EXPECT_NE(server.results()[0].body.find("needs about 4"), std::string::npos) << server.results()[0].body;
+
+  // The same job with no level in its claim is the two it has always been, and the same cap runs
+  // it: what the difference prices is the removal and nothing else.
+  server.queue(fake::Job(14033, "cli")
+                   .atClass("admin")
+                   .leasedUntil(kLease)
+                   .withAdminPassword("adm1n-pass")
+                   .withPayload("{\"command\":\"set tx 20\"}")
+                   .json());
+
+  const mm::WakeReport ran = loop.wake(hourly(3), mm::Budget());
+
+  EXPECT_EQ(ran.jobsRun, 1);
+  EXPECT_EQ(ran.jobsNotRun, 0);
+  EXPECT_EQ(ran.transactionsSpent, 2) << "the login and the line";
+  ASSERT_EQ(server.results().size(), 2u);
+  EXPECT_EQ(memberOf(server.results()[1].body, "outcome"), "ok") << server.results()[1].body;
+  EXPECT_EQ(mesh.timesSent("setperm " + self() + " 0"), 0);
 }
 
 TEST_F(LoopTest, AJobTheMeshCannotCarryIsDeclinedBeforeItIsPricedAgainstTheWake) {
@@ -2275,6 +2636,18 @@ TEST_F(LoopTest, EveryKindOfBadImageIsRefusedWholeAndCounted) {
          reseal(img);
        },
        "records do not add up"},
+      {"a batch of more adverts than the image holds",
+       [&](std::vector<uint8_t>& img) {
+         img[14] = 4;  // the image holds three adverts, so no batch of four is in it
+         reseal(img);
+       },
+       "counts do not add up"},
+      {"a batch whose id is not in the image",
+       [&](std::vector<uint8_t>& img) {
+         img[14] = 2;  // two of the three adverts, but no block for the id behind them
+         reseal(img);
+       },
+       "records do not add up"},
   };
   for (const Damage& damage : damages) {
     std::vector<uint8_t> bad = good;
@@ -2480,6 +2853,283 @@ TEST_F(LoopTest, AWakeWritesAtMostOneImageAndNoneWhenTheStoreAlreadyHoldsIt) {
   EXPECT_EQ(empty.resultCount(), 0u);
   EXPECT_EQ(empty.advertCount(), 0u);
   EXPECT_EQ(store.image().size(), mm::kKeptImageHeaderLen);
+}
+
+// ---------------------------------------------------------------------------------------------
+// A batch keeps its id over a sleep (task p1.13-55)
+//
+// `doObservations` says it itself: a batch built and not yet accepted must go out again exactly
+// as it was, under the client id it was built with, because the server de-duplicates on that id.
+// Until this task the id and the count lived in two fields of the loop and nowhere else, so a
+// board that deep-sleeps woke with the adverts and no id, built a new batch of the old adverts
+// and the new ones, and the server - which could not know - stored every one of them again. On
+// 16 November 2026 the Walter unit sent batches of 13, 14, 15, 16, 17 and 18 adverts in six
+// wakes running, and the hundred newest rows meshmaster.dk held from it were 19 adverts.
+
+TEST_F(LoopTest, ABatchWhoseAnswerWasLostGoesOutAgainUnderItsIdAfterASleep) {
+  fake::FakeRetained store;
+  Boot unit = boot(store);
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  for (uint8_t i = 0; i < 5; i++) unit.loop->ring().push(advert(i, platform.millis()));
+
+  // The post reaches the server, which stores it; the answer never reaches the board.
+  server.loseTheAnswerToObservations(1);
+  const mm::WakeReport first = unit.loop->wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(first.observations, mm::StepOutcome::Failed);
+  ASSERT_EQ(server.observations().size(), 1u);
+  const std::string id = memberOf(server.observations()[0], "clientId");
+  ASSERT_FALSE(id.empty());
+  EXPECT_EQ(itemsIn(server.observations()[0]), 5);
+  EXPECT_EQ(unit.loop->pendingBatchCount(), 5u);
+  EXPECT_STREQ(unit.loop->pendingBatchId(), id.c_str());
+  EXPECT_EQ(unit.loop->ring().size(), 5u) << "nothing is consumed until the server says it has them";
+  ASSERT_TRUE(first.keptImageWritten);
+
+  // The image holds the id and how many of its adverts the batch is - the whole of what a sleep
+  // used to lose.
+  mm::KeptImageReader image;
+  ASSERT_EQ(image.check(store.image().data(), store.image().size()), nullptr);
+  EXPECT_EQ(image.version(), mm::kKeptImageVersion);
+  EXPECT_EQ(image.advertCount(), 5u);
+  EXPECT_EQ(image.batchCount(), 5u);
+  EXPECT_STREQ(image.batchId(), id.c_str());
+  EXPECT_NE(store.text().find(id), std::string::npos) << "and it is in the bytes";
+
+  // The sleep, and the boot after it: the first post is that batch, under that id.
+  Boot woken = boot(store, &unit);
+  ASSERT_TRUE(woken.restored);
+  EXPECT_EQ(woken.loop->pendingBatchCount(), 5u);
+  EXPECT_STREQ(woken.loop->pendingBatchId(), id.c_str());
+  EXPECT_EQ(woken.loop->ring().size(), 5u);
+  server.forgetCalls();
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  platform.advanceSeconds(3600);  // past the backoff the failed post left in the state
+
+  const mm::WakeReport second = woken.loop->wake(hourly(), mm::Budget());
+
+  ASSERT_EQ(server.observations().size(), 1u);
+  EXPECT_EQ(memberOf(server.observations()[0], "clientId"), id) << "the id it was built with";
+  EXPECT_EQ(itemsIn(server.observations()[0]), 5) << "and the same five";
+  for (int i = 0; i < 5; i++) {
+    const std::string name = "\"name\":\"Repeater " + std::to_string(i) + "\"";
+    EXPECT_NE(server.observations()[0].find(name), std::string::npos) << name;
+  }
+  // The server answers *had it already*, and the five cost the ring exactly themselves.
+  EXPECT_TRUE(fake::LogCapture::the().holds("the server had this batch already"));
+  EXPECT_EQ(second.observationsPosted, 5);
+  EXPECT_EQ(woken.loop->ring().size(), 0u);
+  EXPECT_EQ(woken.loop->pendingBatchCount(), 0u);
+  EXPECT_STREQ(woken.loop->pendingBatchId(), "");
+
+  // What was heard since goes out next, as a new batch under another id.
+  for (uint8_t i = 10; i < 13; i++) woken.loop->ring().push(advert(i, platform.millis()));
+  server.forgetCalls();
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  const mm::WakeReport third = woken.loop->wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(third.observationsPosted, 3);
+  ASSERT_EQ(server.observations().size(), 1u);
+  EXPECT_NE(memberOf(server.observations()[0], "clientId"), id) << "a new batch is a new id";
+  EXPECT_EQ(itemsIn(server.observations()[0]), 3);
+  EXPECT_EQ(server.seenBatches().size(), 2u) << "two batches in all, and neither stored twice";
+}
+
+TEST_F(LoopTest, TheBatchIsStillThatBatchAfterASecondSleepWithTheAnswerLostAgain) {
+  fake::FakeRetained store;
+  Boot unit = boot(store);
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  for (uint8_t i = 0; i < 5; i++) unit.loop->ring().push(advert(i, platform.millis()));
+  server.loseTheAnswerToObservations(2);
+
+  const mm::WakeReport first = unit.loop->wake(hourly(), mm::Budget());
+  EXPECT_EQ(first.observations, mm::StepOutcome::Failed);
+  ASSERT_EQ(server.observations().size(), 1u);
+  const std::string id = memberOf(server.observations()[0], "clientId");
+  ASSERT_FALSE(id.empty());
+
+  // The first sleep, and a second wake whose answer is lost in the same way.
+  Boot second = boot(store, &unit);
+  ASSERT_TRUE(second.restored);
+  EXPECT_STREQ(second.loop->pendingBatchId(), id.c_str());
+  platform.advanceSeconds(3600);
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  const mm::WakeReport again = second.loop->wake(hourly(), mm::Budget());
+  EXPECT_EQ(again.observations, mm::StepOutcome::Failed);
+  ASSERT_EQ(server.observations().size(), 2u);
+  EXPECT_EQ(memberOf(server.observations()[1], "clientId"), id);
+  EXPECT_EQ(second.loop->pendingBatchCount(), 5u);
+  EXPECT_EQ(second.loop->ring().size(), 5u);
+
+  // The second sleep: the third post is still that batch under that id, and the server - which
+  // has had it since the first - stores nothing a third time.
+  Boot third = boot(store, &second);
+  ASSERT_TRUE(third.restored);
+  EXPECT_STREQ(third.loop->pendingBatchId(), id.c_str());
+  platform.advanceSeconds(3600);
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  const mm::WakeReport last = third.loop->wake(hourly(), mm::Budget());
+
+  ASSERT_EQ(server.observations().size(), 3u);
+  EXPECT_EQ(memberOf(server.observations()[2], "clientId"), id) << "two sleeps on, the same batch";
+  EXPECT_EQ(itemsIn(server.observations()[2]), 5);
+  EXPECT_EQ(last.observationsPosted, 5);
+  EXPECT_EQ(third.loop->ring().size(), 0u);
+  EXPECT_EQ(server.seenBatches().size(), 1u) << "one batch reached the server, three times";
+}
+
+TEST_F(LoopTest, ABatchTheRingNoLongerHoldsIsForgottenAndNothingIsConsumedUnsent) {
+  // A batch that is no longer whole is no longer that batch. Before this task the loop kept the
+  // count and the id whatever the ring did under them: it would have posted the **new** oldest
+  // five under the old id, the server would have de-duplicated on that id and stored nothing,
+  // and `ring_.consume(5)` would have taken five adverts the server never saw. That is the same
+  // failure a sleep caused, without a sleep.
+  fake::FakeRetained store;
+  Boot unit = boot(store);
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  for (uint8_t i = 0; i < 5; i++) unit.loop->ring().push(advert(i, platform.millis()));
+  server.loseTheAnswerToObservations(1);
+  ASSERT_EQ(unit.loop->wake(hourly(), mm::Budget()).observations, mm::StepOutcome::Failed);
+  ASSERT_EQ(server.observations().size(), 1u);
+  const std::string id = memberOf(server.observations()[0], "clientId");
+  ASSERT_EQ(unit.loop->pendingBatchCount(), 5u);
+
+  // The channel is busy while the batch waits: the ring fills and drops its oldest, which are
+  // the batch's own five.
+  for (size_t i = 0; i < mm::ObservationRing::kCapacity; i++) {
+    unit.loop->ring().push(advert(static_cast<uint8_t>(100 + i), platform.millis()));
+  }
+  ASSERT_EQ(unit.loop->ring().size(), mm::ObservationRing::kCapacity);
+  ASSERT_EQ(unit.loop->ring().dropped(), 5u);
+
+  platform.advanceSeconds(3600);
+  server.forgetCalls();
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  const mm::WakeReport second = unit.loop->wake(hourly(), mm::Budget());
+
+  EXPECT_TRUE(fake::LogCapture::the().holds("is not the ring's oldest"));
+  EXPECT_EQ(unit.loop->pendingBatchCount(), 0u);
+  ASSERT_FALSE(server.observations().empty());
+  int posted = 0;
+  for (const std::string& batch : server.observations()) {
+    EXPECT_NE(memberOf(batch, "clientId"), id) << "the forgotten id is never used again";
+    posted += itemsIn(batch);
+  }
+  EXPECT_EQ(posted, static_cast<int>(mm::ObservationRing::kCapacity))
+      << "every advert the ring still held went out; nothing was consumed unsent";
+  EXPECT_EQ(second.observationsPosted, static_cast<int>(mm::ObservationRing::kCapacity));
+  EXPECT_EQ(unit.loop->ring().size(), 0u);
+  EXPECT_EQ(unit.loop->ring().dropped(), 5u) << "and the five the ring dropped are counted once";
+}
+
+TEST_F(LoopTest, AnImageThatCannotHoldEveryAdvertOfThePendingBatchKeepsNoBatch) {
+  // Three of the five is not that batch: an id over three adverts would have the server
+  // de-duplicate the whole of the batch away and store none of them.
+  fake::FakeRetained small(mm::kKeptImageHeaderLen + 3 * mm::kKeptAdvertLen + mm::kKeptBatchIdLen);
+  Boot unit = boot(small);
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  for (uint8_t i = 0; i < 5; i++) unit.loop->ring().push(advert(i, platform.millis()));
+  server.loseTheAnswerToObservations(1);
+
+  const mm::WakeReport first = unit.loop->wake(hourly(), mm::Budget());
+
+  ASSERT_EQ(server.observations().size(), 1u);
+  const std::string id = memberOf(server.observations()[0], "clientId");
+  ASSERT_EQ(unit.loop->pendingBatchCount(), 5u) << "in RAM it is still pending; the image is what cannot hold it";
+  EXPECT_EQ(first.observationsNotKept, 2);
+  EXPECT_TRUE(fake::LogCapture::the().holds("did not fit the image whole"));
+  mm::KeptImageReader image;
+  ASSERT_EQ(image.check(small.image().data(), small.image().size()), nullptr);
+  EXPECT_EQ(image.advertCount(), 3u);
+  EXPECT_EQ(image.batchCount(), 0u);
+  EXPECT_STREQ(image.batchId(), "");
+  EXPECT_EQ(small.image().size(), mm::kKeptImageHeaderLen + 3 * mm::kKeptAdvertLen)
+      << "and the block held back for the id is not written";
+  EXPECT_EQ(small.text().find(id), std::string::npos) << "the id is nowhere in the store";
+
+  // After the sleep nothing is pending, and the three that came back go out as a new batch.
+  Boot woken = boot(small, &unit);
+  ASSERT_TRUE(woken.restored);
+  EXPECT_EQ(woken.loop->pendingBatchCount(), 0u);
+  EXPECT_EQ(woken.loop->ring().size(), 3u);
+  server.forgetCalls();
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  platform.advanceSeconds(3600);
+
+  const mm::WakeReport second = woken.loop->wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(second.observationsPosted, 3);
+  ASSERT_EQ(server.observations().size(), 1u);
+  EXPECT_NE(memberOf(server.observations()[0], "clientId"), id);
+  EXPECT_EQ(itemsIn(server.observations()[0]), 3);
+}
+
+TEST_F(LoopTest, AVersionOneImageIsStillReadAndHasNoBatchPending) {
+  // The first boot after an update: what is in the store was written by the code as it was, and
+  // it is taken rather than refused - the unit loses neither the result it kept nor the adverts
+  // it heard, and there is no batch pending in it because that version could not keep one.
+  fake::FakeRetained store;
+  const std::string body = "{\"jobId\":16051,\"clientId\":\"job-16051\",\"outcome\":\"ok\"}";
+  std::vector<mm::HeardAdvert> adverts{advert(7, 0), advert(8, 0)};
+  store.set(versionOneImage(16051, body, adverts, kNow - 60));
+
+  Boot unit = boot(store);
+
+  EXPECT_TRUE(unit.restored);
+  EXPECT_EQ(unit.loop->keptImagesRefused(), 0u) << "an image written before the update is not refused";
+  EXPECT_EQ(unit.jobs->queueDepth(), 1);
+  EXPECT_EQ(unit.loop->ring().size(), 2u);
+  EXPECT_EQ(unit.loop->pendingBatchCount(), 0u);
+  EXPECT_STREQ(unit.loop->pendingBatchId(), "");
+  mm::KeptImageReader image;
+  ASSERT_EQ(image.check(store.image().data(), store.image().size()), nullptr);
+  EXPECT_EQ(image.version(), mm::kKeptImageVersionWithoutBatch);
+  EXPECT_EQ(image.batchCount(), 0u);
+  EXPECT_STREQ(image.batchId(), "");
+
+  // And the wake posts both, under a batch id of its own, and writes a version 2 image over it.
+  server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
+  const mm::WakeReport first = unit.loop->wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(first.resultsFlushed, 1);
+  ASSERT_EQ(server.results().size(), 1u);
+  EXPECT_EQ(server.results()[0].jobId, 16051);
+  EXPECT_EQ(server.results()[0].body, body) << "byte for byte what the older firmware kept";
+  EXPECT_EQ(first.observationsPosted, 2);
+  ASSERT_EQ(server.observations().size(), 1u);
+  EXPECT_EQ(itemsIn(server.observations()[0]), 2);
+  mm::KeptImageReader after;
+  ASSERT_EQ(after.check(store.image().data(), store.image().size()), nullptr);
+  EXPECT_EQ(after.version(), mm::kKeptImageVersion) << "and what it writes from here is version 2";
+}
+
+TEST(WhatASleepKeeps, TheLargestImageTheLibraryCanWriteIsTheConstant) {
+  // The figure a consumer sizes its scratch and its flash region by, against what the writer
+  // actually produces for the most it can ever be asked to hold: a full result buffer, a full
+  // ring, and a pending batch's id (task p1.13-55).
+  std::vector<uint8_t> scratch(mm::kMaxKeptImageLen);
+  mm::KeptImageWriter image(scratch.data(), scratch.size());
+  image.setPendingBatch("obs-0102030405060708090a0b0c0d0e0f10", mm::kObservationBatchSize);
+  const size_t bodyLen = mm::ResultBuffer::kCapacityBytes / mm::ResultBuffer::kMaxResults;
+  const std::string body(bodyLen, 'x');
+  for (size_t i = 0; i < mm::ResultBuffer::kMaxResults; i++) {
+    ASSERT_TRUE(image.addResult(static_cast<long long>(i), body.data(), body.size())) << i;
+  }
+  mm::HeardAdvert a;
+  for (size_t i = 0; i < mm::ObservationRing::kCapacity; i++) ASSERT_TRUE(image.addAdvert(a, kNow)) << i;
+  EXPECT_FALSE(image.addAdvert(a, kNow)) << "the ring's capacity is the most there can be";
+
+  const size_t len = image.finish(0, 0, 0);
+
+  EXPECT_EQ(len, mm::kMaxKeptImageLen) << "the constant and what the writer produces are one figure";
+  EXPECT_EQ(image.length(), mm::kMaxKeptImageLen);
+  EXPECT_EQ(image.batchCount(), mm::kObservationBatchSize);
+  mm::KeptImageReader back;
+  ASSERT_EQ(back.check(scratch.data(), len), nullptr);
+  EXPECT_EQ(back.resultCount(), mm::ResultBuffer::kMaxResults);
+  EXPECT_EQ(back.advertCount(), mm::ObservationRing::kCapacity);
+  EXPECT_EQ(back.batchCount(), mm::kObservationBatchSize);
+  EXPECT_STREQ(back.batchId(), "obs-0102030405060708090a0b0c0d0e0f10");
 }
 
 TEST(WhatASleepKeeps, TheCrcIsTheOneZlibAndTheEspRomCompute) {

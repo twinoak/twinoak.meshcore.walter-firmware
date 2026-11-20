@@ -235,16 +235,49 @@ bool parseRepeaterStats(const uint8_t* stats, size_t len, StatusReading& out) {
   return true;
 }
 
-bool parseOwnerInfoFirmware(const uint8_t* data, size_t len, char* out, size_t cap) {
-  if (out == nullptr || cap == 0) return false;
-  out[0] = '\0';
-  if (data == nullptr || len == 0) return false;
-  size_t n = 0;
-  while (n < len && data[n] != '\n' && data[n] != '\0') n++;
-  if (n == 0) return false;
-  if (n > cap - 1) n = cap - 1;
-  std::memcpy(out, data, n);
+namespace {
+
+// One line of the owner-info reply into its own field, cut to what the firmware's field holds.
+// `cut` is set when there was more, so the job's log can say it dropped something.
+void ownerInfoLine(const uint8_t* from, size_t len, char* out, size_t cap, bool& cut) {
+  size_t n = len;
+  cut = false;
+  if (n > cap - 1) {
+    n = cap - 1;
+    cut = true;
+  }
+  if (n > 0) std::memcpy(out, from, n);
   out[n] = '\0';
+}
+
+}  // namespace
+
+bool parseOwnerInfo(const uint8_t* data, size_t len, OwnerInfoReply& out) {
+  out = OwnerInfoReply();
+  if (data == nullptr) return false;
+  // The reply is a string with no length of its own, so a cipher block's padding arrives with
+  // it: the .NET agent's `TrimEnd('\0')`, which is what the firmware's `sprintf` never wrote.
+  while (len > 0 && data[len - 1] == '\0') len--;
+  if (len == 0) return false;
+
+  // The first two newlines, and no further: whatever follows the second one is the owner info,
+  // verbatim, however many newlines of its own it carries.
+  size_t first = 0;
+  while (first < len && data[first] != '\n') first++;
+  bool versionCut = false;  // a version longer than 24 characters is nobody's firmware; no field reports it
+  ownerInfoLine(data, first, out.firmware, sizeof out.firmware, versionCut);
+  if (first >= len) return true;
+
+  const size_t nameFrom = first + 1;
+  size_t second = nameFrom;
+  while (second < len && data[second] != '\n') second++;
+  out.hasNodeName = true;
+  ownerInfoLine(&data[nameFrom], second - nameFrom, out.nodeName, sizeof out.nodeName, out.nodeNameCut);
+  if (second >= len) return true;
+
+  const size_t ownerFrom = second + 1;
+  out.hasOwnerInfo = true;
+  ownerInfoLine(&data[ownerFrom], len - ownerFrom, out.ownerInfo, sizeof out.ownerInfo, out.ownerInfoCut);
   return true;
 }
 

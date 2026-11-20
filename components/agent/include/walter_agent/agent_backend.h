@@ -127,22 +127,26 @@ static_assert(kStateHexBytes <= interfaces::kKeyValueMax, "the loop's state has 
 // a little state beside it.
 //
 // The room is free, because the number was never the bound: 20 480 was a round figure and the
-// largest image `agent/KeptImage.h` can ever write is the static assert below - 19 328 bytes -
-// so a scratch of 19 456 still holds **everything the loop may keep**, with 128 bytes over, and
-// nothing is dropped that was not dropped before. 19 456 and not 19 328 because the allocator
+// largest image `agent/KeptImage.h` can ever write is the static assert below - 19 368 bytes at
+// agent-core 0.7.3 - so a scratch of 19 456 still holds **everything the loop may keep**, with 88
+// bytes over, and nothing is dropped that was not dropped before. 19 456 and not 19 368 because the allocator
 // rounds a block of this size up to a multiple of 1 024 (TLSF's `mapping_search`, 16
 // subdivisions of a power of two): anything from 18 433 to 19 456 takes the same block, so the
 // largest of them is the one to ask for.
 constexpr std::size_t kKeptScratchBytes = 19456;
 
-// The largest image the library can write, from the library's own numbers: the header, then at
-// most `kMaxResults` result headers over `kCapacityBytes` of bodies, then the ring full of
-// adverts (agent/KeptImage.h's layout). A copy of agent-core that made any of them bigger would
-// fail here rather than quietly dropping the tail of what a sleep keeps.
-constexpr std::size_t kLargestKeptImage =
-    mm::kKeptImageHeaderLen + mm::ResultBuffer::kMaxResults * mm::kKeptResultHeaderLen +
-    mm::ResultBuffer::kCapacityBytes + mm::ObservationRing::kCapacity * mm::kKeptAdvertLen;
-static_assert(kLargestKeptImage == 19328, "agent-core's kept image changed size: see above");
+// The largest image the library can write, **as the library says it itself**: the header, the
+// result headers over the buffer's bytes, the ring full of adverts, and the client id of a batch
+// that is still waiting for an answer (`mm::kMaxKeptImageLen`, agent/KeptImage.h).
+//
+// It was a sum written out here, and that is the one thing the bump to 0.7.3 nearly let past: the
+// batch's 40 bytes are new in the library's figure (its task p1.13-55), and a sum of this
+// repository's own would have gone on asserting 19 328 while a full image had become 19 368 -
+// which is not a compile error anywhere and would have shown up as a sleep dropping the last of
+// what it kept. The library made it a constant so that it moves when the library moves; this
+// reads that constant, and the assert below is what a copy that grows it again stops at.
+constexpr std::size_t kLargestKeptImage = mm::kMaxKeptImageLen;
+static_assert(kLargestKeptImage == 19368, "agent-core's kept image changed size: see above");
 static_assert(kKeptScratchBytes >= kLargestKeptImage,
               "the scratch must hold the largest image the loop can write, or a sleep drops "
               "adverts a bigger one would have kept");

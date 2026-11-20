@@ -100,10 +100,42 @@ constexpr size_t kRepeaterStatsMinLen = 48;
 bool parseRepeaterStats(const uint8_t* stats, size_t len, StatusReading& out);
 
 // The owner-info reply of REQ_TYPE_GET_OWNER_INFO: "FIRMWARE_VERSION\nnode_name\nowner_info",
-// no NUL and no length. Only the first line is read - the version the association's verify step
-// records - and the node's name and its owner's note are never kept.
+// no NUL and no length - one `sprintf` of three lines (`MyMesh::handleRequest`, repeater-v1.18.0
+// at 81dbae59). **All three are kept** since meshmaster.dk's task p4.30-181: the version the
+// association's verify step records, and beside it the name the repeater answers on the radio
+// and whatever its owner wrote there for anybody who logs in.
+//
+// The two widths are the firmware's own fields less their terminators - `node_name[32]` and
+// `owner_info[120]` of src/helpers/CommonCLI.h - and the same two numbers StatusResult holds its
+// `MaxNodeName` and `MaxOwnerInfo` to. A line longer than its field is a firmware this library
+// does not know; it is kept, cut, with `nodeNameCut` or `ownerInfoCut` set so that the job's log
+// can say so.
 constexpr size_t kMaxFirmwareVersionLen = 24;
-bool parseOwnerInfoFirmware(const uint8_t* data, size_t len, char* out, size_t cap);
+constexpr size_t kMaxNodeNameLen = 31;
+constexpr size_t kMaxOwnerInfoLen = 119;
+
+struct OwnerInfoReply {
+  char firmware[kMaxFirmwareVersionLen + 1] = {0};
+  char nodeName[kMaxNodeNameLen + 1] = {0};
+  char ownerInfo[kMaxOwnerInfoLen + 1] = {0};
+  // Whether the reply carried a second and a third line **at all**, which is not the same as
+  // their being non-empty: `set owner.info` with nothing after it leaves `owner_info` empty and
+  // the firmware writes the newline all the same, so the empty string is the owner's own answer -
+  // *nothing written* - while an absent line is a reply that did not carry the field. The server
+  // reads the two differently (meshmaster.dk's task p4.30-181: an empty reading is stored, an
+  // absent one stores nothing), so the result has to be able to tell them apart.
+  bool hasNodeName = false;
+  bool hasOwnerInfo = false;
+  bool nodeNameCut = false;
+  bool ownerInfoCut = false;
+};
+
+// Splits the reply at its **first two** newlines and no further: `set owner.info a|b` stores a
+// line break (`CommonCLI.cpp` translates `|` to a newline), so the owner info is the rest of the
+// reply verbatim, newlines kept - which is what the .NET agent's `Split('\n', 3)` does. Trailing
+// NUL bytes are a cipher block's padding and go first. False when there is nothing to read at
+// all, and then nothing of the reply is kept.
+bool parseOwnerInfo(const uint8_t* data, size_t len, OwnerInfoReply& out);
 
 // ---------------------------------------------------------------------------------------------
 // The neighbours reply

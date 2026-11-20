@@ -110,11 +110,15 @@ struct ClaimedJob {
   bool advertFlood = true;  // AdvertRequestPayload.Flood defaults to true: the flood is what refreshes paths
 
   // StatusPayload.Version (meshmaster.dk's task p4.3-68): whether this status read also makes
-  // the owner-info request that carries the firmware version. **Absent is "read it"** - what
-  // every claim said before that task - and `false` is the claim saying the server's record is
-  // fresh enough to spend nothing on, which at the default schedules is forty-seven of a
-  // repeater's forty-eight daily reads. readsFirmwareVersion() below is the rule; this is only
-  // what the payload said.
+  // the owner-info request. **Absent is "read it"** - what every claim said before that task -
+  // and `false` is the claim saying the server's record is fresh enough to spend nothing on,
+  // which at the default schedules is twenty-three of a repeater's twenty-four daily reads.
+  // readsOwnerInfo() below is the rule; this is only what the payload said.
+  //
+  // **The field is still called `version` on the wire** (meshmaster.dk's task p4.30-181): what it
+  // suppresses grew from one line of the reply to three - the version, the node name and the
+  // owner info - but a server that renamed the field would have gone silent to every exit node
+  // built before that task. The name is the history; the meaning is readsOwnerInfo().
   bool statusVersion = true;
   PasswordField passwordField = PasswordField::None;
 
@@ -150,11 +154,47 @@ bool canRun(const ClaimedJob& job, char* why, size_t whyCap);
 // they are for is the session cache's own answer to the same question.
 bool sharesLogin(const ClaimedJob& a, const ClaimedJob& b);
 
-// Whether a status job also fetches the firmware version, which is one transaction more
-// (EXIT-NODES §7). One rule, in one place, as StatusPayload.ReadsVersion is on the server:
-// class `acl` - only the association's verify step needs the version at all - unless the
-// claim's payload says the server does not want it this time. A job of another type is false.
-bool readsFirmwareVersion(const ClaimedJob& job);
+// Whether a status job also makes the owner-info request, which is one transaction more
+// (EXIT-NODES §7). One rule, in one place, as StatusPayload.ReadsOwnerInfo is on the server:
+// **every class a status read goes at**, unless the claim's payload says the server does not
+// want the reply this time. A job of another type is false.
+//
+// Class `acl` alone fetched it until meshmaster.dk's task p4.30-181, because only the
+// association's verify step needed the firmware version. The reply's other two lines - the node
+// name and the owner info - are wanted for every repeater a person can see, somebody else's
+// included, and `MyMesh::handleRequest` checks no permission at all for this request, so a guest
+// login is answered it. The class is therefore no longer part of the question.
+//
+// It is not the whole of *when*: the firmware level the login reply carried is the other half,
+// and a repeater below kOwnerInfoVerLevel is not asked (JobRunner's runStatus).
+bool readsOwnerInfo(const ClaimedJob& job);
+
+// **What a guest login is answered whole** (meshmaster.dk's task p4.30-180,
+// `JobTypes.ServedWholeAtGuest`), read off `MyMesh::handleRequest` at the pin rather than off a
+// table: `REQ_TYPE_GET_STATUS` checks no permission at all - its line is commented *guests can
+// also access this now* - and neither does `REQ_TYPE_GET_NEIGHBOURS`. So `status` and
+// `neighbours` are the two types a guest login serves **whole**.
+//
+// `telemetry` is **not** one of them although a guest login is answered it: `perm_mask` is forced
+// to `0x00` for a guest sender, so the reply is the base channels and none of the sensors, and a
+// read that quietly dropped the sensors would look like the sensors had gone. The access list is
+// `sender->isAdmin()`, and every CLI line is admin's (`onPeerDataRecv` drops a text message from
+// anybody below admin).
+bool servedWholeAtGuest(const char* type);
+
+// **Whether a login answered at `grantedRole` is enough to run this job anyway** -
+// `GuestIsEnough.Covers` on the server and in the .NET agent, so that what one runs and the other
+// reads cannot drift (meshmaster.dk's task p4.30-180, EXIT-NODES §7 *And guest is enough to read
+// with*). Three things at once: class **`acl`**, a type served whole at guest, and a role
+// **below read-only**, which on stock firmware is `guest` and nothing else.
+//
+// Such a login is still the evidence it was - an `acl` login answered at guest says the ACL entry
+// our grant wrote is gone or demoted - and the result says so on `JobReport::loggedInAs`. What
+// changes is that the reading is not thrown away with the login: AAR_LH, 10 November 2026, lost
+// two *Read the neighbours* to a request this firmware would have answered.
+//
+// Every other class and every other type is judged as before, with `writeLoginBelowClassResult`.
+bool guestIsEnough(const char* type, CredentialClass credentialClass, uint8_t grantedRole);
 
 // Whether the lease this job was claimed under has run out (task 06). A claim's jobs are run one
 // at a time and a job is minutes of airtime, so a server that went away under a claim - or a
@@ -215,6 +255,35 @@ struct JobReport {
   // the stored password is probably wrong. The server reads a result without the field exactly
   // as it did before, so an older exit node is unaffected.
   const char* failedAt = nullptr;
+
+  // **The tier the repeater answered the login at, when the job ran below the class it asked
+  // for** (meshmaster.dk's task p4.30-180; API §3): one of `guest`, `read-only`, `read-write`,
+  // `admin`, or nullptr to leave the field out. It is written for one case and no other - an
+  // `acl`-class `status` or `neighbours` whose login was answered at `guest` and which ran all
+  // the same (`guestIsEnough` above) - so the outcome is `ok`, `data` is the reading, and this is
+  // what tells the server the login was not the one the job asked for: it moves the association
+  // exactly as an `unauthorized` carrying the same tier does. **Absent means the login did what
+  // the job asked for**, which is every other result and every result from an exit node built
+  // before this.
+  const char* loggedInAs = nullptr;
+
+  // **What time the repeater thought it was, and what time this board thought it was at that
+  // same moment** (meshmaster.dk's task p4.37-210; API §3, EXIT-NODES §7). A login reply begins
+  // with four bytes of the repeater's own clock - `getRTCClock()->getCurrentTimeUnique()` in
+  // `handleLoginReq` - which this firmware has always read as `MeshReply::tag` and thrown away.
+  // They cost no request and no airtime, and they are the cheapest reading there is of a
+  // repeater whose battery-backed clock started again from an old date.
+  //
+  // **Two numbers and no arithmetic here**: the server stores the difference. They go
+  // **together or not at all** - one of them alone is a 400 on `repeaterClockS` - which is what
+  // the single `hasClock` is for, and each is a `uint32_t`, which is exactly the range four
+  // bytes hold and the range the server accepts. Absent from a job that reused a session and so
+  // made no login of its own, from a job the mesh answered without the air, and from a board
+  // whose own clock is not set; absent is also every result of every exit node built before
+  // this, which the server reads exactly as it read them.
+  bool hasClock = false;
+  uint32_t repeaterClockS = 0;
+  uint32_t agentClockS = 0;
 };
 
 // The two words `JobReport::failedAt` may carry (the server's `JobFailedAt`). Static strings, so

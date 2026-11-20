@@ -2726,6 +2726,41 @@ line now does. These items are whether that line is written and whether the boot
       boot log, the supervisor's day, the uplink's backoff, the TLS trust table and the wake log
       are all byte for byte where they were.
 
+## 26. The agent core at 0.7.3
+
+From the sync pile's task 01, the bump of the copied agent core from `v0.6.0`+8 to **`v0.7.3`**.
+Three of its thirteen upstream tasks change what a person can see, and none of them has been on a
+board: everything below was tested against simulators only - a simulated stock repeater behind the
+RAK and a scripted meshmaster.dk - so these items are the first time a real repeater and the real
+server see them.
+
+- [ ] ★ **Every value of a configuration read is under its own key.** `agent job config.read` on a
+      neighbour over the mesh, and the same on this unit's own repeater (the local door). Stock
+      firmware reflects the two characters and the `|` this firmware now puts in front of every
+      console line of a job, and the reply is only taken as that line's answer when it carries
+      them - so what this proves is that a real repeater reflects it: **every key's value is its
+      own** (`name` the name, `tx` the transmit power), and **no value has a `|` in it**. A read
+      whose values are shifted by one key, or one where every line reads *no reply*, is the
+      failure this item exists for: the first would mean the prefix is not reflected and the old
+      swap is still possible, the second that it is reflected in a way this end does not read.
+
+- [ ] **A region map loaded into a repeater by a job.** A `config.apply` whose plan carries the
+      `regions` entry (`region load`, the map's lines, the one-space line that ends it). The
+      loader's lines go out bare and nothing waits for a reply to them, so this is the one
+      sequence where this firmware gives up an exchange the radio is still waiting on before it
+      sends the next line. All of them must leave: the job's result ends with the repeater's own
+      `OK - loaded N regions`, `region` read back afterwards shows the map, and **no line is
+      reported as *the packet could not be built*** - which is what the radio answers when it is
+      still awaiting the line before, and what this bump fixed.
+
+- [ ] **The same adverts are not stored twice.** The unit's observation batches on the exit node's
+      page after a night of hourly wakes: the hundred newest rows must be the neighbours it heard
+      and not the same handful over and over. A batch the server took but whose answer did not
+      reach the board goes out again after the sleep **under the id it was built with**, and the
+      server answers *had it already* - the log line for which is *the server had this batch
+      already*. Six wakes in a row sending 13, 14, 15, 16, 17 and 18 adverts for 19 distinct
+      neighbours was the failure of 16 November 2026 that this is the fix for.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the

@@ -10,6 +10,10 @@
 //                     long Published, long Dropped, string? LastError)
 //   AgentFlood(string? Scope, bool UnscopedRetry, long AnsweredScoped, long AnsweredUnscoped,
 //              long Unanswered)
+//   AgentUpdate(string Table, long? Id, string? Step)
+//   UpdateResult(string Outcome, string FromVersion, string ToVersion, string? Refusal, int? Check,
+//                IReadOnlyList<FirmwareJournalEntry> Journal)
+//   FirmwareJournalEntry(DateTime At, string Step, string? Note)
 //   RadioParameters(double? FreqMHz, double? BwKHz, int? Sf, int? Cr)
 //   Observation(DateTime At, string Kind, string PublicKey, IReadOnlyList<string>? Path, int? Hops,
 //               double? Snr, double? Rssi, ObservationFields? Fields)
@@ -100,6 +104,24 @@ struct HeartbeatFlood {
   long long unanswered = 0;
 };
 
+// What this board can do about an update, as the heartbeat reports it (AgentUpdate; task
+// p1.15-61 and meshmaster.dk's task p4.42-244). Like the observer and the flood scope above,
+// **this library does not know what an update is** - not a slot, not a release, not a signature,
+// not a trial - and it is not going to: a consumer that can be updated from the server gives the
+// loop a provider (AgentLoop.h, `IUpdateProvider`) and the loop writes whatever it says.
+//
+// `table` is the one word that says what the board can do at all, and it is the consumer's
+// vocabulary to keep: this firmware's is `one`, `two` and `other` (src/platform/PartitionTable.h).
+// `id` and `step` are written **only while an ask is in hand** - `hasAsk` - and then they are the
+// ask's own id and the newest step of its journal, which is all the server hears before the
+// result.
+struct HeartbeatUpdate {
+  const char* table = "other";
+  bool hasAsk = false;        // false: neither `id` nor `step` is written
+  long long id = 0;
+  const char* step = nullptr; // nullptr with hasAsk writes an empty string
+};
+
 struct Heartbeat {
   const char* agentVersion = "";
   const char* transport = "onboard";
@@ -155,6 +177,13 @@ struct Heartbeat {
   // the heartbeat is byte for byte what it was. The object and its `scope` string must outlive
   // the call that posts the heartbeat; nothing here is copied.
   const HeartbeatFlood* flood = nullptr;
+
+  // The update, **last**, as the record has it (task p1.15-61): nullptr for a consumer that
+  // cannot be updated from the server - which is every one that gives the loop no provider, and
+  // this firmware when it was built with no release key - and then the heartbeat is byte for byte
+  // what it was. The object and its two strings must outlive the call that posts the heartbeat;
+  // nothing here is copied.
+  const HeartbeatUpdate* update = nullptr;
 };
 
 struct ObservationFields {
@@ -190,6 +219,38 @@ struct ObservationItem {
   ObservationFields fields;
 };
 
+// Where a result's journal entries come from (task p1.15-61). An interface and not an array,
+// because the bound is forty entries of a step and a note and a consumer that keeps them as one
+// text - which is what a board with 320 kB of RAM does - would otherwise have to build four
+// kilobytes of structs to post three of them.
+//
+// **The two strings are borrowed**: `writeUpdateResult` writes each entry before it asks for the
+// next, so an implementation may hand back pointers into one buffer of its own and overwrite them
+// at the next call.
+class UpdateJournal {
+ public:
+  virtual ~UpdateJournal() {}
+  virtual int count() const = 0;
+  // Entry `i`, 0 being the **oldest**: the moment (UNIX seconds), the step, and the note -
+  // nullptr or empty leaves `note` out of the object. False past the end.
+  virtual bool at(int i, uint32_t& when, const char*& step, const char*& note) const = 0;
+};
+
+// The one result of an update the server asked for (UpdateResult; task p1.15-61). What the words
+// mean is meshmaster.dk's - `committed`, `rolledBack`, `refused`, `stuck`, and a refusal's
+// `inProgress`, `table`, `current`, `fetch` or `check` - and this library writes them as they are
+// given: the vocabulary lives at the two ends of the protocol and a copy of it here would be a
+// third that could drift.
+struct UpdateResult {
+  const char* outcome = "";
+  const char* fromVersion = "";
+  const char* toVersion = "";
+  const char* refusal = nullptr;  // nullptr: the member is left out
+  bool hasCheck = false;          // false: the member is left out
+  int check = 0;
+  const UpdateJournal* journal = nullptr;  // nullptr: an empty array, which is not an absent one
+};
+
 // Write the JSON body of POST /agent/v1/heartbeat into `out` (cap bytes, NUL-terminated).
 // Returns the length written, or 0 when it did not fit.
 size_t writeHeartbeat(const Heartbeat& hb, char* out, size_t cap);
@@ -198,6 +259,12 @@ size_t writeHeartbeat(const Heartbeat& hb, char* out, size_t cap);
 // id the server de-duplicates on, so a batch that is retried must carry the one it was built
 // with. Returns the length written, or 0 when it did not fit.
 size_t writeObservationBatch(const char* clientId, const ObservationItem* items, int count, char* out, size_t cap);
+
+// Write the JSON body of POST /agent/v1/updates/{id}/result into `out` (cap bytes,
+// NUL-terminated). Returns the length written, or 0 when it did not fit - a caller with a journal
+// too long for its buffer drops the oldest entries and asks again, which is what this firmware
+// does (src/update/Ask.h).
+size_t writeUpdateResult(const UpdateResult& result, char* out, size_t cap);
 
 // The length of the longest prefix of `text` that is well-formed UTF-8 with no control
 // characters, at most `max` bytes. A name in an advert is whatever a stranger put there, and a

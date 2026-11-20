@@ -14,8 +14,8 @@ int statusErrors(const StatusReading& s, ErrorCounter* out, int max) {
   return n;
 }
 
-size_t writeStatusResult(const StatusReading& s, const ErrorCounter* errors, int errorCount, const char* firmware,
-                         char* out, size_t cap) {
+size_t writeStatusResult(const StatusReading& s, const ErrorCounter* errors, int errorCount,
+                         const OwnerInfoReply* owner, char* out, size_t cap) {
   JsonWriter w(out, cap);
   w.beginObject();
   w.key("batteryMv");
@@ -63,9 +63,22 @@ size_t writeStatusResult(const StatusReading& s, const ErrorCounter* errors, int
     }
     w.endObject();
   }
-  if (firmware != nullptr && firmware[0] != '\0') {
-    w.key("firmware");
-    w.string(firmware);
+  // The three lines of the owner-info reply, in the record's own order. The version is left out
+  // when it is empty as well as when it is absent: a repeater that answered a blank first line
+  // has told us no version, and `firmware: ""` is not a version the server could show.
+  if (owner != nullptr) {
+    if (owner->firmware[0] != '\0') {
+      w.key("firmware");
+      w.string(owner->firmware);
+    }
+    if (owner->hasNodeName) {
+      w.key("nodeName");
+      w.string(owner->nodeName);
+    }
+    if (owner->hasOwnerInfo) {
+      w.key("ownerInfo");
+      w.string(owner->ownerInfo);
+    }
   }
   w.endObject();
   return w.overflowed() ? 0 : w.length();
@@ -96,7 +109,7 @@ size_t writeTelemetryResult(const LppReading* readings, int count, char* out, si
   return w.overflowed() ? 0 : w.length();
 }
 
-size_t writeNeighboursResult(const Neighbour* neighbours, int count, char* out, size_t cap) {
+size_t writeNeighboursResult(const Neighbour* neighbours, int count, int total, char* out, size_t cap) {
   JsonWriter w(out, cap);
   w.beginObject();
   w.key("neighbours");
@@ -113,6 +126,8 @@ size_t writeNeighboursResult(const Neighbour* neighbours, int count, char* out, 
     w.endObject();
   }
   w.endArray();
+  w.key("total");
+  w.integer(total);
   w.endObject();
   return w.overflowed() ? 0 : w.length();
 }
