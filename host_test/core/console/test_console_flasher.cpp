@@ -59,6 +59,8 @@ struct Rig {
   Rig() {
     chip.attachTo(target);
     chip.on_power_loss = [this] { target.silent = true; };
+    // The reset line reaches the chip (task p18-01): every flash is left by a pulse on it.
+    target.on_pin_reset = [this] { chip.pinReset(); };
     chip.installSoftDevice();
     // The only pages `rak flash-test` may erase or write: the two at the top of the region
     // (checkApplicationUntouched() reads the same thing off the log afterwards). Declared, so
@@ -110,14 +112,15 @@ TEST_CASE("rak flash-test on blank top pages: written, verified, erased again, t
   CHECK(contains(text, "reading the whole image back: page 2/2"));
   CHECK(contains(text, "rak flash-test: done in "));
   CHECK(contains(text, "2 pages (0 skipped, 2 written in place, 0 erased, 0 retries), 2 erases"));
-  CHECK(contains(text, "the radio was reset through the debug port; the next reset pulse waits out the spacing"));
+  CHECK(contains(text, "the radio was started by a pulse on the reset line; the next reset pulse waits out the spacing"));
   CHECK(contains(text, "pins released"));
   CHECK(!contains(text, "error:"));
   // The two pages are blank again; the pattern was there in between (two erases in the log).
   for (std::uint32_t a = kTop; a < 0xED000; a += 4) REQUIRE(rig.chip.flashWord(a) == 0xFFFFFFFF);
   CHECK(rig.chip.countLog(sim::FlashEvent::Kind::kErasePage) == 2);
   CHECK(rig.chip.countLog(sim::FlashEvent::Kind::kWrite) == 2 * 1024);
-  CHECK(rig.chip.counters().aircr_resets == 1);
+  CHECK(rig.chip.resets().pin == 1);
+  CHECK(rig.chip.counters().aircr_resets == 0);
   CHECK(!rig.chip.coreHalted());
   CHECK(rig.radio.msUntilResetAllowed() == core::board::kResetSpacingMs);
   rig.checkApplicationUntouched();
@@ -138,6 +141,7 @@ TEST_CASE("rak flash-test refuses when the pages are not blank, with nothing wri
   CHECK(rig.chip.countLog(sim::FlashEvent::Kind::kConfig) == 0);
   CHECK(rig.chip.counters().dhcsr_writes == 0);
   CHECK(rig.chip.counters().aircr_resets == 0);
+  CHECK(rig.chip.resets().pin == 0);  // nothing was halted: nothing to start
   CHECK(rig.chip.flashWord(0xECFFC) == 0x12345678);
   rig.checkReleased();
 }

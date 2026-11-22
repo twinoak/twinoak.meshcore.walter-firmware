@@ -308,7 +308,8 @@ class Client {
   // Whether the session advertised all of these bits (§5.1). False without a session.
   bool hasCapability(std::uint32_t bits) const;
 
-  // §5.1 and §9: the radio was reset by somebody (a reset pulse, a kill, the console). Everything
+  // §5.1 and §9: the radio was reset by somebody (a reset pulse - the supervisor's rung 2, the
+  // console's, or the one a flash leaves by - or a kill). Everything
   // the client believed about it is gone and the mode goes back to unknown - a reset is also what
   // ends a text session. It sends nothing.
   void radioWasReset();

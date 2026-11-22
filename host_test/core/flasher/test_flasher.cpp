@@ -83,7 +83,6 @@ TEST_CASE("a full image into a blank region: every page written in place, the se
   CHECK(r.ok());
   CHECK(r.step == Step::kDone);
   CHECK(r.reset_issued);
-  CHECK(!r.port_closed_after_reset);
   CHECK(b.chipHolds(image, 0x26000));
   // A blank region: no erase of an image page; the settings page was blank too, so its first
   // record went in without an erase and the second needed one.
@@ -104,8 +103,10 @@ TEST_CASE("a full image into a blank region: every page written in place, the se
   // Both bootloaders start it.
   CHECK(b.chip.bootloaderAccepts(sim::Nrf52Chip::Bootloader::kStock));
   CHECK(b.chip.bootloaderAccepts(sim::Nrf52Chip::Bootloader::kOtafix));
-  // The radio was reset once, through the debug port, and runs; the power-up is withdrawn.
-  CHECK(b.chip.counters().aircr_resets == 1);
+  // The radio was reset once - by a pulse on the reset line, after the power-up was withdrawn
+  // (task p18-01) - and runs; no soft reset was asked for at all.
+  CHECK(b.chip.resets().pin == 1);
+  CHECK(b.chip.counters().aircr_resets == 0);
   CHECK(!b.chip.coreHalted());
   CHECK(!b.chip.debugEnabled());
   CHECK((b.target.ctrlStat() & core::swd::ctrl_stat::kPowerUpRequests) == 0);
@@ -146,7 +147,7 @@ TEST_CASE("the same image again: zero erases, zero writes, and still a complete 
   CHECK(b.chip.countLog(sim::FlashEvent::Kind::kConfig) == 0);
   CHECK(r.counters.words_read >= 2 * 3 * 1024);  // the scan and the read-back
   CHECK(r.reset_issued);
-  CHECK(b.chip.counters().aircr_resets == 2);
+  CHECK(b.chip.resets().pin == 2);
 }
 
 TEST_CASE("into a region holding another image: the first page erased before any other, every differing page erased, the old settings replaced") {
@@ -275,7 +276,7 @@ TEST_CASE("verify() changes nothing: the log is empty, the core is not halted, t
   CHECK(sim::nothingWritten(b.chip));
   CHECK(!b.chip.coreHalted());
   CHECK(!r.reset_issued);
-  CHECK(b.chip.counters().aircr_resets == 1);  // the flash's, not the verify's
+  CHECK(b.chip.resets().pin == 1);  // the flash's, not the verify's
 
   // A wrong digest: refused at the digest, nothing changed.
   std::vector<std::uint8_t> wrong = sha;
@@ -328,9 +329,15 @@ TEST_CASE("an image whose length is not a whole number of words is padded with 0
   CHECK(b.flasher.verify(img, b.profile).ok());
 }
 
-TEST_CASE("a build code Fxx module that closes its port at a reset: the flash completes, the result says the port closed") {
+// Since task p18-01 the flash is left by a pulse on the reset line, and a pin reset is one of the
+// three an improved-APPROTECT part re-reads its protection at (PS "Access port protection"). On a
+// module whose firmware does not write APPROTECT.DISABLE at start-up the port therefore closes
+// behind the flash - where before, a soft reset left it open and the result carried the finding.
+// It is reported at the next flash's `open()`, which is where a closed port belongs; and such a
+// module is one that any power cycle or any pulse of the supervisor's rung 2 closes as well.
+TEST_CASE("a build code Fxx module whose firmware does not open its port: the flash completes, the pulse closes the port, the next flash says so") {
   sim::FlasherBench b;
-  b.chip.protects_after_reset = true;
+  b.chip.bootloader_opens_port = false;
   const std::vector<std::uint8_t> image = sim::makeImage(2, false);
   const std::vector<std::uint8_t> sha = digestOf(image);
   const MemoryImage source(image.data(), static_cast<std::uint32_t>(image.size()));
@@ -339,10 +346,15 @@ TEST_CASE("a build code Fxx module that closes its port at a reset: the flash co
   const Result r = b.flasher.flash(img, b.profile, nullptr);
   CHECK(r.ok());
   CHECK(r.reset_issued);
-  CHECK(r.port_closed_after_reset);
   CHECK(b.chipHolds(image, 0x26000));
-  CHECK(b.chip.counters().aircr_resets == 1);
+  CHECK(b.chip.resets().pin == 1);
   CHECK(b.chip.approtect);
+  CHECK(!b.board.swdHeld());
+
+  const Result again = b.flasher.flash(img, b.profile, nullptr);
+  CHECK(!again.ok());
+  CHECK(again.step == Step::kProtected);
+  CHECK(!again.reset_issued);
   CHECK(!b.board.swdHeld());
 }
 

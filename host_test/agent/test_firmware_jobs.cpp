@@ -629,14 +629,16 @@ TEST_CASE("twinoak.fw.apply: rolled back with the journal in the result, the can
   // The same hash again: refused with the bad list's word, nothing touched.
   bench.world.chip->boot = bench::Boot::kNormal;
   bench.server().queue(bench::ownJob(13, agent::kApplyType, bench::applyPayload(sha)).json());
-  const unsigned flashes = bench.v().pins.kill_cycles + bench.v().pins.reset_pulses;
+  // What the radio was put through, counted in the world and not in this life: every flash ends
+  // in a reset of the chip (task p18-01: a pulse on the reset line), and a life's pins go with it.
+  const unsigned radio_resets = bench.world.chip->chip.counters().resets;
   (void)bench.oneWake();
   const std::string again = bench::objectOf(bench.lastResult(13), "data");
   REQUIRE_FALSE(again.empty());
   CHECK(bench::member(bench.lastResult(13), "outcome") == "failed");
   CHECK(bench::member(again, "outcome") == "refused");
   CHECK(bench::member(again, "refusal") == "badList");
-  CHECK(bench.v().pins.kill_cycles + bench.v().pins.reset_pulses == flashes);
+  CHECK(bench.world.chip->chip.counters().resets == radio_resets);
 }
 
 TEST_CASE("twinoak.fw.apply refused: a hash the server did not name, and inProgress while this firmware is on trial") {

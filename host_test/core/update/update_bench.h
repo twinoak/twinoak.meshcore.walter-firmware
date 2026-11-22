@@ -74,6 +74,13 @@ class FakeBattery final : public upd::BatterySource {
   }
 };
 
+// The hardware watchdog a scanner image starts at its boot, and feeds from its own loop (the
+// repeater firmware's src/roles/scanner/Wdt.h and config.h: WDT_TIMEOUT_S 60, CONFIG.HALT Pause,
+// CONFIG.SLEEP Run). A repeater image starts none and feeds none - "upstream's own loop has no
+// watchdog" - so a scanner's outlives it across anything but a pin, a brownout or a power-on
+// reset, which is the fault of 21 November (task p18-01).
+constexpr std::uint32_t kScannerWatchdogMs = 60000;
+
 // How the radio behaves when it boots into an image.
 enum class Boot {
   kNormal,          // what the descriptor says, answering everything
@@ -183,6 +190,7 @@ struct UpdateWorld {
   // The radio boots into whatever the chip holds, with the knob applied.
   void radioBoots() {
     ++boots;
+    chip.watchdog_fed = false;  // until the image that is booting says otherwise
     // A new boot has no memory of the last firmware's quirks: the per-type refusals and
     // silences a knob set are cleared, and the knob applied again below.
     radio.override_status_flags = false;
@@ -212,6 +220,9 @@ struct UpdateWorld {
     if (f.role == core::image::Role::kScanner) {
       radio.scanner = true;  // NoiseScope: lines, no frames (§9)
       if (boot == Boot::kSilent) radio.deaf = true;  // a scanner build whose console never comes up
+      // The hardware watchdog, started by this image and fed by its loop (kScannerWatchdogMs).
+      chip.startWatchdog(kScannerWatchdogMs);
+      chip.watchdog_fed = true;
       radio.restart(false);
       return;
     }
@@ -243,6 +254,16 @@ struct UpdateWorld {
       seen_resets = chip.counters().resets;
       radio.deaf = true;
       radio_runs = false;
+      // Nothing of what the radio was going to say survives its reset: "a module whose firmware
+      // was replaced has no EV_BOOT of the old one's still in flight" (sim/scripted_radio.h), and
+      // a Walter that was itself reset lost what was in its UART with it. Without this, a boot
+      // the *previous* flash began - due while this flash's exit waits out the reset spacing -
+      // would be read after the pulse as the boot that is being proved, and the boot that really
+      // follows the pulse as a restart inside the proving period (task p18-01).
+      radio.forgetPending();
+      // Nothing feeds a watchdog from here until an image that feeds one is running: a radio in
+      // its bootloader feeds nothing, and a repeater never does (task p18-01).
+      chip.watchdog_fed = false;
       boot_pending = true;
       boot_due_ms = now + boot_delay_ms;
     }
@@ -250,6 +271,10 @@ struct UpdateWorld {
       boot_pending = false;
       radioBoots();
     }
+    // The watchdog gets the time that has passed under whatever is running now. A soft reset did
+    // not clear it, so a repeater booted over a scanner is reset here 60 s later - which is the
+    // session of 21 November; a pin reset did clear it, and then this does nothing for ever.
+    chip.serviceWatchdog();
     if (restart_at_ms != 0 && now >= restart_at_ms) {
       restart_at_ms = 0;
       if (radio_runs) radio.restart(true);
@@ -309,6 +334,9 @@ struct Walter {
     REQUIRE(w.store.store.begin() == StoreError::kNone);
     w.chip.attachTo(target);
     w.chip.on_power_loss = [this] { target.silent = true; };
+    // The reset line reaches the chip (task p18-01): the pulse the flasher leaves every flash by
+    // is a pin reset there - the core running, the watchdog cleared, the protection read again.
+    target.on_pin_reset = [this] { w.chip.pinReset(); };
     pins.record_log = false;
     health.begin(core::health::ResetReason::kPowerOn, core::health::WakeCause::kNotFromSleep);
     w.clock.advance(core::board::kKillTiming.settle_ms);

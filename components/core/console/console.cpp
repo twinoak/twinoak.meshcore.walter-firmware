@@ -1936,9 +1936,7 @@ void Console::printFlashResult(const char* what, const flasher::Result& r) {
            r.why[0] != 0 ? r.why : "");
   }
   if (r.reset_issued) {
-    print(r.port_closed_after_reset
-              ? "  the radio was reset; its access port closed afterwards (a build code Fxx module); the next reset pulse waits out the spacing\n"
-              : "  the radio was reset through the debug port; the next reset pulse waits out the spacing\n");
+    print("  the radio was started by a pulse on the reset line; the next reset pulse waits out the spacing\n");
   }
   print("  pins released\n");
 }

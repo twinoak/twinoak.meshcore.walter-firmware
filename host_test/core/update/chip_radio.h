@@ -107,6 +107,7 @@ struct ChipRadio {
   // The radio boots into whatever the chip holds, with the knob applied.
   void radioBoots() {
     ++boots;
+    chip.watchdog_fed = false;  // until the image that is booting says otherwise
     radio.override_status_flags = false;
     radio.refuseType(0, 0, 0);
     radio.ignoreType(0, 0);
@@ -134,6 +135,8 @@ struct ChipRadio {
     if (f.role == core::image::Role::kScanner) {
       radio.scanner = true;
       if (boot == Boot::kSilent) radio.deaf = true;
+      chip.startWatchdog(kScannerWatchdogMs);  // the scanner's own, fed by its loop (task p18-01)
+      chip.watchdog_fed = true;
       radio.restart(false);
       return;
     }
@@ -163,6 +166,8 @@ struct ChipRadio {
       seen_resets = chip.counters().resets;
       radio.deaf = true;
       radio_runs = false;
+      radio.forgetPending();      // the reset took what the old firmware had still to say
+      chip.watchdog_fed = false;  // a radio in its bootloader feeds nothing
       boot_pending = true;
       boot_due_ms = now + boot_delay_ms;
     }
@@ -170,6 +175,7 @@ struct ChipRadio {
       boot_pending = false;
       radioBoots();
     }
+    chip.serviceWatchdog();
     if (restart_at_ms != 0 && now >= restart_at_ms) {
       restart_at_ms = 0;
       if (radio_runs) radio.restart(true);

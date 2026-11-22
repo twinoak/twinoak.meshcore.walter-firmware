@@ -151,7 +151,14 @@ void Nrf52Chip::readProtectionAtReset() {
 // System Control Space and debug logic"; PS "Reset behavior"): the core running, halting debug
 // off, DEMCR clear, the NVMC read-only and idle, the access port's registers at their reset
 // values, the protection read again, and the debug port's power-up gone with the rest.
+//
+// **And the watchdog** (task p18-01): the WDT column of the "Reset behavior" table (5.3.6.8) is
+// marked for a watchdog, a pin, a brownout and a power-on reset, and for no other source - so
+// this is where a watchdog an image started stops, and localReset() below is where it does not.
 void Nrf52Chip::hardReset() {
+  wdt_running_ = false;  // not serviced first: what it was owed is owed to nobody now
+  wdt_left_us_ = 0;
+  wdt_seen_us_ = clock_.nowUs();
   halted_ = false;
   debug_en_ = false;
   held_in_reset_ = false;
@@ -171,6 +178,64 @@ void Nrf52Chip::hardReset() {
 
 void Nrf52Chip::pinReset() {
   resets_.pin++;
+  hardReset();
+}
+
+// ---- the watchdog (task p18-01; PS 5.3.6.8 "Reset behavior", 6.36 "WDT") ----------------------
+
+// TASKS_START, by the image in flash. "After it is started, the watchdog's configuration
+// registers ... will be blocked for further configuration" (6.36.3), so a second start while it
+// runs changes nothing - not even the timeout.
+void Nrf52Chip::startWatchdog(std::uint32_t timeout_ms) {
+  serviceWatchdog();
+  if (wdt_running_) return;
+  wdt_running_ = true;
+  wdt_timeout_us_ = static_cast<std::uint64_t>(timeout_ms) * 1000u;
+  wdt_left_us_ = wdt_timeout_us_;
+  wdt_seen_us_ = clock_.nowUs();
+}
+
+// A reload request granted: the down-counter back to CRV (6.36.1).
+void Nrf52Chip::feedWatchdog() {
+  serviceWatchdog();
+  if (wdt_running_) wdt_left_us_ = wdt_timeout_us_;
+}
+
+// The time since this was last asked, spent out of what is left - except while the core is halted
+// by the debugger (CONFIG.HALT = Pause, 6.36.2) and while the chip is unpowered. At zero: the
+// TIMEOUT and its reset.
+void Nrf52Chip::serviceWatchdog() {
+  const std::uint64_t now = clock_.nowUs();
+  const std::uint64_t elapsed = now > wdt_seen_us_ ? now - wdt_seen_us_ : 0;
+  wdt_seen_us_ = now;
+  if (!wdt_running_ || !powered_ || halted_) return;
+  if (watchdog_fed) {  // the image's own loop keeps reloading it
+    wdt_left_us_ = wdt_timeout_us_;
+    return;
+  }
+  if (elapsed < wdt_left_us_) {
+    wdt_left_us_ -= elapsed;
+    return;
+  }
+  wdt_left_us_ = 0;
+  watchdogTimeout();
+}
+
+std::uint32_t Nrf52Chip::watchdogLeftMs() {
+  serviceWatchdog();
+  if (!wdt_running_) return 0;
+  return static_cast<std::uint32_t>((wdt_left_us_ + 999u) / 1000u);
+}
+
+// "A TIMEOUT event will automatically lead to a watchdog reset" (6.36.3). The "Reset behavior"
+// table gives a watchdog reset the same targets as a pin reset - CPU, peripherals, GPIO, the
+// debug components, RAM, the WDT itself and the retained registers - so it is hardReset(), which
+// also clears the watchdog. (The table excludes the SWJ-DP from both; this chip resets the
+// simulated port with them, which no caller can tell apart: every session begins with a line
+// reset and a power-up of its own.)
+void Nrf52Chip::watchdogTimeout() {
+  resets_.watchdog++;
+  wdt_running_ = false;
   hardReset();
 }
 
@@ -855,6 +920,10 @@ ApAccess Nrf52Chip::readScs(std::uint32_t addr, std::uint32_t* out) {
 }
 
 ApAccess Nrf52Chip::writeScs(std::uint32_t addr, std::uint32_t value) {
+  // Before the core's state changes: what the watchdog has spent so far is spent under the old
+  // state, and CONFIG.HALT = Pause makes that distinction the whole point (task p18-01). This is
+  // the one place the halt is taken and given back, so it is the one place that has to count.
+  serviceWatchdog();
   switch (addr) {
     case regs::scs::kDhcsr: {
       counters_.dhcsr_writes++;
@@ -924,7 +993,12 @@ ApAccess Nrf52Chip::writeScs(std::uint32_t addr, std::uint32_t value) {
 // knob closes it again until that firmware runs (Nordic's APPROTECT note: a soft reset
 // re-enables the protection when the firmware's own start-up is what disables it), which is
 // what resetAndHalt() reports.
+// The watchdog is **not** among the targets: the table marks CPU, Peripherals and GPIO for a soft
+// reset and nothing else, so a WDT the previous image started keeps counting down with the same
+// timeout, and the image this reset starts has whatever is left of it to feed it (task p18-01:
+// the 21 November session, where nothing fed it at all).
 void Nrf52Chip::localReset() {
+  serviceWatchdog();  // paused while the core was halted for the flash: counted before it runs again
   counters_.resets++;
   reset_sticky_ = true;
   halted_ = debug_en_ && (demcr_ & regs::scs::kVcCoreReset) != 0;
