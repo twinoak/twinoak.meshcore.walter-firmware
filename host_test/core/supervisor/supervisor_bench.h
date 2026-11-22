@@ -220,6 +220,9 @@ struct SupWalter {
     w.chip.attachTo(target);
     w.chip.on_power_loss = [this] { target.silent = true; };
     pins.on_reset_pulse = [this] { s.onResetPulse(); };
+    // And the chip itself is pin-reset by it (task p18-01): the flasher's exit leaves by that
+    // pulse, so rung 4's flash ends in a pin reset and the radio boots from it.
+    target.on_pin_reset = [this] { w.chip.pinReset(); };
     pins.on_kill_cycle = [this] { s.onKillCycle(); };
     s.pins = &pins;
     health.begin(reason, core::health::WakeCause::kNotFromSleep);

@@ -570,7 +570,12 @@ StepResult RadioUpdate::stepFlashing(bool rollback) {
   if (!r.ok()) {
     return fail(Reason::kFlashFailed, ProveStep::kNone, static_cast<std::uint32_t>(r.step));
   }
-  // The flasher reset the radio through the debug port: everything the client believed is gone.
+  // **The boot that is proved is the boot the flasher's pulse started** (task p18-01). The
+  // flasher's last act is a pulse on the reset line - and its only one: there is no soft reset
+  // before it any more, so there is no earlier boot whose EV_BOOT could be read here as this
+  // one's, and none whose late arrival inside the proving period would read as a restart. The
+  // window begins now, which is after the pulse, and everything the client believed about the
+  // radio goes first.
   radio_.radioWasReset();
   window_started_ms_ = clock_.nowMs();
   next_hello_ms_ = window_started_ms_;

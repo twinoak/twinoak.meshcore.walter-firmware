@@ -141,7 +141,8 @@ TEST_CASE("silence cured at each rung in turn: only the rungs below it were used
     CHECK(unit.walter->ladder() == sup::State::kIdle);
     CHECK(unit.incident().outcome == Outcome::kCured);
     CHECK(unit.incident().cured_at == Rung::kGoldenImage);
-    CHECK(unit.walter->pins.reset_pulses == 1);
+    // Rung 2's pulse, and the one the flash of rung 4 is left by (task p18-01).
+    CHECK(unit.walter->pins.reset_pulses == 2);
     CHECK(unit.walter->pins.kill_cycles == 1);
     CHECK(unit.status().counts.flashes == 1);
     // The golden image is on the chip again and the radio is running it.
@@ -243,6 +244,10 @@ TEST_CASE("rung 4 looks at the chip before it writes to it") {
     unit.walter->beat();
     unit.world.goSilent();
     unit.world.u.chip.approtect = true;  // a module whose debug port is shut
+    // ... and stays shut: rung 2's pulse is a pin reset, and an improved-APPROTECT part reads its
+    // protection again at one (task p18-01). A part that is closed after a reset is one whose
+    // firmware does not write APPROTECT.DISABLE at start-up.
+    unit.world.u.chip.bootloader_opens_port = false;
     const unsigned before = flashOps(unit.world.u.chip);
 
     CHECK(unit.walter->ladder() == sup::State::kStopped);

@@ -36,6 +36,7 @@ struct Refusal : sim::FlasherBench {
     CHECK(!chip.coreHalted());
     CHECK(chip.counters().dhcsr_writes == 0);
     CHECK(chip.counters().aircr_resets == 0);
+    CHECK(chip.resets().pin == 0);
     CHECK(!r.reset_issued);
     CHECK(!board.swdHeld());
     CHECK((target.ctrlStat() & core::swd::ctrl_stat::kPowerUpRequests) == 0);
@@ -167,7 +168,13 @@ TEST_CASE("a target that goes silent mid-flash: a clear error, the pins released
   CHECK(r.nrf.swd == core::swd::Status::kNoTarget);
   CHECK((r.step == Step::kFirstPageErase || r.step == Step::kPages || r.step == Step::kSettingsInvalidate));
   CHECK(!b.board.swdHeld());
-  CHECK(!r.reset_issued);  // pointless on a silent target: not attempted
+  // The core was halted when the lines went, and the pulse needs no debug port: since task
+  // p18-01 the exit starts the radio anyway, which is the only way a halted radio ever runs
+  // again without a power cycle. (The old exit, a SYSRESETREQ through the port, could not be
+  // delivered at all and was skipped.)
+  CHECK(r.reset_issued);
+  CHECK(b.chip.resets().pin == 1);
+  CHECK(!b.chip.coreHalted());
   CHECK(b.chip.counters().erases >= 1);
   // The chip, if it were listening, would have no startable application: the first page is
   // erased or the settings say bank 0 invalid.
@@ -241,7 +248,7 @@ TEST_CASE("a flash page with a stuck bit: retried once with an erase, then a fai
   CHECK(erases_of_page == 1);
   // The radio was reset on the way out: it sits in its bootloader, bank 0 invalid.
   CHECK(r.reset_issued);
-  CHECK(b.chip.counters().aircr_resets == 1);
+  CHECK(b.chip.resets().pin == 1);
   CHECK(b.settings().bank_0 == bs::kBankInvalidApp);
   CHECK(!b.chip.bootloaderAccepts(sim::Nrf52Chip::Bootloader::kStock));
   CHECK(!b.chip.bootloaderAccepts(sim::Nrf52Chip::Bootloader::kOtafix));

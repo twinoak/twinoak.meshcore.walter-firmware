@@ -43,6 +43,12 @@
 // UICR writes performed instead of a failed test. NVMC.ERASEALL and NVMC.ERASEUICR trip always;
 // the door does not use them.
 //
+// Since task p18-01 it also has the **watchdog an image in its flash can start** (PS "WDT" and
+// the "Reset behavior" table): it counts only while the core runs, it survives SYSRESETREQ and
+// nothing stops it, and a pin reset or a power-on clears it. That is the fault of 21 November -
+// a golden image flashed over a scanner, started by a soft reset, and reset 60 s later by a
+// watchdog nobody was feeding.
+//
 // Knobs: protection on; protection re-engaged by a reset (a build code Fxx module whose firmware
 // opens the port at run time); another part, page size or page count; READY late or never;
 // power lost at the Nth flash operation, leaving a page half-erased or a word half-written;
@@ -173,6 +179,40 @@ class Nrf52Chip {
   // A CTRL-AP soft reset that leaves the debug port needing a line reset and a power-up again
   // (resetDap): the part the door must reconnect to. False: the port survives the soft reset.
   bool soft_reset_drops_dap = false;
+
+  // ---- the hardware watchdog (task p18-01; PS "WDT - Watchdog timer", "Reset behavior") -------
+  // What the firmware **in the chip's flash** started, which is the only way this peripheral is
+  // ever used here: a scanner image starts the WDT at 60 s and feeds it from its own loop (the
+  // repeater firmware's src/roles/scanner/Wdt.h and config.h, WDT_TIMEOUT_S 60, CONFIG.HALT
+  // Pause, CONFIG.SLEEP Run), a repeater image starts and feeds nothing. Nothing of this
+  // firmware touches the WDT; these are for a bench that has to show what a flash leaves behind.
+  //
+  // The rules, from the Product Specification (v1.11, 2024-10-01):
+  //   - once started it cannot be stopped or reconfigured: "After it is started, the watchdog's
+  //     configuration registers, which comprise registers CRV, RREN, and CONFIG, will be blocked
+  //     for further configuration" (6.36.3);
+  //   - it is paused while the core is halted by the debugger when CONFIG.HALT is Pause ("Pause
+  //     watchdog while the CPU is halted by the debugger", 6.36.2), which is why a flash of any
+  //     length does not end in a watchdog reset;
+  //   - a **soft reset does not reset it**: the "Reset behavior" table (5.3.6.8) marks CPU,
+  //     Peripherals and GPIO for a soft reset, and the WDT column only for a watchdog, a pin, a
+  //     brownout and a power-on reset. So it counts on through the boot a SYSRESETREQ begins,
+  //     with the same timeout, and the image that boot starts has that long to feed it;
+  //   - "A TIMEOUT event will automatically lead to a watchdog reset" (6.36.3), and that reset
+  //     clears the watchdog - which is why the radio of 21 November was healthy afterwards.
+  // Time only passes here when somebody asks: serviceWatchdog() is what a bench calls as its
+  // world settles, and startWatchdog()/feedWatchdog()/watchdogLeftMs() do it for themselves.
+  void startWatchdog(std::uint32_t timeout_ms);  // TASKS_START, by the image in flash
+  void feedWatchdog();                           // RR[0] = 0x6E524635, from that image's loop
+  void serviceWatchdog();                        // the TIMEOUT, if it has fallen due
+  bool watchdogRunning() const { return wdt_running_; }
+  std::uint32_t watchdogLeftMs();
+  // Whether the image that is running feeds it from its loop: a scanner does (Wdt.h's wdtFeed()
+  // from the main loop), a repeater and a bootloader feed nothing. While this is true the
+  // down-counter is reloaded as fast as it falls, so a bench may let any amount of simulated time
+  // pass in one jump; while it is false the watchdog counts. A bench sets it at every boot and
+  // clears it whenever the radio goes dark.
+  bool watchdog_fed = false;
   // THE DOOR'S TESTS ONLY. Arms the chip for what S-5a allows a person's command to do: the
   // CTRL-AP's ERASEALL is performed and UICR takes writes through the NVMC. Every other test of
   // the tree leaves this alone, and the tripwire fails it at the first of either.
@@ -197,6 +237,7 @@ class Nrf52Chip {
     unsigned sysresetreq = 0;    // AIRCR.SYSRESETREQ
     unsigned pin = 0;            // nRESET
     unsigned power_on = 0;       // powerOn()
+    unsigned watchdog = 0;       // the WDT timed out
   };
   const Resets& resets() const { return resets_; }
   // The SoftDevice information structure a provisioned chip carries at MBR_SIZE + 0x2000 (the
@@ -299,6 +340,7 @@ class Nrf52Chip {
   void eraseAll();
   void localReset();
   void hardReset();                // what a pin reset and a power-on share
+  void watchdogTimeout();          // the WDT's own reset
   void readProtectionAtReset();    // UICR.APPROTECT (and the firmware) read, as the kind says
   void fillFactory();              // RUI3-like contents
   void startBusy(std::uint64_t us);
@@ -342,6 +384,12 @@ class Nrf52Chip {
   bool held_in_reset_ = false;
   bool reset_sticky_ = false;
   std::uint32_t demcr_ = 0;
+
+  // the watchdog: what it was given, what is left of it, and when that was last counted
+  bool wdt_running_ = false;
+  std::uint64_t wdt_timeout_us_ = 0;
+  std::uint64_t wdt_left_us_ = 0;
+  std::uint64_t wdt_seen_us_ = 0;
 
   bool allowed(std::uint32_t addr, std::uint32_t bytes) const;
 

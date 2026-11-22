@@ -502,31 +502,44 @@ Result Flasher::settingsValidate(Plan* plan) {
 
 // ------------------------------------------------------------------------------- the exits
 
-// Step 7, and the way out of every failure after the halt: a system reset so that the radio runs
-// its bootloader (and, when the image is complete, the application) rather than sitting halted;
-// the power-up withdrawn; the lines released; the reset recorded for the spacing rule.
+// Step 7, and the way out of every failure after the halt: the image is started by **a pulse on
+// the reset line**, and by nothing else (task p18-01).
+//
+// In order, and the order is the point: the power-up request withdrawn, which is what ends debug
+// interface mode (nrf52.cpp, Nrf52::close(); PS "Debug and trace > Debug Interface mode": "Once
+// the debugger stops requesting power via CxxxPWRUPREQ, the device is back in normal mode"); the
+// lines released; then nRESET pulsed through RadioPins, which waits out the spacing of
+// ARCHITECTURE §2 rule 2 and LINK-PROTOCOL §10 rather than violating it, and records the pulse
+// for the next one.
+//
+// **Why the reset line and not SYSRESETREQ, which this used to be.** The nRF52840's "Reset
+// behavior" table (Product Specification v1.11, 5.3.6.8) gives a soft reset three targets - the
+// CPU, the peripherals and the GPIO - and marks the WDT column only for a watchdog, a pin, a
+// brownout and a power-on reset. So a watchdog the firmware this flash replaced had started keeps
+// counting across SYSRESETREQ with the same timeout, and the image that boot starts has only what
+// is left of it to feed one it knows nothing about: a scanner starts the WDT at 60 s and the
+// repeater feeds nothing, which is what reset the radio 59 s into the golden image's proving
+// period on 21 November and ended the first NoiseScope session `stuck`. A pin reset is in that
+// column, so the pulse leaves no watchdog behind - and it needs no debug port, so it is also the
+// way out of a flash that lost its lines with the core halted.
+//
+// The cost, said plainly: this end gets no confirmation that the chip reset (SYSRESETREQ could be
+// read back in DHCSR.S_RESET_ST, a pin cannot) - the boot window's HELLO is the confirmation now -
+// and a pulse the pin driver refuses leaves the radio halted, which the result says and the
+// supervisor's power cycle is the way out of.
 Result Flasher::finish(Plan* plan, Result r, bool reset) {
-  const bool pointless = r.outcome == Outcome::kFailed &&
-                         (r.step == Step::kProtected || r.step == Step::kConnect ||
-                          (r.nrf.status == nrf52::Status::kSwd &&
-                           (r.nrf.swd == swd::Status::kNoTarget || r.nrf.swd == swd::Status::kLinesLost)));
-  if (reset && plan->halted && !pointless) {
-    const nrf52::Result reset_result = nrf_.systemReset();
-    r.reset_issued = true;
-    if (reset_result.status == nrf52::Status::kProtected) {
-      // The AIRCR write went through - a closed port fails that write with a FAULT, not with
-      // kProtected - and the module shut its port afterwards (task p1-04: build code Fxx).
-      r.port_closed_after_reset = true;
-    } else if (!reset_result.ok() && r.ok()) {
-      r = failed(Step::kReset, reset_result);
-      r.reset_issued = true;
-    }
-  }
   if (r.step != Step::kPins && r.step != Step::kSelect) nrf_.close();
   pins_.swdRelease();
-  // Noted after the lines are released, so that the spacing runs from the moment the radio is
-  // on its own again.
-  if (r.reset_issued) pins_.noteRadioReset();
+  if (reset && plan->halted) {
+    const board::Outcome pulsed = pins_.resetPulse();
+    if (pulsed == board::Outcome::kOk) {
+      r.reset_issued = true;
+    } else if (r.ok()) {
+      r.outcome = Outcome::kFailed;
+      r.step = Step::kReset;
+      r.why = board::describe(pulsed);
+    }
+  }
   // The slot last of all: nothing of this call faces the radio any more, so another slot may be
   // selected now (task p1-06).
   if (plan->slot_held) {

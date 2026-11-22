@@ -739,8 +739,9 @@ too, from the bootloader's `dfu_types.h`. Built against the simulated chip, as b
    or needing an erase. Nothing has been written; an image already on the chip ends with zero
    erases and zero writes.
 3. **Halt the core — a running core, not reset-and-halt** (§4: on a build code Fxx module a reset
-   closes the access port until its firmware has run; MeshCore runs no nRF52 watchdog that a halted
-   core would trip), then wait for the flash controller to finish anything the application had in
+   closes the access port until its firmware has run; and no watchdog a halted core would trip -
+   MeshCore's repeater runs none at all and NoiseScope's is set to pause while the debugger holds
+   the core, which is why a flash of fifteen minutes does not end in a watchdog reset), then wait for the flash controller to finish anything the application had in
    flight. For an image that *is* the application (load address = the region's start): **write
    the bootloader's settings page to "bank 0 holds nothing"** (`bank_0 = BANK_INVALID_APP`), the
    record the bootloader's own DFU writes before it erases bank 0.
@@ -756,8 +757,21 @@ too, from the bootloader's `dfu_types.h`. Built against the simulated chip, as b
    bootloaders a RAK4630 may carry start (`core/flasher/bootloader_settings.h` cites the lines) — unless
    a record they already accept for exactly this image is there. Word 0 of a record is written
    after words 1–6, so a torn write reads as an erased page, never as a code with a torn body.
-7. A system reset through the debug port, the power-up withdrawn, the pins released to the safe
-   state, and `RadioPins` told the radio was reset so that the next pulse waits out the spacing.
+7. **The power-up withdrawn — which is what ends debug interface mode — the lines released, and
+   the image started by a pulse on `nRESET`** (`RadioPins::resetPulse()`, so rule 2's spacing is
+   waited out and the pulse recorded). That pulse is the flash's only reset, on every path that
+   resets at all: there is no `SYSRESETREQ` before it, so there is one boot and the health check's
+   window begins after it. **Why the line and not the port** (task p18-01): the nRF52840's *Reset
+   behavior* table (Product Specification v1.11, 5.3.6.8) gives a soft reset the CPU, the
+   peripherals and the GPIO, and marks the WDT column only for a watchdog, a pin, a brownout and a
+   power-on reset — so a watchdog the firmware being replaced had started survives a soft reset
+   with the same timeout and resets the radio in the next image's lap. NoiseScope starts the
+   nRF52840's watchdog at 60 s and the repeater feeds nothing, which is why the first session on a
+   unit ended `stuck` on 21 November 2026. The pin reset is in that column; it also needs no debug
+   port, so it is the way out of a flash that lost its lines with the core halted. What it costs:
+   no confirmation from the chip that the reset happened (the boot window's `HELLO` is the
+   confirmation), and a pulse the pin driver refuses leaves the radio halted — a `kReset` failure,
+   and the supervisor's power cycle is the way out.
 
 **The idle task runs between transfers** (task p8-01, `core/swd/idle_pause.h`). Nothing on the SWD
 path blocks: the wire's half-bit waits are busy waits, and `delayUs` is the one busy wait the clock
@@ -798,8 +812,9 @@ the MBR, the SoftDevice, the bootloader and the UICR words, everything the flash
 — is written by the sequence of task p5-03 through that door and by nothing here (S-5a). A power loss at any flash operation leaves a
 radio with no startable application, an intact bootloader and identity, and a settings page that
 is blank, invalid or valid; running the same flash again finishes it with no more erases than the
-pages that still differ need. On a failure after the halt the flasher asks for a system reset on
-its way out, so the radio runs its bootloader rather than sitting halted. `verify()` reads back and
+pages that still differ need. On a failure after the halt the flasher pulses the reset line on its
+way out, so the radio runs its bootloader rather than sitting halted — including when the lines
+were lost, which the old system reset through the port could not reach. `verify()` reads back and
 compares, changing nothing; `flashTest()` is the bench's `rak flash-test` (`docs/console.md`). The
 simulated chip evaluates both bootloaders' `bootloader_app_is_valid()` after every interruption, and
 refuses any erase or write outside the image's own pages and the settings page — the region the

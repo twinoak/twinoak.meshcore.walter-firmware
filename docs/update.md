@@ -41,12 +41,12 @@ runs it to the end inside the command.
 | State | What is happening | Journalled before |
 |---|---|---|
 | **check** | the preconditions, below; nothing is touched | the start of the run, with the image's SHA-256 |
-| **flashing-candidate** | the flasher (`docs/ARCHITECTURE.md` §5) writes the candidate into the application region, verifies it, writes the bootloader's settings record and resets the radio | the flash |
+| **flashing-candidate** | the flasher (`docs/ARCHITECTURE.md` §5) writes the candidate into the application region, verifies it, writes the bootloader's settings record and **starts the image with a pulse on the reset line** — the one reset that clears a watchdog the firmware it replaced had started, and the only reset of a flash, so the boot that is proved is the boot that pulse began (task p18-01) | the flash |
 | **booting** | waiting for the radio to come up: an `EV_BOOT` or a `HELLO` answer, inside the boot window | the wait |
 | **proving** | the health check, below | the check |
 | **committing** | the store's promotion: the golden pointer moves to the candidate's area (seven flash operations, whatever the size) | the promotion |
 | **done** | the candidate is the golden image; the candidate slot is empty — plainly empty, not a download half done: the area it now points at is the old golden image's, and the markers that image's own download left there are not read as a transfer (`ARCHITECTURE.md` §6, task p15-01) | terminal |
-| **rolling-back** | the candidate's hash is put on the bad list, then the golden image is flashed back and the radio reset | the rollback, with why and at which step of the check |
+| **rolling-back** | the candidate's hash is put on the bad list, then the golden image is flashed back and started by the same pulse | the rollback, with why and at which step of the check |
 | **rolling-back (booting the golden image)** | as booting, for the golden image | the wait |
 | **rolling-back (proving the golden image)** | the same health check, held against the golden image's own descriptor | the check |
 | **restored** | the golden image is back, proved and still golden; the candidate is in the store but on the bad list | terminal |
@@ -309,6 +309,17 @@ check ─► flashing-scanner ─► scanner ─► step-1 … step-6 ─► roo
 
 Those words are the journal's own: one entry of kind `0x000B` before each of them, with the
 command on a `step-N` entry and the room's figures on the `room` one.
+
+**The scanner's watchdog ends with the scanner** (task p18-01). NoiseScope starts the nRF52840's
+hardware watchdog at 60 s and feeds it from its own loop; once started it cannot be stopped, and
+the repeater that comes back after the session feeds nothing. A soft reset — which is what the
+flasher used to leave by — is not among the reset sources that clear it (the Product
+Specification's *Reset behavior* table), so the first session on a unit, on 21 November 2026,
+measured every one of its six steps and then ended `stuck`: the watchdog reset the radio 59 s into
+the golden image's three-minute proving period, and a restart there is a failure by rule. Every
+flash is now left by **a pulse on the reset line**, which is in that table's WDT column, so the
+image a flash starts has no watchdog behind it. The proof itself is unchanged: a restart inside
+the proving period is still a failure, and nothing forgives a watchdog.
 
 ### The rails
 

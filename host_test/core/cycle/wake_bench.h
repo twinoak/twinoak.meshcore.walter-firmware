@@ -461,6 +461,9 @@ struct WakeWalter {
     if (w.chip) {
       w.chip->chip.attachTo(target);
       w.chip->chip.on_power_loss = [this] { target.silent = true; };
+      // The reset line reaches the chip (task p18-01): the flasher's exit pulses it, and so does
+      // the supervisor's rung 2.
+      target.on_pin_reset = [this] { w.chip->chip.pinReset(); };
     }
     REQUIRE(w.images.store.begin() == core::image::StoreError::kNone);
     // The modem is handed deadlines on *this* Walter's clock, which began now (sim/fake_modem.h).

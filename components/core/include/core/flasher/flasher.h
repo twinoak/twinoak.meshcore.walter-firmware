@@ -22,7 +22,10 @@
 //   5  kPages, kFirstPage                                   - the pages; the first one last
 //   6  kReadBack, kDigest, kSettingsValidate                - the whole image read back, hashed;
 //                                                             the bootloader told it is valid
-//   7  kReset                                               - a system reset; pins released
+//   7  kReset                                               - debug interface mode ended, the lines
+//                                                             released, and the image started by a
+//                                                             pulse on nRESET (task p18-01: the one
+//                                                             reset that clears a watchdog)
 #pragma once
 
 #include <cstddef>
@@ -91,8 +94,10 @@ struct Result {
   nrf52::Result nrf;          // on kFailed: the nRF52 layer's result
   std::uint32_t address = 0;  // the flash address concerned, when there is one
   const char* why = "";       // one phrase for a person
-  bool reset_issued = false;  // the system reset was requested through the debug port
-  bool port_closed_after_reset = false;  // ... and the module then closed its access port (Fxx)
+  // The image was started by a pulse on the reset line (task p18-01). False after a refusal, a
+  // failure before the halt, and a verify - and when the pulse itself was refused, which is a
+  // kFailed at kReset with the pin layer's word in `why`.
+  bool reset_issued = false;
   // verify() only: the settings page holds a record the bootloader accepts for this image.
   bool settings_valid = false;
   bootloader_settings::Record settings;
