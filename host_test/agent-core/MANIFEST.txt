@@ -60,6 +60,11 @@ a1e370463081b1e10ede6d7f2b0e6df73d0d1b4c3e59897c2f9380afa8174ee7     1003  tests
 389745ef2c9a63e7b670a5831aee17eabdd2fa7d8a34bfe02b1a551b7bf03aac     1245  tests/fixtures/companion/telemetry-response.hex
 7ed0286ea17ce45ed0f91941006d3abac43ecea59371345b3a23226985cab1f3      898  tests/fixtures/companion/trace-data-2byte.hex
 f8bd77ec8f7ee343a997921072df8ad890110f710b51fb714e38d099772314f7      755  tests/fixtures/companion/trace-data.hex
+e91bad5d4a1fdea1b40969fd9fcaf686e1e2d36e1fd9fc6a0702639689a6b901       28  tests/fixtures/contracts-ahead/ClaimRequestHolding.json
+128efa468f516e595fda8e83d528f5fd7fc0bdbc1d1d04b1827bc1e6e223fd11       23  tests/fixtures/contracts-ahead/ClaimRequestHoldingNothing.json
+41cf4f0b5c229fc5bddb4edb0254e3180c08c2e9e77001ce0f668aa7677b0014       32  tests/fixtures/contracts-ahead/ClaimRequestLeft.json
+64f9ffb81a1467c371d2f8d9e7cd2b1d4c897245b89d1568203e77bda2ab8ecf       84  tests/fixtures/contracts-ahead/JobResultReplyWaiting.json
+e78491695f4241d6c8f4e6eba3d071962708d9e08f503739e425b6b3da7d330d     3452  tests/fixtures/contracts-ahead/README.md
 50eff832915e825560612dd0a3a0f52f1c0ef7bcbc1ec89222bda1c5001b3ab7       43  tests/fixtures/contracts/AclSetPayload.json
 6ba2c399877ae4f5b54a6bae56efd787a02f252848245aeb087f4fa14e77cbec       85  tests/fixtures/contracts/AclSetResult.json
 0aa11b683e155673eac3cee6ad8522461776764b1db8c38d7dcdd9adf42efc3b       15  tests/fixtures/contracts/AdvertRequestPayload.json

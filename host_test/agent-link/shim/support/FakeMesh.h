@@ -140,6 +140,17 @@ class FakeMesh : public FakeMeshRepeater {
   uint8_t pathHopCount() const override { return world_.mesh.pathHopCount(); }
   int describePath(char hops[][8], int max) const override { return world_.mesh.describePath(hops, max); }
 
+  // **The way back** (the library's `v0.7.6`, upstream's task p1.21-71): the link's, which tells
+  // none. §6 of the link protocol has no request for a PATH packet, so `LinkMesh` takes the
+  // library's default - nothing goes on the air, the answer is *not told*, and every reply to this
+  // unit is flooded exactly as it was before the bump.
+  //
+  // It is overridden here and not left inherited, because the repeater fake **does** tell one: a
+  // way back told on it would be a packet it sent to itself, never across the link, and the
+  // repeater's count of sends would stand one above `client_tx` at the end of every job - which is
+  // the whole rail this shim exists to hold.
+  mm::IMesh::WayBack tellTheWayBack() override { return world_.mesh.tellTheWayBack(); }
+
   mm::SendResult sendLogin(const char* password, uint32_t& tag) override {
     return world_.mesh.sendLogin(password, tag);
   }
@@ -202,6 +213,7 @@ class FakeMesh : public FakeMeshRepeater {
     bool hasPath() const override { return o_.FakeMeshRepeater::hasPath(); }
     uint8_t pathHopCount() const override { return o_.FakeMeshRepeater::pathHopCount(); }
     int describePath(char hops[][8], int max) const override { return o_.FakeMeshRepeater::describePath(hops, max); }
+    mm::IMesh::WayBack tellTheWayBack() override { return o_.FakeMeshRepeater::tellTheWayBack(); }
     mm::SendResult sendLogin(const char* password, uint32_t& tag) override {
       return o_.FakeMeshRepeater::sendLogin(password, tag);
     }

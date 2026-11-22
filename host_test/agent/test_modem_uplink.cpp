@@ -56,6 +56,23 @@ std::string contract(const char* name) {
   return text;
 }
 
+// And one of the envelopes that **wait** in the copied tree (upstream's §9.1,
+// `tests/fixtures/contracts-ahead/`): a shape meshmaster.dk has agreed in words and does not
+// generate yet, written upstream from the line of its task p4.47-253. Read from the copy and not
+// transcribed here, as the contracts are - the difference is only which directory holds the
+// agreed bytes today.
+std::string ahead(const char* name) {
+  const fs::path path = fs::path(TWINOAK_REPO_ROOT) / "host_test" / "agent-core" / "tests" / "fixtures" /
+                        "contracts-ahead" / (std::string(name) + ".json");
+  std::ifstream in(path, std::ios::binary);
+  REQUIRE_MESSAGE(in.good(), "cannot read " << path.string());
+  std::ostringstream all;
+  all << in.rdbuf();
+  std::string text = all.str();
+  while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+  return text;
+}
+
 std::vector<std::uint8_t> bytesOf(const std::string& text) {
   return std::vector<std::uint8_t>(text.begin(), text.end());
 }
@@ -316,7 +333,7 @@ TEST_CASE("POST /agent/v1/jobs/claim: {max} from the library's writer, the claim
   const int max = std::stoi(member(request, "max"));
   mm::ClaimedJob jobs[4];
   int count = -1;
-  CHECK(rig.uplink.claimJobs(jobs, max, count));
+  CHECK(rig.uplink.claimJobs(jobs, max, count, -1, nullptr, -1));
   const sim::SeenRequest& r = rig.last();
   CHECK(r.path == "/agent/v1/jobs/claim");
   rig.headersOn(r, true);
@@ -336,14 +353,58 @@ TEST_CASE("POST /agent/v1/jobs/claim: {max} from the library's writer, the claim
   rig.tokenNowhere("after the claim");
 }
 
+// **The two members the library hands the claim in with**, on the wire (upstream's tasks p1.20-69
+// and p1.20-70, the library's `v0.7.6`): `transactionsLeft` after `max` and `holding` last, each
+// written by the library's own writer into a request buffer of `mm::kMaxClaimRequestLen` - which
+// was 32 bytes here before the bump and a list of held jobs does not fit. The bytes are held
+// against the envelopes waiting in the copied tree, which is what the server has agreed to read.
+TEST_CASE("POST /agent/v1/jobs/claim: transactionsLeft and holding, as the waiting envelopes have them") {
+  Rig rig;
+  rig.serve("/agent/v1/jobs/claim", contract("ClaimResponse"));
+  mm::ClaimedJob jobs[4];
+  int count = -1;
+
+  // Nothing stated of either: the first claim of a wake, and `{"max":N}` as it always was - the
+  // contract fixture's own body, to the byte.
+  CHECK(rig.uplink.claimJobs(jobs, std::stoi(member(contract("ClaimRequest"), "max")), count, -1, nullptr, -1));
+  CHECK(rig.last().body == contract("ClaimRequest"));
+
+  // The transactions this wake has left, and nothing held.
+  const long long none[1] = {0};
+  const std::string left = ahead("ClaimRequestLeft");
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, 17, none, 0));
+  CHECK(rig.last().body == left.substr(0, left.size() - 1) + ",\"holding\":[]}");
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, -1, none, 0));
+  CHECK(rig.last().body == ahead("ClaimRequestHoldingNothing"));
+
+  // And one result this end keeps and has not had taken.
+  const long long holding[1] = {12345};
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, -1, holding, 1));
+  CHECK(rig.last().body == ahead("ClaimRequestHolding"));
+
+  // The longest body that writer can write - eight ids, each of them long - fits the buffer and
+  // goes out whole: the claim is sized from the library's own bound and not from a guess.
+  long long full[mm::kClaimHoldingMax];
+  for (int i = 0; i < mm::kClaimHoldingMax; ++i) full[i] = 9000000000000000000LL + i;
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, 2000000000, full, mm::kClaimHoldingMax));
+  char longest[mm::kMaxClaimRequestLen] = {};
+  const std::size_t n = mm::writeClaimRequest(2, longest, sizeof longest, 2000000000, full, mm::kClaimHoldingMax);
+  REQUIRE(n > 0);
+  CHECK(rig.last().body == std::string(longest, n));
+  CHECK(rig.last().body.size() <= mm::kMaxClaimRequestLen);
+  rig.tokenNowhere("after the claims");
+}
+
 TEST_CASE("POST /agent/v1/jobs/{id}/result, /extend and /progress: the per-job routes and their replies") {
   Rig rig;
+  bool waiting = true;  // the answer's `jobsWaiting`, which this reply does not carry
   const std::string report = contract("JobResultReport");
   rig.serve("/agent/v1/jobs/12345/result", contract("JobResultReply"));
-  CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size()));
+  CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
   CHECK(rig.last().path == "/agent/v1/jobs/12345/result");
   rig.headersOn(rig.last(), true);
   CHECK(rig.last().body == report);
+  CHECK_FALSE(waiting);  // this reply carries no `jobsWaiting`, and absent is nothing
   rig.tokenNowhere("after the result");
 
   const std::string extend = contract("ExtendRequest");
@@ -372,6 +433,50 @@ TEST_CASE("POST /agent/v1/jobs/{id}/result, /extend and /progress: the per-job r
   CHECK(rig.client.requests() == 3);
   CHECK(rig.uplink.uplinkCounters().calls == 3);
   CHECK(rig.uplink.uplinkCounters().ok == 3);
+}
+
+// **The answer's own `jobsWaiting`, read before the reply is wiped** (upstream's task p1.20-69,
+// the library's `v0.7.6`): whether a claim by this exit node now would be handed a job. The post
+// wipes the reply as soon as it has its status - a result's answer carries nothing this firmware
+// kept until now - so the member is read there, with the library's reader, or it is read from
+// zeros.
+TEST_CASE("the answer to a result says whether more waits, and the bytes are still wiped") {
+  Rig rig;
+  const std::string report = contract("JobResultReport");
+  bool waiting = false;
+
+  // The waiting envelope of the copied tree: the same reply with `jobsWaiting` last.
+  rig.serve("/agent/v1/jobs/12345/result", ahead("JobResultReplyWaiting"));
+  CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
+  CHECK(waiting);
+  // And the reply itself is gone: what the member said is in a bool, not in a buffer.
+  CHECK_FALSE(holds(&rig.uplink, sizeof rig.uplink, "jobsWaiting"));
+
+  // The answer of a server that has never heard of the member: nothing, which is false.
+  rig.serve("/agent/v1/jobs/12345/result", contract("JobResultReply"));
+  CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
+  CHECK_FALSE(waiting);
+
+  // A 200 whose body is not JSON at all: the result is still taken - the server answered 200 and
+  // a result is never re-posted for want of a reply this firmware can read - and nothing waits.
+  waiting = true;
+  rig.serve("/agent/v1/jobs/12345/result", "not json");
+  CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
+  CHECK_FALSE(waiting);
+
+  // And a result the gate withholds: nothing goes out, the runner is told it was taken, and
+  // nothing waits - there was no answer to read it from (`ResultGate`, task p16-04).
+  struct Withhold final : agent::ResultGate {
+    bool withhold(long long) override { return true; }
+  } gate;
+  rig.uplink.setResultGate(&gate);
+  waiting = true;
+  rig.serve("/agent/v1/jobs/99/result", ahead("JobResultReplyWaiting"));
+  const std::size_t sent = rig.server().requests.size();
+  CHECK(rig.uplink.postJobResult(99, report.c_str(), report.size(), waiting));
+  CHECK_FALSE(waiting);
+  CHECK(rig.server().requests.size() == sent);  // nothing went out
+  rig.tokenNowhere("after the results");
 }
 
 // ---------------------------------------------------------------------------- what a status means
@@ -404,8 +509,10 @@ TEST_CASE("429 with Retry-After in seconds and as a date, 503 with and without, 
   rig.server().statuses["/agent/v1/jobs/6/result"] = sim::StatusRule{403, "", "paused"};
   rig.server().statuses["/agent/v1/jobs/7/result"] = sim::StatusRule{429, "86400", ""};
   const std::string body = "{}";
+  bool waiting = true;  // false after every one of these: a call that got no answer said nothing
 
-  CHECK_FALSE(rig.uplink.postJobResult(1, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(1, body.c_str(), body.size(), waiting));
+  CHECK_FALSE(waiting);  // a call that failed said nothing about more work
   mm::IUplink::Call c = rig.uplink.lastCall();
   CHECK(c.reachable);
   CHECK(c.httpStatus == 429);
@@ -414,38 +521,38 @@ TEST_CASE("429 with Retry-After in seconds and as a date, 503 with and without, 
   CHECK(mm::retryAfterMs(c.retryAfterS) == 45000);
   CHECK(has(c.error, "http 429"));
 
-  CHECK_FALSE(rig.uplink.postJobResult(2, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(2, body.c_str(), body.size(), waiting));
   c = rig.uplink.lastCall();
   CHECK(c.httpStatus == 429);
   CHECK(c.retryAfterS == 0);  // an HTTP date: the library's rule, and retryAfterMs makes it a minute
   CHECK(mm::actionFor(c.reachable, c.httpStatus, c.retryAfterS) == mm::ServerAction::WaitRetryAfter);
   CHECK(mm::retryAfterMs(c.retryAfterS) == mm::kRetryAfterWhenUnstatedMs);
 
-  CHECK_FALSE(rig.uplink.postJobResult(3, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(3, body.c_str(), body.size(), waiting));
   c = rig.uplink.lastCall();
   CHECK(c.httpStatus == 503);
   CHECK(c.retryAfterS == 120);
   CHECK(mm::actionFor(c.reachable, c.httpStatus, c.retryAfterS) == mm::ServerAction::WaitRetryAfter);
 
-  CHECK_FALSE(rig.uplink.postJobResult(4, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(4, body.c_str(), body.size(), waiting));
   c = rig.uplink.lastCall();
   CHECK(c.httpStatus == 503);
   CHECK(c.retryAfterS == 0);
   CHECK(mm::actionFor(c.reachable, c.httpStatus, c.retryAfterS) == mm::ServerAction::BackOff);
 
-  CHECK_FALSE(rig.uplink.postJobResult(5, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(5, body.c_str(), body.size(), waiting));
   c = rig.uplink.lastCall();
   CHECK(c.httpStatus == 500);
   CHECK(mm::actionFor(c.reachable, c.httpStatus, c.retryAfterS) == mm::ServerAction::BackOff);
   CHECK_FALSE(has(c.error, "boom"));
 
-  CHECK_FALSE(rig.uplink.postJobResult(6, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(6, body.c_str(), body.size(), waiting));
   c = rig.uplink.lastCall();
   CHECK(c.httpStatus == 403);
   CHECK(mm::actionFor(c.reachable, c.httpStatus, c.retryAfterS) == mm::ServerAction::Discard);
 
   // A day's Retry-After is believed for an hour, where the client bounds its own reading too.
-  CHECK_FALSE(rig.uplink.postJobResult(7, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(7, body.c_str(), body.size(), waiting));
   c = rig.uplink.lastCall();
   CHECK(c.retryAfterS == core::net::kRetryAfterCapS);
 
@@ -555,7 +662,7 @@ TEST_CASE("a body one byte over the bound is cut and the call is not ok, with th
   rig.serve("/agent/v1/jobs/claim", claim);
   mm::ClaimedJob jobs[2];
   int count = 0;
-  CHECK(rig.uplink.claimJobs(jobs, 2, count));
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, -1, nullptr, -1));
   CHECK(count == 1);
   rig.tokenNowhere("after the bound");
 }
@@ -698,18 +805,19 @@ TEST_CASE("the 120-a-minute ceiling is kept on this side: the 121st call in a mi
   rig.socket().connect_ms = 1;
   rig.socket().piece_ms = 0;
   const std::string body = "{}";
+  bool waiting = false;
   for (int i = 0; i < 120; ++i) {
-    CHECK(rig.uplink.postJobResult(1, body.c_str(), body.size()));
+    CHECK(rig.uplink.postJobResult(1, body.c_str(), body.size(), waiting));
   }
   CHECK(rig.server().requests.size() == 120);
-  CHECK_FALSE(rig.uplink.postJobResult(1, body.c_str(), body.size()));
+  CHECK_FALSE(rig.uplink.postJobResult(1, body.c_str(), body.size(), waiting));
   CHECK(rig.server().requests.size() == 120);
   CHECK_FALSE(rig.uplink.lastCall().reachable);
   CHECK(has(rig.uplink.lastCall().error, "held back by the 120-a-minute ceiling"));
   CHECK(rig.uplink.uplinkCounters().held == 1);
   CHECK(rig.uplink.limiter().held() == 1);
   rig.clock.advance(60001);
-  CHECK(rig.uplink.postJobResult(1, body.c_str(), body.size()));
+  CHECK(rig.uplink.postJobResult(1, body.c_str(), body.size(), waiting));
 }
 
 TEST_CASE("link(): the ups and downs the owner says, counted") {

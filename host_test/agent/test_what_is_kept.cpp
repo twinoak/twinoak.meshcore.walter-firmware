@@ -107,14 +107,22 @@ TEST_CASE("a heartbeat answered 503 and a claim that never came back are both in
   CHECK(has(said, "http 503"));
   CHECK(has(said, "claim, wake "));
   CHECK(has(said, "nothing answered, "));
+  // **Three entries and not two, since the library's `v0.7.6`**: a claim whose answer did not come
+  // back whole is asked **once** more in the same wake (upstream's task p1.20-70), because the
+  // server leases a claim's jobs in the moment it answers and a silent claim may have left this
+  // unit holding leases it knows nothing of. A silenced route answers neither, so this wake makes
+  // two claims and both are in the list - which is what a person reading `agent calls` should see.
   const agent::CallLog& log = bench.half().calls;
-  REQUIRE(log.count() == 2);
+  REQUIRE(log.count() == 3);
   CHECK(log.at(0).what == agent::CallKind::kClaim);
   CHECK(log.at(0).status == 0);
-  CHECK(log.at(1).what == agent::CallKind::kHeartbeat);
-  CHECK(log.at(1).status == 503);
+  CHECK(log.at(1).what == agent::CallKind::kClaim);
+  CHECK(log.at(1).status == 0);
+  CHECK(log.at(1).wake == log.at(0).wake);  // the pair is one wake's
+  CHECK(log.at(2).what == agent::CallKind::kHeartbeat);
+  CHECK(log.at(2).status == 503);
   // The two wakes are two numbers, and the newer one is the larger.
-  CHECK(log.at(0).wake > log.at(1).wake);
+  CHECK(log.at(0).wake > log.at(2).wake);
   // And each is dated by this unit's own clock, which the uplink gave it at step 6.
   CHECK(log.at(0).at_epoch > 0);
 
@@ -122,7 +130,7 @@ TEST_CASE("a heartbeat answered 503 and a claim that never came back are both in
   // entries, not the whole text - the line above them counts what *this boot* recorded and wrote,
   // and a boot that recorded nothing is the point.
   const std::vector<std::string> before = entriesOf(said);
-  REQUIRE(before.size() == 2);
+  REQUIRE(before.size() == 3);
   bench.boot();
   bench.v().begin();
   CHECK(entriesOf(bench.v().runLine("agent calls")) == before);
@@ -134,10 +142,11 @@ TEST_CASE("a heartbeat answered 503 and a claim that never came back are both in
   bench.boot(interfaces::WokeBy::kNotFromSleep, core::health::ResetReason::kPowerOn);
   bench.v().begin();
   const agent::CallLog& after = bench.half().calls;
-  REQUIRE(after.count() == 2);
+  REQUIRE(after.count() == 3);
   CHECK(after.at(0).what == agent::CallKind::kClaim);
-  CHECK(after.at(1).what == agent::CallKind::kHeartbeat);
-  CHECK(after.at(1).status == 503);
+  CHECK(after.at(1).what == agent::CallKind::kClaim);
+  CHECK(after.at(2).what == agent::CallKind::kHeartbeat);
+  CHECK(after.at(2).status == 503);
 }
 
 TEST_CASE("a 401 and a 429 are in the list, which the library's httpFailures leaves out") {

@@ -23,6 +23,6 @@ direct_dependencies:
 - bblanchon/arduinojson
 - dptechnics/walter-modem
 - idf
-manifest_hash: 147e31b4bb28b65bd48b1307f220b63e5d6ab458bd1068307f7b9aecf2e707a1
+manifest_hash: 0742f09d8635aa858138e1638716ef723707f68a5c3fb5c0f2df684ffd89de61
 target: esp32s3
 version: 2.0.0

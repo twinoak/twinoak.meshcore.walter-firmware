@@ -546,10 +546,23 @@ bool ModemUplink::postObservations(const char* body, std::size_t len, int& accep
   return true;
 }
 
-bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count) {
+// **The claim, and the two members the library hands in with it** (the library's `v0.7.6`,
+// upstream's tasks p1.20-69 and p1.20-70): `transactionsLeft` is what the wake has left of the cap
+// its heartbeat stated and is left out below 0, and `holding` is the ids of the results the runner
+// keeps and has not had taken. Both are passed straight on to the library's own writer and neither
+// is written here - a claim this firmware wrote a member of itself would be a second dialect.
+//
+// The request buffer is `mm::kMaxClaimRequestLen`, which is **the longest body that writer can
+// write**: `{"max":N}` with both members and `holding` full (eight ids). It was 32 bytes until
+// this bump, which `{"max":2,"holding":[]}` still fits and a list of held jobs does not - and a
+// body that does not fit is refused whole by the writer (0 back), so a claim sized by a guess
+// would have gone out as an empty POST and been a 400.
+bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count, int transactionsLeft,
+                            const long long* holding, int holdingCount) {
   count = 0;
-  char request[32] = {};
-  const std::size_t request_len = mm::writeClaimRequest(max, request, sizeof request);
+  char request[mm::kMaxClaimRequestLen] = {};
+  const std::size_t request_len =
+      mm::writeClaimRequest(max, request, sizeof request, transactionsLeft, holding, holdingCount);
   std::size_t len = 0;
   Call c;
   if (!call(CallKind::kClaim, "/jobs/claim", reinterpret_cast<const std::uint8_t*>(request), request_len, kClaimReplyBytes, len, c) ||
@@ -629,7 +642,16 @@ void ModemUplink::coverTheLeases(mm::ClaimedJob* jobs, int count) {
   }
 }
 
-bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t len) {
+// **And what the answer to a result says about more work waiting** (the library's `v0.7.6`,
+// upstream's task p1.20-69): `jobsWaiting`, read out of the reply this call already has with the
+// library's own reader, before the bytes are wiped. A wake with more than one claim in its intent
+// claims again on it; this unit's intent is one claim a wake today, so the answer is read, carried
+// back and acted on by nobody until pile 18's task 02 sets that field.
+//
+// False whenever this returns false - a call that got no answer said nothing - and false for a
+// result the gate withholds, which never went out at all.
+bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t len, bool& jobsWaiting) {
+  jobsWaiting = false;
   if (gate_ != nullptr && gate_->withhold(jobId)) {
     // The extension left this job to its lease (walter_agent/modem_uplink.h, ResultGate): nothing
     // goes, and the runner is told the result is taken so that it neither keeps nor re-posts it.
@@ -641,6 +663,7 @@ bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t l
   std::size_t reply_len = 0;
   Call c;
   const bool ok = callJob(CallKind::kResult, jobId, "result", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) && c.ok;
+  if (ok) jobsWaiting = mm::resultReplySaysJobsWaiting(reply_, reply_len);
   wipeReply();
   return ok;
 }

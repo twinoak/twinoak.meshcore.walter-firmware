@@ -331,8 +331,15 @@ while(AGENT_CORE_LINKS)
 endwhile()
 
 # Each suite has a main() of its own, as it does upstream, so each is its own binary and its own
-# ctest entry: a failure names the suite. The three defines are upstream's [env:native]'s, over
+# ctest entry: a failure names the suite. The four defines are upstream's [env:native]'s, over
 # the staged root instead of over that tree.
+#
+# AHEAD_FIXTURES_DIR is the third of upstream's fixture directories and came across with the copy
+# in the sync pile's task 02: the envelopes upstream wrote from meshmaster.dk's lines before that
+# server generates them (`tests/fixtures/contracts-ahead/README.md`, upstream's §9.1). Its loop
+# suite reads four of them and stops at an `#error` without the define. It is **not** this
+# repository's own `host_test/fixtures/contracts-ahead/`, which holds the Walter's waiting files
+# and is read by name by the tests that read it.
 foreach(suite runner loop)
   set(target agent_core_${suite}_tests)
   add_executable(${target} ${AGENT_CORE_HOST}/test/test_${suite}/test_${suite}.cpp)
@@ -341,6 +348,7 @@ foreach(suite runner loop)
   target_compile_definitions(${target} PRIVATE
     PROJECT_DIR="${AGENT_CORE_PROJECT}"
     FIXTURES_DIR="${AGENT_CORE_HOST}/tests/fixtures/contracts"
+    AHEAD_FIXTURES_DIR="${AGENT_CORE_HOST}/tests/fixtures/contracts-ahead"
     COMPANION_DIR="${AGENT_CORE_HOST}/tests/fixtures/companion")
   twinoak_ours(${target})
 endforeach()
@@ -435,6 +443,7 @@ foreach(binary agent_core_runner_link_tests agent_link_tests agent_core_loop_upl
   target_compile_definitions(${binary} PRIVATE
     PROJECT_DIR="${AGENT_CORE_PROJECT}"
     FIXTURES_DIR="${AGENT_CORE_HOST}/tests/fixtures/contracts"
+    AHEAD_FIXTURES_DIR="${AGENT_CORE_HOST}/tests/fixtures/contracts-ahead"
     COMPANION_DIR="${AGENT_CORE_HOST}/tests/fixtures/companion"
     TWINOAK_VERSION="${TWINOAK_VERSION}"
     TWINOAK_SPEC_FIXTURES="${SPEC_FIXTURES}"
@@ -506,20 +515,63 @@ endforeach()
 # scenarios through the modem's uplink (task p4-03); the agent behind the seam with a repeater on
 # the air, and the month (task p4-05).
 #
-# **Two of the library's own cases are not run through the link shim** (the sync task of
-# `agent-core` v0.7.3), and they are the only two of either suite that are not. Both script a
-# reply that came home after its own wait and assert that the wait **goes on** and finds the
-# answer it was waiting for: that is the Heltec's radio, which the library reads itself. §6.2's
-# RAK awaits "until a matching reply arrives or the time is up" and §6.3 reports that outcome
-# **once**, so on this road the exchange a late reply was handed to is over and the reply it
-# waited for is lost - the reading is the same and the library's rule fires exactly as upstream's
-# (the log lines are asserted on either road), but the job pays one more try for it. Both cases
-# run unchanged in upstream's own `agent_core_runner` binary, where they belong, and the Walter's
-# half of each is `host_test/agent-link/test_link_mesh.cpp`'s
+# **Sixteen of the library's own cases are not run through the link shim**, in three groups, and
+# they are the only cases of either suite that are not. Each group is a thing the Heltec's radio
+# can do that a RAK on a wire cannot, and every one of them runs unchanged in upstream's own
+# `agent_core_runner` binary, where it belongs.
+#
+# **A reply that came home late** (two cases, the sync task of `agent-core` v0.7.3). Both script a
+# reply that arrived after its own wait and assert that the wait **goes on** and finds the answer
+# it was waiting for: that is the Heltec's radio, which the library reads itself. §6.2's RAK awaits
+# "until a matching reply arrives or the time is up" and §6.3 reports that outcome **once**, so on
+# this road the exchange a late reply was handed to is over and the reply it waited for is lost -
+# the reading is the same and the library's rule fires exactly as upstream's (the log lines are
+# asserted on either road), but the job pays one more try for it. The Walter's half of each is
+# `host_test/agent-link/test_link_mesh.cpp`'s
 # `ALateRequestReplyEndsTheReLoginsExchangeAndCostsOneMoreTry` and
 # `ALateConsoleReplyEndsTheNextLinesExchangeAndTheValueIsStillItsOwn`.
-set(LINK_SHIM_SKIPPED
-    "-RunnerTest.ALateRequestReplyDuringTheReLoginIsDroppedAndTheJobRunsOn:RunnerTest.AConsoleReplyThatCameTooLateIsNotStoredAsTheNextLinesValue")
+#
+# **The way back** (eleven cases, the sync task of `agent-core` v0.7.7, upstream's task p1.21-71).
+# A repeater answers a direct request along the way home a PATH packet taught it, and the library
+# teaches one through `IMesh::tellTheWayBack()`. §6 of the link protocol has **no request that
+# sends a PATH packet**, so `LinkMesh` takes the library's defaulted member - it tells none, which
+# is what every mesh did before that task - and §6.3's reply record says nothing about how a reply
+# arrived (`via_path` is a path return and not a flood), so `MeshReply::route` reads *not known*
+# here. These eleven assert the ways back a mesh told, or that a reply came *flooded* rather than
+# by a route this end cannot read. `host_test/agent-link/test_link_mesh.cpp`'s
+# `AMeshOverTheLinkTellsNoWayBackAndSaysSoInEveryJobsLog` is the Walter's half of all eleven: the
+# default answers *not told*, nothing goes on the air for it, and the log says so once a job.
+#
+# **A job log capped at 1 024 bytes** (three cases). The log is a ring of whole entries
+# (`mm::JobLog`) and this road writes **more** of them than upstream's: the sentence about a mesh
+# that tells no way back, and `reply route unknown` on every reply. In three of upstream's longest
+# jobs that pushes the entry the case greps for off the front of the log. The behaviour is the
+# same on both roads - what differs is how much of a job's own evidence fits beside it.
+# The cases, by name, and the filter GoogleTest takes - one `-` and the names joined by colons.
+# A list and not one long string, so that a name can be read, added and removed on its own line.
+set(LINK_SHIM_SKIP_CASES
+    # a reply that came home late (v0.7.3)
+    ALateRequestReplyDuringTheReLoginIsDroppedAndTheJobRunsOn
+    AConsoleReplyThatCameTooLateIsNotStoredAsTheNextLinesValue
+    # the way back (v0.7.7)
+    TwentyTwoNovemberTheRepliesComeBackTheWayTheRequestsWent
+    TheSameReadOnAMeshThatTellsNoWayBackHasEveryReplyFlooded
+    AGuestsFirstLoginEndsDirectAndTellsExactlyTwoWaysBack
+    APairOfNoHopsTellsTheEmptyPathAsItsWayBack
+    AFourHopPathInThreeByteHashesIsReversedAtThatWidth
+    AReusedSessionWhoseClaimNamesAnotherPathTellsTheWayBackAgain
+    AReusedSessionAlongTheSamePathTellsNoWayBack
+    AFloodedLoginIsPrecededByNothingAndTheTaughtPathIsToldBeforeTheRequest
+    AWayBackLostOnTheAirIsToldOnceMoreAndThenTheRepliesAreDirect
+    ADeadWayBackEndsTheJobAsSilenceDoesAndNothingNewIsTried
+    TheWayBackAndTheLoginAreOneSlotOfTheGateAndOneTransaction
+    # the job log, capped at 1 024 bytes (v0.7.7)
+    ARevokeIsConfirmedByABlankLoginAnsweredAtGuest
+    ARevokeOnARepeaterWithAGuestPasswordCannotBeConfirmed
+    ALateReplyDuringAnApplysReReadIsNotTheNextKeysValue)
+list(TRANSFORM LINK_SHIM_SKIP_CASES PREPEND "RunnerTest.")
+list(JOIN LINK_SHIM_SKIP_CASES ":" LINK_SHIM_SKIPPED)
+set(LINK_SHIM_SKIPPED "-${LINK_SHIM_SKIPPED}")
 foreach(binary agent_core_runner_link_tests agent_link_tests agent_core_loop_uplink_tests agent_backend_tests)
   if(binary STREQUAL agent_core_runner_link_tests)
     add_test(NAME ${binary} COMMAND ${binary} --gtest_filter=${LINK_SHIM_SKIPPED})
