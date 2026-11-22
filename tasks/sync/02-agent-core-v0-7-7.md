@@ -1,4 +1,4 @@
-# 01 — agent-core v0.7.7
+# 02 — agent-core v0.7.7
 
 **Depends on:** nothing.
 **Written by:** `tools/new-sync-task.ps1 -Tag v0.7.7` on 22 November 2026.
@@ -15,9 +15,60 @@ needs a session: a green bump is merged by a person and costs nobody anything.
 
 pull request #92
 
-The failing job:
+The failing job: run 45067273902, job 137346366975 (`verify`), of 22 November. What it says
+is in the next section.
 
-    Not recorded when this file was written. `gh run view --log-failed` on the newest red run of the branch.
+## What was read before the run (the reviewer, 22 November)
+
+- **The host tests stop at a define.** The library's copied `test_loop.cpp` wants
+  `AHEAD_FIXTURES_DIR` (~L61, ~L1455, ~L1558): upstream's tasks p1.20-69 and 70 keep four
+  fixtures in its `tests/fixtures/contracts-ahead/` until meshmaster.dk's own arrive.
+  `tools/sync-agent-core.ps1` (~L91) copies `tests/fixtures/contracts` and `companion` and not
+  that directory, and `host_test/CMakeLists.txt` (~L343, ~L372, ~L437, ~L472) defines
+  `FIXTURES_DIR` and `COMPANION_DIR` only. The copy brings the third directory, `-Verify`
+  holds it to the manifest like the other two, and the define is given wherever the copied
+  suites are compiled. It is not this repository's own `host_test/fixtures/contracts-ahead/`,
+  which holds the Walter's waiting files and stays as it is.
+- **The firmware stops at two signatures.** `IUplink::claimJobs` gained `transactionsLeft`,
+  `holding` and `holdingCount`; `postJobResult` gained `bool& jobsWaiting`. `ModemUplink`
+  (`modem_uplink.h` ~L284-285; `modem_uplink.cpp` ~L549-583 and ~L632-646) overrides neither
+  any more. Its claim is written into `char request[32]`, which a list of held jobs does not
+  fit: size it from what the library can write, not from a guess. Its result post wipes the
+  reply unread: `jobsWaiting` is read from it with the library's own reader before the wipe,
+  and a result the gate withholds (~L633-640) says false. The shim
+  (`host_test/agent-uplink/shim/support/FakeUplink.h`) and every other `IUplink` here follow.
+- **This bump is eight of upstream's tasks.** The copy is at `b6d4cfb` (v0.7.3). Between it
+  and `be69234` lie p1.17-65, p1.18-66 and 67, p1.19-68, p1.20-69 and 70 and p1.21-71, and
+  eight headers of `include/agent/` moved: `AgentLoop.h`, `IMesh.h`, `IUplink.h`,
+  `JobEnvelopes.h`, `JobRunner.h`, `ServerPolicy.h`, `Sessions.h`, `Version.h`. Step 1 reads
+  the changelog's sections of v0.7.4 to v0.7.7, all four.
+- **What acts on this unit at once, with nothing here asking for it.** Say for each, in the
+  report, what a Walter does after the bump:
+  - *One more claim after a claim that did not come back whole* (p1.20-70). The lost answer
+    takes this unit's claim now and then (`tasks/phase-17/FOLLOWUPS.md`, *A claim whose answer
+    was lost*). Show with the fake modem that a wake whose first claim loses its answer makes
+    the second inside the wake's bound and its uplink budgets and ends by its sleep, never by
+    the guard's reset; give the wake's length.
+  - *`holding` in every claim*, and meshmaster.dk's task 254 behind it: a claim is answered
+    first with the leases this exit node has and did not name. This firmware keeps work
+    across a sleep that the library does not hold: a job the result gate left to its lease
+    (a fetch that ran out of the wake's budget), a session the bound cut, an apply whose
+    result waits for the next boot. For each: what a claim that says `holding: []` is handed
+    by such a server, in which order the wake posts and claims, and what this firmware does
+    with a job it is handed back. **If any of them ends in a job run twice or a flash started
+    twice, stop: write it in the report and merge nothing.**
+  - *The way back* (p1.21-71): `IMesh`'s new member has a default that sends nothing, so
+    `LinkMesh` is untouched and a reply's route reads *not known* here.
+- **Pile 18's task 02 waits for this bump and is not part of it.** `maxClaimsThisWake` stays
+  unset: one claim a wake, as today, bar the second one above.
+- **This file was written as a second `01`, and the driver skipped it.**
+  `tools/new-sync-task.ps1` (~L84-86) lists the tasks there are with
+  `Get-ChildItem -Filter '[0-9][0-9]-*.md'`; `-Filter` knows `*` and `?` and no character
+  classes, so it finds nothing and every task is number 01, whose report is on `main` since
+  v0.7.3. Renamed to 02 by hand. Its second fault: it puts the newest row first, and the
+  driver runs from the first row's number to the last's (`tasks/run-all.ps1` ~L136-137), which
+  with rows 02 and 01 is nothing. Mend both in this task (the names matched properly, the
+  new row last, `tasks/sync/README.md`'s words to match) and show the tool's next number is 03.
 
 ## The task
 
