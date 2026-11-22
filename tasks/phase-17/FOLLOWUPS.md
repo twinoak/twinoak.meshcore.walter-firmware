@@ -140,3 +140,76 @@ No code was read. The copy is at `b6d4cfb2`, 0.7.3.
   under their own keys (the one that needs a real repeater: it rests on stock firmware
   reflecting the prefix), a region map loaded by a `config.apply`, and the same adverts not
   stored twice after a night of hourly wakes.
+
+## A claim whose answer was lost (21 November)
+
+Read from the unit's own report of 21 November 20:12Z (jobs 39366 and 39367), the first on
+0.1.10+c07576d. No code was changed.
+
+- [ ] **[next, Thomas to decide] The lost answer took a claim, and the server's jobs with it.**
+  Wake 602 (19:11Z) is in the list as *timer MS-; awake 73 s*, and `agent calls` holds
+  *claim, wake 602: http 200* among the calls that did not come back whole (`ModemUplink::call`
+  records a 2xx whose body was cut or did not arrive whole; a claim that does not parse is not
+  put in that list). An ordinary wake is 44 to 45 s with the one 30 s stall of the observations
+  post; 73 s is two stalls. The server had answered 200 and leased two jobs to the unit:
+  `twinoak.fw.offer` 39302 (the scanner image) and `status` 39312. The unit never held either.
+  The offer has one attempt and ended *failed: the exit node took this job and never reported a
+  result*; the status waited out its lease. The same shape as job 32763 on 17 November (*taken
+  twice, and no answer came before it expired*). The counter reads 28 claim failures in 1 628
+  heartbeats.
+- [ ] **[next] What would make it harmless**, as rules and not guesses: a claim that hands back
+  the leases this exit node already holds and has not reported (meshmaster.dk), and one more
+  claim in the same wake when a claim came back 2xx without its body (here). Offered, not
+  written.
+- [ ] **[later] The list says *http 200* and not which of the two it was.** `noteFailedCall`
+  keeps the status and the outcome; *cut at the bound* and *did not arrive whole* read the same
+  in a report, and the sentence that told them apart was a log line the sleep took.
+
+## The first session on hardware (21 November, 22:20Z to 22:41Z)
+
+Session 1 on the unit at Bellevue (meshmaster.dk job 39506, `/noisescope/1`), Walter
+0.1.10+c07576d, radio and scanner 0.1.6+fcf52d5. Read from the session's journal, the unit's
+report of 23:23Z and the code. No code was changed.
+
+- [ ] **[next] The golden image is proved while the scanner's watchdog is still running, so
+  every session ends `stuck`.** The journal: *flashing-golden* 22:30:38, *booting: the radio was
+  reset* 22:39:52, *proving* 22:39:54, **stuck: the radio restarted inside the proving period**
+  22:40:53. The report an hour later: `radio status: uptime 2570 s, booted: 3 (watchdog)`, *the
+  radio is healthy; the supervisor is idle*. The scanner starts the nRF52840's hardware watchdog
+  at 60 s (`src/roles/scanner/Wdt.h` and `config.h` ~L116–136 in the repeater firmware: *cannot
+  be stopped and survives the soft reset*), with `HALT_Pause`, so it stands still while the core
+  is halted for the flash. The flasher leaves by `Nrf52::systemReset()`, which is
+  AIRCR.SYSRESETREQ (`components/core/flasher/flasher.cpp` ~L508–520,
+  `components/core/nrf52/nrf52.cpp` ~L291–304): a soft reset, which does not reset that
+  watchdog. The repeater feeds nothing (*upstream's own loop has no watchdog*), so it is reset
+  59 s after its first boot, and a restart inside the three-minute proving period is a failure by
+  rule (`radio_update.cpp` ~L731–741). The watchdog's own reset clears it; the repeater has run
+  since, adverted under its own key at 22:41Z and answered an admin login over the mesh at
+  23:22Z. Nothing was lost but the verdict. **What a fix has to decide:** a reset that clears the
+  watchdog after a flash over a scanner (the reset line, with the spacing rule of
+  `LINK-PROTOCOL.md` §10 and debug interface mode ended first), or a proof that begins at the
+  boot after the watchdog's. Offered, not written.
+- [ ] **[none] What worked, for the record.** The PSRAM's first use on a board: *room: 65536
+  psram of 2097152; internal 32748, block 12288, least 30604*. Six steps, 284 lines,
+  101 037 bytes, every scope step its full 60 frames. The flashes took 4 min 48 s (the scanner,
+  127 kB) and 9 min 14 s (the golden image, 424 kB); the repeater was off the mesh 19 min, where
+  the page says about 37.
+- [ ] **[later] The scanner was never given the time.** Its `info` line says `rtc:0`, every line
+  carries `ts:0`, and meshmaster.dk places the windows *by the time since the scanner started*.
+- [ ] **[later] The scanner says `reset: por`** after a flash over SWD and a SYSRESETREQ.
+- [ ] **[later, Thomas] Whole frames lit across every frequency**: 14 of 60 frames in the
+  400 kHz scope with a median of -88 dBm where the others read -125.5, peaks to -32 dBm; 11 of
+  60 and 4 of 60 in the two wider ones; the dwell on 869.618 MHz has a strongest second of
+  -33 dBm. Most likely the unit's own LTE beside the antenna; not checked against the modem's
+  activity. If so, the repeater hears nothing while the Walter sends.
+- [ ] **[next] The unit took the session up again an hour later and restored it, and the server
+  was never told.** Its journal, read on 22 November (report 39710/39711): seq 1084 *session,
+  stuck*; seq 1085 wake 608, *attention*, 90 s, nothing done about the session; then at the
+  timer wake 609 (00:24Z, awake 611 s) seq 1086 to 1094: *check - switch back to the repeater*,
+  *rolling-back*, *flashing-golden*, *booting*, *proving*, *done (the health check passed
+  182964 ms of proving)*, **session, restored slot 0**. So a session that ends `stuck` by the
+  watchdog costs the repeater a second outage of about seven minutes at the next timer wake and
+  then is right. meshmaster.dk still reads *Stuck: the repeater's own image did not come back*:
+  the job's one result was `stuck` and nothing posts the later ending.
+- [ ] **[later] A wake a person asked for does not take an open session up; the timer's does.**
+  Seen once (wake 608 against 609); not read in the code.
