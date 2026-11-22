@@ -267,8 +267,8 @@ target_include_directories(agent_core SYSTEM PUBLIC ${ARDUINOJSON}/src)
 twinoak_ours(agent_core)
 
 # -- the library's own suites, here (task p4-01) ------------------------------------------------
-# test/test_runner (123 cases: all thirteen job types, one send per command, the credential wiped,
-# the lease, the offline buffer) and test/test_loop (74: the loop, the heartbeat's bytes, the
+# test/test_runner (136 cases: all thirteen job types, one send per command, the credential wiped,
+# the lease, the offline buffer, the way back) and test/test_loop (91: the loop, the heartbeat's bytes, the
 # backoff, the reboot guard, every wake case, and what a sleep keeps - the image's bytes, a torn
 # one refused whole, the uplink's ledger), copied under host_test/agent-core/ with the four
 # fakes and both fixture sets beside them, at upstream's own paths - run here against the
@@ -387,9 +387,9 @@ target_include_directories(core_tests PRIVATE ${AGENT_CORE_HOST}/test)
 # Two more GoogleTest binaries, because the simulated stock repeater they put behind the RAK is
 # the library's FakeMesh, which is written against GoogleTest:
 #
-#   agent_core_runner_link_tests  test_runner.cpp - the library's own 123 cases, **unchanged**
-#                                 (121 of them run: see LINK_SHIM_SKIPPED at the end of this
-#                                 file for the two a late reply cannot be scripted for here) -
+#   agent_core_runner_link_tests  test_runner.cpp - the library's own 136 cases, **unchanged**
+#                                 (120 of them run: see LINK_SHIM_SKIPPED at the end of this
+#                                 file for the sixteen a RAK on a wire cannot be scripted for) -
 #                                 compiled with host_test/agent-link/shim/ first on its include
 #                                 path, where `support/FakeMesh.h` and `support/FakePlatform.h`
 #                                 shadow the library's with the same classes behind a simulated
@@ -404,7 +404,7 @@ target_include_directories(core_tests PRIVATE ${AGENT_CORE_HOST}/test)
 #
 # And a third (task p4-03), the same way round for the uplink:
 #
-#   agent_core_loop_uplink_tests  test_loop.cpp - the library's own 74 cases, **unchanged** -
+#   agent_core_loop_uplink_tests  test_loop.cpp - the library's own 91 cases, **unchanged** -
 #                                 compiled with host_test/agent-uplink/shim/ first on its include
 #                                 path, where `support/FakeUplink.h` shadows the library's
 #                                 scripted meshmaster.dk with the same knobs and records behind

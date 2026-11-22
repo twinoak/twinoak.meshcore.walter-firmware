@@ -91,7 +91,10 @@ $used = @()
 foreach ($one in Get-ChildItem $syncDir -File -Filter '*.md' -ErrorAction SilentlyContinue) {
     if ($one.Name -match '^(\d\d)-') { $used += [int]$Matches[1] }
 }
-$n = if ($used.Count -gt 0) { ($used | Measure-Object -Maximum).Maximum + 1 } else { 1 }
+# `[int]`, because `Measure-Object` answers a **Double** in PowerShell 5.1 and `d2` is a format for
+# integers alone: with the numbering above mended, the first run of this script threw *the format
+# specifier was invalid* and wrote a task file called `-agent-core-v9-9-9.md`.
+$n = if ($used.Count -gt 0) { [int]($used | Measure-Object -Maximum).Maximum + 1 } else { 1 }
 if ($n -gt 99) { throw 'ninety-nine sync tasks is enough' }
 $nn = '{0:d2}' -f $n
 

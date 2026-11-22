@@ -13,7 +13,7 @@
 //
 // So a scenario's `mesh.sendLogin(...)` is a SEND_LOGIN frame, its reply an EV_MESH_REPLY event,
 // and `mesh.sends()` what the repeater on the far side was asked for - the same assertions, now
-// through the framing. The 123 cases of test_runner.cpp are compiled a second time against this
+// through the framing. The 136 cases of test_runner.cpp are compiled a second time against this
 // directory (host_test/CMakeLists.txt, `agent_core_runner_link_tests`), unchanged.
 //
 // Two things this class adds to every scenario, because the task asks for them in every one: at

@@ -16,7 +16,7 @@
 // So a scenario's `server.queue(job)` is a claim answered over the wire with that job's bytes,
 // its `failWith(Unauthorized, 1)` a real 401 the uplink reads into the Call record, and
 // `server.results()` what reached the server as the body of `POST /agent/v1/jobs/{id}/result` -
-// the same assertions, now through the framing. The 74 cases of test_loop.cpp are compiled a
+// the same assertions, now through the framing. The 91 cases of test_loop.cpp are compiled a
 // second time against this directory (host_test/CMakeLists.txt, `agent_core_loop_uplink_tests`),
 // unchanged: the loop does not know which uplink it has.
 //

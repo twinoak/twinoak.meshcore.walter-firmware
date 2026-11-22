@@ -29,3 +29,21 @@ Items for a later task of this phase are tagged with it. Only the reviewer ticks
 - [ ] **[later, meshmaster.dk's] A gap in `seq` is noticed by nobody.** The scanner numbers
   every line, so the server could say *lines 252 to 260 are missing* on the session's page.
   Offered, not written.
+- [ ] **[later] A Walter tells no way back, so every reply to it is still flooded.** The library
+  can teach a repeater the way home (its task p1.21-71) and the gain is real - a reply that
+  takes the hops the request took, instead of being flooded at every repeater that can hear it.
+  §6 of the link protocol has no request that sends a PATH packet, so `LinkMesh` takes the
+  defaulted member and tells none, and §6.3's reply record cannot say how a reply arrived
+  (`via_path` is a path return, not a flood), so the job's log reads *route unknown*. Taking it
+  would be a request in §6 and a field in §6.3, which is the design repository's and then a task
+  here. Eleven of the library's own cases are not run through the link shim for want of it
+  (`host_test/CMakeLists.txt`, `LINK_SHIM_SKIPPED`), which is the cost measured.
+- [ ] **[later] A claim the wake's own room refuses is asked twice.** Since the bump a claim
+  whose answer *was lost* is made once more (the library's `mm::answerWasLost`, which reads
+  `reachable` false with `httpStatus` 0 as lost), and a call this firmware never began - no room
+  left in the bound, the 120-a-minute ceiling, no token - leaves exactly that record. So such a
+  claim is asked a second time, refused at the same gate, and `budget`/`no_room` count two where
+  one call was wanted. Nothing goes on the wire and the wake ends the same way, so it is a
+  counter that reads high and not a fault; the fix is either a `Call` the library cannot read as
+  lost, or a word from upstream for *never sent*. Read in the code of the bump (the sync pile's
+  task 02) and not provoked in a test: every claim of the wake bench's cases begins.
