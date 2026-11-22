@@ -296,7 +296,7 @@ TEST_CASE("a step that lost nothing writes no second entry: the journal is what 
   CHECK(step_entries == 2);  // one a step, as it has always been
 }
 
-TEST_CASE("the journal entry of a lost step: encoded and read back, command and count both") {
+TEST_CASE("the journal entry of a lost step: the count and the end, and no command in it") {
   upd::SessionPayload p;
   p.stage = Stage::kStep;
   p.step = 5;
