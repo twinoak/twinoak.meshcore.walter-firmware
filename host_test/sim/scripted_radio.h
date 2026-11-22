@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "core/link/client/port.h"
 #include "core/link/codec/frame.h"
 #include "core/link/codec/packet.h"
 #include "core/link/codec/wire.h"
@@ -48,6 +49,7 @@ class ScriptedRadio final : public interfaces::ByteStream {
   std::size_t write(const std::uint8_t* data, std::size_t size) override;
   bool flush(std::uint32_t timeout_ms) override;
   bool idleFor(std::uint32_t ms) override;
+  std::uint32_t losses() const override { return losses_; }
 
   // ---------------------------------------------------------------- the knobs
   // Called at the top of every read() and write() the Walter makes, before the bytes move: a
@@ -68,6 +70,30 @@ class ScriptedRadio final : public interfaces::ByteStream {
   // leaves the defaults below - `info`, `stat`, `help`, and an `ack` that is not ok for anything
   // NoiseScope's own table does not have.
   std::function<bool(const std::string&)> on_text_command;
+  // **A port that is a wire, with the Walter's own ring behind it** (task p18-03).
+  //
+  // Off - which is what this object always was, and still is by default - whatever this radio has
+  // said appears whole at the moment it falls due, however much of it there is. That fiction is
+  // what every test of the codec, the exchange and the events is written on: they queue a frame
+  // or ten events and poll, with the clock where it was.
+  //
+  // On, two things become true together, because neither means anything without the other:
+  //
+  //   - bytes ripen at `core::link::client::kBytesPerSecond` from the moment they fall due (115
+  //     of them a tick of the client's own polling, 11 520 a second), so a line of 7 600 bytes
+  //     takes 660 ms as it does on the board;
+  //   - the ring holds `rx_ring` of them and **loses** the rest, as the ESP32's driver loses them,
+  //     counting the moment (interfaces::ByteStream::losses).
+  //
+  // A ring without a wire that takes time would lose bytes no port loses - a whole line in one
+  // instant - which is why the one switch does both. `bench::ScriptedScanner::install()` turns it
+  // on: a scripted NoiseScope is the thing that says more than a frame at a time, and 21 November
+  // is reproducible behind it - with the ring the board had, seven lines of a `hist` fit and nine
+  // did not.
+  bool wire_rate = false;
+  // The ring's size when the wire is on. `kRxRingBytes` is the board's since this task; 1 024 is
+  // the board before it, and 0 is a ring with no bound at all.
+  std::size_t rx_ring = core::link::client::kRxRingBytes;
   int silence = 0;                    // ignore this many more requests, whole
   bool deaf = false;                  // ignore every request (a radio whose firmware is gone)
   std::uint32_t answer_delay_ms = 0;  // how long after a request its answer appears
@@ -251,6 +277,9 @@ class ScriptedRadio final : public interfaces::ByteStream {
   int closes = 0;
   bool is_open = false;
   std::uint32_t dropped = 0;  // frames its own receiver refused
+  // The bytes the ring had no room for, which the port the Walter reads cannot know and a test
+  // can: `losses()` is the count of the moments, and this is what went in them.
+  std::size_t lost_bytes = 0;
 
   // The response payload it last put on the wire, for a test that wants to hold the client's
   // decoding against the bytes.
@@ -261,6 +290,7 @@ class ScriptedRadio final : public interfaces::ByteStream {
   struct Pending {
     std::uint64_t due_ms = 0;
     std::vector<std::uint8_t> bytes;
+    std::size_t at = 0;      // how many of its bytes the wire has carried already (task p18-03)
     bool attention = false;  // dropped when a request arrives (§8)
   };
 
@@ -282,6 +312,7 @@ class ScriptedRadio final : public interfaces::ByteStream {
   std::vector<std::uint8_t> collected_;  // the frame being collected, for `Seen::frame`
   std::string line_;                     // the text command being collected (§9)
   std::uint64_t last_activity_ms_ = 0;
+  std::uint32_t losses_ = 0;  // times the ring had no room for what ripened into it
 
   // §3's one entry: the (type, seq) of the last request executed and the response it got.
   bool remembered_ = false;

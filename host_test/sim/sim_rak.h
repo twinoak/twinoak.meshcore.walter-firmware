@@ -89,6 +89,9 @@ class SimRak final : public interfaces::ByteStream {
   std::size_t write(const std::uint8_t* data, std::size_t size) override;
   bool flush(std::uint32_t timeout_ms) override { return radio.flush(timeout_ms); }
   bool idleFor(std::uint32_t ms) override { return radio.idleFor(ms); }
+  // The radio's own, because the ring is the radio's (task p18-03): this object adds §6 and no
+  // bytes of its own.
+  std::uint32_t losses() const override { return radio.losses(); }
 
   // ---------------------------------------------------------------- the knobs
   std::uint32_t job_idle_end_ms = core::link::kJobIdleEndMs;  // §6.1: 120 s

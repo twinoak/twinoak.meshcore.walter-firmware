@@ -124,6 +124,18 @@ constexpr std::uint32_t kExtendEveryMs = 300000;
 // A unit must not depend on that.)
 constexpr int kLeaseFlashSeconds = 1800;
 
+// **And what a step's lease has to cover beyond the step itself** (task p18-03): the posting of
+// its lines and the calls that follow, before the loop is anywhere it could ask for more. A step
+// of the small room is one post of 8 192 bytes and one of the big room is eight, and after the
+// last step come the `room` line, the golden image's lease and the result - so three minutes,
+// against a step of at most `core::update::kStepSecondsMax` (300 s). The two together are 480
+// seconds, inside `kLeaseExtendSeconds`, which is why one ordinary extension always covers a step
+// and the lease's five-minute timer never has to fire inside one.
+constexpr std::uint64_t kLeaseAfterStepMs = 180000;
+static_assert(core::update::kStepSecondsMax * 1000u + kLeaseAfterStepMs <=
+                  static_cast<std::uint64_t>(kLeaseExtendSeconds) * 1000u,
+              "one ordinary extension must cover the longest step and the posting of its lines");
+
 // A progress report every two of the download's 64 KB ranges: the job's page prints *412 kB of
 // 1.2 MB*, and a report per range would be a request per range on a metered link.
 constexpr std::uint32_t kProgressEveryBytes = 2 * 64 * 1024;
@@ -424,6 +436,15 @@ struct FirmwareJobCounters {
   std::uint32_t sessions_refused = 0;    // ... and ones refused before the radio was touched
   std::uint32_t lines_posted = 0;        // lines of a scanner handed to a post
   std::uint32_t lines_unanswered = 0;    // ... of those, the ones in posts nothing answered
+  // Task p18-03's two. **In fours, for the reason above**: two more members after the
+  // `std::uint64_t` cost the eight bytes they are, where one would cost eight as well.
+  std::uint32_t steps_lossy = 0;         // steps that ended having lost bytes at the port
+  // **The tripwire, and it must stay nought** (task p18-03): a call to the server this end
+  // refused to make because a step's command had been said and the step had not ended. The three
+  // methods that reach the server during a session ask first, so the shape of the loop is not the
+  // only thing holding the rule - and if the loop's shape is ever broken, no byte goes out
+  // mid-step and this number says it did not. Every session test checks it.
+  std::uint32_t calls_in_step = 0;
 };
 
 class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
@@ -594,6 +615,10 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   // The lease and the token (an offer's progress is the download listener's, in the .cpp).
   // `seconds` is kLeaseExtendSeconds everywhere but before a flash, which asks for the ceiling.
   void extendLease(long long job_id, mm::JobContext& ctx, int seconds = kLeaseExtendSeconds);
+  // **Nothing may leave this end between a step's command and the step's end** (task p18-03): the
+  // one question the three methods that reach the server during a session ask first. True means
+  // *do not call* - and it counts, because a true answer here is a loop whose shape has broken.
+  bool quietInAStep();
   const char* bearer();
   void wipeBearer();
   // The journal entries this object writes.
@@ -626,6 +651,11 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   long long left_leased_ = 0;
   // When the lease is next extended, on the clock.
   std::uint64_t extend_due_ms_ = 0;
+  // **When what the server last granted runs out**, on the clock (task p18-03): every extension
+  // sets a lease to *now plus what was asked* (meshmaster.dk's own behaviour, which task p14-04
+  // paid for), so this end knows the moment without asking. A step is never begun on a lease that
+  // would end inside it, because the loop cannot stop in the middle of one to ask for more.
+  std::uint64_t lease_until_ms_ = 0;
 
   Line lines_[kJournalMaxEntries];
   int line_count_ = 0;

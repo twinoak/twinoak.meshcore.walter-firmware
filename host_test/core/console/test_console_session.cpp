@@ -163,6 +163,40 @@ TEST_CASE("the journal prints a session's entries, with the command and the room
   CHECK(has(unit.walter->runLine("rak session"), "room: 8192 of "));
 }
 
+// **A step that lost bytes at the port says so where it says how it ended** (task p18-03): the
+// typed session calls no server at all, so the only thing that changes for it is this one clause -
+// and the journal's own line under it.
+TEST_CASE("rak session: a step that lost bytes says so, on its line and in the journal") {
+  SessionUnit unit;
+  unit.world.radio.rx_ring = 256;  // smaller than one line: the port cannot keep up
+  bench::Answer many;
+  many.lines = 8;
+  many.line_bytes = 400;
+  unit.scripted.answers["sweep"] = many;
+  unit.scripted.first_line_ms = 20;
+  unit.scripted.between_ms = 20;
+  const std::string text = unit.walter->runLine("rak session 20 sweep 863 870 25");
+  INFO(text);
+  CHECK(has(text, "the port lost bytes "));
+  CHECK(has(text, " time(s)"));
+  // On the same line as the step's ending, which is where a person reads it.
+  const std::size_t step_line = text.find("step 1 (`sweep 863 870 25`, 20 s) ended ");
+  REQUIRE(step_line != std::string::npos);
+  const std::size_t end_of_line = text.find('\n', step_line);
+  REQUIRE(end_of_line != std::string::npos);
+  CHECK(has(text.substr(step_line, end_of_line - step_line), "the port lost bytes "));
+  // And the journal entry of the step's end, printed by `journal` as the entry says it.
+  CHECK(has(unit.walter->runLine("journal"), "the port lost bytes "));
+}
+
+TEST_CASE("rak session: a step that lost nothing says nothing of a loss") {
+  SessionUnit unit;
+  const std::string text = unit.walter->runLine("rak session 30 sweep 863 870 25");
+  INFO(text);
+  CHECK(has(text, "ended done"));
+  CHECK_FALSE(has(text, "the port lost bytes "));
+}
+
 TEST_CASE("rak session: no byte of a scanner's line is in the log, the journal or a report") {
   SessionUnit unit;
   // A marker only this scanner would ever say, in a line of its own.

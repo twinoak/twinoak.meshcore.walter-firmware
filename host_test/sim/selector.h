@@ -123,6 +123,10 @@ class UartMux final : public interfaces::ByteStream {
   std::size_t write(const std::uint8_t* data, std::size_t size) override;
   bool flush(std::uint32_t timeout_ms) override;
   bool idleFor(std::uint32_t ms) override;
+  // The selected radio's ring is the one the Walter reads through (task p18-03). What the
+  // unselected module emitted is `droppedBytes()` below and not a loss of this port: its TX goes
+  // nowhere, which is §2.3 and not a buffer that filled.
+  std::uint32_t losses() const override { return radios_[selector_.uartSel() ? 1 : 0]->losses(); }
 
   ScriptedRadio& selected() { return *radios_[selector_.uartSel() ? 1 : 0]; }
   std::uint32_t droppedBytes() const { return dropped_; }

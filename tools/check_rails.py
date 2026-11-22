@@ -1338,6 +1338,87 @@ def rail_only_the_room_is_external(r):
     return r
 
 
+# ---- R25: nothing reaches the server between a step's command and its end (task p18-03) --------
+
+# The three methods of components/agent/firmware_jobs.cpp that reach meshmaster.dk while a session
+# of the radio as a scanner is running. Each must ask `quietInAStep()` before it calls anything,
+# and `quietInAStep()` must ask the **machine** - not a flag this end cached - because a step's
+# lines are handed over from inside step() and a cached flag would still say *in a step* at the one
+# moment they are meant to go out.
+#
+# Why a grep and not only the tests: the tests of task p18-03 hold the behaviour, and a grep cannot
+# follow control flow. What it can do is refuse the one change that would bring 21 November back -
+# a guard taken out of one of the three - and that is a shape that does not cry wolf, because the
+# three are named here and a fourth way to the server during a session would be a new method.
+SESSION_SERVER_CALLERS = "components/agent/firmware_jobs.cpp"
+SESSION_QUIET_GUARD = "quietInAStep()"
+SESSION_QUIET_METHODS = ("void FirmwareJobs::extendLease(",
+                         "void FirmwareJobs::postApplyProgress(",
+                         "std::size_t FirmwareJobs::postSomeLines(")
+
+
+def body_after(text, signature):
+    """The body of the function whose definition begins with `signature`, to its closing brace at
+    column 0. Empty when the signature is not there."""
+    at = text.find(signature)
+    if at < 0:
+        return ""
+    open_brace = text.find("{", at)
+    if open_brace < 0:
+        return ""
+    end = text.find("\n}", open_brace)
+    return text[open_brace:end if end > 0 else len(text)]
+
+
+def rail_quiet_in_a_step(r):
+    """Task p18-03: from the moment a step's command is said until the step has ended, nothing of
+    this end goes to meshmaster.dk - no progress post, no lease, no lines. On 21 November the unit
+    at Bellevue lost nine of the sixteen lines of one `hist` step to a progress call that fell on
+    the wrong side of the command, and the loop that made it was doing nothing wrong at the time.
+    So the rule is held in two places: the loop's shape (the lease and the progress post are both
+    outside a step now) and a guard at each of the three methods that can reach the server while a
+    session runs, which refuses the call and counts it rather than making it."""
+    text = read(SESSION_SERVER_CALLERS)
+    missing = []
+    for signature in SESSION_QUIET_METHODS:
+        body = body_after(text, signature)
+        if not body:
+            missing.append("%s is no longer in %s" % (signature, SESSION_SERVER_CALLERS))
+        elif SESSION_QUIET_GUARD not in body:
+            missing.append("%s does not ask %s" % (signature, SESSION_QUIET_GUARD))
+    r.problems(missing, "a call to the server during a session is no longer guarded:")
+    r.looked_at("the three methods that reach the server while a session runs each ask %s: %s"
+                % (SESSION_QUIET_GUARD, ", ".join(s.split("::")[-1] for s in SESSION_QUIET_METHODS)))
+
+    # The guard asks the machine, and the machine's answer is the one definition of the moment.
+    guard = body_after(text, "bool FirmwareJobs::quietInAStep(")
+    if "parts_.session" not in guard or "listening()" not in guard:
+        r.broken("quietInAStep() no longer asks the session machine whether it is listening:",
+                 ["a flag cached by the loop would still say *in a step* when a step's lines are "
+                  "handed over, which happens from inside step()"])
+    r.problems(must_contain("components/core/include/core/update/scanner_session.h",
+                            "bool listening() const", "stepPending()"),
+               "the machine no longer answers whether a step is being listened to:")
+    r.looked_at("quietInAStep() reads parts_.session->listening(), which is the machine's own "
+                "answer and not a copy")
+
+    # And the tests: the fixture's hook, which fails any case in which a request of the API
+    # arrives while the machine is listening, and the case of 21 November itself.
+    r.problems(must_exist("host_test/agent/session_job.h",
+                          "host_test/agent/test_a_step_is_listened_to.cpp",
+                          "host_test/core/update/test_a_step_is_listened_to.cpp"),
+               "the tests of task p18-03 are gone:")
+    r.problems(must_contain("host_test/agent/session_job.h", "watchForCallsInAStep",
+                            "listening()", "a call to the server between a step's command"),
+               "the fixture no longer watches every call of the API:")
+    r.problems(must_contain("host_test/agent/test_a_step_is_listened_to.cpp",
+                            "calls_in_step == 0", "seq unbroken"),
+               "the case of 21 November no longer holds it:")
+    r.says("the three ways to the server during a session each ask the machine first, and every "
+           "case that runs a step fails on a request that arrives inside one")
+    return r
+
+
 RAILS = [
     ("R1", "nRESET is never output-high", rail_reset_never_high),
     ("R2", "radio-facing pins are inputs before KILL; two resets a second apart", rail_kill_and_spacing),
@@ -1365,6 +1446,7 @@ RAILS = [
     ("R23", "nothing is signed that has not started in QEMU", rail_a_release_starts),
     ("R24", "nothing but the room of a session asks for external memory",
      rail_only_the_room_is_external),
+    ("R25", "nothing reaches the server between a step's command and its end", rail_quiet_in_a_step),
 ]
 
 

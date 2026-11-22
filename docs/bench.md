@@ -984,6 +984,27 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   line down either way; it is the first figure from a real scanner about whether 64 kB is right,
   and `agent calls` carries the same line to the server from a session a job started (§18).
   On a **bench radio**, not a mast: it costs the site about forty minutes with no repeater.
+- [ ] **A `hist` step leaves every line it sent** (task p18-03; `docs/update.md`, *A step, and
+  what ends it*). Needs the same as the two items above, and a **session a job started**: queue a
+  `twinoak.noisescope.session` on meshmaster.dk whose one step is
+
+  ```
+  hist 869.418 869.818 25
+  ```
+
+  with 40 seconds, and wake the unit once (§18). Expected on the job's page: **sixteen `hist`
+  lines and a `done`**, with the scanner's own `seq` **unbroken** from the first to the last — on
+  21 November the same step left `seq` 245 to 251 and 261, and nine measurements were nowhere.
+  The step's row says `done`, and the session's journal has **no** line saying *the port lost
+  bytes*. Then `agent jobs`: its fourth line should say `0 step(s) lost bytes at the port`, and
+  `rak text` `the port lost bytes 0 time(s)`.
+  A count that is **not** nought is the finding: write down the number, the step and the
+  `seq` range the server holds. It means the ring of 4 096 bytes is not enough for what that
+  scanner sends at that moment, and `kReaderWorkMs` in `core/link/client/port.h` — the 50 ms this
+  end guesses the loop spends between two reads — is the number to raise.
+  The same step typed at a cable (`rak session 40 hist 869.418 869.818 25`) prints the sixteen
+  lines whole and must say nothing about a loss; this is the one to do first, because it needs no
+  server.
 - [ ] **The cable pulled while the radio is a scanner: the next boot brings the repeater back by
   itself** (task p16-03, rail 2). Start `rak session 300 dwell 869.618 300` and, while the step is
   running (the scanner's lines are coming in), **pull the Walter's USB cable** — or its power.

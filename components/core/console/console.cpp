@@ -1569,17 +1569,24 @@ void Console::rakEvents() {
 void Console::rakText() {
   radio_.poll();
   const lc::Counters& counted = radio_.counters();
+  // **And what the port lost** (task p18-03), beside the two counts of what the ring of kept lines
+  // lost: the third way a line of §9 does not reach whoever wanted it, and the only one that takes
+  // a whole line with no trace of it anywhere else.
   if (radio_.textLines() == 0) {
-    printf("no scanner lines (%lu seen, %lu dropped; the link is %s)\n",
+    printf("no scanner lines (%lu seen, %lu dropped, the port lost bytes %lu time(s); the link is "
+           "%s)\n",
            static_cast<unsigned long>(counted.text_lines),
-           static_cast<unsigned long>(counted.text_dropped), lc::describe(radio_.mode()));
+           static_cast<unsigned long>(counted.text_dropped),
+           static_cast<unsigned long>(counted.port_losses), lc::describe(radio_.mode()));
     return;
   }
-  printf("%lu line%s kept of %lu seen (%lu dropped, %lu truncated):\n",
+  printf("%lu line%s kept of %lu seen (%lu dropped, %lu truncated; the port lost bytes %lu "
+         "time(s)):\n",
          static_cast<unsigned long>(radio_.textLines()), radio_.textLines() == 1 ? "" : "s",
          static_cast<unsigned long>(counted.text_lines),
          static_cast<unsigned long>(counted.text_dropped),
-         static_cast<unsigned long>(counted.text_truncated));
+         static_cast<unsigned long>(counted.text_truncated),
+         static_cast<unsigned long>(counted.port_losses));
   for (std::size_t i = 0; i < radio_.textLines(); ++i) {
     print("  ");
     printText(radio_.textLine(i));
@@ -2554,12 +2561,23 @@ void Console::rakSessionRun(std::uint32_t seconds, const char* command, std::siz
    public:
     explicit Printer(Console& console) : console_(console) {}
     void onStepLines(const update::StepReport& report) override {
-      console_.printf("step %lu (`%s`, %lu s) ended %s: %lu line%s, %lu byte%s%s\n",
+      // **What the port lost while this step ran, where the step's ending is said** (task
+      // p18-03): a person at a cable is told on the same line as the `done` that lines are
+      // missing. Pre-rendered because nought prints nothing at all - a session that lost nothing
+      // reads exactly as it always did.
+      char lost[48];
+      lost[0] = 0;
+      if (report.losses != 0) {
+        std::snprintf(lost, sizeof lost, "; the port lost bytes %lu time(s)",
+                      static_cast<unsigned long>(report.losses));
+      }
+      console_.printf("step %lu (`%s`, %lu s) ended %s: %lu line%s, %lu byte%s%s%s\n",
                       static_cast<unsigned long>(report.index), report.command,
                       static_cast<unsigned long>(report.seconds), update::name(report.end),
                       static_cast<unsigned long>(report.count), report.count == 1 ? "" : "s",
                       static_cast<unsigned long>(report.used), report.used == 1 ? "" : "s",
-                      report.first ? " (the greeting's acks and its info line among them)" : "");
+                      report.first ? " (the greeting's acks and its info line among them)" : "",
+                      lost);
       for (std::size_t at = 0; at < report.used;) {
         std::size_t end = at;
         while (end < report.used && report.lines[end] != '\n') ++end;
@@ -2691,7 +2709,15 @@ void Console::printSessionEntry(std::size_t number, const update::Entry& entry,
   printf("  %2lu. seq %lu: session, %s", static_cast<unsigned long>(number),
          static_cast<unsigned long>(entry.seq), update::name(p.stage));
   if (p.stage == update::Stage::kStep) {
-    printf("-%u: `%s`", static_cast<unsigned>(p.step), p.command);
+    // Task p18-03's entry is the step's **end** and carries no command (the one that opened the
+    // step, two lines back, has it): what it says is how the step ended and that lines of it are
+    // missing.
+    if ((p.flags & update::kSessionFlagLost) != 0) {
+      printf("-%u: ended %s, the port lost bytes %lu time(s)", static_cast<unsigned>(p.step),
+             update::name(p.end), static_cast<unsigned long>(p.losses));
+    } else {
+      printf("-%u: `%s`", static_cast<unsigned>(p.step), p.command);
+    }
   }
   if (p.stage == update::Stage::kRoom) {
     char line[update::kRoomLineMax + 1];

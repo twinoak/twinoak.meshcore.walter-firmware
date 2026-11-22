@@ -35,8 +35,11 @@ inline std::string scannerAck(const std::string& command, bool ok, const std::st
          ",\"msg\":\"" + message + "\"}";
 }
 
-inline std::string scannerDone(const std::string& command) {
-  return "{\"t\":\"done\",\"cmd\":\"" + command + "\",\"seq\":18,\"ts\":1754820100,\"ms\":112000}";
+// The `done` line, whose own `seq` follows the measurement lines': the scanner numbers it too, so
+// a test that reads the numbers reads this one as the last of the run (task p18-03).
+inline std::string scannerDone(const std::string& command, unsigned seq = 18) {
+  return "{\"t\":\"done\",\"cmd\":\"" + command + "\",\"seq\":" + std::to_string(seq) +
+         ",\"ts\":1754820100,\"ms\":112000}";
 }
 
 // A measurement line of `size` bytes, shaped like a real one: the command's own `t`, a sequence
@@ -60,6 +63,11 @@ struct Answer {
   std::size_t lines = 1;   // measurement lines after the `ack`
   std::size_t line_bytes = 300;
   bool done = true;        // a `done` line after them. false leaves the step to its clock
+  // **The `seq` the first of them carries** (task p18-03): NoiseScope numbers every line it
+  // sends, so a test can hold what reached the server against an unbroken run of numbers - which
+  // is how nine missing lines of 21 November were seen at all (`seq` 245 to 260, of which the
+  // server holds 245 to 251).
+  unsigned first_seq = 17;
 };
 
 // What the scripted scanner answers each command with. One hook on the radio, installed for the
@@ -82,6 +90,12 @@ struct ScriptedScanner {
   }
 
   void install(sim::ScriptedRadio& radio) {
+    // **The port becomes a wire** (task p18-03): bytes take the time §1's baud rate gives them
+    // and the Walter's receive ring holds what it holds. A scanner is the only thing on this link
+    // that says more than a frame at a time, so this is where the fiction of instant delivery has
+    // to end - and it ends here and not for every radio, because every test of the codec, the
+    // exchange and the events is written on that fiction and is right to be.
+    radio.wire_rate = true;
     radio.on_text_command = [this, &radio](const std::string& line) {
       said.push_back(line);
       if (on_command) on_command(line);
@@ -106,10 +120,10 @@ struct ScriptedScanner {
       if (!a.ok) return true;
       std::uint32_t at = first_line_ms;
       for (std::size_t i = 0; i < a.lines; ++i) {
-        radio.sendLine(scannerLine(word, static_cast<unsigned>(17 + i), a.line_bytes), at);
+        radio.sendLine(scannerLine(word, static_cast<unsigned>(a.first_seq + i), a.line_bytes), at);
         at += between_ms;
       }
-      if (a.done) radio.sendLine(scannerDone(word), at);
+      if (a.done) radio.sendLine(scannerDone(word, a.first_seq + a.lines), at);
       return true;
     };
   }

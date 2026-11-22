@@ -374,9 +374,18 @@ Once a scanner is found the greeting is said — `time <epoch>`, `auto 0`, `info
 already lent, so its three `ack`s and its `info` line are laid down in it and are handed over
 **with the first step's lines**: the session's lines begin with them.
 
-Then, per step: what the scanner said between steps is thrown away, the command is said
-(`spec/LINK-PROTOCOL.md` §9), and lines are kept whole in the room until one of five things, which
-is how the step **ended**:
+Then, per step, in **two** calls of the machine (task p18-03):
+
+1. the step's journal entry is written — the stage `step`, which step it is, and the command — and
+   the machine answers *changed* with **nothing said to the scanner**. `listening()` is false and
+   `stepPending()` says how many seconds the step about to begin was given. This is the moment
+   whoever drives the machine has to tell a server what is about to happen and to see to its
+   lease, with the scanner still silent and the step's seconds not begun;
+2. the next call says the command (`spec/LINK-PROTOCOL.md` §9). From here `listening()` is true,
+   the step's seconds run, and lines are kept whole in the room until one of five things, which is
+   how the step **ended**:
+
+What the scanner said between steps is thrown away.
 
 | Ended | Means |
 |---|---|
@@ -388,6 +397,41 @@ is how the step **ended**:
 
 The step's lines are then handed to whoever runs the session — the console prints each one whole,
 task p16-04's job posts them — and the next step begins when that returns.
+
+**While a step runs, the port is the only thing being listened to.** `listening()` says so, and
+whoever drives the machine makes no call of its own between the command and the end — not a
+progress post, not a lease, not a line (*A session as a job* below, and rail **R25**). The reason
+is 21 November: the fifth step of the first session a unit ever ran was
+`hist 869.418 869.818 25`, the scanner numbered its sixteen lines `seq` 245 to 260 and its `done`
+261, and meshmaster.dk holds 245 to 251 and 261. Nine measurements are not anywhere. The job had
+written its *step 5* line and called `progress` the moment the step began — a second or more over
+LTE‑M, with the scanner already speaking — and the driver's receive ring was 1 024 bytes, which is
+seven of those lines.
+
+**The receive ring follows from the baud rate**, in `core/link/client/port.h` and not at the
+driver, because what sizes it is the loop and not the port: 115 200 baud 8N1 carries 11 520 bytes
+a second, the reader is away for at most `kListenIdleMs` (100 ms) plus what the loop does between
+two reads (50 ms), and that is 1 728 bytes. The ring is **4 096** bytes — 355 ms of this line,
+better than twice the absence, sixteen frames of §2 — held by a `static_assert` beside the
+numbers, and `kListenIdleMs` is held equal to the figure the arithmetic used. It costs 3 072 bytes
+more of the internal heap than the 1 024 it replaced, held for the life of the firmware; the step
+room on this board is 64 kB of PSRAM and not the heap's, so that is what pays for it.
+
+**And a loss is counted and said.** The driver is installed with an event queue from this task on
+and `read()` drains it: `UART_BUFFER_FULL` is the ring full and `UART_FIFO_OVF` the hardware's own
+128‑byte FIFO over, and after either the bytes behind are gone. Neither event carries a size —
+`uart_event_t::size` is *UART data size for UART_DATA event* — so what is counted is **the moment
+and not the bytes**: what the unit at Bellevue was missing was not a number, it was any word at
+all that something had been lost. The count reaches
+
+- `interfaces::ByteStream::losses()`, and through the port the link client's `port_losses`, beside
+  `text_truncated` and `text_dropped` — the three ways a line of §9 does not reach whoever wanted
+  it, and the only one of them that takes a line whole and silently. `rak text` prints it;
+- **the step**: a step that lost anything writes a **second** journal entry at its end — which
+  step, how it ended, and the count — and that line goes to the server with the result and is
+  printed by `journal`, by `rak session <seconds> <command>` beside the step's ending, and counted
+  by `agent jobs`. A step that lost nothing writes no such entry, so an ordinary session's journal
+  is exactly what it always was.
 
 ### Its room, and what it cost
 
@@ -466,6 +510,14 @@ drives `step()` in slices inside the wake exactly as an apply drives its machine
 
 What the job adds is the three things a mast needs and a cable does not:
 
+- **Nothing goes out between a step's command and its end** (task p18-03). The job writes its
+  *step N* line and posts it in the moment the machine gives it — after the journal entry, before
+  the command — and from the command until the step has ended it makes **no** call: no progress,
+  no lease, no lines. The rule is held in two places: the loop's shape, and a guard at each of the
+  three methods that can reach the server while a session runs (`extendLease`,
+  `postApplyProgress`, `postSomeLines`), which refuses such a call and counts it in
+  `calls_in_step` rather than making it. Rail **R25**, and the fixture of every session test fails
+  a case in which a request of the API arrives while the machine is listening.
 - **The lines go to the server, step by step.** When a step hands its lines over they are posted
   before the next step begins: `POST /agent/v1/jobs/{id}/lines/{from}`, the body the lines as the
   scanner sent them — each ended with `\n` — in bodies of at most **8 192 bytes cut at a line's
@@ -476,7 +528,12 @@ What the job adds is the three things a mast needs and a cable does not:
   own in the failed-call list and in what a wake was doing (`agent calls`, *scanner lines*).
 - **The lease, and the journal as progress.** Extended before the first byte, for the server's
   whole ceiling before **each of the two flashes** (`kLeaseFlashSeconds`, as an apply's flash is)
-  and every five minutes otherwise; one `POST /jobs/{id}/progress` per journal line, so the job's
+  and every five minutes otherwise — but **never inside a step**: before a step's command the
+  lease must cover the step's seconds, the posting of its lines and the calls that follow
+  (`kLeaseAfterStepMs`, three minutes), and it is extended then if it does not. A step of the
+  longest kind and that margin are 480 seconds, inside the 900 one ordinary extension gives, which
+  is why the five-minute timer never has to fire in the middle of one. One
+  `POST /jobs/{id}/progress` per journal line, so the job's
   page says *flashing-scanner since 10:00* rather than nothing for a quarter of an hour. The
   `room` line is one of those entries, so the room's figures reach the server with **every**
   session.

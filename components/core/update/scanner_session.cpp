@@ -398,6 +398,20 @@ std::size_t encode(const SessionPayload& p, std::uint8_t out[kPayloadMax]) {
   out[3] = p.flags;
   put32(out + 4, p.at_epoch);
   if (p.stage == Stage::kStep) {
+    if ((p.flags & kSessionFlagLost) != 0) {
+      // **Task p18-03's entry carries the count and no command**: a slot's 48 bytes are eight of
+      // header and forty of command exactly, with nothing left over - and the command is in the
+      // entry that *opened* this step, two lines back, where a reader of the journal has it. What
+      // this entry adds is which step (the header's own `step`), how it ended (the flags' bits
+      // 4..6, where this entry's header has always said a `StepEnd` would be) and how many times
+      // the port lost bytes while it ran.
+      out[3] = static_cast<std::uint8_t>((out[3] & ~kSessionEndMask) |
+                                         ((static_cast<std::uint8_t>(p.end) << kSessionEndShift) &
+                                          kSessionEndMask));
+      out[kSessionHeaderBytes + 0] = static_cast<std::uint8_t>(p.losses & 0xFF);
+      out[kSessionHeaderBytes + 1] = static_cast<std::uint8_t>((p.losses >> 8) & 0xFF);
+      return kSessionHeaderBytes + kSessionLostBytes;
+    }
     const std::size_t n = textLength(p.command);
     const std::size_t take = n < kCommandMax ? n : kCommandMax;
     for (std::size_t i = 0; i < take; ++i) out[kSessionHeaderBytes + i] = static_cast<std::uint8_t>(p.command[i]);
@@ -427,7 +441,15 @@ bool decode(const Entry& entry, SessionPayload* out) {
   out->flags = entry.payload[3];
   out->at_epoch = get32(entry.payload + 4);
   const std::size_t body = entry.size - kSessionHeaderBytes;
-  if (out->stage == Stage::kStep) {
+  if (out->stage == Stage::kStep && (out->flags & kSessionFlagLost) != 0 &&
+      body >= kSessionLostBytes) {
+    // Task p18-03's entry: two bytes of count and no command (see `encode`). The step's end is in
+    // the flags.
+    out->losses = static_cast<std::uint16_t>(
+        entry.payload[kSessionHeaderBytes] |
+        (static_cast<std::uint16_t>(entry.payload[kSessionHeaderBytes + 1]) << 8));
+    out->end = static_cast<StepEnd>((out->flags & kSessionEndMask) >> kSessionEndShift);
+  } else if (out->stage == Stage::kStep) {
     const std::size_t take = body < kCommandMax ? body : kCommandMax;
     for (std::size_t i = 0; i < take; ++i) {
       out->command[i] = static_cast<char>(entry.payload[kSessionHeaderBytes + i]);
@@ -510,6 +532,8 @@ void ScannerSession::clear() {
   back_started_ = false;
   back_stage_ = Stage::kIdle;
   step_over_ = false;
+  said_ = false;
+  losses_at_say_ = 0;
   stuck_ = false;
   scanner_at_ms_ = 0;
   step_until_ms_ = 0;
@@ -517,12 +541,18 @@ void ScannerSession::clear() {
 }
 
 // The entry before the action (S-5, §6: "Every step is journalled ... before it is taken").
-bool ScannerSession::journal(Stage stage, const char* command) {
+bool ScannerSession::journal(Stage stage, const char* command, bool lost, StepEnd end,
+                            std::uint32_t losses) {
   SessionPayload p;
   p.stage = stage;
   p.step = stage == Stage::kStep ? static_cast<std::uint8_t>(status_.step) : 0;
   p.slot = status_.slot.index;
   p.flags = static_cast<std::uint8_t>(status_.resumed ? kSessionFlagResumed : 0);
+  if (lost) {
+    p.flags = static_cast<std::uint8_t>(p.flags | kSessionFlagLost);
+    p.end = end;
+    p.losses = static_cast<std::uint16_t>(losses > 0xFFFFu ? 0xFFFFu : losses);
+  }
   p.at_epoch = status_.at_epoch;
   if (command != nullptr) {
     std::size_t i = 0;
@@ -738,6 +768,21 @@ bool ScannerSession::resume() {
 // ------------------------------------------------------------------------------- one step
 
 SessionStep ScannerSession::step() {
+  // **One wrapper, so that every answer says it** (task p18-03): whoever drives this machine reads
+  // `listening` off the answer it holds and makes no call to a server while it is true, and there
+  // are a dozen places below that answer.
+  SessionStep r = stepOnce();
+  r.listening = listening();
+  return r;
+}
+
+std::uint32_t ScannerSession::stepPending() const {
+  if (stage_ != Stage::kStep || said_ || step_over_) return 0;
+  const ProgramStep* s = current();
+  return s != nullptr ? s->seconds : 0;
+}
+
+SessionStep ScannerSession::stepOnce() {
   if (scanner_at_ms_ != 0) {
     const std::uint64_t now = clock_.nowMs();
     status_.scanner_ms = now > scanner_at_ms_ ? static_cast<std::uint32_t>(now - scanner_at_ms_) : 0;
@@ -792,7 +837,12 @@ SessionStep ScannerSession::step() {
       return goBack();
     }
     case Stage::kScanner: return stepScanner();
-    case Stage::kStep: return step_over_ ? beginStep() : stepRunning();
+    // Three things a step is, in this order: its entry journalled and nothing said (beginStep),
+    // its command said (sayStep), its lines listened to (stepRunning). The middle one is task
+    // p18-03's: the caller's *step N* reaches the server between the first and the second.
+    case Stage::kStep:
+      if (step_over_) return beginStep();
+      return said_ ? stepRunning() : sayStep();
     case Stage::kRoom: return stepBack();
     case Stage::kFlashingGolden:
     case Stage::kBooting:
@@ -860,19 +910,36 @@ SessionStep ScannerSession::beginStep() {
     lent_ = lc::TextRoom{};
   }
   if (!lending_) lending_ = radio_.lendText(&lent_, room_.data, room_.bytes);
+  said_ = false;
   const SessionStep r = enter(Stage::kStep, "the step's command", s->command);
   if (!r.changed) return r;  // the journal: nothing is said
+  // **And the command is said by the next call, not this one** (task p18-03). The entry is in the
+  // flash and the stage is `kStep`, so a caller that talks to a server has this moment - and only
+  // this moment - to say *step N* and its command and to see to its lease, with the scanner still
+  // silent and the step's seconds not begun. On 21 November that call fell the other side of the
+  // command and took nine lines with it.
+  return r;
+}
+
+// The command of the step whose entry is already journalled. The step's seconds begin here, which
+// is where they belong: a caller that spent a second telling a server has not spent a second of
+// the step.
+SessionStep ScannerSession::sayStep() {
+  const ProgramStep* s = current();
+  if (s == nullptr) return goBack();
+  said_ = true;
+  losses_at_say_ = radio_.counters().port_losses;
   step_until_ms_ = clock_.nowMs() + static_cast<std::uint64_t>(s->seconds) * 1000u;
   const lc::Said said = radio_.say(link::text(s->command));
   if (!said.answered()) {
     endStep(StepEnd::kSilent);
-    return r;
+    return waiting(name(StepEnd::kSilent));
   }
   if (!said.ok) {
     endStep(StepEnd::kRefused);
-    return r;
+    return waiting(name(StepEnd::kRefused));
   }
-  return r;
+  return waiting("the step's command was said");
 }
 
 SessionStep ScannerSession::stepRunning() {
@@ -918,6 +985,15 @@ void ScannerSession::endStep(StepEnd end) {
   step_over_ = true;
   const std::size_t i = status_.step > 0 ? status_.step - 1 : 0;
   if (i < kStepsMax) status_.step_end[i] = end;
+  // **What the port lost while this step ran** (task p18-03), as the difference of the client's
+  // own count: the ring was full, or the hardware's FIFO ran over, and lines the scanner numbered
+  // are simply not here. Nine of sixteen went that way on 21 November and nothing anywhere said
+  // so, which is what this entry is for - the one journal line of a session that says a
+  // measurement is incomplete. A step that lost nothing writes no entry, so an ordinary session's
+  // journal is exactly what it always was.
+  const std::uint32_t now_losses = radio_.counters().port_losses;
+  const std::uint32_t losses = now_losses > losses_at_say_ ? now_losses - losses_at_say_ : 0;
+  if (losses != 0) (void)journal(Stage::kStep, nullptr, true, end, losses);
   // Handed to whoever runs the session, as the room itself (S-12: nothing of it is copied into a
   // log, the journal or a report). The next step begins when this returns.
   if (sink_ != nullptr) {
@@ -931,6 +1007,7 @@ void ScannerSession::endStep(StepEnd end) {
     report.used = lent_.used;
     report.count = lent_.lines;
     report.first = status_.step == 1;
+    report.losses = losses;
     sink_->onStepLines(report);
   }
 }
