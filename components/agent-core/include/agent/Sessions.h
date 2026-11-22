@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <agent/IMesh.h>
 #include <agent/JobEnvelopes.h>
 #include <agent/ReplyCodec.h>
 
@@ -28,6 +29,35 @@ struct RepeaterSession {
   CredentialClass credentialClass = CredentialClass::None;
   uint8_t permissions = 0;
   uint32_t loggedInAtMs = 0;
+
+  // **The path the claim of the job that opened this session carried** (task p1.21-71), so that a
+  // job which reuses the session can tell whether the way back the repeater holds is still the
+  // way its sends are about to go. The repeater was told that way back before this session's own
+  // login; a claim that now names another path means the repeater would answer along hops this
+  // job is not using, so the way back is told again before the job's first send.
+  //
+  // `hasPath` false is a session opened by a flood - the server knew no path - and `pathLen` 0
+  // with `hasPath` true is a direct pair, whose way back is the empty path. `pathLen` is the
+  // encoded `path_len` byte MeshCore uses, `(hashSize - 1) << 6 | hopCount`, so a path of the
+  // same hops at another width is a different path, which it is: the hops a packet is addressed
+  // to are the bytes, not the nodes.
+  bool hasPath = false;
+  uint8_t pathLen = 0;
+  uint8_t path[kMeshPathCap] = {};
+
+  // Were this session's hops the same as these? The comparison the reuse above is decided by.
+  bool samePathAs(const uint8_t* bytes, uint8_t len, bool has) const {
+    if (has != hasPath) return false;
+    if (!has) return true;
+    if (len != pathLen) return false;
+    const size_t width = static_cast<size_t>(len & 63) * static_cast<size_t>((len >> 6) + 1);
+    if (width == 0) return true;
+    if (bytes == nullptr) return false;
+    for (size_t i = 0; i < width && i < sizeof path; i++) {
+      if (path[i] != bytes[i]) return false;
+    }
+    return true;
+  }
 
   uint8_t role() const { return permissions & kPermRoleMask; }
   bool isAdmin() const { return role() == kPermAdmin; }
@@ -54,7 +84,13 @@ class SessionStore {
   // Record a login. When the granted role falls short of the class the login was for, the
   // session is stored at the class it can carry - guest, which any accepted login satisfies -
   // rather than at the class that asked.
-  const RepeaterSession* put(const char* key, CredentialClass credentialClass, uint8_t permissions, uint32_t nowMs);
+  //
+  // `pathBytes`/`pathLen`/`hasPath` are the path the job that made this login was claimed with
+  // (task p1.21-71), kept so that a job reusing the session can see that the claim's path has
+  // changed. They have defaults - *no path* - so a caller that does not care passes nothing and
+  // every job of such a caller is then a job whose path has not changed.
+  const RepeaterSession* put(const char* key, CredentialClass credentialClass, uint8_t permissions, uint32_t nowMs,
+                             const uint8_t* pathBytes = nullptr, uint8_t pathLen = 0, bool hasPath = false);
 
   void invalidate(const char* key);
   void clear();

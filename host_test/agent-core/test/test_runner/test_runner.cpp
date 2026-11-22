@@ -1143,7 +1143,11 @@ TEST_F(RunnerTest, ARevokeIsConfirmedByABlankLoginAnsweredAtGuest) {
   const std::string log = logOf(body);
   EXPECT_NE(log.find("the entry check (blank login): answered at guest"), std::string::npos) << log;
   EXPECT_NE(log.find("this exit node's key is off it, so the line ran"), std::string::npos) << log;
-  EXPECT_NE(log.find("the session is gone with the entry"), std::string::npos) << log;
+  // The last sentence of this job's log - *the session is gone with the entry* - is cut by the
+  // kilobyte since task p1.21-71 put the way back and each reply's route in it. What it says is
+  // asserted of the store itself rather than of the log: the next `acl` job for this repeater
+  // logs in again (`AfterAConfirmedGrantTheNextAclJobLogsIn`), and the entry really is off.
+  EXPECT_NE(log.find("the entry set is this exit node's own"), std::string::npos) << log;
 }
 
 TEST_F(RunnerTest, ARevokeOnARepeaterWithAGuestPasswordCannotBeConfirmed) {
@@ -1511,13 +1515,19 @@ TEST_F(RunnerTest, AConsoleReplyThatCameTooLateIsNotStoredAsTheNextLinesValue) {
   EXPECT_EQ(transactionsOf(body), 7)
       << "the login, two tries of `get name`, `get tx`, `get repeat`, `ver` and `board`";
 
+  // The log of a read this long no longer holds its own first lines: `JobLog` is 1 024 bytes and
+  // drops whole entries off the front when it fills, and since task p1.21-71 every answered
+  // exchange says how its reply came home as well as how the request went. The entry this test
+  // is about is the drop, which is near the end and survives; the retry's own *no reply* and the
+  // one sentence about the prefixes are the earliest entries and are gone. The prefixes
+  // themselves are read out of the fake below, and
+  // `EveryConsoleLineOfAJobCarriesItsOwnPrefixAndNoTwoAreTheSame` holds that sentence on a
+  // shorter job.
   const std::string log = logOf(body);
-  EXPECT_NE(log.find("cli 'get name' try 1: no reply"), std::string::npos) << log;
   EXPECT_NE(log.find("cli 'get tx' try 1: a console reply that does not carry this line's prefix arrived instead"),
             std::string::npos)
       << "the drop is in the job's log, with no byte of the dropped reply in it: " << log;
-  EXPECT_NE(log.find("every console line of this job carries the firmware's two-character prefix"), std::string::npos)
-      << log;
+  EXPECT_NE(log.find("cli 'get name' try 2: ok"), std::string::npos) << log;
   // The prefix changes with every line and every try, so a late reply to try 1 is not the answer
   // to try 2 either - which is what made the drop above happen in `get tx`'s wait and not here.
   EXPECT_NE(mesh.prefixOf("get name", 0), mesh.prefixOf("get name", 1));
@@ -3147,6 +3157,331 @@ TEST_F(RunnerTest, TheConsoleReportsReadBackWhatTheRunnerDid) {
   char line[160];
   runner.describe(line, sizeof line);
   EXPECT_NE(std::string(line).find("1 run"), std::string::npos) << line;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The way back (task p1.21-71)
+//
+// On 22 November 2026 Thomas traced TwinOak Ebeltoft through the Risskov exit node: out by two
+// hops and back, 7 to 12 dB at all six receptions (meshmaster.dk's job 40632). Two minutes later
+// a status read along the same pinned path had two logins unanswered (40633). A trace goes out
+// and comes back along the hops it names; a reply did not, because a repeater answers a direct
+// request along the `out_path` it has stored for that client, stores one only from a PATH packet
+// the client sends it, and this firmware sent none. So every reply to an exit node was a flood.
+//
+// `FakeMesh` tells one now, because the board does, and the repeater behind it does what the
+// pinned firmware does with the packet: stores it under the key that sent it, drops it from a key
+// its access list does not hold, forgets it when a login of that key arrives as a flood, and
+// answers along it when it holds one.
+
+// The frames of a job, in order, with the ways back among them - `mesh.frames()` as a sentence,
+// so a failure prints what went on the air rather than an index.
+std::string framesOf(const fake::FakeMesh& mesh) {
+  std::string out;
+  for (const std::string& frame : mesh.frames()) {
+    if (!out.empty()) out += " ";
+    out += frame;
+  }
+  return out;
+}
+
+TEST_F(RunnerTest, TwentyTwoNovemberTheRepliesComeBackTheWayTheRequestsWent) {
+  // The read that failed: two hops from the server, and a repeater whose access list already
+  // holds this exit node's key - the pinned pair that had been read hourly for weeks.
+  mesh.grant(self(), mm::kPermReadOnly);
+  const std::string body = run(fake::Job(12600, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "f77b"}));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  // Way back, login, the status request, the owner-info request.
+  EXPECT_EQ(framesOf(mesh), "wayback login request request") << logOf(body);
+  EXPECT_EQ(mesh.waysBackCount(), 1) << "one telling is enough for a repeater that holds the key";
+  EXPECT_EQ(transactionsOf(body), 3) << "the login and the two requests are what they always were (EXIT-NODES 7)";
+  // Every reply came home along the hops the request went out by, and the log says so at each.
+  const std::string log = logOf(body);
+  EXPECT_EQ(log.find("reply flooded"), std::string::npos) << log;
+  EXPECT_NE(log.find("way back: 2 hop(s)"), std::string::npos) << log;
+  EXPECT_NE(log.find("logged in as read-only, firmware level 2 (direct, reply direct)"), std::string::npos) << log;
+  int direct = 0;
+  for (size_t at = 0; (at = log.find("reply direct", at)) != std::string::npos; at += 12) direct++;
+  EXPECT_EQ(direct, 3) << "the login's reply and both requests' (" << log << ")";
+}
+
+TEST_F(RunnerTest, TheSameReadOnAMeshThatTellsNoWayBackHasEveryReplyFlooded) {
+  // The same job before this task, and on a mesh that overrides nothing still: the repeater holds
+  // no way home, so it floods every reply. Nothing else about the job moves.
+  mesh.tellsNoWayBack();
+  mesh.grant(self(), mm::kPermReadOnly);
+  const std::string body = run(fake::Job(12601, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "f77b"}));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(framesOf(mesh), "login request request");
+  EXPECT_EQ(mesh.waysBackCount(), 0);
+  EXPECT_EQ(transactionsOf(body), 3);
+  const std::string log = logOf(body);
+  EXPECT_EQ(log.find("reply direct"), std::string::npos) << log;
+  EXPECT_NE(log.find("this mesh tells no way back"), std::string::npos) << log;
+  int flooded = 0;
+  for (size_t at = 0; (at = log.find("reply flooded", at)) != std::string::npos; at += 13) flooded++;
+  EXPECT_EQ(flooded, 3) << log;
+}
+
+TEST_F(RunnerTest, AMeshWithTheDefaultMemberSendsEveryByteAsItDid) {
+  // Nothing of a job changes on a mesh that tells no way back: the same frames, the same
+  // transactions, the same gaps, the same result - which is the promise the default member makes
+  // to the Walter and to a host's own mesh.
+  mesh.tellsNoWayBack();
+  mesh.grant(self(), mm::kPermReadOnly);
+  const std::string body = run(fake::Job(12602, "neighbours")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(mesh.waysBackCount(), 0);
+  EXPECT_EQ(framesOf(mesh), "login request");
+  EXPECT_EQ(transactionsOf(body), 2);
+  EXPECT_NE(dataOf(body).find("\"prefix\":\"7f8e9dacbbcad9e8\""), std::string::npos) << dataOf(body);
+  for (const fake::Send& sent : mesh.sends()) EXPECT_TRUE(sent.answered) << sent.kindName();
+}
+
+TEST_F(RunnerTest, AGuestsFirstLoginEndsDirectAndTellsExactlyTwoWaysBack) {
+  // A guest's very first login: the repeater's access list does not hold this key yet, so the
+  // first way back matches no peer and is dropped before it is decrypted, and the login - which
+  // is what writes the entry - is answered with a flood. The way back goes once more, and the
+  // request after it comes home direct.
+  mesh.setGuestPassword("gu3st-pass");
+  const std::string body = run(fake::Job(12603, "status")
+                                   .atClass("guest")
+                                   .leasedUntil(kLease)
+                                   .withGuestPassword("gu3st-pass")
+                                   .alongPath({"ef15", "f77b"}));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(framesOf(mesh), "wayback login wayback request request") << logOf(body);
+  ASSERT_EQ(mesh.waysBackCount(), 2);
+  EXPECT_FALSE(mesh.waysBack()[0].stored) << "a way back from a key the access list does not hold is dropped";
+  EXPECT_TRUE(mesh.waysBack()[1].stored);
+  EXPECT_EQ(transactionsOf(body), 3) << "the login and the two requests, as they always were";
+  const std::string log = logOf(body);
+  EXPECT_NE(log.find("(direct, reply flooded)"), std::string::npos) << "the login's own reply was flooded: " << log;
+  EXPECT_NE(log.find("way back again (the reply came flooded)"), std::string::npos) << log;
+  EXPECT_NE(log.find("reply direct"), std::string::npos) << log;
+
+  // And the job after it is all direct: the repeater holds the way home now.
+  mesh.forgetSends();
+  const std::string next = run(fake::Job(12604, "telemetry")
+                                   .atClass("guest")
+                                   .leasedUntil(kLease)
+                                   .withGuestPassword("gu3st-pass")
+                                   .alongPath({"ef15", "f77b"}));
+  EXPECT_EQ(outcomeOf(next), "ok");
+  EXPECT_EQ(framesOf(mesh), "request") << "the session is still live and the repeater holds the way home: "
+                                       << logOf(next);
+  EXPECT_EQ(mesh.waysBackCount(), 0);
+  EXPECT_EQ(logOf(next).find("reply flooded"), std::string::npos) << logOf(next);
+  EXPECT_NE(logOf(next).find("reply direct"), std::string::npos) << logOf(next);
+}
+
+TEST_F(RunnerTest, APairOfNoHopsTellsTheEmptyPathAsItsWayBack) {
+  // A direct neighbour: a known path of **zero** hops, whose way back is the empty path - which
+  // `Packet::copyPath` stores as an `out_path_len` of 0 and not OUT_PATH_UNKNOWN, so the repeater
+  // answers that client direct with no hops at all.
+  mesh.grant(self(), mm::kPermReadOnly);
+  const std::string body = run(fake::Job(12605, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .asDirectNeighbour());
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(framesOf(mesh), "wayback login request request");
+  ASSERT_EQ(mesh.waysBackCount(), 1);
+  EXPECT_TRUE(mesh.waysBack()[0].path.empty()) << "the empty path, which a repeater stores as direct";
+  EXPECT_TRUE(mesh.waysBack()[0].stored);
+  EXPECT_NE(logOf(body).find("way back: 0 hop(s), 0 ms to clear"), std::string::npos) << logOf(body);
+  EXPECT_EQ(logOf(body).find("reply flooded"), std::string::npos) << logOf(body);
+}
+
+TEST_F(RunnerTest, AFourHopPathInThreeByteHashesIsReversedAtThatWidth) {
+  // The order is the thing: a direct packet is routed by the front of its path and each hop takes
+  // itself off, while a flood appends at the end - so the way out read backwards is the way home
+  // read forwards. Four hops of three-byte hashes, which is a width a trace cannot even express.
+  mesh.grant(self(), mm::kPermReadOnly);
+  const std::string body = run(fake::Job(12606, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"a1a2a3", "b1b2b3", "c1c2c3", "d1d2d3"}));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  ASSERT_EQ(mesh.waysBackCount(), 1);
+  const fake::WayBackTold& told = mesh.waysBack()[0];
+  EXPECT_EQ(told.hashSize, 3);
+  const std::vector<uint8_t> reversed = {0xd1, 0xd2, 0xd3, 0xc1, 0xc2, 0xc3, 0xb1, 0xb2, 0xb3, 0xa1, 0xa2, 0xa3};
+  EXPECT_EQ(told.path, reversed) << "the claim's hops, in the opposite order, at their own width";
+  EXPECT_NE(logOf(body).find("way back: 4 hop(s)"), std::string::npos) << logOf(body);
+  EXPECT_EQ(logOf(body).find("reply flooded"), std::string::npos) << logOf(body);
+}
+
+TEST_F(RunnerTest, AReusedSessionWhoseClaimNamesAnotherPathTellsTheWayBackAgain) {
+  // A session remembers the path it was opened along, because that is what the repeater was told
+  // the way back from. The server has moved this pair onto another route; a reply along the old
+  // one would come home by hops this job is not using.
+  mesh.grant(self(), mm::kPermReadOnly);
+  run(fake::Job(12607, "status")
+          .atClass("acl")
+          .leasedUntil(kLease)
+          .withAclLevel(mm::kPermReadOnly)
+          .alongPath({"ef15", "f77b"}));
+  mesh.forgetSends();
+
+  const std::string body = run(fake::Job(12608, "telemetry")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "aaaa"}));
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_NE(logOf(body).find("session reused"), std::string::npos) << logOf(body);
+  EXPECT_EQ(framesOf(mesh), "wayback request") << logOf(body);
+  EXPECT_EQ(mesh.waysBackCount(), 1);
+  EXPECT_NE(logOf(body).find("way back again (the claim's path changed)"), std::string::npos) << logOf(body);
+  EXPECT_EQ(transactionsOf(body), 1) << "a reused session is one transaction, as it always was";
+}
+
+TEST_F(RunnerTest, AReusedSessionAlongTheSamePathTellsNoWayBack) {
+  mesh.grant(self(), mm::kPermReadOnly);
+  run(fake::Job(12609, "status")
+          .atClass("acl")
+          .leasedUntil(kLease)
+          .withAclLevel(mm::kPermReadOnly)
+          .alongPath({"ef15", "f77b"}));
+  mesh.forgetSends();
+
+  const std::string body = run(fake::Job(12610, "telemetry")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "f77b"}));
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_NE(logOf(body).find("session reused"), std::string::npos) << logOf(body);
+  EXPECT_EQ(framesOf(mesh), "request") << "the repeater already holds this way back: " << logOf(body);
+  EXPECT_EQ(mesh.waysBackCount(), 0);
+  EXPECT_NE(logOf(body).find("reply direct"), std::string::npos) << logOf(body);
+}
+
+TEST_F(RunnerTest, AFloodedLoginIsPrecededByNothingAndTheTaughtPathIsToldBeforeTheRequest) {
+  // No path from the server: the login floods, and nothing precedes it - there are no hops to
+  // name. Its reply comes back as a path return and teaches one, so the way back goes along that
+  // path before the job's next send, and that reply comes home direct.
+  mesh.grant(self(), mm::kPermReadOnly);
+  mesh.setReturnPath({0x11, 0x22, 0x33, 0x44}, 2);
+  const std::string body = run(fake::Job(12611, "telemetry")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .withNoPath());
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(framesOf(mesh), "login wayback request") << logOf(body);
+  ASSERT_EQ(mesh.waysBackCount(), 1);
+  const std::vector<uint8_t> reversed = {0x33, 0x44, 0x11, 0x22};
+  EXPECT_EQ(mesh.waysBack()[0].path, reversed) << "the path the flood taught, reversed";
+  EXPECT_NE(logOf(body).find("way back along the path a flood taught"), std::string::npos) << logOf(body);
+  EXPECT_NE(logOf(body).find("reply direct"), std::string::npos) << logOf(body);
+  EXPECT_EQ(transactionsOf(body), 2) << "the flooded login and the request, as they always were";
+}
+
+TEST_F(RunnerTest, AWayBackLostOnTheAirIsToldOnceMoreAndThenTheRepliesAreDirect) {
+  // The packet itself lost: the repeater holds no way home, so the login's reply is flooded as it
+  // was before this task, the way back goes once more, and the request after it is direct.
+  mesh.grant(self(), mm::kPermReadOnly);
+  mesh.loseTheNextWaysBack(1);
+  const std::string body = run(fake::Job(12612, "telemetry")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "f77b"}));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(framesOf(mesh), "wayback login wayback request") << logOf(body);
+  ASSERT_EQ(mesh.waysBackCount(), 2);
+  EXPECT_FALSE(mesh.waysBack()[0].reached);
+  EXPECT_TRUE(mesh.waysBack()[1].stored);
+  EXPECT_NE(logOf(body).find("(direct, reply flooded)"), std::string::npos) << logOf(body);
+  EXPECT_NE(logOf(body).find("way back again (the reply came flooded)"), std::string::npos) << logOf(body);
+  EXPECT_NE(logOf(body).find("reply direct"), std::string::npos) << logOf(body);
+  EXPECT_EQ(transactionsOf(body), 2);
+}
+
+TEST_F(RunnerTest, ADeadWayBackEndsTheJobAsSilenceDoesAndNothingNewIsTried) {
+  // **What gets less forgiving.** A reply has one way home now: a link that is good out and poor
+  // back fails where a flood might have got through. The way back arrives and the repeater stores
+  // it; every reply it sends along it is lost. Both tries of the login go unanswered, the job is
+  // `unreachable` exactly as a silence makes it, and nothing new is sent - a way back is not a
+  // command and is told once a login, not once a disappointment.
+  mesh.grant(self(), mm::kPermReadOnly);
+  mesh.theWayBackIsDead();
+  const std::string body = run(fake::Job(12613, "telemetry")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "f77b"}));
+
+  EXPECT_EQ(outcomeOf(body), "unreachable");
+  EXPECT_EQ(failedAtOf(body), "login");
+  EXPECT_EQ(framesOf(mesh), "wayback login wayback login") << logOf(body);
+  EXPECT_EQ(mesh.logins(), 2) << "the two tries of the login sequence and nothing else";
+  EXPECT_EQ(mesh.requests(), 0);
+  EXPECT_EQ(transactionsOf(body), 2) << "one a try, as a silence has always cost";
+}
+
+TEST_F(RunnerTest, TheWayBackAndTheLoginAreOneSlotOfTheGateAndOneTransaction) {
+  // Two packets, one slot: the way back goes at the start of the login's own slot, the hops are
+  // given the time this mesh says they need, and the login follows inside the same slot. The
+  // budget's gap is measured from where the transaction started, which is the way back.
+  setBudget(mm::kDefaultMaxTransactionsPerMinute, mm::kDefaultMinGapSeconds);
+  mesh.setWayBackClearMs(500);  // 500 ms a hop, so a two-hop path is a second
+  mesh.grant(self(), mm::kPermReadOnly);
+  const std::string body = run(fake::Job(12614, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "f77b"}));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(transactionsOf(body), 3);
+  EXPECT_EQ(runner.gate().transmissions(), 3u) << "the way back took no slot of its own";
+  ASSERT_EQ(mesh.waysBackCount(), 1);
+  ASSERT_GE(mesh.sendCount(), 1);
+  EXPECT_EQ(mesh.sends()[0].atMs - mesh.waysBack()[0].atMs, 1000u)
+      << "the login waited for the hops to clear: two hops at 500 ms";
+  for (uint32_t gap : mesh.gapsMs()) {
+    EXPECT_GE(gap, mm::kDefaultMinGapSeconds * 1000u) << "two transactions closer than the minimum gap";
+  }
+  EXPECT_NE(logOf(body).find("1000 ms to clear"), std::string::npos) << logOf(body);
+}
+
+TEST_F(RunnerTest, ALocalJobTellsNoWayBack) {
+  // A job the mesh answers without the air has no hops to clear and no reply to route
+  // (IMesh::answersLocally, task p1.10-40).
+  mesh.setLocalDoorKey(repeater());
+  const std::string body = run(fake::Job(12615, "status")
+                                   .atClass("acl")
+                                   .leasedUntil(kLease)
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .alongPath({"ef15", "f77b"}));
+
+  EXPECT_EQ(outcomeOf(body), "ok");
+  EXPECT_EQ(mesh.waysBackCount(), 0);
+  EXPECT_EQ(transactionsOf(body), 0);
 }
 
 // ---------------------------------------------------------------------------------------------

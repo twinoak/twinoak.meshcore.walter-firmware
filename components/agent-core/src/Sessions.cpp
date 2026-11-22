@@ -35,7 +35,7 @@ const RepeaterSession* SessionStore::get(const char* key, CredentialClass wanted
 }
 
 const RepeaterSession* SessionStore::put(const char* key, CredentialClass credentialClass, uint8_t permissions,
-                                         uint32_t nowMs) {
+                                         uint32_t nowMs, const uint8_t* pathBytes, uint8_t pathLen, bool hasPath) {
   if (key == nullptr || key[0] == '\0') return nullptr;
   int i = indexOf(key);
   if (i < 0) {
@@ -55,6 +55,16 @@ const RepeaterSession* SessionStore::put(const char* key, CredentialClass creden
   s.credentialClass = (permissions & kPermRoleMask) >= roleNeededFor(credentialClass) ? credentialClass
                                                                                       : CredentialClass::Guest;
   s.loggedInAtMs = nowMs;
+  // The path this session was opened along (task p1.21-71), which is what the repeater was told
+  // the way back from.
+  s.hasPath = hasPath;
+  s.pathLen = hasPath ? pathLen : 0;
+  std::memset(s.path, 0, sizeof s.path);
+  if (hasPath && pathBytes != nullptr) {
+    size_t width = static_cast<size_t>(pathLen & 63) * static_cast<size_t>((pathLen >> 6) + 1);
+    if (width > sizeof s.path) width = sizeof s.path;
+    std::memcpy(s.path, pathBytes, width);
+  }
   used_[i] = true;
   return &s;
 }

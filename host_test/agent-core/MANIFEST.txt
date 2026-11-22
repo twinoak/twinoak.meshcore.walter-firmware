@@ -1,17 +1,17 @@
 # The agent core's host fakes, contract fixtures and own two suites, copied - never edited here.
-# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit b6d4cfb242cee93c2be5adfbdaa54bf8ef42c60b
+# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit be69234713e738ef2bc46761f00ec9661b19a7f0
 # written by tools/sync-agent-core.ps1; docs/upstream.md says how and when
 #
 # sha256                                                           bytes  name
-76c8fd83f683c19563fed90dada16fa96a03a7c7b6b1b73bdab1ad3c81c54713    24223  platformio.ini
-dd92765796edfb88847fc9731f1f7059700c71968f16615d0f12d272dc56551d    70206  test/support/FakeMesh.h
+64499929d81d1beef78b399d1859714defbcd5850a8e3eef4932e8e505f85a9f    26180  platformio.ini
+d0058224d5ab5e8e8cbaf8f0cb6e5f6b8b47a28329ef61281a01794033e6abc7    80031  test/support/FakeMesh.h
 3fa0f2fd8eba516f30b3ef3399b217e8531ad6316e5fa3d97d152b06599462db     5983  test/support/FakePlatform.h
 66e0fa1a31b021bed11421b6df6daec4d94ea4e6d4a3251faf64c0d9236099ed     2660  test/support/FakeRetained.h
-08c832edd4bb8768676fcedd2d923652be55365951d72ce94f1b9d3d8a010ab0    19229  test/support/FakeUplink.h
+4ab26034910a21c24637e8b66a80d356f0a7254e72df2e778a89bdf962ffd227    26496  test/support/FakeUplink.h
 01172f3677f0bd2d04ca4600cb3217bd862aae8afeeddd1b02626d49983912b6     6683  test/support/Fixtures.h
 e26dfebb90161012ab8187bba70b41c4775ff79ec8dfa8d75a71a228ebe0a349     6340  test/support/Jobs.h
-134519a557e4ac55d87ec83845c22d2a9c0b0c6835a3719bd5e5a20e3478aaef   162190  test/test_loop/test_loop.cpp
-6289874f0830e3661c69fb0001e771e8b487be83e879b2a8a7e12eb7f8c924ce   177175  test/test_runner/test_runner.cpp
+b1e765d321badf66380b2c7b7f123084ecbe800ea973837ed6396d18a3096d92   186767  test/test_loop/test_loop.cpp
+997189764e2bc6af48836bf7759e75352ff5d9f7fed91dd9143d08305c822d52   195957  test/test_runner/test_runner.cpp
 ebfa67bcdf0617c577c093010f475fdd7e949886e3cc3745ddd665d990f844d8     2221  tests/fixtures/companion/access-list-response-full.hex
 0708a3b026116c1ac387d09d2c6b1fb7c9a20db09ac68fd8822e30d8c6d98bf5     1451  tests/fixtures/companion/access-list-response.hex
 39b879a378f21c8fc678ee7922a231a053ba18bf379750750e24ce7c7d745e71      338  tests/fixtures/companion/advert-path.hex
