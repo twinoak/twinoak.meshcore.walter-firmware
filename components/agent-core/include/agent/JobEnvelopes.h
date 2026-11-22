@@ -49,6 +49,17 @@ bool isKnownJobType(const char* type);
 // the status+telemetry pair the server schedules in one slot and claims together.
 constexpr int kClaimMax = 2;
 
+// As many job ids as the claim's `holding` can carry (task p1.20-70): the ids of the results this
+// exit node keeps and has not had taken, which is what the offline buffer holds at most
+// (`ResultBuffer::kMaxResults` - a static_assert in JobRunner.cpp holds the two together). A job
+// in hand is never among them, because this library claims between jobs and never during one.
+constexpr int kClaimHoldingMax = 8;
+
+// The longest body `writeClaimRequest` can write: `{"max":N}` with both optional members and
+// `holding` full. What the uplink's request buffer is sized by (src/agent/AgentClient.cpp), so
+// that no claim this library can make is ever refused for want of room.
+constexpr size_t kMaxClaimRequestLen = 256;
+
 constexpr size_t kMaxJobTypeLen = 16;
 constexpr size_t kMaxRepeaterLabelLen = 48;
 constexpr size_t kMaxIdempotencyKeyLen = 80;
@@ -209,8 +220,40 @@ bool guestIsEnough(const char* type, CredentialClass credentialClass, uint8_t gr
 // `leaseUntil` of 0 is a claim that named no lease.
 bool leaseLapsed(uint32_t leaseUntil, bool hasTime, uint32_t nowEpoch);
 
-// POST /agent/v1/jobs/claim's body: `{"max":N}`.
-size_t writeClaimRequest(int max, char* out, size_t cap);
+// POST /agent/v1/jobs/claim's body: `{"max":N}`, and after `max` two optional members, in this
+// order (API §3; meshmaster.dk's task p4.47-253).
+//
+// **`transactionsLeft`** (task p1.20-69) - what the wake has left of the
+// `maxTransactionsThisWake` its heartbeat stated, so that the server hands out no job this wake
+// cannot pay for. **Below 0 is not stated** and the member is left out: an agent writes it in
+// every claim of a wake after the first and never in the first, and a wake whose intent proposed
+// no cap has nothing to say and writes none.
+//
+// **`holding`** (task p1.20-70) - the ids of the jobs this exit node is running or keeps a result
+// for, oldest first. `holdingCount` **below 0 is not stated** and the member is left out, which
+// is what an agent that does not say says; 0 writes `[]`, which says *nothing*, and the two are
+// different things to the server. An agent that writes it writes it in **every** claim, and this
+// library does: `JobRunner::claim` fills the list from the offline buffer for every claim it
+// makes. At most `kClaimHoldingMax` ids are written; `holding` may be null when the count is not
+// above 0.
+//
+// A body that does not fit `cap` is refused whole - 0 back, nothing written past the end - rather
+// than cut in half: half a claim is a 400, and a 400 costs the wake its work.
+size_t writeClaimRequest(int max, char* out, size_t cap, int transactionsLeft = -1,
+                         const long long* holding = nullptr, int holdingCount = -1);
+
+// The answer to a posted result (API §3: `{ jobId, state, duplicate, late }`), read for the one
+// member of it this firmware acts on: **`jobsWaiting`** - whether a claim by this exit node now
+// would be handed a job (task p1.20-69). The server writes it to an exit node whose last
+// heartbeat stated an interval of its own and to no other, so a reply without it says nothing -
+// and nothing is **false** here: an older server has never written it, and a wake that cannot be
+// told there is more does what it always did, one claim.
+//
+// Never a reason to fail a result the server answered 200: a body that is not JSON, or not an
+// object, is false too. Nothing else of the reply is read - the job id, the state, `duplicate`
+// and `late` are the server's record of what it already has, and this firmware acts on none of
+// them.
+bool resultReplySaysJobsWaiting(const char* json, size_t len);
 
 // Reads the claim's answer. At most `max` jobs are kept - the server sends at most what was
 // asked for, and a reply that says otherwise is not a reason to overrun a buffer. `count` is how

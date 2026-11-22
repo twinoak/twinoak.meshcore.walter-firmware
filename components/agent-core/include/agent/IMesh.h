@@ -48,6 +48,29 @@ struct MeshCounters {
   uint32_t advertsDropped = 0; // adverts whose app_data did not decode
 };
 
+// **How a reply came home** (task p1.21-71): the shape of the packet it arrived in, which is
+// whether the repeater answered along a way back it holds or flooded the reply at every repeater
+// that could hear it. A repeater answers a direct request along the `out_path` it has stored for
+// that client and floods when it has none - `examples/simple_repeater/MyMesh.cpp` at 81dbae59: a
+// login's reply ~L596-619 through `mesh::chooseReplyRoute`, a request's ~L684-697, a console
+// reply ~L744-756 - and it stores one only from a PATH packet the client sends it, which is what
+// `IMesh::tellTheWayBack()` below is.
+//
+// `NotKnown` is the default and is a mesh that cannot say: a link client whose protocol has no
+// word for the route, and a reply nothing filled in. It is never read as *flooded*: the job's log
+// says it in so many words and nothing else reads it.
+enum class ReplyRoute : uint8_t { NotKnown, Direct, Flood };
+
+// The words a job's log says about how a reply came.
+inline const char* replyRouteName(ReplyRoute route) {
+  switch (route) {
+    case ReplyRoute::Direct: return "direct";
+    case ReplyRoute::Flood: return "flooded";
+    case ReplyRoute::NotKnown: break;
+  }
+  return "route unknown";
+}
+
 // What came back from a repeater during a job. One instance, reused: a board runs one
 // transaction at a time, by the budget of EXIT-NODES §8.
 //
@@ -79,6 +102,10 @@ struct MeshReply {
   uint8_t traceSnrs[kMeshPathCap] = {};
   uint8_t traceSnrCount = 0;
   float traceFinalSnr = 0;
+
+  // How this reply came home (task p1.21-71). Set by the mesh at every reply it hands over;
+  // `NotKnown` for a mesh that cannot say.
+  ReplyRoute route = ReplyRoute::NotKnown;
 };
 
 // What a send came to. The words are MeshCore's MSG_SEND_* and mean the same thing.
@@ -246,6 +273,52 @@ class IMesh {
   virtual uint8_t pathHopCount() const = 0;
   // The out-path as hex hops, for the result's `pathUsed`; returns how many were written.
   virtual int describePath(char hops[][8], int max) const = 0;
+
+  // ------------------------------------------------------------------ the way back (task p1.21-71)
+
+  // What telling the way back came to: whether a packet went out, how many hops it named, and
+  // how long it needs to clear them before the next send may go.
+  struct WayBack {
+    // `NotTold` is a mesh that tells none at all - the default below, and what every mesh was
+    // before this - and is not a failure; `Failed` is a mesh that tells one and could not.
+    enum class How : uint8_t { NotTold, Failed, Told };
+    How how = How::NotTold;
+    uint8_t hops = 0;      // the hops the way back names; 0 is the empty path of a direct pair
+    uint32_t clearMs = 0;  // how long the packet needs to clear those hops, by this mesh's figures
+  };
+
+  // **Tell this job's repeater the way back to this exit node** (task p1.21-71), so that the
+  // replies of this job come home along the hops the requests went out by instead of being
+  // flooded at every repeater that can hear them.
+  //
+  // A repeater stores a way back only from a PATH packet the client sends it (`onPeerPathRecv`,
+  // `examples/simple_repeater/MyMesh.cpp` ~L766-782 at 81dbae59), and this firmware sent none
+  // until now: so every reply to an exit node was a flood, and a trace - which goes out and back
+  // along the hops it names - said nothing about the way a reply would take. On 22 November 2026
+  // a trace of TwinOak Ebeltoft through Risskov read 7 to 12 dB on all six receptions and two
+  // logins two minutes later went unanswered.
+  //
+  // The library calls it **before every login that goes out direct**, each try, and once more
+  // before the next send when a reply came home flooded all the same - never on a send that
+  // floods, where there is no path to tell one along and nothing to tell it with. It is one
+  // packet inside the login's own slot of the airtime budget and **counts no transaction of its
+  // own**: EXIT-NODES §7 prices a login as one exchange and it stays one.
+  //
+  // It is **not a command**: *one send per command* is the rail for a line that changes a
+  // repeater, and a way back told twice is the same way back. So nothing retries it and nothing
+  // reads its answer - the way to know the repeater took it is that the next reply came direct.
+  //
+  // What the way back **is**, for a mesh that implements it: the hops of the path this job holds,
+  // in the **opposite order**, at the width the path carried - a direct packet is routed by
+  // `path[0]` and each hop takes itself off the front (`src/Mesh.cpp` ~L88-105 at the pin), while
+  // a flood appends its hops at the end (~L344-356), so the way out read backwards is the way
+  // home read forwards. For a pair of **no hops** it is the empty path, which a repeater stores
+  // as *direct*.
+  //
+  // **The default tells nothing and says so**, so a mesh that overrides nothing - a host's, the
+  // repeater-v2 unit's Walter, whose link protocol has no request for it - compiles and behaves
+  // exactly as it did, and the library says one sentence about it in the job's log.
+  virtual WayBack tellTheWayBack() { return WayBack(); }
 
   // A login as ourselves (EXIT-NODES §7). With `password` empty or nullptr it is the ACL login,
   // which offers the repeater our own key and no secret at all; with one it is the guest or

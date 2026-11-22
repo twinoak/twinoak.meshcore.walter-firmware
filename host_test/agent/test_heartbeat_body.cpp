@@ -145,11 +145,14 @@ class CapturingUplink final : public mm::IUplink {
     duplicate = false;
     return true;
   }
-  bool claimJobs(mm::ClaimedJob*, int, int& count) override {
+  bool claimJobs(mm::ClaimedJob*, int, int& count, int, const long long*, int) override {
     count = 0;
     return true;
   }
-  bool postJobResult(long long, const char*, std::size_t) override { return true; }
+  bool postJobResult(long long, const char*, std::size_t, bool& jobsWaiting) override {
+    jobsWaiting = false;
+    return true;
+  }
   bool extendLease(long long, int, std::uint32_t&) override { return false; }
   bool postProgress(long long, const char*, std::size_t) override { return true; }
   bool hasConfig() const override { return has_config_; }

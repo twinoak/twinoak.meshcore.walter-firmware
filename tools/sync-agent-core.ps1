@@ -20,8 +20,17 @@
                                                           the job builders
                                test/test_runner/, test/test_loop/   the library's own two suites
                                tests/fixtures/contracts/  the agent API's envelopes
+                               tests/fixtures/contracts-ahead/  the envelopes upstream wrote from
+                                                          meshmaster.dk's lines before that server
+                                                          generates them (upstream's §9.1); its own
+                                                          suites read them, so the copy carries them
                                tests/fixtures/companion/  the transcribed MeshCore frames
                                platformio.ini             upstream's, for its [meshcore] pin
+
+  `tests/fixtures/contracts-ahead/` is upstream's waiting envelopes and is **not** this
+  repository's own host_test/fixtures/contracts-ahead/, which holds the Walter's waiting files and
+  is written here. The two are different directories with the same name for the same reason, and
+  only the first is a copy.
 
   The paths under host_test/agent-core/ are upstream's and not tidied, which is not neatness: the
   runner suite's `Citations` case reads `test/support/FakeMesh.h`, `platformio.ini`'s `[meshcore]`
@@ -88,7 +97,8 @@ $trees = @(
         From  = 'test/, tests/fixtures/ and platformio.ini'
         Strip = ''
         Paths = @('test/support', 'test/test_runner', 'test/test_loop',
-            'tests/fixtures/contracts', 'tests/fixtures/companion', 'platformio.ini')
+            'tests/fixtures/contracts', 'tests/fixtures/contracts-ahead',
+            'tests/fixtures/companion', 'platformio.ini')
     }
 )
 
@@ -103,10 +113,21 @@ function Get-TreeFiles {
     param([string]$TreeRoot)
     if (-not (Test-Path $TreeRoot)) { return @() }
     $prefix = (Resolve-Path $TreeRoot).Path
-    Get-ChildItem -LiteralPath $prefix -Recurse -File | ForEach-Object {
-        $rel = $_.FullName.Substring($prefix.Length + 1).Replace('\', '/')
-        if ($localFiles -notcontains $rel) { $rel }
-    } | Sort-Object
+    $files = @(Get-ChildItem -LiteralPath $prefix -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring($prefix.Length + 1).Replace('\', '/')
+            if ($localFiles -notcontains $rel) { $rel }
+        })
+    # **A comparison of this script's own, and not the culture's** - for the reason the manifest is
+    # written with LF below: the same copy must write the same manifest wherever the sync ran.
+    # `Sort-Object` compares the way the culture does, which treats a hyphen as a minor difference
+    # and puts `advert.hex` before `advert-path.hex`; the Linux runner the weekly watch runs on
+    # sorts those two the other way round, so the bump the watch pushed and a session on this
+    # machine re-synced differed in nothing but the order of a hundred lines (the sync pile's task
+    # 02). `OrdinalIgnoreCase` is byte order with case folded - which is the order the manifests
+    # already have - and two names of one tree that differ only in case cannot both exist on a
+    # Windows checkout, so nothing here depends on how ties are broken.
+    [Array]::Sort($files, [StringComparer]::OrdinalIgnoreCase)
+    return $files
 }
 
 function Get-FileDigest {

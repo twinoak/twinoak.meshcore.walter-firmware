@@ -17,6 +17,12 @@
 // citation, and `Citations.EveryAnswerOfTheFakeCitesAFixtureOrAFirmwareFunction` walks this file
 // against it the way `test_contract_fixtures` walks its manifest.
 //
+// Since task p1.21-71 it also holds what a repeater holds about the way **home**: an `out_path`
+// per key of its access list, written by a way back from such a key (`tellTheWayBack`) and by
+// nothing else, forgotten when a login from that key arrives as a flood - and a reply sent along
+// it when it holds one, flooded when it does not. So a test can read, out of `MeshReply::route`
+// and out of the job's log, the thing the field could only be read out of counters before.
+//
 // It is a repeater and not a radio: nothing here models airtime, collisions or the real region
 // loader. A reply arrives after `directLatencyMs` or `floodLatencyMs` **on the fake clock**
 // (support/FakePlatform.h), so a wait is asserted rather than slept, and every send is recorded
@@ -53,6 +59,12 @@
 // answer: reply-padding         cite: fw companion-v1.18.0 81dbae59 src/Utils.cpp:85-126 Utils::encrypt -- the plaintext is zero-padded to the cipher block, so a reply arrives a multiple of sixteen long
 // answer: reply-padding         cite: fixture binary-response-telemetry-padded.hex
 // answer: path-return           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:596-608 MyMesh::onAnonDataRecv -- a flooded request is answered with a path return, which is how a login teaches the way home
+// answer: way-back-stored        cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:766-782 MyMesh::onPeerPathRecv -- a PATH packet from a client in the access list is stored as that client's out_path by Packet::copyPath, and nothing else ever writes one
+// answer: way-back-dropped       cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:626-634 MyMesh::searchPeersByHash -- a packet whose sender is not in the access list matches no peer, so a way back from a key this repeater does not hold is dropped before it is decrypted and no out_path is written
+// answer: way-back-forgotten     cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:131-133 MyMesh::handleLoginReq -- a login that arrived as a flood sets out_path_len to OUT_PATH_UNKNOWN, so the way back is forgotten and the next reply is flooded
+// answer: reply-direct           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:596-619 MyMesh::onAnonDataRecv -- a DIRECT login is answered along the stored out_path through mesh::chooseReplyRoute, and flooded when there is none
+// answer: reply-direct           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:684-697 MyMesh::onPeerDataRecv -- a DIRECT request is answered along the stored out_path, and flooded when out_path_len is OUT_PATH_UNKNOWN
+// answer: reply-direct           cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:744-756 MyMesh::onPeerDataRecv -- a console reply takes the same two routes as a request's
 // answer: cli-not-admin         cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:701-702 MyMesh::onPeerDataRecv -- a text message from a sender below admin is dropped without a word
 // answer: cli-retry             cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:709-740 MyMesh::onPeerDataRecv -- a sender timestamp equal to the last is a retry: nothing is run and the empty reply is not sent, and one below it is a replay
 // answer: cli-reply             cite: fw repeater-v1.18.0 81dbae59 examples/simple_repeater/MyMesh.cpp:741-758 MyMesh::onPeerDataRecv -- a non-empty reply is a TXT_MSG of the repeater's own clock, TXT_TYPE_CLI_DATA in the flags byte, then the text
@@ -115,6 +127,12 @@ struct AclEntry {
   std::string key;          // 64 lowercase hex
   uint8_t permissions = 0;  // the low two bits are the role
   uint32_t lastTimestamp = 0;
+  // **The way home this repeater holds for that key** (task p1.21-71): `ClientInfo::out_path`
+  // and `out_path_len`, where OUT_PATH_UNKNOWN is *none*. Written only by a way back from this
+  // key and forgotten by a login of this key that arrived as a flood.
+  bool hasOutPath = false;
+  std::vector<uint8_t> outPath;
+  uint8_t outPathLen = 0;  // the encoded path_len byte: (hashSize - 1) << 6 | hopCount
 };
 
 struct NeighbourEntry {
@@ -125,6 +143,20 @@ struct NeighbourEntry {
 
 // What the mesh was asked to send, with the fake clock's time: the record *one send per command*,
 // the minimum gap and the per-minute cap are asserted against.
+// A way back this mesh told, with the fake clock's time (task p1.21-71). It is **not** a `Send`
+// below: `sends()` is the record of this mesh's *commands*, which is what *one send per command*,
+// the minimum gap and the per-minute cap are asserted against, and a way back is none of those -
+// it is one packet inside the login's own slot and no transaction at all. `frames()` is the two
+// records merged, in order, for a test that wants every packet that went on the air.
+struct WayBackTold {
+  uint32_t atMs = 0;
+  std::vector<uint8_t> path;   // the hops as they went out, which is the way out reversed
+  uint8_t hashSize = 1;
+  size_t beforeSend = 0;       // the index in `sends()` of the command whose slot this shared
+  bool reached = false;        // the packet got to the repeater
+  bool stored = false;         // and the repeater held this key, so it is the way home now
+};
+
 struct Send {
   enum class Kind : uint8_t { Login, Request, Cli, Discovery, Trace };
   Kind kind = Kind::Login;
@@ -196,7 +228,10 @@ class FakeMesh : public mm::IMesh {
         return;
       }
     }
-    acl_.push_back(AclEntry{keyHex, permissions, 0});
+    AclEntry entry;
+    entry.key = keyHex;
+    entry.permissions = permissions;
+    acl_.push_back(entry);
   }
   const std::vector<AclEntry>& acl() const { return acl_; }
   uint8_t levelOf(const std::string& keyHex) const {
@@ -338,6 +373,23 @@ class FakeMesh : public mm::IMesh {
     lateLineReplies_[line] = {times, waits};
   }
 
+  // **The next `n` ways back never reach the repeater**: the packet lost on the air, so no
+  // out_path is written and the replies that follow are flooded as they were before this task.
+  void loseTheNextWaysBack(int n) { lostWaysBack_ = n; }
+  // **The way back is dead**: the repeater stores it and every reply it then sends along it is
+  // lost. The link is good out and poor back, which is the one thing this task makes less
+  // forgiving - a flood might have got through where this does not.
+  void theWayBackIsDead(bool dead = true) { wayBackDead_ = dead; }
+  // How long this mesh tells the library a way back needs to clear **each** hop. On the board it
+  // is arithmetic over the radio's own figures (`AgentMesh::clearMsFor`: the packet's airtime,
+  // and the longest a hop may hold it before it retransmits it); this fake has no radio, so it is
+  // a figure like its latencies above.
+  void setWayBackClearMs(uint32_t perHopMs) { wayBackClearMs_ = perHopMs; }
+  // **This mesh tells no way back at all**: `tellTheWayBack` answers exactly what the default on
+  // `mm::IMesh` answers, which is what a host's mesh and the repeater-v2 unit's Walter are. The
+  // mesh every test but one runs against *does* tell one, because the board does.
+  void tellsNoWayBack(bool none = true) { tellsNoWayBack_ = none; }
+
   void setLatency(uint32_t directMs, uint32_t floodMs) {
     directLatencyMs_ = directMs;
     floodLatencyMs_ = floodMs;
@@ -349,6 +401,11 @@ class FakeMesh : public mm::IMesh {
 
   const std::vector<Send>& sends() const { return sends_; }
   int sendCount() const { return static_cast<int>(sends_.size()); }
+  // The ways back this mesh told (task p1.21-71), and every frame that went on the air in order:
+  // the commands of `sends()` with the ways back among them, by their kind names.
+  const std::vector<WayBackTold>& waysBack() const { return waysBack_; }
+  int waysBackCount() const { return static_cast<int>(waysBack_.size()); }
+  std::vector<std::string> frames() const { return frames_; }
   int timesSent(const std::string& line) const {
     int n = 0;
     for (const Send& s : sends_) {
@@ -418,25 +475,45 @@ class FakeMesh : public mm::IMesh {
     }
     return out;
   }
-  // The gap in milliseconds between the starts of two sends, in order.
+  // **When each transaction started**, in order. A way back is not a transaction of its own
+  // (task p1.21-71): it shares the slot of the command it precedes, so a command that one went
+  // before started when the way back did and the command's own time is not a start.
+  std::vector<uint32_t> transactionStartsMs() const {
+    std::vector<uint32_t> starts;
+    for (size_t i = 0; i < sends_.size(); i++) {
+      uint32_t at = sends_[i].atMs;
+      for (const WayBackTold& w : waysBack_) {
+        if (w.beforeSend == i && w.atMs < at) at = w.atMs;
+      }
+      starts.push_back(at);
+    }
+    return starts;
+  }
+  // The gap in milliseconds between the starts of two transactions, in order.
   std::vector<uint32_t> gapsMs() const {
+    const std::vector<uint32_t> starts = transactionStartsMs();
     std::vector<uint32_t> gaps;
-    for (size_t i = 1; i < sends_.size(); i++) gaps.push_back(sends_[i].atMs - sends_[i - 1].atMs);
+    for (size_t i = 1; i < starts.size(); i++) gaps.push_back(starts[i] - starts[i - 1]);
     return gaps;
   }
-  // The most sends that started inside any sixty seconds of the record.
+  // The most transactions that started inside any sixty seconds of the record.
   int mostInAnyMinute() const {
+    const std::vector<uint32_t> starts = transactionStartsMs();
     int worst = 0;
-    for (size_t i = 0; i < sends_.size(); i++) {
+    for (size_t i = 0; i < starts.size(); i++) {
       int n = 0;
-      for (size_t j = i; j < sends_.size(); j++) {
-        if (sends_[j].atMs - sends_[i].atMs < 60000u) n++;
+      for (size_t j = i; j < starts.size(); j++) {
+        if (starts[j] - starts[i] < 60000u) n++;
       }
       if (n > worst) worst = n;
     }
     return worst;
   }
-  void forgetSends() { sends_.clear(); }
+  void forgetSends() {
+    sends_.clear();
+    waysBack_.clear();
+    frames_.clear();
+  }
 
   // ------------------------------------------------------------------ IMesh
 
@@ -532,6 +609,55 @@ class FakeMesh : public mm::IMesh {
     return n;
   }
 
+  // **The way back** (task p1.21-71), both halves of it: what this mesh sends, and what the
+  // repeater behind it does with the packet.
+  //
+  // The exit node's half: the hops of the path this job holds, in the opposite order, at the
+  // width the path carried - the empty path for a pair of no hops - and nothing at all when
+  // there is no path to tell one along. It is told through no `Send`: `sends()` is the record of
+  // commands and a way back is not one.
+  //
+  // The repeater's half, by citation: the packet is dropped unless the access list holds this
+  // key (answer: way-back-dropped), and stored as that key's `out_path` when it does
+  // (answer: way-back-stored).
+  WayBack tellTheWayBack() override {
+    WayBack out;
+    if (tellsNoWayBack_) return out;  // the default member, and nothing goes on the air
+    if (!peerSet_ || !havePath_) return out;
+    const uint8_t size = static_cast<uint8_t>((outPathLen_ >> 6) + 1);
+    const uint8_t hops = static_cast<uint8_t>(outPathLen_ & 63);
+    WayBackTold told;
+    told.atMs = platform_.millis();
+    told.hashSize = size;
+    told.beforeSend = sends_.size();
+    for (uint8_t i = 0; i < hops; i++) {
+      for (uint8_t b = 0; b < size; b++) {
+        told.path.push_back(outPath_[static_cast<size_t>(hops - 1 - i) * size + b]);
+      }
+    }
+    out.hops = hops;
+    out.clearMs = static_cast<uint32_t>(hops) * wayBackClearMs_;
+    out.how = WayBack::How::Told;
+    counters_.tx++;
+    frames_.push_back("wayback");
+    if (lostWaysBack_ > 0) {
+      lostWaysBack_--;  // the packet lost on the air: no out_path is written
+    } else if (addressed()) {
+      told.reached = true;
+      AclEntry* client = find(selfKey_);
+      if (client != nullptr && !forgotten_) {
+        // answer: way-back-stored
+        told.stored = true;
+        client->hasOutPath = true;
+        client->outPath = told.path;
+        client->outPathLen = outPathLen_;
+      }
+      // answer: way-back-dropped - no entry for this key, so nothing was decrypted
+    }
+    waysBack_.push_back(told);
+    return out;
+  }
+
   mm::SendResult sendLogin(const char* password, uint32_t& tag) override {
     tag = 0;  // a login reply carries the repeater's own timestamp and no tag of ours
     if (!peerSet_) return mm::SendResult::Failed;
@@ -542,6 +668,17 @@ class FakeMesh : public mm::IMesh {
     sends_.back().withMaterial = !offered.empty();
     const mm::SendResult how = direct ? mm::SendResult::Direct : mm::SendResult::Flood;
     if (!reachable()) return how;
+    // answer: way-back-forgotten - a login that arrived as a flood clears the way home, whatever
+    // the login goes on to answer, so the reply to it and every reply after it is flooded until
+    // another way back is told.
+    if (!direct) {
+      AclEntry* known = find(selfKey_);
+      if (known != nullptr) {
+        known->hasOutPath = false;
+        known->outPath.clear();
+        known->outPathLen = 0;
+      }
+    }
 
     if (somethingElseLogins_ > 0) {
       somethingElseLogins_--;
@@ -782,6 +919,7 @@ class FakeMesh : public mm::IMesh {
     s.scoped = !s.direct && floodScope_ != "*" && !floodScope_.empty() && nextMode_ == mm::FloodMode::Scoped;
     s.tag = tag;
     sends_.push_back(s);
+    frames_.push_back(s.kindName());
     counters_.tx++;
     return s.direct;
   }
@@ -894,8 +1032,27 @@ class FakeMesh : public mm::IMesh {
     while (plaintext.size() % kCipherBlock != 0) plaintext.push_back(0);
   }
 
+  // **Which way this repeater sends a reply** (answer: reply-direct): a reply to a request that
+  // arrived as a **flood** is a path return, flooded back; a reply to a direct request goes along
+  // the `out_path` this repeater holds for our key and is flooded when it holds none. A trace is
+  // neither - it travels the round trip in its own payload and comes home direct.
+  mm::ReplyRoute replyRouteNow(const mm::MeshReply& reply) const {
+    if (reply.kind == mm::MeshReply::Kind::Trace) return mm::ReplyRoute::Direct;
+    if (!sends_.empty() && !sends_.back().direct) return mm::ReplyRoute::Flood;
+    const AclEntry* client = find(selfKey_);
+    // answer: reply-direct
+    return client != nullptr && client->hasOutPath ? mm::ReplyRoute::Direct : mm::ReplyRoute::Flood;
+  }
+
   void arm(Pending p) {
     if (!p.has) {
+      pending_ = Pending();
+      return;
+    }
+    p.reply.route = replyRouteNow(p.reply);
+    // A way back the test has declared dead: the repeater sends the reply along it and it never
+    // arrives, which from here is the same silence being off the air is.
+    if (wayBackDead_ && p.reply.route == mm::ReplyRoute::Direct && p.reply.kind != mm::MeshReply::Kind::Trace) {
       pending_ = Pending();
       return;
     }
@@ -1328,6 +1485,11 @@ class FakeMesh : public mm::IMesh {
   bool replyWentElsewhere_ = false;
   uint32_t directLatencyMs_ = 400;
   uint32_t floodLatencyMs_ = 1500;
+  // the way back (task p1.21-71)
+  int lostWaysBack_ = 0;
+  bool wayBackDead_ = false;
+  bool tellsNoWayBack_ = false;
+  uint32_t wayBackClearMs_ = 150;
   bool pad_ = true;
 
   // the mesh's own state
@@ -1348,6 +1510,8 @@ class FakeMesh : public mm::IMesh {
   std::vector<Pending> late_;
   uint32_t lastUnique_ = 0;
   std::vector<Send> sends_;
+  std::vector<WayBackTold> waysBack_;
+  std::vector<std::string> frames_;
 };
 
 }  // namespace fake

@@ -16,7 +16,7 @@
 // So a scenario's `server.queue(job)` is a claim answered over the wire with that job's bytes,
 // its `failWith(Unauthorized, 1)` a real 401 the uplink reads into the Call record, and
 // `server.results()` what reached the server as the body of `POST /agent/v1/jobs/{id}/result` -
-// the same assertions, now through the framing. The 74 cases of test_loop.cpp are compiled a
+// the same assertions, now through the framing. The 91 cases of test_loop.cpp are compiled a
 // second time against this directory (host_test/CMakeLists.txt, `agent_core_loop_uplink_tests`),
 // unchanged: the loop does not know which uplink it has.
 //
@@ -40,9 +40,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 #include <string>
@@ -196,11 +199,39 @@ class FakeUplink : public mm::IUplink {
     fault_ = Fault::None;
     faultCalls_ = 0;
     obsAnswerLost_ = 0;
+    claimAnswerLost_ = 0;
+    claimFaultCalls_ = 0;
   }
   void failResults(Fault fault, int calls) {
     resultFault_ = fault;
     resultFaultCalls_ = calls;
   }
+  // The next `calls` **claims** answer this, whatever the other calls do: a claim the server
+  // **refused** - a 4xx, a 5xx, a 429 - which is the server having spoken and which a wake does
+  // not ask again (upstream's task p1.20-70). The original's knob.
+  void failClaims(Fault fault, int calls) {
+    claimFault_ = fault;
+    claimFaultCalls_ = calls;
+  }
+  // The next `calls` **claims** are leased by the server and the answer never reaches the board:
+  // the evening of 21 November 2026 at Bellevue, where the claim answered *http 200* without its
+  // body while the server had leased the unit a download and a status read (upstream's task
+  // p1.20-70). The jobs leave the queue - the server has leased them - and are handed back to the
+  // next claim that says it does not hold them.
+  //
+  // The original's knob, and here the answer is lost the way the observations' is: the TLS refuses
+  // after the request went (`begin()` below), so the script never sees it and the lease is written
+  // into the server's own memory by `claimJobs` instead. What the board reads of such a call is a
+  // `Call` record with `reachable` false and `httpStatus` 0, which is one of the three shapes
+  // `mm::answerWasLost` knows - and the one a modem gives a request whose answer never arrived.
+  void loseTheAnswerToClaims(int calls) { claimAnswerLost_ = calls; }
+  // What the answers to results say about more work waiting (API §3's `jobsWaiting`, upstream's
+  // task p1.20-69): `results` of them carry it, and -1 is every one. The default is a server that
+  // says it at no result at all, which is what one that has never heard of the member answers.
+  // The member goes out over the wire here and is read by **the firmware's own reader**
+  // (`agent::ModemUplink::postJobResult`), which is the point of this road.
+  void sayMoreWaitsAfterAResult(int results) { moreWaits_ = results; }
+  void sayMoreWaitsAfterEveryResult() { moreWaits_ = -1; }
   // The next `calls` posts of an update's result answer this instead of 200 (the original's
   // knob). `Fault::NotFound` is the one 404 - an id that is not this exit node's - which is an
   // answer and not a failure.
@@ -238,6 +269,21 @@ class FakeUplink : public mm::IUplink {
   int configCalls() const { return configCalls_; }
   int claimCalls() const { return claimCalls_; }
   const std::vector<int>& claimMaxes() const { return claimMaxes_; }
+  // And the **bytes** of every claim, in order (upstream's task p1.20-69): recorded from what the
+  // library handed in, as the original records them. That these are the bytes `ModemUplink` puts
+  // on the wire - the same writer, the same members, in a buffer sized by the library's own
+  // `kMaxClaimRequestLen` - is held by host_test/agent/test_modem_uplink.cpp, which reads the
+  // request the scripted server received.
+  const std::vector<std::string>& claimRequests() const { return claimRequests_; }
+  // The `holding` of every claim, in order, as the library handed it in (upstream's task
+  // p1.20-70). An empty vector is `[]` on the wire - *nothing held* - because the library states
+  // the member in every claim it makes.
+  const std::vector<std::vector<long long>>& claimHoldings() const { return claimHoldings_; }
+  // Jobs this fake leased out and whose answer was lost, still waiting to be handed back.
+  size_t leasedAndLost() const { return lost_.size(); }
+  // Every answer this fake gave a result, in order: the bytes that went back over the wire, with
+  // `jobsWaiting` last where this server had more for the exit node.
+  const std::vector<std::string>& resultReplies() const { return resultReplies_; }
   const mm::ClaimedJob* claimed() const { return claimed_; }
   int claimedCount() const { return claimedCount_; }
   void forgetCalls() {
@@ -281,22 +327,44 @@ class FakeUplink : public mm::IUplink {
     return uplink_.postObservations(body, len, accepted, duplicate);
   }
 
-  bool claimJobs(mm::ClaimedJob* jobs, int max, int& count) override {
+  bool claimJobs(mm::ClaimedJob* jobs, int max, int& count, int transactionsLeft, const long long* holding,
+                 int holdingCount) override {
     claimCalls_++;
     claimMaxes_.push_back(max);
+    // The two optional members of the claim, as the library handed them in (upstream's tasks
+    // p1.20-69 and p1.20-70), recorded the way the original records them. The bytes that go out
+    // are the uplink's own, written by this same library writer into a buffer of
+    // `mm::kMaxClaimRequestLen`.
+    char request[mm::kMaxClaimRequestLen];
+    const size_t requestLen =
+        mm::writeClaimRequest(max, request, sizeof request, transactionsLeft, holding, holdingCount);
+    claimRequests_.emplace_back(request, requestLen);
+    std::vector<long long> said;
+    for (int i = 0; i < holdingCount && holding != nullptr; i++) said.push_back(holding[i]);
+    claimHoldings_.push_back(said);
     claimed_ = jobs;
     claimedCount_ = 0;
     count = 0;
+    // An answer that was lost on the way back: the server leased the jobs, the board never learns
+    // of them (loseTheAnswerToClaims). The script never sees this request - the TLS is refused
+    // before it goes - so the lease is written into the server's own memory here instead, which is
+    // what *leased, and the answer lost* has to mean on this road. It is read **before** the call,
+    // because `begin()` is what spends the knob, exactly as the observations' is.
+    if (claimAnswerLost_ != 0) {
+      for (const std::string& job : take(max, said, true)) lost_.emplace_back(idOf(job), job);
+    }
     begin("claim");
-    const bool ok = uplink_.claimJobs(jobs, max, count);
+    const bool ok = uplink_.claimJobs(jobs, max, count, transactionsLeft, holding, holdingCount);
     claimedCount_ = count;
     return ok;
   }
 
-  bool postJobResult(long long jobId, const char* body, size_t len) override {
+  bool postJobResult(long long jobId, const char* body, size_t len, bool& jobsWaiting) override {
     // Recorded when the server took it (answer()), as the original did only on a 200.
+    // `jobsWaiting` comes out of the answer's own bytes, read by the uplink with the library's
+    // reader: nothing of it is decided here (upstream's task p1.20-69).
     begin("result");
-    return uplink_.postJobResult(jobId, body, len);
+    return uplink_.postJobResult(jobId, body, len, jobsWaiting);
   }
 
   bool extendLease(long long jobId, int seconds, uint32_t& leaseUntil) override {
@@ -395,6 +463,16 @@ class FakeUplink : public mm::IUplink {
     } else if (std::strcmp(what, "update-result") == 0 && updateFaultCalls_ != 0) {
       pending_ = updateFault_;
       if (updateFaultCalls_ > 0) updateFaultCalls_--;
+    } else if (std::strcmp(what, "claim") == 0 && claimFaultCalls_ != 0) {
+      pending_ = claimFault_;
+      if (claimFaultCalls_ > 0) claimFaultCalls_--;
+    } else if (std::strcmp(what, "claim") == 0 && claimAnswerLost_ != 0) {
+      // The original's own shape for a lost claim is *http 200 and no body*; here it is no reply
+      // at all - `Fault::Unreachable`, the TLS refused after the request went - which is the other
+      // shape `mm::answerWasLost` knows and the one a modem gives. The jobs the server leased are
+      // already in its memory (`claimJobs` above).
+      pending_ = Fault::Unreachable;
+      if (claimAnswerLost_ > 0) claimAnswerLost_--;
     } else if (std::strcmp(what, "observations") == 0 && obsAnswerLost_ != 0) {
       // The original's `Fault::Unreachable`: nothing comes back. The script never sees this
       // request - the TLS is refused before it goes - so the batch is written into the server's
@@ -470,7 +548,13 @@ class FakeUplink : public mm::IUplink {
       return true;
     }
     if (path == "/agent/v1/jobs/claim") {
-      reply->body = claimReply(maxOf(request.body));
+      // **From the body the firmware put on the wire**, and not from what the library handed in:
+      // `max`, and the `holding` on which a lease whose answer was lost is handed back
+      // (meshmaster.dk's task p4.47-254, upstream's p1.20-70). A claim that states no `holding`
+      // member at all is handed nothing back - an agent that says nothing may be running the job.
+      bool stated = false;
+      const std::vector<long long> said = holdingOf(request.body, stated);
+      reply->body = claimReply(maxOf(request.body), said, stated);
       return true;
     }
     long long jobId = 0;
@@ -478,7 +562,16 @@ class FakeUplink : public mm::IUplink {
     if (std::sscanf(path.c_str(), "/agent/v1/jobs/%lld/%15s", &jobId, action) == 2) {
       if (std::strcmp(action, "result") == 0) {
         results_.push_back(PostedResult{jobId, request.body, platform_.millis()});
-        reply->body = "{\"jobId\":" + std::to_string(jobId) + ",\"state\":\"succeeded\",\"duplicate\":false,\"late\":false}";
+        // The answer, as the server writes one, with `jobsWaiting` last when this server has more
+        // for the exit node - the waiting fixture `JobResultReplyWaiting.json` (upstream's task
+        // p1.20-69). These bytes go back over the wire and the **firmware** reads the member out
+        // of them, which is the half of it this road exists to test.
+        const bool more = moreWaits_ != 0;
+        if (moreWaits_ > 0) moreWaits_--;
+        reply->body = "{\"jobId\":" + std::to_string(jobId) +
+                      ",\"state\":\"succeeded\",\"duplicate\":false,\"late\":false" +
+                      (more ? ",\"jobsWaiting\":true" : "") + "}";
+        resultReplies_.push_back(reply->body);
         return true;
       }
       if (std::strcmp(action, "extend") == 0) {
@@ -496,17 +589,38 @@ class FakeUplink : public mm::IUplink {
     return true;
   }
 
-  // The claim's answer: the queue's oldest batch, `max` of it, the rest left queued, as the
-  // original built and parsed it.
-  std::string claimReply(int max) {
+  // What a claim is handed, as the original hands it: what was leased to this exit node and whose
+  // answer never reached it **first and before anything new** (and only to a claim that stated
+  // `holding` without it), then the queue's oldest batch up to `max`, the rest left queued. Both
+  // lists are taken from here, so a job this returns has left the server's queue - which is what
+  // the lost answer of `claimJobs` then remembers as a lease.
+  std::vector<std::string> take(int max, const std::vector<long long>& said, bool statedHolding) {
     std::vector<std::string> batch;
-    if (!queued_.empty()) {
+    if (statedHolding) {
+      for (size_t i = 0; i < lost_.size();) {
+        if (std::find(said.begin(), said.end(), lost_[i].first) != said.end()) {
+          i++;
+          continue;
+        }
+        batch.push_back(lost_[i].second);
+        lost_.erase(lost_.begin() + static_cast<long>(i));
+      }
+    }
+    if (batch.size() > static_cast<size_t>(max)) batch.resize(static_cast<size_t>(max));
+    if (batch.size() < static_cast<size_t>(max) && !queued_.empty()) {
       std::vector<std::string>& front = queued_.front();
-      const size_t take = static_cast<size_t>(max) < front.size() ? static_cast<size_t>(max) : front.size();
-      batch.assign(front.begin(), front.begin() + static_cast<long>(take));
-      front.erase(front.begin(), front.begin() + static_cast<long>(take));
+      const size_t room = static_cast<size_t>(max) - batch.size();
+      const size_t n = room < front.size() ? room : front.size();
+      batch.insert(batch.end(), front.begin(), front.begin() + static_cast<long>(n));
+      front.erase(front.begin(), front.begin() + static_cast<long>(n));
       if (front.empty()) queued_.erase(queued_.begin());
     }
+    return batch;
+  }
+
+  // The claim's answer, built over what `take` handed over, as the original built and parsed it.
+  std::string claimReply(int max, const std::vector<long long>& said, bool statedHolding) {
+    const std::vector<std::string> batch = take(max, said, statedHolding);
     std::string response = "{\"serverTime\":\"";
     char iso[32];
     mm::formatUtc(serverEpoch_ != 0 ? serverEpoch_ : platform_.clock().now(), iso, sizeof iso);
@@ -522,11 +636,41 @@ class FakeUplink : public mm::IUplink {
 
   static int maxOf(const std::string& body) {
     int max = 0;
-    if (std::sscanf(body.c_str(), "{\"max\":%d}", &max) != 1) {
-      ADD_FAILURE() << "a claim whose body is not {\"max\":N}: " << body;
+    // `{"max":N}` and, since upstream's tasks p1.20-69 and p1.20-70, `{"max":N[,"transactionsLeft":
+    // M][,"holding":[...]]}`. `max` is first in all of them, so one assignment is a claim whose
+    // first member read; the two optional ones are read by `holdingOf` below and by the tests.
+    if (std::sscanf(body.c_str(), "{\"max\":%d", &max) != 1) {
+      ADD_FAILURE() << "a claim whose body does not begin {\"max\":N: " << body;
       return 0;
     }
     return max;
+  }
+
+  // A claimed job's own id, read out of the JSON this fake was queued with (the original's
+  // helper): what `holding` is compared against and what a leased-and-lost job is remembered by.
+  static long long idOf(const std::string& job) {
+    const size_t at = job.find("\"id\":");
+    if (at == std::string::npos) return 0;
+    return std::strtoll(job.c_str() + at + 5, nullptr, 10);
+  }
+
+  // The claim's `holding`, out of the body on the wire: the ids, and `stated` false when the
+  // member is not there at all - which says *this agent does not say* where `[]` says *nothing*,
+  // and is handed nothing back.
+  static std::vector<long long> holdingOf(const std::string& body, bool& stated) {
+    std::vector<long long> ids;
+    const size_t at = body.find("\"holding\":[");
+    stated = at != std::string::npos;
+    if (!stated) return ids;
+    for (size_t i = at + 11; i < body.size() && body[i] != ']';) {
+      if (std::isdigit(static_cast<unsigned char>(body[i])) == 0) {
+        i++;
+        continue;
+      }
+      ids.push_back(std::strtoll(body.c_str() + i, nullptr, 10));
+      while (i < body.size() && std::isdigit(static_cast<unsigned char>(body[i])) != 0) i++;
+    }
+    return ids;
   }
 
   static int countItems(const std::string& batch) {
@@ -568,6 +712,13 @@ class FakeUplink : public mm::IUplink {
   Fault updateFault_ = Fault::None;
   int updateFaultCalls_ = 0;
   int obsAnswerLost_ = 0;
+  Fault claimFault_ = Fault::None;
+  int claimFaultCalls_ = 0;
+  int claimAnswerLost_ = 0;
+  // Leased to this exit node, answer lost: (job id, the job's JSON), in the order they were
+  // leased. Handed back to the first claim that says it does not hold them.
+  std::vector<std::pair<long long, std::string>> lost_;
+  int moreWaits_ = 0;
   Fault pending_ = Fault::None;
   uint32_t retryAfterS_ = 0;
   uint32_t callMs_ = 120;
@@ -587,6 +738,9 @@ class FakeUplink : public mm::IUplink {
   int configCalls_ = 0;
   int claimCalls_ = 0;
   std::vector<int> claimMaxes_;
+  std::vector<std::string> claimRequests_;
+  std::vector<std::vector<long long>> claimHoldings_;
+  std::vector<std::string> resultReplies_;
   const mm::ClaimedJob* claimed_ = nullptr;
   int claimedCount_ = 0;
 };

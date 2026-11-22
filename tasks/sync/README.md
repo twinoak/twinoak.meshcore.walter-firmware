@@ -27,12 +27,12 @@ credential* in `docs/upstream.md`.
 
 ## Order and dependencies
 
-Newest first. Each one is independent — a bump is a bump — but they are
-numbered in the order they were written, and the driver runs them in that
-order.
+Oldest first, as every other pile's table is. Each one is independent — a bump
+is a bump — but they are numbered in the order they were written, and the driver
+runs them from the first row's number to the last's.
 
-<!-- new-sync-task.ps1 inserts its row directly under the |---| line, in the
-     driver's format: | NN | [name](NN-name.md) | tag | what happened | -->
+<!-- new-sync-task.ps1 appends its row after the last one, in the driver's
+     format: | NN | [name](NN-name.md) | tag | what happened | -->
 
 | # | Task | Tag | Why it needed a session |
 |---|---|---|---|

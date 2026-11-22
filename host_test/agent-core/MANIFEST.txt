@@ -1,17 +1,17 @@
 # The agent core's host fakes, contract fixtures and own two suites, copied - never edited here.
-# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit b6d4cfb242cee93c2be5adfbdaa54bf8ef42c60b
+# source: twinoak/twinoak.meshmaster.exitnode-firmware/test/, tests/fixtures/ and platformio.ini at commit be69234713e738ef2bc46761f00ec9661b19a7f0
 # written by tools/sync-agent-core.ps1; docs/upstream.md says how and when
 #
 # sha256                                                           bytes  name
-76c8fd83f683c19563fed90dada16fa96a03a7c7b6b1b73bdab1ad3c81c54713    24223  platformio.ini
-dd92765796edfb88847fc9731f1f7059700c71968f16615d0f12d272dc56551d    70206  test/support/FakeMesh.h
+64499929d81d1beef78b399d1859714defbcd5850a8e3eef4932e8e505f85a9f    26180  platformio.ini
+d0058224d5ab5e8e8cbaf8f0cb6e5f6b8b47a28329ef61281a01794033e6abc7    80031  test/support/FakeMesh.h
 3fa0f2fd8eba516f30b3ef3399b217e8531ad6316e5fa3d97d152b06599462db     5983  test/support/FakePlatform.h
 66e0fa1a31b021bed11421b6df6daec4d94ea4e6d4a3251faf64c0d9236099ed     2660  test/support/FakeRetained.h
-08c832edd4bb8768676fcedd2d923652be55365951d72ce94f1b9d3d8a010ab0    19229  test/support/FakeUplink.h
+4ab26034910a21c24637e8b66a80d356f0a7254e72df2e778a89bdf962ffd227    26496  test/support/FakeUplink.h
 01172f3677f0bd2d04ca4600cb3217bd862aae8afeeddd1b02626d49983912b6     6683  test/support/Fixtures.h
 e26dfebb90161012ab8187bba70b41c4775ff79ec8dfa8d75a71a228ebe0a349     6340  test/support/Jobs.h
-134519a557e4ac55d87ec83845c22d2a9c0b0c6835a3719bd5e5a20e3478aaef   162190  test/test_loop/test_loop.cpp
-6289874f0830e3661c69fb0001e771e8b487be83e879b2a8a7e12eb7f8c924ce   177175  test/test_runner/test_runner.cpp
+b1e765d321badf66380b2c7b7f123084ecbe800ea973837ed6396d18a3096d92   186767  test/test_loop/test_loop.cpp
+997189764e2bc6af48836bf7759e75352ff5d9f7fed91dd9143d08305c822d52   195957  test/test_runner/test_runner.cpp
 ebfa67bcdf0617c577c093010f475fdd7e949886e3cc3745ddd665d990f844d8     2221  tests/fixtures/companion/access-list-response-full.hex
 0708a3b026116c1ac387d09d2c6b1fb7c9a20db09ac68fd8822e30d8c6d98bf5     1451  tests/fixtures/companion/access-list-response.hex
 39b879a378f21c8fc678ee7922a231a053ba18bf379750750e24ce7c7d745e71      338  tests/fixtures/companion/advert-path.hex
@@ -60,6 +60,11 @@ a1e370463081b1e10ede6d7f2b0e6df73d0d1b4c3e59897c2f9380afa8174ee7     1003  tests
 389745ef2c9a63e7b670a5831aee17eabdd2fa7d8a34bfe02b1a551b7bf03aac     1245  tests/fixtures/companion/telemetry-response.hex
 7ed0286ea17ce45ed0f91941006d3abac43ecea59371345b3a23226985cab1f3      898  tests/fixtures/companion/trace-data-2byte.hex
 f8bd77ec8f7ee343a997921072df8ad890110f710b51fb714e38d099772314f7      755  tests/fixtures/companion/trace-data.hex
+e91bad5d4a1fdea1b40969fd9fcaf686e1e2d36e1fd9fc6a0702639689a6b901       28  tests/fixtures/contracts-ahead/ClaimRequestHolding.json
+128efa468f516e595fda8e83d528f5fd7fc0bdbc1d1d04b1827bc1e6e223fd11       23  tests/fixtures/contracts-ahead/ClaimRequestHoldingNothing.json
+41cf4f0b5c229fc5bddb4edb0254e3180c08c2e9e77001ce0f668aa7677b0014       32  tests/fixtures/contracts-ahead/ClaimRequestLeft.json
+64f9ffb81a1467c371d2f8d9e7cd2b1d4c897245b89d1568203e77bda2ab8ecf       84  tests/fixtures/contracts-ahead/JobResultReplyWaiting.json
+e78491695f4241d6c8f4e6eba3d071962708d9e08f503739e425b6b3da7d330d     3452  tests/fixtures/contracts-ahead/README.md
 50eff832915e825560612dd0a3a0f52f1c0ef7bcbc1ec89222bda1c5001b3ab7       43  tests/fixtures/contracts/AclSetPayload.json
 6ba2c399877ae4f5b54a6bae56efd787a02f252848245aeb087f4fa14e77cbec       85  tests/fixtures/contracts/AclSetResult.json
 0aa11b683e155673eac3cee6ad8522461776764b1db8c38d7dcdd9adf42efc3b       15  tests/fixtures/contracts/AdvertRequestPayload.json

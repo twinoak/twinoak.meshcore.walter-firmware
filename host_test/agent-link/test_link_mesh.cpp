@@ -1623,6 +1623,52 @@ TEST_F(LinkMeshTest, AStatusJobOn13FloodsScopedThenOnceWithoutIt) {
   EXPECT_EQ(rak().client_tx(), static_cast<uint32_t>(transactionsOf(body)));
 }
 
+// ---------------------------------------------------------------------------------------------
+// The way back (the library's `v0.7.6`, upstream's task p1.21-71)
+
+// **A mesh over the link tells no way back**, and that is the Walter's half of the eleven cases of
+// upstream's suite this road does not run (host_test/CMakeLists.txt, LINK_SHIM_SKIPPED).
+//
+// A repeater answers a direct request along the way home it holds for that client, and it holds one
+// only from a PATH packet the client sent it. §6 of the link protocol has no request that sends
+// one: the Walter's radio is asked for a login, a request, a console line, a discovery and a trace,
+// and for nothing else. So `LinkMesh` takes the library's **defaulted** member - it answers *not
+// told*, nothing goes on the air for it, and every reply to this unit is flooded by the repeater
+// exactly as it was before the bump. The library says that in one sentence in each job's log, and
+// a reply's own route reads *not known*, because §6.3's reply record says only whether a response
+// came inside a returned path - which is a path return and not a flood.
+TEST_F(LinkMeshTest, AMeshOverTheLinkTellsNoWayBackAndSaysSoInEveryJobsLog) {
+  mesh.grant(self(), mm::kPermReadOnly);
+  const size_t mark = framesSoFar();
+  const std::string body = run(fake::Job(302, "status")
+                                   .atClass("acl")
+                                   .withAclLevel(mm::kPermReadOnly)
+                                   .leasedUntil(kLease)
+                                   .withPayload("{\"version\":false}"));
+  EXPECT_EQ(outcomeOf(body), "ok") << body;
+
+  // The member itself: the library's default, which tells nothing and says so.
+  const mm::IMesh::WayBack told = link().tellTheWayBack();
+  EXPECT_EQ(told.how, mm::IMesh::WayBack::How::NotTold);
+  EXPECT_EQ(told.hops, 0);
+  EXPECT_EQ(told.clearMs, 0u);
+  // Nothing went on the air for it: the repeater was told none, and the frames of this job are the
+  // sends of §6.2 alone.
+  EXPECT_EQ(mesh.repeater().waysBackCount(), 0);
+  for (const std::string& frame : mesh.repeater().frames()) {
+    EXPECT_NE(frame, "wayback") << "a way back reached the repeater without crossing the link";
+  }
+  EXPECT_GT(rak().radio.requests.size(), mark) << "the job's own sends did go out";
+  // The job's log says it once, and every reply's route reads *not known* rather than *flooded*.
+  const std::string log = logOf(body);
+  EXPECT_NE(log.find("this mesh tells no way back"), std::string::npos) << log;
+  EXPECT_NE(log.find("reply route unknown"), std::string::npos) << log;
+  EXPECT_EQ(log.find("reply flooded"), std::string::npos) << log;
+  EXPECT_EQ(link().reply().route, mm::ReplyRoute::NotKnown);
+  // And the rail of this road is untouched: the sends the repeater was asked for are client_tx.
+  EXPECT_EQ(rak().client_tx(), static_cast<uint32_t>(transactionsOf(body)));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

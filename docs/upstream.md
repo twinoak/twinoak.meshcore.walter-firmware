@@ -15,11 +15,11 @@ This firmware is built **against** that library, not forked from it. The pin is
 one line, twice:
 
 ```
-components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit b6d4cfb2…
-host_test/agent-core/MANIFEST.txt    # source: … at commit b6d4cfb2…
+components/agent-core/MANIFEST.txt   # source: twinoak/twinoak.meshmaster.exitnode-firmware/lib/agent-core at commit be692347…
+host_test/agent-core/MANIFEST.txt    # source: … at commit be692347…
 ```
 
-`b6d4cfb2` is the tag **`v0.7.3`** itself, which is what `AGENT_CORE_VERSION` in
+`be692347` is the tag **`v0.7.7`** itself, which is what `AGENT_CORE_VERSION` in
 the copy says. The pin is a *commit* and not always a tag, because the work a
 consumer needs is sometimes in the library before its next release: task p9-05
 is the first such pin — the exit-node firmware's tasks p1.10-40 and p1.10-41,
@@ -45,7 +45,7 @@ dependencies:
   twinoak/agent-core:
     git: https://github.com/twinoak/twinoak.meshmaster.exitnode-firmware.git
     path: lib/agent-core
-    version: b6d4cfb242cee93c2be5adfbdaa54bf8ef42c60b
+    version: be69234713e738ef2bc46761f00ec9661b19a7f0
 ```
 
 **That repository is private.** The component manager resolves a `git` source by
@@ -64,7 +64,7 @@ here, held byte for byte against a manifest.**
 | `tools/sync-agent-core.ps1 -Ref v0.6.0` | `git archive` of that commit out of a clone beside this one, into the two trees, and a `MANIFEST.txt` of SHA-256, size and commit for each. Reads the exit-node clone; writes nothing in it |
 | `tools/sync-agent-core.ps1 -Verify` | every file of both trees against its manifest line, plus the two commits against each other. No network, no clone. `tools/verify.ps1` runs it **before the container starts**, and so does CI |
 | `components/agent-core/` | the library, as an ESP-IDF component — its own `CMakeLists.txt` and `idf_component.yml`, unedited; ArduinoJson 7.4.3 comes from the public component registry, which needs no credential |
-| `host_test/agent-core/` | the four fakes, both fixture sets, the library's own two suites and upstream's `platformio.ini`, at **upstream's own paths**, so that every case of both suites runs here unmodified |
+| `host_test/agent-core/` | the four fakes, all three fixture sets - the contracts, the companion frames and the envelopes that **wait** for meshmaster.dk (`tests/fixtures/contracts-ahead/`, which the suites read and the sync pile's task 02 added) - the library's own two suites and upstream's `platformio.ini`, at **upstream's own paths**, so that every case of both suites runs here unmodified |
 
 What the copy costs, stated plainly, is the thing a dependency gives for free:
 nobody can bump it without a machine that can read the upstream repository. The
@@ -229,6 +229,7 @@ this firmware is [`ARCHITECTURE.md`](ARCHITECTURE.md) §13.
 | Tag | Commit | When | Why |
 |---|---|---|---|
 <!-- upstream.yml inserts the newest row directly under this line -->
+| `v0.7.7` | `be692347` | 22 November 2026 | the weekly bump (`upstream.yml`, pull request #92), red in CI and taken by the sync pile's task 02. Eight of upstream's tasks and four releases, of which only `v0.7.6` carries anything: **two methods of `IUplink` moved** and `IMesh` gained one with a default. `claimJobs` takes `transactionsLeft`, `holding` and `holdingCount` and `postJobResult` a `bool& jobsWaiting` - both passed straight to the library's own writer and reader, and the claim's request buffer is now `mm::kMaxClaimRequestLen` (256) where 32 bytes could not hold a list of held jobs. **What acts on this unit with nothing here asking for it:** a claim whose answer did not come back whole is made *once* more in the same wake, which a wake of 9.2 s does inside its 300 s bound, and a job handed over again whose result this end keeps is answered with that result rather than run twice. `maxClaimsThisWake` stays unset: one claim a wake, as before. The way back (`IMesh::tellTheWayBack`) is defaulted here - §6 of the link protocol has no request that sends a PATH packet - so `LinkMesh` is untouched, a reply's route reads *not known*, and sixteen of the runner suite's 136 cases are not run through the link shim (eleven for the way back, three for a job log that is full, two from `v0.7.3`). Upstream's loop suite is 91 cases and all 91 run through `ModemUplink`. The host suites needed upstream's third fixture directory, `tests/fixtures/contracts-ahead/`, which the copy now carries. `kMeshReplyDataCap` 184 and `kMeshPathCap` 64 unmoved; the contract fixtures still meshmaster.dk `28daabd`; ArduinoJson still 7.4.3. +3 200 bytes of image |
 | `v0.7.3` | `b6d4cfb2` | 20 November 2026 | the weekly bump (`upstream.yml`, pull request #87), red in CI and taken by the sync pile's task 01. Thirteen of upstream's tasks and four releases; **no interface moved and no constant of `MeshReply` moved**, so nothing of this repository stopped compiling. What it cost: the shim of the library's loop suite grew the four knobs the original grew (an update asked for in a heartbeat's reply, and a batch whose answer was lost); the kept image is **version 2** and `mm::kMaxKeptImageLen` is **19 368** bytes, 40 more than before, which this repository now reads off the library instead of adding up itself (`agent::kLargestKeptImage`; the scratch of 19 456 holds it with 88 bytes over); every console line of a job now carries a prefix the repeater reflects, which the simulated RAK had to learn; and a console line nobody waits for - the region loader's - needed `LinkMesh` to give up the exchange before the next send, or the radio answers it `ERR_BUSY`. The contract fixtures moved to meshmaster.dk `28daabd` (95 files) and the companion frames are the same bytes at that commit. ArduinoJson is still 7.4.3. +10 224 bytes of image |
 | `v0.6.0`+8 | `6290e092` | 8 November 2026 | task p10-01, for the night of 8 November: `AgentLoop::restore` gained a second parameter, *how long the board was away*, and takes it off a hold or a `Retry-After` (p1.10-42) — without which one failed call bought six hours of silence at the unit's hourly wake. `IMesh::answersLocallyFor(key)` came with it (p1.10-43), so the wake prices a job the local door answers at its reply waits instead of at airtime gaps it never spends, and `cliReplyValue` reads a bare `>` as the empty value rather than a raw line (p1.10-44). No release between the two pins, so `AGENT_CORE_VERSION`, `library.json`, `idf_component.yml` and ArduinoJson's 7.4.3 are all unmoved: this bump is three commits of behaviour and not one byte of version |
 | `v0.6.0`+4 | `8c24da5b` | 8 November 2026 | task p9-05, and the first pin that is not a tag: `IMesh` gained `answersLocally()` (p1.10-40) and `loginMaterialFor` a second parameter (p1.10-41), which together are the local door's *no airtime, no password* — the work the unit needed four commits before the library's next release. Three releases came with it (`v0.3.1` the UTF-8 strings, `v0.4.0` the heartbeat's observer and `failedAt`, `v0.5.0` the flood scope and the neighbours, `v0.6.0` a lighter TLS on a Heltec), every one of them additive: nothing of this repository changed to compile against them |

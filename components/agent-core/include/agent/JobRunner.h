@@ -216,6 +216,10 @@ class JobRunner {
     char pathHops[kMaxClaimPathHops][8];
     const char* pathPtrs[kMaxClaimPathHops];
     uint8_t pathBytes[kMaxClaimPathHops * 3];
+    // **The path this job's claim carried**, kept for the whole job (task p1.21-71): what the
+    // session a login opens remembers it was opened along, and what a job reusing a session
+    // compares with. `pathBytes` above is scratch that runTrace writes over.
+    uint8_t claimPath[kMeshPathCap];
     uint8_t roundTrip[kMeshPathCap];
     ConfigSnapshot snapshot;
     AccessListEntry acl[kAccessListMaxEntries];
@@ -265,15 +269,20 @@ class JobRunner {
   // prices each claimed job before it puts it on the air. The Heltec calls `claimAndRun` and
   // never these.
   //
-  //   claim(max)       one claim of at most `max` jobs (never more than kClaimMax), into this
-  //                    runner's own buffer. The count, or -1 when the call did not come back
+  //   claim(max, left) one claim of at most `max` jobs (never more than kClaimMax), into this
+  //                    runner's own buffer. The count, or -1 when the call did not come back.
+  //                    `left` is the wake's `transactionsLeft` for the claim's body, and **below
+  //                    0 is not stated** - the first claim of a wake and `loop()`'s own
+  //                    (task p1.20-69). The claim's `holding` is **not** a parameter: this
+  //                    runner owns the offline buffer those ids come from and fills the member
+  //                    itself, for every claim it makes (task p1.20-70)
   //   claimed(i)       the job at `i` of that claim, to read its type, class and payload
   //   runClaimed(i)    run it and post its result, exactly as `claimAndRun` would have
   //   reportNotRun(i)  report it `failed` with `why` in its log, at no transaction and with
   //                    nothing sent: a job this wake has no room for is **never left leased and
   //                    silent**, which is the whole point of the pair
   //   endClaim()       the claim is over: every credential wiped, whatever happened
-  int claim(int max);
+  int claim(int max, int transactionsLeft = -1);
   int claimedCount() const { return claimed_; }
   const ClaimedJob& claimed(int i) const { return scratch_.jobs[i < 0 || i >= kClaimMax ? 0 : i]; }
   void runClaimed(int i);
@@ -341,6 +350,37 @@ class JobRunner {
   // for the next wake: *kept: budget*, which is a bound of ours and not a failure of the
   // server's, so it backs nothing off (task p1.6-21). The WakeReport carries a wake's own count.
   uint32_t resultsKeptForBudget() const { return resultsKeptForBudget_; }
+
+  // **What this exit node holds** (API §3's `holding`, task p1.20-70): the ids of the results it
+  // keeps and has not had taken, oldest first, into `out` - at most `cap` of them, and the count
+  // back. `claim()` writes it into every claim this library makes, so that a server holding a
+  // lease whose answer was lost knows to hand the job back (meshmaster.dk's task p4.47-254).
+  //
+  // A job **in hand** is never among them, and that is not an accident of the buffer: this
+  // library claims between jobs and never during one - `claimAndRun` claims and then runs, and a
+  // wake's `wakeJobs` claims, runs what it was handed to the end, and only then claims again - so
+  // at the moment of a claim there is no open job to hold. What is in the buffer is a result that
+  // was made and not taken, which is the other half of the member's meaning.
+  int holding(long long* out, int cap) const;
+
+  // Whether a result for this job id is in that buffer: a job handed over again whose result
+  // this end already keeps (task p1.20-70). `runClaimed` asks it itself and runs nothing when it
+  // is true; a caller that **prices** a claimed job asks it first, because such a job costs no
+  // transaction and goes nowhere near the air.
+  bool holdsResultFor(long long jobId) const;
+
+  // Jobs the server handed over again while this end kept a result for them: not run a second
+  // time, their kept result posted instead (task p1.20-70). With `holding` in every claim the
+  // server does not hand them over at all, so this stays 0 against a server that reads it; it is
+  // the rail for one that does not.
+  uint32_t handedOverAgain() const { return handedOverAgain_; }
+
+  // What the answer to the last result posted **since the last claim** said: API §3's
+  // `jobsWaiting`, whether a claim by this exit node now would be handed a job (task p1.20-69).
+  // `claim()` clears it, so it is always about the claim that is being finished and never about
+  // the one before it or the last wake's; a post that got no answer said nothing, and nothing is
+  // false. A wake reads it to decide whether to claim again; `loop()` never asks.
+  bool lastResultSaidJobsWaiting() const { return lastResultJobsWaiting_; }
 
   // `jobs` on the console: the last ten with their outcome and their transactions.
   void report(TextOut& out) const;
@@ -460,6 +500,26 @@ class JobRunner {
     // is where it failed.
     enum class Stage : uint8_t { None, Login, Request };
     Stage stage = Stage::None;
+    // ---------------------------------------------------------------- the way back (task p1.21-71)
+    //
+    // The path this job's claim carried, as `beginJob` was given it: `claimPathLen` is the
+    // encoded `path_len` byte and the bytes are `scratch_.claimPath`. A session a login of this
+    // job opens remembers them, and a job that reuses a session compares them.
+    bool hasClaimPath = false;
+    uint8_t claimPathLen = 0;
+    // How many ways back this job has told. A direct login tells one before every try, and a
+    // reply that came home flooded all the same buys **one** more before the next send - once a
+    // job, whatever happens after it, because a way back told twice is the same way back and a
+    // repeater that ignored two will ignore three.
+    int waysBackTold = 0;
+    bool wayBackOwed = false;    // one is owed before this job's next send that goes out direct
+    bool wayBackRetold = false;  // the once-a-job telling a flooded reply buys has been spent
+    bool wayBackNoted = false;   // the one sentence a job about a mesh that tells none
+    // Why one is owed, as the job's log says it when it goes: a static string, and nullptr for
+    // the ordinary telling before a direct login. The log is 1 024 bytes and whole entries fall
+    // off the front of it (JobLog above), so the reason is part of the line that tells the way
+    // back rather than a line of its own - a job's evidence is worth more than a second sentence.
+    const char* wayBackWhy = nullptr;
   };
 
   // The word a result carries for where it failed, or nullptr: the rule above, with success and
@@ -510,6 +570,21 @@ class JobRunner {
   // and nullptr only at class admin with no admin password, because there is no admin login
   // without one.
   const char* loginMaterial(const ClaimedJob& job);
+
+  // ---------------------------------------------------------------- the way back (task p1.21-71)
+
+  // Tell this job's repeater the way back and wait for the packet to clear the hops, so that the
+  // send after it comes home along them. Nothing when this job holds no path - a flooded send is
+  // preceded by nothing - and one line in the job's log when the mesh tells none at all. Called
+  // before every login that goes out direct, each try, and from the two sends below when one is
+  // owed.
+  void tellTheWayBack(Context& ctx, const char* what);
+  // The one owed before the next send, if there is one: the same call, guarded.
+  void tellTheWayBackIfOwed(Context& ctx, const char* what);
+  // A reply came home: `how` gets "<the send's shape>, reply <direct|flooded>" for the job's log,
+  // and a reply that came flooded buys one more telling of the way back, once a job. Nothing is
+  // logged here - the telling's own line says why it went.
+  void noteReplyRoute(Context& ctx, const char* shape, char* how, size_t cap);
   // One login: counted, logged, the session bookkeeping a reply implies, and no policy beyond
   // that. ensureSession() is this twice; a discover is this once, for the path.
   LoginResult loginOnce(const ClaimedJob& job, Context& ctx, const char* material, const char* what);
@@ -670,6 +745,10 @@ class JobRunner {
   uint32_t ran_ = 0;
   uint32_t postFailures_ = 0;
   uint32_t resultsKeptForBudget_ = 0;
+  // API §3's `jobsWaiting` from the answer to the last result posted since the last claim.
+  bool lastResultJobsWaiting_ = false;
+  // Jobs handed over again whose result this end already kept, and so did not run (task p1.20-70).
+  uint32_t handedOverAgain_ = 0;
   // How many jobs the last claim handed over, which is how far claimed(i) and runClaimed(i) go.
   int claimed_ = 0;
 

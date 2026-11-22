@@ -35,6 +35,20 @@ enum class ServerAction : uint8_t {
 // for the statuses of `saysWhenToComeBack` below and ignored for every other.
 ServerAction actionFor(bool reachable, int httpStatus, uint32_t retryAfterS);
 
+// **The answer was lost, not refused** (task p1.20-70): a call whose request went out and whose
+// answer did not come back whole, as against one the server answered with a refusal. The three
+// shapes of lost are no reply at all after the request was sent, a 2xx with no body, and a 2xx
+// whose body did not parse - all of which leave the caller not knowing what the server did, and
+// the server having done it. Only ever asked of a call that failed; a 2xx that *did* parse never
+// reaches here.
+//
+// Why it matters for the claim: the server leases the jobs of a claim in the moment it answers,
+// so a lost answer leaves leases this exit node knows nothing of (meshmaster.dk's
+// `LostLease.cs`, and 21 November 2026 at Bellevue). Such a claim is worth making once more in
+// the same wake. A refusal - a 4xx, a 5xx, a 429 - is the server having spoken, and asking again
+// would only be refused again.
+bool answerWasLost(bool reachable, int httpStatus);
+
 // The statuses whose Retry-After is believed: the 429 - whose wait the header *is* - and the
 // 502, 503 and 504 a deploy or a restart of meshmaster.dk answers, which say how long they will
 // be. Nothing else: a 500 is a bug and not a schedule, and a 4xx has nowhere to come back to.

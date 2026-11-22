@@ -1308,7 +1308,10 @@ bool FirmwareJobs::postOwedResult() {
   report.log = "the Walter's own apply: the trial's outcome, posted from the journal after the restart";
   const std::size_t len = mm::writeJobResult(report, body_, kEnvelopeBytes);
   if (len == 0) return false;
-  if (!server_.postJobResult(owed.job_id, body_, len)) return false;
+  // The answer's `jobsWaiting` (the library's `v0.7.6`): read and let go here, because a result
+  // owed from before a restart is posted outside the wake's claim step and nothing claims on it.
+  bool jobs_waiting = false;
+  if (!server_.postJobResult(owed.job_id, body_, len, jobs_waiting)) return false;
   counters_.owed_posted = saturate(counters_.owed_posted);
 
   JobEntry posted = owed;
@@ -2119,7 +2122,10 @@ bool FirmwareJobs::postOwedSessionResult(const JobEntry& owed) {
                "the restart";
   const std::size_t len = mm::writeJobResult(report, body_, kEnvelopeBytes);
   if (len == 0) return false;
-  if (!server_.postJobResult(owed.job_id, body_, len)) return false;
+  // The answer's `jobsWaiting` (the library's `v0.7.6`): read and let go here, because a result
+  // owed from before a restart is posted outside the wake's claim step and nothing claims on it.
+  bool jobs_waiting = false;
+  if (!server_.postJobResult(owed.job_id, body_, len, jobs_waiting)) return false;
   counters_.owed_posted = saturate(counters_.owed_posted);
 
   JobEntry posted = owed;

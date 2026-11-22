@@ -18,9 +18,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 #include <string>
@@ -144,6 +146,8 @@ class FakeUplink : public mm::IUplink {
     fault_ = Fault::None;
     faultCalls_ = 0;
     obsAnswerLost_ = 0;
+    claimAnswerLost_ = 0;
+    claimFaultCalls_ = 0;
   }
   // The next `calls` **result** posts answer this, whatever the other calls do: the offline
   // buffer is what a server that went away under a running job fills, and the claim that handed
@@ -152,11 +156,33 @@ class FakeUplink : public mm::IUplink {
     resultFault_ = fault;
     resultFaultCalls_ = calls;
   }
+  // The next `calls` **claims** answer this, whatever the other calls do: a claim the server
+  // **refused** - a 4xx, a 5xx, a 429 - which is the server having spoken, and which a wake does
+  // not ask again (task p1.20-70).
+  void failClaims(Fault fault, int calls) {
+    claimFault_ = fault;
+    claimFaultCalls_ = calls;
+  }
+  // The next `calls` **claims** are leased by the server and the answer never reaches the board:
+  // the evening of 21 November 2026 at Bellevue, where the claim answered *http 200* without its
+  // body and the server had leased the unit a download and a status read (task p1.20-70,
+  // meshmaster.dk's `LostLease.cs`). The jobs leave the queue - the server has leased them - and
+  // are **handed back to the next claim that says it does not hold them**, first and before
+  // anything new, which is meshmaster.dk's task p4.47-254 and the half this fake stands in for.
+  // A claim with no `holding` member is handed nothing back, because an agent that says nothing
+  // may be running the job.
+  void loseTheAnswerToClaims(int calls) { claimAnswerLost_ = calls; }
   // The next `calls` **observation** posts are taken and stored by the server and the answer
   // never reaches the board - the Walter's failure of 16 November 2026, and the one a batch's
   // client id exists for (task p1.13-55). A later post under the same id is answered *had it
   // already*, with nothing stored twice.
   void loseTheAnswerToObservations(int calls) { obsAnswerLost_ = calls; }
+  // What the answers to results say about more work waiting (API §3's `jobsWaiting`, task
+  // p1.20-69): `results` of them carry it, and -1 is every one. The default is a server that
+  // says it at no result at all - which is what one that has never heard of the member answers,
+  // and what every test written before that task gets.
+  void sayMoreWaitsAfterAResult(int results) { moreWaits_ = results; }
+  void sayMoreWaitsAfterEveryResult() { moreWaits_ = -1; }
   void setRetryAfter(uint32_t seconds) { retryAfterS_ = seconds; }
   void setCallMs(uint32_t ms) { callMs_ = ms; }
   // A slow call: this long on the clock, once.
@@ -179,6 +205,19 @@ class FakeUplink : public mm::IUplink {
   int claimCalls() const { return claimCalls_; }
   // The `max` of every claim, in order: what a wake's transaction cap asked the server for.
   const std::vector<int>& claimMaxes() const { return claimMaxes_; }
+  // And the **bytes** of every claim, in order (task p1.20-69): `{"max":N}` for the first claim
+  // of a wake and for every claim a board that does not sleep makes, with `transactionsLeft`
+  // after `max` in a wake's later ones.
+  const std::vector<std::string>& claimRequests() const { return claimRequests_; }
+  // The `holding` of every claim, in order, as the library handed it in: the job ids this exit
+  // node said it was running or keeping a result for (task p1.20-70). An empty vector is `[]` on
+  // the wire - *nothing held* - because this library states the member in every claim.
+  const std::vector<std::vector<long long>>& claimHoldings() const { return claimHoldings_; }
+  // Jobs this fake leased out and whose answer was lost, still waiting to be handed back.
+  size_t leasedAndLost() const { return lost_.size(); }
+  // Every answer this fake gave a result, in order: `JobResultReply`'s bytes, with `jobsWaiting`
+  // last where this server had more for the exit node.
+  const std::vector<std::string>& resultReplies() const { return resultReplies_; }
   // The claim's own buffer, as the runner handed it in: how a test reads a credential back after
   // the job that used it has ended.
   const mm::ClaimedJob* claimed() const { return claimed_; }
@@ -246,20 +285,66 @@ class FakeUplink : public mm::IUplink {
     return true;
   }
 
-  bool claimJobs(mm::ClaimedJob* jobs, int max, int& count) override {
+  bool claimJobs(mm::ClaimedJob* jobs, int max, int& count, int transactionsLeft, const long long* holding,
+                 int holdingCount) override {
     claimCalls_++;
     claimMaxes_.push_back(max);
+    // The bytes the board would have put on the wire for this claim, from what it handed in: what
+    // a test reads to see the optional `transactionsLeft` of a wake's later claim (task p1.20-69)
+    // and the `holding` of every claim (task p1.20-70), to the byte.
+    char request[mm::kMaxClaimRequestLen];
+    const size_t requestLen =
+        mm::writeClaimRequest(max, request, sizeof request, transactionsLeft, holding, holdingCount);
+    claimRequests_.emplace_back(request, requestLen);
+    std::vector<long long> said;
+    for (int i = 0; i < holdingCount && holding != nullptr; i++) said.push_back(holding[i]);
+    claimHoldings_.push_back(said);
     claimed_ = jobs;
     claimedCount_ = 0;
     count = 0;
-    if (!begin("claim")) return false;
-    std::vector<std::string> batch;
-    if (!queued_.empty()) {
+    // What was leased to this exit node and whose answer never reached it, handed back **first
+    // and before anything new** to a claim that says it does not hold it (meshmaster.dk's task
+    // p4.47-254). A claim that states no `holding` is handed nothing back: an agent that says
+    // nothing may be running the job.
+    std::vector<std::string> handBack;
+    if (holdingCount >= 0) {
+      for (size_t i = 0; i < lost_.size();) {
+        if (std::find(said.begin(), said.end(), lost_[i].first) != said.end()) {
+          i++;
+          continue;
+        }
+        handBack.push_back(lost_[i].second);
+        lost_.erase(lost_.begin() + static_cast<long>(i));
+      }
+    }
+    if (handBack.size() > static_cast<size_t>(max)) handBack.resize(static_cast<size_t>(max));
+    const bool lose = claimAnswerLost_ != 0;
+    if (!begin("claim")) {
+      // The call failed before anything was leased: what was about to be handed back goes back to
+      // the front of the lost list, in the order it was leased, for the next claim to find.
+      for (size_t i = 0; i < handBack.size(); i++) {
+        lost_.insert(lost_.begin() + static_cast<long>(i), {idOf(handBack[i]), handBack[i]});
+      }
+      return false;
+    }
+    std::vector<std::string> batch = handBack;
+    if (batch.size() < static_cast<size_t>(max) && !queued_.empty()) {
       std::vector<std::string>& front = queued_.front();
-      const size_t take = static_cast<size_t>(max) < front.size() ? static_cast<size_t>(max) : front.size();
-      batch.assign(front.begin(), front.begin() + static_cast<long>(take));
+      const size_t room = static_cast<size_t>(max) - batch.size();
+      const size_t take = room < front.size() ? room : front.size();
+      batch.insert(batch.end(), front.begin(), front.begin() + static_cast<long>(take));
       front.erase(front.begin(), front.begin() + static_cast<long>(take));
       if (front.empty()) queued_.erase(queued_.begin());
+    }
+    // The answer that was lost (loseTheAnswerToClaims): the server **leased** these jobs and the
+    // board never learned of them, so they are gone from the queue and remembered here. The call
+    // answers 200 with no body, which is what the modem at Bellevue gave the unit.
+    if (lose) {
+      if (claimAnswerLost_ > 0) claimAnswerLost_--;
+      for (const std::string& job : batch) lost_.push_back({idOf(job), job});
+      call_.ok = false;
+      std::snprintf(call_.error, sizeof call_.error, "http 200 but the claim did not parse: the body was empty");
+      return false;
     }
     std::string response = "{\"serverTime\":\"";
     char iso[32];
@@ -280,9 +365,23 @@ class FakeUplink : public mm::IUplink {
     return ok;
   }
 
-  bool postJobResult(long long jobId, const char* body, size_t len) override {
+  bool postJobResult(long long jobId, const char* body, size_t len, bool& jobsWaiting) override {
+    jobsWaiting = false;
     if (!begin("result")) return false;
     results_.push_back(PostedResult{jobId, std::string(body, len), platform_.millis()});
+    // The answer, as the server writes one: `JobResultReply.json`'s members, and `jobsWaiting`
+    // last when this server has more for the exit node - the line of task p1.20-69, which is the
+    // waiting fixture `JobResultReplyWaiting.json`. What the board learns from it is read by the
+    // **firmware's own reader** and not by a second reading here, so a test of a wake that claims
+    // again is a test against those bytes.
+    const bool more = moreWaits_ != 0;
+    if (moreWaits_ > 0) moreWaits_--;
+    char reply[160];
+    const int written =
+        std::snprintf(reply, sizeof reply, "{\"jobId\":%lld,\"state\":\"succeeded\",\"duplicate\":false,\"late\":false%s}",
+                      jobId, more ? ",\"jobsWaiting\":true" : "");
+    resultReplies_.emplace_back(reply);
+    jobsWaiting = mm::resultReplySaysJobsWaiting(reply, static_cast<size_t>(written));
     return true;
   }
 
@@ -348,6 +447,9 @@ class FakeUplink : public mm::IUplink {
     if (std::strcmp(what, "result") == 0 && resultFaultCalls_ != 0) {
       fault = resultFault_;
       if (resultFaultCalls_ > 0) resultFaultCalls_--;
+    } else if (std::strcmp(what, "claim") == 0 && claimFaultCalls_ != 0) {
+      fault = claimFault_;
+      if (claimFaultCalls_ > 0) claimFaultCalls_--;
     } else if (std::strcmp(what, "update-result") == 0 && updateFaultCalls_ != 0) {
       fault = updateFault_;
       if (updateFaultCalls_ > 0) updateFaultCalls_--;
@@ -399,6 +501,14 @@ class FakeUplink : public mm::IUplink {
     return true;
   }
 
+  // A claimed job's own id, read out of the JSON this fake was queued with: what `holding` is
+  // compared against and what a leased-and-lost job is remembered by.
+  static long long idOf(const std::string& job) {
+    const size_t at = job.find("\"id\":");
+    if (at == std::string::npos) return 0;
+    return std::strtoll(job.c_str() + at + 5, nullptr, 10);
+  }
+
   // The batch's `clientId`, which is what the server de-duplicates on.
   static std::string clientIdOf(const std::string& batch) {
     const size_t at = batch.find("\"clientId\":\"");
@@ -431,6 +541,12 @@ class FakeUplink : public mm::IUplink {
   int faultCalls_ = 0;
   Fault resultFault_ = Fault::None;
   int obsAnswerLost_ = 0;
+  int claimAnswerLost_ = 0;
+  Fault claimFault_ = Fault::None;
+  int claimFaultCalls_ = 0;
+  // Leased to this exit node, answer lost: (job id, the job's JSON), in the order they were
+  // leased. Handed back to the first claim that says it does not hold them.
+  std::vector<std::pair<long long, std::string>> lost_;
   int resultFaultCalls_ = 0;
   Fault updateFault_ = Fault::None;
   int updateFaultCalls_ = 0;
@@ -449,6 +565,10 @@ class FakeUplink : public mm::IUplink {
   int configCalls_ = 0;
   int claimCalls_ = 0;
   std::vector<int> claimMaxes_;
+  std::vector<std::vector<long long>> claimHoldings_;
+  std::vector<std::string> claimRequests_;
+  std::vector<std::string> resultReplies_;
+  int moreWaits_ = 0;
   const mm::ClaimedJob* claimed_ = nullptr;
   int claimedCount_ = 0;
 

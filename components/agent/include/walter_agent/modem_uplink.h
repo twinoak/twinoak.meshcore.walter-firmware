@@ -281,8 +281,9 @@ class ModemUplink final : public mm::IUplink {
   bool fetchConfig() override;
   bool postHeartbeat(const mm::Heartbeat& hb, mm::HeartbeatReply& reply) override;
   bool postObservations(const char* body, std::size_t len, int& accepted, bool& duplicate) override;
-  bool claimJobs(mm::ClaimedJob* jobs, int max, int& count) override;
-  bool postJobResult(long long jobId, const char* body, std::size_t len) override;
+  bool claimJobs(mm::ClaimedJob* jobs, int max, int& count, int transactionsLeft,
+                 const long long* holding, int holdingCount) override;
+  bool postJobResult(long long jobId, const char* body, std::size_t len, bool& jobsWaiting) override;
   bool extendLease(long long jobId, int seconds, std::uint32_t& leaseUntil) override;
   bool postProgress(long long jobId, const char* body, std::size_t len) override;
 

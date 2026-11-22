@@ -28,6 +28,7 @@ namespace {
 #define g_pathHops (scratch_.pathHops)
 #define g_pathPtrs (scratch_.pathPtrs)
 #define g_pathBytes (scratch_.pathBytes)
+#define g_claimPath (scratch_.claimPath)
 #define g_roundTrip (scratch_.roundTrip)
 #define g_snapshot (scratch_.snapshot)
 #define g_acl (scratch_.acl)
@@ -174,6 +175,93 @@ bool JobRunner::Context::sentTag(uint32_t tag) const {
     if (sentTags[i] == tag) return true;
   }
   return false;
+}
+
+// ------------------------------------------------------------------ the way back (task p1.21-71)
+
+// **A reply does not come back the way the request went, unless the repeater is told it.**
+//
+// A request goes out direct along the path the server holds. A repeater answers a direct request
+// along the `out_path` it has stored for that client and **floods** the reply when it has none
+// (examples/simple_repeater/MyMesh.cpp at 81dbae59: a login's reply 596-619 through
+// `mesh::chooseReplyRoute`, a request's 684-697, a console reply 744-756), and it stores one only
+// from a PATH packet the client sends it (`onPeerPathRecv`, 766-782). This firmware sent none, and
+// with a path from the server nothing of ours is flooded for the repeater to answer with a path
+// return either - so every reply to an exit node was a flood, repeated by every repeater that
+// heard it, and a trace said nothing about the way a reply would take. On 22 November 2026 a
+// trace of TwinOak Ebeltoft through Risskov read 7 to 12 dB on all six receptions
+// (meshmaster.dk's job 40632) and a status read two minutes later had two logins unanswered
+// (40633); Ebeltoft answered three requests in each of seven hours that morning and its
+// `sentDirect` moved by five in all.
+//
+// So the repeater is told the way back before it is asked anything: `IMesh::tellTheWayBack()`,
+// whose default tells none. It is **one packet inside the login's own slot** of the airtime
+// budget and counts **no transaction** - EXIT-NODES §7 prices a login as one exchange and it
+// stays one - and it is **not a command**, so nothing retries it and nothing awaits an answer to
+// it. How to know the repeater took it is that the next reply came direct, which is what
+// `noteReplyRoute` below reads and what every answered exchange of a job's log now says.
+void JobRunner::tellTheWayBack(Context& ctx, const char* what) {
+  // A send that floods is preceded by nothing: there is no path to tell a way back along, and
+  // the reply to a flood comes home as a path return of the repeater's own anyway.
+  if (!mesh_->hasPath()) return;
+  // And a job this mesh answers without the air has no hops to clear and no reply to route
+  // (IMesh::answersLocally, task p1.10-40).
+  if (mesh_->answersLocally()) return;
+  const char* why = ctx.wayBackOwed && ctx.wayBackWhy != nullptr ? ctx.wayBackWhy : "";
+  ctx.wayBackOwed = false;
+  ctx.wayBackWhy = nullptr;
+  const IMesh::WayBack told = mesh_->tellTheWayBack();
+  if (told.how == IMesh::WayBack::How::NotTold) {
+    if (!ctx.wayBackNoted) {
+      ctx.wayBackNoted = true;
+      g_log.add("this mesh tells no way back: replies come home however the repeater chooses");
+    }
+    return;
+  }
+  if (told.how == IMesh::WayBack::How::Failed) {
+    g_log.add("%s: the way back could not be sent", what);
+    return;
+  }
+  ctx.waysBackTold++;
+  // One line, with the reason in it: the job's log is 1 024 bytes and a second sentence costs a
+  // job its earliest evidence (JobLog, and task p1.10-47's own note about this).
+  g_log.add("way back%s: %u hop(s), %lu ms to clear", why, static_cast<unsigned>(told.hops),
+            static_cast<unsigned long>(told.clearMs));
+  // The hops have to be clear before the send that follows it, or the two race each other at the
+  // first repeater. The figure is the mesh's own, from the packet's airtime and the delay a hop
+  // adds; it is inside the slot this transaction already holds.
+  if (told.clearMs > 0) idle(told.clearMs);
+}
+
+void JobRunner::tellTheWayBackIfOwed(Context& ctx, const char* what) {
+  if (!ctx.wayBackOwed) return;
+  tellTheWayBack(ctx, what);
+}
+
+void JobRunner::noteReplyRoute(Context& ctx, const char* shape, char* how, size_t cap) {
+  const ReplyRoute route = mesh_->reply().route;
+  std::snprintf(how, cap, "%s, reply %s", shape, replyRouteName(route));
+  if (route != ReplyRoute::Flood) return;
+  // Nothing to tell a way back along, and nothing to tell: a flooded send whose reply taught no
+  // path leaves this job with no hops to name.
+  if (!mesh_->hasPath()) return;
+  // **One more telling, and exactly one.** A way back told twice is the same way back, and a
+  // repeater that ignored two will ignore three; what bounds this is the job and not a count of
+  // tries. The two cases it covers:
+  //
+  //   - a way back **was** told and the reply came home flooded all the same. Either the repeater
+  //     did not hold this exit node's key when the packet arrived - a guest's very first login is
+  //     what writes that entry, and a PATH packet from a key the access list does not hold is
+  //     dropped before it is decrypted (`searchPeersByHash`,
+  //     examples/simple_repeater/MyMesh.cpp 626-634 at the pin) - or the packet was lost on the
+  //     air. The login that came back wrote the entry, so the second telling lands;
+  //   - **a path a flood taught**: a discover, or a login with no path from the server. The reply
+  //     came back as a path return and this job now holds hops it never had when it sent; the way
+  //     back goes before its next direct send.
+  if (ctx.wayBackRetold) return;
+  ctx.wayBackRetold = true;
+  ctx.wayBackOwed = true;
+  ctx.wayBackWhy = ctx.waysBackTold > 0 ? " again (the reply came flooded)" : " along the path a flood taught";
 }
 
 // ------------------------------------------------------------------ the login
@@ -324,6 +412,10 @@ const char* JobRunner::loginMaterial(const ClaimedJob& job) {
 JobRunner::LoginResult JobRunner::loginOnce(const ClaimedJob& job, Context& ctx, const char* material,
                                             const char* what) {
   if (!spend(job, ctx)) return LoginResult::Timeout;
+  // **The way back, before the login** (task p1.21-71), and before each try of it: the login's
+  // own reply then takes it, and a path that changed is told before anything has to come back
+  // along the old one. A login that floods is preceded by nothing.
+  tellTheWayBack(ctx, what);
   const uint32_t started = millis();
   uint32_t tag = 0;
   const FloodMode mode = scopeTheNextSend();
@@ -346,13 +438,17 @@ JobRunner::LoginResult JobRunner::loginOnce(const ClaimedJob& job, Context& ctx,
     g_log.add("%s: no reply (%s)", what, shape);
     return LoginResult::NoReply;
   }
+  // How the reply came home, beside how the request went out (task p1.21-71).
+  char came[80];
+  noteReplyRoute(ctx, shape, came, sizeof came);
   flood_.answered();
   if (!ctx.hasRtt) {
     ctx.hasRtt = true;
     ctx.rttMs = static_cast<int>(millis() - started);
   }
   const uint8_t permissions = login.hasAclPermissions ? login.aclPermissions : login.role();
-  const RepeaterSession* stored = sessions_.put(job.repeaterKey, job.credentialClass, permissions, millis());
+  const RepeaterSession* stored = sessions_.put(job.repeaterKey, job.credentialClass, permissions, millis(),
+                                               g_claimPath, ctx.claimPathLen, ctx.hasClaimPath);
   const uint8_t granted = stored != nullptr ? stored->role() : login.role();
   char level[24] = {0};
   if (login.hasFirmwareLevel) {
@@ -404,7 +500,7 @@ JobRunner::LoginResult JobRunner::loginOnce(const ClaimedJob& job, Context& ctx,
   ctx.sessionRole = granted;
   ctx.sessionWasFresh = true;
   g_log.add("%s: logged in as %s%s%s (%s)", what, permissionName(granted), level, login.legacy ? " (a legacy reply)" : "",
-            shape);
+            came);
   return LoginResult::Ok;
 }
 
@@ -476,6 +572,14 @@ Outcome JobRunner::ensureSession(const ClaimedJob& job, Context& ctx) {
     ctx.sessionWasFresh = false;
     g_log.add("session reused (%s, %s, %lu s old)", credentialClassName(live->credentialClass), live->tier(),
               static_cast<unsigned long>((now - live->loggedInAtMs) / 1000));
+    // **A reused session whose path has changed** (task p1.21-71). The way back the repeater
+    // holds was told from the path the session was opened along; this claim names another, so a
+    // reply along the old one would come back by hops this job is not using. It is told again
+    // before the job's first send, and nothing is told when the path is the one it was.
+    if (!live->samePathAs(g_claimPath, ctx.claimPathLen, ctx.hasClaimPath)) {
+      ctx.wayBackOwed = true;
+      ctx.wayBackWhy = " again (the claim's path changed)";
+    }
     return Outcome::Ok;
   }
 
@@ -507,6 +611,7 @@ bool JobRunner::probeReachable(const ClaimedJob& job, Context& ctx) {
     g_log.add("reachability probe (blank login): not sent, the lease ran out");
     return false;
   }
+  tellTheWayBackIfOwed(ctx, "reachability probe (blank login)");
   uint32_t tag = 0;
   const FloodMode mode = scopeTheNextSend();
   const SendResult sent = mesh_->sendLogin("", tag);
@@ -535,8 +640,10 @@ bool JobRunner::probeReachable(const ClaimedJob& job, Context& ctx) {
   const uint8_t permissions = login.hasAclPermissions ? login.aclPermissions : login.role();
   ctx.probeAnsweredRole = static_cast<uint8_t>(permissions & kPermRoleMask);
   const char* tier = permissionName(ctx.probeAnsweredRole);
+  char came[80];
+  noteReplyRoute(ctx, how, came, sizeof came);
   g_log.add("reachability probe (blank login): answered at %s%s (%s)", tier, login.legacy ? " (a legacy reply)" : "",
-            how);
+            came);
   g_log.add("the repeater is on the air: it answered the blank login at %s, so a silence to the new candidate right "
             "after it is a refusal (task p4.7-95)",
             tier);
@@ -557,6 +664,9 @@ Outcome JobRunner::exchange(const ClaimedJob& job, Context& ctx, const char* wha
     // got another and then lost the second try reports `request` (task p1.7-28).
     ctx.stage = Context::Stage::Request;
     if (!spend(job, ctx, escape)) return Outcome::Timeout;
+    // A way back owed from an earlier reply of this job - or from a session whose path changed -
+    // goes before this send, so this reply comes home along the hops it is about to take.
+    tellTheWayBackIfOwed(ctx, what);
     const uint32_t started = millis();
     uint32_t tag = 0;
     const FloodMode mode = scopeTheNextSend();
@@ -581,10 +691,12 @@ Outcome JobRunner::exchange(const ClaimedJob& job, Context& ctx, const char* wha
     const bool answered =
         text ? awaitCliReply(job, what, attempt) : mesh_->awaitReply(tag, requestWaitMs(job), pump_);
     if (answered) {
+      char came[80];
+      noteReplyRoute(ctx, shape, came, sizeof came);
       flood_.answered();
       ctx.hasRtt = true;
       ctx.rttMs = static_cast<int>(millis() - started);
-      g_log.add("%s try %d: ok (%s, %lu ms)", what, attempt, shape, static_cast<unsigned long>(ctx.rttMs));
+      g_log.add("%s try %d: ok (%s, %lu ms)", what, attempt, came, static_cast<unsigned long>(ctx.rttMs));
       return Outcome::Ok;
     }
     g_log.add("%s try %d: no reply (%s)", what, attempt, shape);
@@ -1364,7 +1476,9 @@ Outcome JobRunner::runDiscover(const ClaimedJob& job, Context& ctx, size_t& data
     flood_.answered();
     ctx.hasRtt = true;
     ctx.rttMs = static_cast<int>(millis() - started);
-    g_log.add("path discovery request, the last resort (some firmware never answers it): ok (%s, %lu ms)", shape,
+    char came[80];
+    noteReplyRoute(ctx, shape, came, sizeof came);
+    g_log.add("path discovery request, the last resort (some firmware never answers it): ok (%s, %lu ms)", came,
               static_cast<unsigned long>(ctx.rttMs));
     return learned(job, ctx, LoginResult::NoReply, kPathSourceDiscovery, dataLen);
   }
@@ -1996,6 +2110,17 @@ Outcome JobRunner::runJob(const ClaimedJob& job, Context& ctx, size_t& dataLen) 
     return Outcome::Failed;
   }
   if (hops == 0 && job.hasPath && job.pathCount == 0) mesh_->setDirectPath();  // a direct neighbour
+  // The claim's path, kept for the whole job (task p1.21-71): a session a login opens remembers
+  // it, and a job that reuses one compares it. `hasClaimPath` false is a claim with no path at
+  // all; true with `claimPathLen` 0 is a direct pair, whose way back is the empty path.
+  ctx.hasClaimPath = mesh_->hasPath();
+  ctx.claimPathLen = ctx.hasClaimPath ? static_cast<uint8_t>(((hashSize > 0 ? hashSize - 1 : 0) << 6) | hops) : 0;
+  std::memset(g_claimPath, 0, sizeof g_claimPath);
+  if (hops > 0 && hashSize > 0) {
+    size_t width = static_cast<size_t>(hops) * hashSize;
+    if (width > sizeof g_claimPath) width = sizeof g_claimPath;
+    std::memcpy(g_claimPath, g_pathBytes, width);
+  }
   g_log.add("path %s", mesh_->hasPath() ? "from the server" : "unknown: the mesh floods");
   // The local door (IMesh::answersLocally, task p1.10-40), said once on the job's page: this is
   // why the result reports no transaction and why the job was not paced by the airtime budget.
@@ -2075,7 +2200,12 @@ bool JobRunner::post(long long jobId, const char* body, size_t len) {
   const uint32_t failuresBefore = postFailures_;
   flushResults();
   if (results_.empty() && mayPost(len)) {
-    if (spend(len, [&] { return server_->postJobResult(jobId, body, len); })) return true;
+    // What the answer said about more work waiting is read here and nowhere else, from the body
+    // this call already had: a wake claims again on it (task p1.20-69).
+    bool waiting = false;
+    const bool took = spend(len, [&] { return server_->postJobResult(jobId, body, len, waiting); });
+    lastResultJobsWaiting_ = took && waiting;
+    if (took) return true;
     postFailures_++;
   } else if (postFailures_ == failuresBefore) {
     // Not the server: what stopped this was the wake's own bytes or its uplink seconds, here or
@@ -2129,10 +2259,13 @@ int JobRunner::flushResults() {
       }
       return posted;
     }
-    if (!spend(len, [&] { return server_->postJobResult(jobId, body, len); })) {
+    bool waiting = false;
+    if (!spend(len, [&] { return server_->postJobResult(jobId, body, len, waiting); })) {
+      lastResultJobsWaiting_ = false;
       postFailures_++;
       return posted;
     }
+    lastResultJobsWaiting_ = waiting;
     posted++;
     LOG_I("jobs: the kept result of job %lld went through", jobId);
     results_.popOldest();
@@ -2164,16 +2297,54 @@ int JobRunner::claimAndRun() {
   return count;
 }
 
-int JobRunner::claim(int max) {
+// The claim's `holding` can carry as many ids as the offline buffer can hold results, so the two
+// bounds are one number and the writer never has to leave an id out (JobEnvelopes.h).
+static_assert(kClaimHoldingMax == static_cast<int>(ResultBuffer::kMaxResults),
+              "kClaimHoldingMax is the result buffer's capacity: a claim says everything this end holds");
+
+int JobRunner::holding(long long* out, int cap) const {
+  if (out == nullptr || cap < 1) return 0;
+  int count = 0;
+  for (size_t i = 0; i < results_.count() && count < cap; i++) {
+    long long jobId = 0;
+    size_t len = 0;
+    if (results_.at(i, jobId, len) == nullptr) break;
+    out[count++] = jobId;
+  }
+  return count;
+}
+
+bool JobRunner::holdsResultFor(long long jobId) const {
+  for (size_t i = 0; i < results_.count(); i++) {
+    long long held = 0;
+    size_t len = 0;
+    if (results_.at(i, held, len) == nullptr) break;
+    if (held == jobId) return true;
+  }
+  return false;
+}
+
+int JobRunner::claim(int max, int transactionsLeft) {
   if (max > kClaimMax) max = kClaimMax;
   if (max < 1) max = 1;
 
   // Whatever a previous claim left: no password outlives its job, and none waits for the next.
   for (int i = 0; i < kClaimMax; i++) g_jobs[i].credential.wipe();
   claimed_ = 0;
+  // And whatever the last claim's results were told: `jobsWaiting` is about the claim that is
+  // being finished, so the answer a caller reads after this one is this claim's or nothing
+  // (task p1.20-69).
+  lastResultJobsWaiting_ = false;
+
+  // What this end holds, in **every** claim this library makes (task p1.20-70): the results in
+  // the offline buffer, oldest first, and `[]` when there are none. The server leases the jobs of
+  // a claim in the moment it answers, so an answer that was lost leaves it holding leases this
+  // end knows nothing of; this is how it finds out, and its task p4.47-254 hands them back.
+  long long held[kClaimHoldingMax];
+  const int heldCount = holding(held, kClaimHoldingMax);
 
   int count = 0;
-  if (!spend(0, [&] { return server_->claimJobs(g_jobs, max, count); })) {
+  if (!spend(0, [&] { return server_->claimJobs(g_jobs, max, count, transactionsLeft, held, heldCount); })) {
     for (int i = 0; i < kClaimMax; i++) g_jobs[i].credential.wipe();
     return -1;
   }
@@ -2195,6 +2366,19 @@ void JobRunner::endClaim() {
 void JobRunner::runClaimed(int i) {
   if (i < 0 || i >= claimed_) return;
   ClaimedJob& job = g_jobs[i];
+  // **A job handed over twice is run once** (task p1.20-70). This end already has an answer for
+  // it, made and not yet taken, so running it again would put a repeater's work on the air for a
+  // result that exists: the kept one is posted instead, oldest first through the same budget as
+  // every other post, and the job's credential is wiped unused. With `holding` in every claim the
+  // server does not hand such a job over at all; this is the rail for the server that does.
+  if (holdsResultFor(job.id)) {
+    handedOverAgain_++;
+    job.credential.wipe();
+    LOG_I("jobs: job %lld was handed over again and this exit node keeps its result: posting that, not running it",
+          job.id);
+    flushResults();
+    return;
+  }
   const uint32_t startedAt = clock_->now();
   g_log.clear();
   g_log.add("job %lld %s for repeater %lld \"%s\" (%s)", job.id, job.type, job.repeaterId, job.repeaterLabel,
@@ -2460,6 +2644,7 @@ void JobRunner::describeFlood(char* out, size_t cap) const {
 #undef g_pathHops
 #undef g_pathPtrs
 #undef g_pathBytes
+#undef g_claimPath
 #undef g_roundTrip
 #undef g_snapshot
 #undef g_acl

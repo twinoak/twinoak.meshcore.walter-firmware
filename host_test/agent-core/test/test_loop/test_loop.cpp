@@ -57,6 +57,9 @@
 #ifndef PROJECT_DIR
 #error "PROJECT_DIR must be defined; platformio.ini's [env:native] does it"
 #endif
+#ifndef AHEAD_FIXTURES_DIR
+#error "AHEAD_FIXTURES_DIR must be defined; platformio.ini's [env:native] does it"
+#endif
 
 namespace {
 
@@ -792,6 +795,17 @@ mm::WakeIntent hourly(int cap = 12) {
   return intent;
 }
 
+// The same intent, with room for more than the one claim a wake made before task p1.20-69.
+mm::WakeIntent hourly(int cap, int claims) {
+  mm::WakeIntent intent = hourly(cap);
+  intent.maxClaimsThisWake = claims;
+  return intent;
+}
+
+// One trace, leased for half an hour: the cheapest job there is - one transaction, no login and
+// no password - which is what a test about **how many claims** a wake makes wants of a job.
+std::string trace(long long id) { return fake::Job(id, "trace").leasedUntil(kLease).json(); }
+
 TEST_F(LoopTest, AWakeWithNothingWaitingIsAConfigCallAHeartbeatAndNothingElse) {
   server.answerHeartbeat(60, 1, 3600, false, platform.clock().now());
 
@@ -1254,6 +1268,447 @@ TEST_F(LoopTest, AWakeWithNoRoomLeftMakesNoClaimAtAll) {
   EXPECT_EQ(server.claimCalls(), 0);
   EXPECT_EQ(server.queuedJobs(), 1u);
   EXPECT_TRUE(fake::LogCapture::the().holds("which is less than a job: no claim is made"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// A wake claims again (task p1.20-69)
+//
+// A claim takes two jobs at most, because two is the room this firmware has at a time, so a wake
+// that is one claim does two jobs an hour at best whatever is queued. A wake that has finished
+// what it was handed therefore asks again - while the answer to its last result said more waits,
+// nothing of that claim was kept back, the last claim handed over a job, and it has the time, the
+// transactions and the claims for it. How many claims is the caller's `maxClaimsThisWake`, and a
+// caller that says nothing gets one: what every wake got before this.
+
+TEST_F(LoopTest, AWakeThatProposesNoClaimsOrOneMakesTheOneClaimItAlwaysMade) {
+  // The acceptance criterion of the task: nothing of a wake that does not ask for this moves. The
+  // server says more waits after the result, and the wake goes to sleep all the same.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14200));
+  server.queue(trace(14201));
+
+  const mm::WakeReport unset = loop.wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(unset.claimsMade, 1);
+  EXPECT_EQ(unset.jobsRun, 1);
+  EXPECT_STREQ(unset.claimsEndedBy, "the wake's claims");
+  ASSERT_EQ(server.claimRequests().size(), 1u);
+  EXPECT_EQ(server.claimRequests()[0], "{\"max\":2,\"holding\":[]}")
+      << "and the one claim's bytes are `max` and the holding of task p1.20-70, which is empty";
+  EXPECT_EQ(server.queuedJobs(), 1u) << "the second trace waits for the next wake";
+
+  // And 1 is the same as 0: both of them are the one claim, so a caller can say what it means.
+  server.forgetCalls();
+  const mm::WakeReport one = loop.wake(hourly(12, 1), mm::Budget());
+  EXPECT_EQ(one.claimsMade, 1);
+  EXPECT_EQ(server.claimCalls(), 2) << "one claim this wake as well";
+  EXPECT_EQ(server.queuedJobs(), 0u);
+}
+
+TEST_F(LoopTest, AWakeAllowedFourClaimsToldMoreWaitsEachTimeMakesExactlyFour) {
+  // The evening of 21 November 2026 in one wake: five batches queued, four claims allowed, and
+  // the fifth batch left for the next wake rather than a fifth claim made.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  for (long long id = 14210; id < 14215; id++) server.queue(trace(id));
+
+  const mm::WakeReport report = loop.wake(hourly(12, 4), mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 4);
+  EXPECT_EQ(server.claimCalls(), 4) << "four claims and no fifth";
+  EXPECT_EQ(report.jobsClaimed, 4) << "counted over the whole wake";
+  EXPECT_EQ(report.jobsRun, 4);
+  EXPECT_EQ(report.jobsNotRun, 0);
+  EXPECT_EQ(report.claim, mm::StepOutcome::Done);
+  EXPECT_EQ(report.jobs, mm::StepOutcome::Done);
+  EXPECT_EQ(report.transactionsSpent, 4);
+  EXPECT_STREQ(report.claimsEndedBy, "the wake's claims");
+  ASSERT_EQ(server.results().size(), 4u);
+  for (size_t i = 0; i < 4; i++) EXPECT_EQ(server.results()[i].jobId, 14210 + static_cast<long long>(i));
+  EXPECT_EQ(server.queuedJobs(), 1u) << "the fifth is queued and bound to nothing, as it always was";
+  EXPECT_EQ(loop.counters().consecutiveFailures, 0u);
+}
+
+TEST_F(LoopTest, AServerThatNeverSaysMoreWaitsIsClaimedOfOnce) {
+  // The answer to a result carries `jobsWaiting` only for an exit node that paces itself, and a
+  // server that has never heard of the member says nothing - which is not "more waits".
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.queue(trace(14220));
+  server.queue(trace(14221));
+
+  const mm::WakeReport report = loop.wake(hourly(12, 4), mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 1);
+  EXPECT_EQ(server.claimCalls(), 1);
+  EXPECT_STREQ(report.claimsEndedBy, "nothing waits");
+  EXPECT_EQ(server.queuedJobs(), 1u);
+  ASSERT_EQ(server.resultReplies().size(), 1u);
+  EXPECT_EQ(server.resultReplies()[0].find("jobsWaiting"), std::string::npos) << server.resultReplies()[0];
+}
+
+TEST_F(LoopTest, AnEmptyClaimEndsTheWakesJobs) {
+  // The server said more waits and then handed over nothing - another exit node took it, or the
+  // job went away. There is nothing to run and nothing to ask about, so the wake's jobs are over.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14230));
+
+  const mm::WakeReport report = loop.wake(hourly(12, 4), mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 2) << "the second claim was made and came back empty";
+  EXPECT_EQ(server.claimCalls(), 2);
+  EXPECT_EQ(report.jobsClaimed, 1);
+  EXPECT_EQ(report.jobsRun, 1);
+  EXPECT_EQ(report.claim, mm::StepOutcome::Done) << "an empty claim is an answer, not a failure";
+  EXPECT_STREQ(report.claimsEndedBy, "an empty claim");
+  EXPECT_EQ(loop.counters().claimFailures, 0u);
+}
+
+TEST_F(LoopTest, AKeptResultEndsTheWakesJobs) {
+  // A wake that could not post what it has must not take on more: the result of the claim just
+  // finished is in the offline buffer for the next wake, and asking for two more jobs would put
+  // two more behind it.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14240));
+  server.queue(trace(14241));
+  mm::Budget budget;
+  budget.postBytes = 1;  // no result this firmware writes is one byte long
+
+  const mm::WakeReport report = loop.wake(hourly(12, 4), budget);
+
+  EXPECT_EQ(report.claimsMade, 1);
+  EXPECT_EQ(server.claimCalls(), 1);
+  EXPECT_EQ(report.jobsRun, 1) << "the job ran: the cap is on what is posted";
+  EXPECT_EQ(report.resultsKept, 1);
+  EXPECT_STREQ(report.claimsEndedBy, "a result kept");
+  EXPECT_TRUE(server.results().empty());
+  EXPECT_EQ(server.queuedJobs(), 1u);
+  EXPECT_EQ(jobs.postFailures(), 0u) << "a bound of ours is not a failure of the server's";
+  EXPECT_TRUE(fake::LogCapture::the().holds("a result of the last one is kept for the next wake"));
+}
+
+TEST_F(LoopTest, ATransactionCapWithNoRoomForAnotherJobEndsTheWakesJobs) {
+  // Two transactions: one claim of one job at the cheapest price there is, and then one left -
+  // less than a job - so no second claim is made however much the server says is waiting. It is
+  // the same arithmetic the first claim is sized by (claimMax), read again before each one.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14250));
+  server.queue(trace(14251));
+
+  const mm::WakeReport report = loop.wake(hourly(2, 4), mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 1);
+  EXPECT_EQ(server.claimCalls(), 1);
+  EXPECT_EQ(report.transactionsSpent, 1);
+  EXPECT_STREQ(report.claimsEndedBy, "no transactions");
+  EXPECT_EQ(report.claim, mm::StepOutcome::Done) << "a claim was made; it is the second that was not";
+  EXPECT_EQ(server.queuedJobs(), 1u);
+  EXPECT_TRUE(fake::LogCapture::the().holds("which is less than a job: no claim is made"));
+}
+
+TEST_F(LoopTest, TheWakesSecondsRunningOutBetweenTwoClaimsEndsItWithNoTimeAndNoClaimHalfMade) {
+  // Four seconds of uplink at a second a call: the config, the heartbeat, the claim and the one
+  // result spend them exactly. The result went through - it was inside the budget when it was
+  // asked - and the second claim is not made at all: a claim is never half made.
+  server.setCallMs(1000);
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14260));
+  server.queue(trace(14261));
+  mm::Budget budget;
+  budget.uplinkSeconds = 4;
+
+  const mm::WakeReport report = loop.wake(hourly(12, 4), budget);
+
+  EXPECT_EQ(report.claimsMade, 1);
+  EXPECT_EQ(server.claimCalls(), 1);
+  EXPECT_EQ(report.jobsRun, 1);
+  EXPECT_EQ(report.resultsKept, 0) << "the result was posted; it is the next claim that had no time";
+  ASSERT_EQ(server.results().size(), 1u);
+  EXPECT_EQ(report.uplinkMs, 4000u) << "four calls of a second, and the fifth was not made";
+  EXPECT_STREQ(report.claimsEndedBy, "no time");
+  EXPECT_EQ(server.queuedJobs(), 1u);
+  EXPECT_TRUE(fake::LogCapture::the().holds("this wake's seconds at the server are spent"));
+}
+
+TEST_F(LoopTest, TheFirstClaimOfAWakeIsMaxAloneAndTheSecondSaysWhatIsLeft) {
+  // Eighteen transactions proposed and one trace run: the second claim states the seventeen that
+  // are left, after `max` and in that order - which is the waiting fixture of this task, to the
+  // byte. The first claim states nothing but `max`, as every claim did before.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14270));
+  server.queue(trace(14271));
+
+  const mm::WakeReport report = loop.wake(hourly(18, 2), mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 2);
+  EXPECT_EQ(report.transactionsSpent, 2);
+  ASSERT_EQ(server.claimRequests().size(), 2u);
+  EXPECT_EQ(server.claimRequests()[0], "{\"max\":2,\"holding\":[]}") << "never in the first claim of a wake";
+  EXPECT_EQ(server.claimRequests()[1], "{\"max\":2,\"transactionsLeft\":17,\"holding\":[]}");
+  // The waiting fixture of task p1.20-69 is `max` and `transactionsLeft`; this claim is that with
+  // task p1.20-70's `holding` appended, so the fixture is the claim's opening bytes to the byte.
+  std::string fixture = readFile(fs::path(AHEAD_FIXTURES_DIR) / "ClaimRequestLeft.json");
+  while (!fixture.empty() && (fixture.back() == '\n' || fixture.back() == '\r')) fixture.pop_back();
+  ASSERT_GT(fixture.size(), 1u);
+  EXPECT_EQ(server.claimRequests()[1].rfind(fixture.substr(0, fixture.size() - 1), 0), 0u)
+      << "this wake's own number happens to be the fixture's: " << server.claimRequests()[1];
+}
+
+TEST_F(LoopTest, AWakeWithNoTransactionCapStatesNoneInItsLaterClaimsEither) {
+  // `transactionsLeft` is what is left of a number the heartbeat stated, so a wake that proposed
+  // none has nothing to say and leaves the member out of every claim - and still claims again.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14280));
+  server.queue(trace(14281));
+  mm::WakeIntent intent;
+  intent.nextCheckInS = 3600;
+  intent.maxClaimsThisWake = 2;
+
+  const mm::WakeReport report = loop.wake(intent, mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 2);
+  ASSERT_EQ(server.claimRequests().size(), 2u);
+  EXPECT_EQ(server.claimRequests()[0], "{\"max\":2,\"holding\":[]}");
+  EXPECT_EQ(server.claimRequests()[1], "{\"max\":2,\"holding\":[]}")
+      << "there is no cap, so there is nothing left of one";
+}
+
+TEST_F(LoopTest, EveryClaimOfAWakeIsPricedAsTheFirstIs) {
+  // Four transactions and three claims allowed. Two traces spend two; a `status` at class `acl`
+  // costs three, which is more than the two that are left, so it is **failed with wake budget**
+  // and never put on the air - exactly as a job of the first claim would be - and the claim after
+  // it is made all the same.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(std::vector<std::string>{trace(14290), trace(14291)});
+  server.queue(fake::Job(14292, "status").atClass("acl").leasedUntil(kLease).json());
+  server.queue(trace(14293));
+
+  const mm::WakeReport report = loop.wake(hourly(4, 3), mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 3);
+  EXPECT_EQ(report.jobsClaimed, 4) << "two, then one, then one";
+  EXPECT_EQ(report.jobsRun, 3);
+  EXPECT_EQ(report.jobsNotRun, 1);
+  EXPECT_EQ(report.transactionsSpent, 3) << "three traces; the status never went on the air";
+  EXPECT_STREQ(report.claimsEndedBy, "the wake's claims");
+  ASSERT_EQ(server.results().size(), 4u) << "no job a claim handed over is left leased and silent";
+  EXPECT_EQ(server.results()[2].jobId, 14292);
+  EXPECT_EQ(memberOf(server.results()[2].body, "outcome"), "failed");
+  EXPECT_NE(server.results()[2].body.find("wake budget"), std::string::npos) << server.results()[2].body;
+  ASSERT_EQ(server.claimRequests().size(), 3u);
+  // And `max` is sized from the same arithmetic before each claim: two jobs while four
+  // transactions could hold two, and one apiece after the two traces had spent two of them.
+  EXPECT_EQ(server.claimRequests()[0], "{\"max\":2,\"holding\":[]}");
+  EXPECT_EQ(server.claimRequests()[1], "{\"max\":1,\"transactionsLeft\":2,\"holding\":[]}");
+  EXPECT_EQ(server.claimRequests()[2], "{\"max\":1,\"transactionsLeft\":2,\"holding\":[]}")
+      << "the status spent nothing";
+}
+
+TEST_F(LoopTest, TheHeltecsLoopClaimsMaxAndWhatItHoldsHoweverOftenTheServerSaysMoreWaits) {
+  // `loop()` makes one claim at its poll and does nothing with `jobsWaiting` in a result's answer:
+  // a board that never sleeps claims again in thirty seconds, which is its next poll and not this
+  // one (the pile's FOLLOWUPS.md). The one thing task p1.20-70 adds here is `holding`, empty while
+  // this board keeps no result - because the claim's next poll **is** the second claim already.
+  wideBudget();
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14300));
+  server.queue(trace(14301));
+
+  linkUp();
+  ASSERT_TRUE(untilACall());  // config
+  ASSERT_TRUE(untilACall());  // heartbeat
+  ASSERT_TRUE(untilACall());  // the claim, the job and its result
+
+  ASSERT_FALSE(server.claimRequests().empty());
+  for (const std::string& request : server.claimRequests()) {
+    EXPECT_EQ(request, "{\"max\":2,\"holding\":[]}") << "the Heltec's claim states max and what it holds";
+  }
+  ASSERT_FALSE(server.claimHoldings().empty());
+  EXPECT_TRUE(server.claimHoldings()[0].empty()) << "nothing is kept, so the list is empty and is still written";
+  ASSERT_FALSE(server.results().empty());
+  EXPECT_TRUE(fake::followsShapeOf(server.results()[0].body, fake::contract("JobResultReport")))
+      << server.results()[0].body;
+  EXPECT_EQ(std::count(server.calls().begin(), server.calls().end(), std::string("claim")), 1)
+      << "one claim a pass, whatever the result's answer said";
+}
+
+// ---------------------------------------------------------------------------------------------
+// A claim that was lost (task p1.20-70)
+//
+// The server leases the jobs of a claim in the moment it answers. When the answer does not arrive
+// it holds leases this end knows nothing of: on 21 November 2026 the unit at Bellevue claimed at
+// 19:11Z, the answer came back *http 200* without its body, and a download with one attempt was
+// failed as *the exit node took this job and never reported a result*. So every claim now says
+// what this exit node holds (`holding`), and a claim that did not come back whole is made once
+// more in the same wake. The fake server behind these tests stands in for meshmaster.dk's task
+// p4.47-254: it leases the jobs of a lost claim and hands them back to the next claim that says
+// it does not hold them.
+
+TEST_F(LoopTest, EveryClaimOfAWakeSaysWhatThisEndHoldsAndNothingHeldIsTheWaitingFixture) {
+  // Nothing is kept, so the member is an **empty list** and not a member left out: `[]` tells the
+  // server this exit node holds no job, where saying nothing would tell it this agent does not
+  // say - and only on the first does it hand a lease back. The bytes are the waiting fixture.
+  std::string fixture = readFile(fs::path(AHEAD_FIXTURES_DIR) / "ClaimRequestHoldingNothing.json");
+  while (!fixture.empty() && (fixture.back() == '\n' || fixture.back() == '\r')) fixture.pop_back();
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.sayMoreWaitsAfterEveryResult();
+  server.queue(trace(14440));
+  server.queue(trace(14441));
+
+  const mm::WakeReport report = loop.wake(hourly(0, 2), mm::Budget());
+
+  EXPECT_EQ(report.claimsMade, 2);
+  ASSERT_EQ(server.claimRequests().size(), 2u);
+  for (const std::string& request : server.claimRequests()) {
+    EXPECT_EQ(request, fixture) << "a wake with no transaction cap states nothing but max and what it holds";
+  }
+  ASSERT_EQ(server.claimHoldings().size(), 2u);
+  for (const std::vector<long long>& said : server.claimHoldings()) EXPECT_TRUE(said.empty());
+}
+
+TEST_F(LoopTest, TheEveningOfTheTwentyFirstOfNovemberIsAClaimLostAndOneMadeAgainAtOnce) {
+  // 19:11Z at Bellevue: the claim went out, the server leased it two jobs, and the answer came
+  // back 200 with no body. The second claim is made at once, with the same `max` and `holding`
+  // empty - this end holds nothing, because it never learned of the two - and the server hands
+  // both back with no attempt spent. The wake runs them and reports them.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.loseTheAnswerToClaims(1);
+  server.queue(std::vector<std::string>{trace(39302), trace(39312)});
+
+  const mm::WakeReport report = loop.wake(hourly(), mm::Budget());
+
+  EXPECT_EQ(report.claimsLost, 1);
+  EXPECT_EQ(report.claimsMade, 1) << "the first did not come back; the second is the claim this wake made";
+  EXPECT_EQ(server.claimCalls(), 2) << "one more, and only one";
+  EXPECT_EQ(report.claim, mm::StepOutcome::Done);
+  EXPECT_EQ(report.jobsClaimed, 2);
+  EXPECT_EQ(report.jobsRun, 2) << "the two jobs the lost answer had leased ran all the same";
+  EXPECT_EQ(report.jobsNotRun, 0);
+  EXPECT_EQ(loop.counters().claimFailures, 0u) << "a claim that came back the second time is no failure";
+  ASSERT_EQ(server.claimRequests().size(), 2u);
+  EXPECT_EQ(server.claimRequests()[0], "{\"max\":2,\"holding\":[]}");
+  EXPECT_EQ(server.claimRequests()[1], "{\"max\":2,\"holding\":[]}") << "the same max, and nothing held";
+  EXPECT_EQ(server.leasedAndLost(), 0u) << "both leases were handed back on the empty holding";
+  ASSERT_EQ(server.results().size(), 2u);
+  EXPECT_EQ(server.results()[0].jobId, 39302);
+  EXPECT_EQ(server.results()[1].jobId, 39312);
+  EXPECT_TRUE(fake::LogCapture::the().holds("asked once more"));
+}
+
+TEST_F(LoopTest, AClaimWhoseAnswerIsLostTwiceEndsTheWakesJobsAndCountsOneFailure) {
+  // One more claim, not a loop: a second answer that does not come back ends the wake's jobs
+  // exactly as a failed claim did before this task, and the pair counts **one** claimFailures.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.loseTheAnswerToClaims(2);
+  server.queue(std::vector<std::string>{trace(14450), trace(14451)});
+
+  const mm::WakeReport report = loop.wake(hourly(12, 4), mm::Budget());
+
+  EXPECT_EQ(report.claimsLost, 1);
+  EXPECT_EQ(report.claimsMade, 0);
+  EXPECT_EQ(server.claimCalls(), 2) << "two, and no third";
+  EXPECT_EQ(report.claim, mm::StepOutcome::Failed);
+  EXPECT_STREQ(report.claimsEndedBy, "") << "no claim was made, so the step's outcome is the answer";
+  EXPECT_EQ(report.jobsRun, 0);
+  EXPECT_EQ(loop.counters().claimFailures, 1u) << "once for the pair, not once each";
+  EXPECT_GT(report.sleepAtLeastS, 0u) << "a failed claim still backs off";
+}
+
+TEST_F(LoopTest, AClaimTheServerRefusedIsNotMadeAgain) {
+  // A 4xx, a 5xx and a 429 are the server having spoken: it leased nothing, it said so, and
+  // asking again in the same breath would only be refused again.
+  for (fake::FakeUplink::Fault refusal : {fake::FakeUplink::Fault::RateLimited, fake::FakeUplink::Fault::ServerError,
+                                          fake::FakeUplink::Fault::Discard}) {
+    server.answerAgain();
+    server.forgetQueued();
+    server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+    server.failClaims(refusal, 1);
+    server.queue(trace(14460));
+    const int before = server.claimCalls();
+    const uint32_t failuresBefore = loop.counters().claimFailures;
+
+    const mm::WakeReport report = loop.wake(hourly(12, 4), mm::Budget());
+
+    EXPECT_EQ(report.claimsLost, 0) << "http " << static_cast<int>(refusal);
+    EXPECT_EQ(server.claimCalls() - before, 1) << "one claim and no second";
+    EXPECT_EQ(report.claim, mm::StepOutcome::Failed);
+    EXPECT_EQ(loop.counters().claimFailures - failuresBefore, 1u);
+    EXPECT_EQ(report.jobsRun, 0);
+    EXPECT_EQ(server.leasedAndLost(), 0u) << "the server leased nothing: it refused the claim";
+    // Past whatever wait that refusal earned, so the next round is a wake that sends something.
+    platform.advance((report.sleepAtLeastS + 1) * 1000);
+  }
+}
+
+TEST_F(LoopTest, AJobHandedOverAgainWhoseResultThisEndKeepsIsNotRunAndItsKeptResultIsPosted) {
+  // The byte cap kept the result of 14420 for the next wake, so the server never had one: a
+  // server that does not read `holding` may well hand the job over again. It is **not run a
+  // second time** - nothing goes on the air for a job this end has already answered - and the
+  // result it kept is what goes back. The claim says so first: 14420 is in its `holding`.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.queue(trace(14420));
+  mm::Budget tight;
+  tight.postBytes = 1;  // no result this firmware writes is one byte long
+
+  const mm::WakeReport first = loop.wake(hourly(), tight);
+  ASSERT_EQ(first.jobsRun, 1);
+  ASSERT_EQ(first.resultsKept, 1);
+  ASSERT_TRUE(server.results().empty());
+  ASSERT_EQ(server.claimHoldings().size(), 1u);
+  EXPECT_TRUE(server.claimHoldings()[0].empty()) << "nothing was held when that claim went out";
+
+  // The next wake. The kept result's own post fails once, so it is still in the buffer when the
+  // claim goes out - and the server hands 14420 over again.
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.failResults(fake::FakeUplink::Fault::Unreachable, 1);
+  server.queue(trace(14420));
+
+  const mm::WakeReport again = loop.wake(hourly(), mm::Budget());
+
+  ASSERT_EQ(server.claimHoldings().size(), 2u);
+  ASSERT_EQ(server.claimHoldings()[1].size(), 1u);
+  EXPECT_EQ(server.claimHoldings()[1][0], 14420) << "a kept result's id is what this end holds";
+  ASSERT_EQ(server.claimRequests().size(), 2u);
+  EXPECT_EQ(server.claimRequests()[1], "{\"max\":2,\"holding\":[14420]}");
+  EXPECT_EQ(again.jobsClaimed, 1);
+  EXPECT_EQ(again.jobsHandedOverAgain, 1);
+  EXPECT_EQ(again.jobsRun, 0) << "a job handed over twice is run once";
+  EXPECT_EQ(again.jobsNotRun, 0) << "and it is not refused either: it was answered the first time";
+  EXPECT_EQ(again.transactionsSpent, 0) << "nothing went on the air";
+  EXPECT_EQ(again.jobs, mm::StepOutcome::Done);
+  ASSERT_EQ(server.results().size(), 1u) << "the kept result is what the server is handed";
+  EXPECT_EQ(server.results()[0].jobId, 14420);
+  EXPECT_EQ(jobs.queueDepth(), 0) << "and the buffer let it go once the server took it";
+  EXPECT_EQ(jobs.handedOverAgain(), 1u);
+  EXPECT_TRUE(fake::LogCapture::the().holds("was handed over again and this exit node keeps its result"));
+}
+
+TEST_F(LoopTest, AClaimWhoseAnswerWasLostIsNotMadeAgainWithNoUplinkSecondsLeft) {
+  // The second claim is a call like any other and is made only while the wake has seconds at the
+  // server for it: three of them here, which the config, the heartbeat and the first claim spend
+  // exactly. The wake ends as a failed claim ends it, and the next wake's claim says `holding`.
+  server.setCallMs(1000);
+  server.answerHeartbeat(60, 1, 3600, true, platform.clock().now());
+  server.loseTheAnswerToClaims(1);
+  server.queue(trace(14470));
+  mm::Budget budget;
+  budget.uplinkSeconds = 3;
+
+  const mm::WakeReport report = loop.wake(hourly(12, 4), budget);
+
+  EXPECT_EQ(report.claimsLost, 0) << "there were no seconds to ask again in";
+  EXPECT_EQ(server.claimCalls(), 1);
+  EXPECT_EQ(report.uplinkMs, 3000u) << "the config, the heartbeat and the one claim";
+  EXPECT_EQ(report.claim, mm::StepOutcome::Failed);
+  EXPECT_EQ(loop.counters().claimFailures, 1u);
+  EXPECT_EQ(server.leasedAndLost(), 1u) << "the lease the server holds is for the sweep, not this wake";
 }
 
 TEST_F(LoopTest, AJobTheWakeHasNoTimeForIsFailedWithWakeBudgetAndItsResultIsPosted) {
@@ -2311,11 +2766,14 @@ TEST_F(LoopTest, TheAirtimeGateStillPacesAWakeWithRoomForSixTransactions) {
 
   ASSERT_EQ(report.jobsRun, 1) << "the job did not run at all";
   EXPECT_GE(report.transactionsSpent, 2);
-  // Every gap between two sends is the budget's twenty seconds, on the fake clock.
-  const std::vector<fake::Send>& sends = mesh.sends();
-  ASSERT_GE(sends.size(), 2u);
-  for (size_t i = 1; i < sends.size(); i++) {
-    EXPECT_GE(sends[i].atMs - sends[i - 1].atMs, 20000u) << "send " << i << " came too soon after " << (i - 1);
+  // Every gap between two **transactions** is the budget's twenty seconds, on the fake clock.
+  // `gapsMs()` is where a transaction started and not where its command went out, which since
+  // task p1.21-71 are two different moments: a direct login is preceded by the way back, inside
+  // the same slot, and the login follows it by however long the mesh says the hops need.
+  const std::vector<uint32_t> gaps = mesh.gapsMs();
+  ASSERT_GE(gaps.size(), 1u);
+  for (size_t i = 0; i < gaps.size(); i++) {
+    EXPECT_GE(gaps[i], 20000u) << "transaction " << (i + 1) << " came too soon after " << i;
   }
   EXPECT_GE(platform.millis() - began, 20000u) << "a paced wake takes the time the pacing costs";
 }

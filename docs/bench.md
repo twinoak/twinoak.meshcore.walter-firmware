@@ -2847,6 +2847,36 @@ the cause of that is chased).
       must agree: that is §26's third item read from the other side, and the number that was
       three times too high before.
 
+## 28. The agent core at 0.7.7
+
+From the sync pile's task 02, the bump of the copied agent core from `v0.7.3` to **`v0.7.7`**.
+Eight of its upstream tasks, and **one** of them changes what a person can see on this unit
+without anything here asking for it: a claim whose answer does not come back whole is now made
+once more in the same wake. Everything below was tested against a scripted meshmaster.dk only -
+nothing of it has been on a board, and the one thing no simulator decides is a real answer going
+missing.
+
+- [ ] **A claim whose answer was lost, and the work still done in that wake.** On the unit in
+      service, after a night of hourly wakes: wherever `agent calls` shows a `claim` entry that
+      says *nothing answered*, the wake it names must still have run its jobs - the exit node's
+      page shows their results at that wake and not an hour later. Before this bump such a wake
+      did nothing and the jobs it had been leased sat until their leases lapsed, which is the
+      evening of 21 November 2026 at Bellevue. Two `claim` entries at the same wake number are
+      the expected shape, not a fault: the first is the lost one and the second is the one that
+      was answered.
+
+- [ ] **And nothing done twice.** Over the same night, on the exit node's page: no job with two
+      results, and no download or flash of the radio begun twice. The claim now says which
+      results this unit is still holding, and the server hands back only what it has heard
+      nothing about; a job handed back whose result the unit kept is answered with that result
+      and is not run again. A second run of the same job id is the failure this item exists for.
+
+- [ ] **Replies still come home flooded.** Nothing to do, and here so that it is not read as a
+      fault: the library can now teach a repeater the way back to the exit node, and a Walter
+      tells none - its link to the radio has no request for it. So a job's log says *this mesh
+      tells no way back* and each reply reads *route unknown*, and a trace still says nothing
+      about the way an answer will take. The Heltec's own firmware is where that gain is.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the

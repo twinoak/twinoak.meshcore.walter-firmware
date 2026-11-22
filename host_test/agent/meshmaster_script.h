@@ -124,6 +124,7 @@ class MeshMasterScript {
     next_fail_count_ = 0;
     route_status_.clear();
     silent_routes_.clear();
+    claim_answer_lost_ = 0;
   }
   // **One route**, from now on: a status for it while the rest of the API answers normally (the
   // path's suffix under `/agent/v1`, as the uplink builds it - `/heartbeat`, `/jobs/claim`).
@@ -152,6 +153,17 @@ class MeshMasterScript {
   // upstream's own `FakeUplink::loseTheAnswerToObservations`, so that a case here reads as the
   // library's own case for the same thing.
   void loseTheAnswerToObservations(int calls) { obs_answer_lost_ = calls; }
+  // **The next `count` claims are leased and their answers lost** (the library's `v0.7.6`,
+  // upstream's task p1.20-70): the jobs leave this server's queue - it has leased them to this
+  // unit - and the call ends with no answer at all, which is the evening of 21 November 2026 at
+  // Bellevue. The lease is remembered here and **handed back to the first claim that says it does
+  // not hold that job** (`holding`, meshmaster.dk's task p4.47-254), which is this server's own
+  // half of the bump and the half a unit cannot be tested against without. The knob's name is
+  // upstream's own `FakeUplink::loseTheAnswerToClaims`.
+  void loseTheAnswerToClaims(int count) { claim_answer_lost_ = count; }
+  // The jobs this server has leased out and whose answers were lost, still waiting to be handed
+  // back.
+  std::size_t leasedAndLost() const { return lost_.size(); }
   // The next `count` result posts answer `status` (a server that takes everything but results).
   void failResults(int status, int count) {
     result_fail_status_ = status;
@@ -198,6 +210,11 @@ class MeshMasterScript {
 
   std::vector<std::string> heartbeats;            // the bodies, in order
   std::vector<int> claim_maxes;                   // every claim's `max`
+  // And every claim's **body**, in order, as this server received it: `{"max":N}` with the two
+  // optional members the library's `v0.7.6` added after it - `transactionsLeft` (upstream's task
+  // p1.20-69) and `holding` (p1.20-70), which this unit's library states in every claim.
+  std::vector<std::string> claim_bodies;
+  int claims_handed_back = 0;  // jobs handed over again because a claim said it did not hold them
   std::map<long long, std::vector<PostedResult>> results;  // by job id, in order
   std::map<long long, std::vector<std::string>> extends;
   std::map<long long, std::vector<SeenExtend>> extensions;    // the same calls, read (task p14-04)
@@ -303,6 +320,24 @@ class MeshMasterScript {
   static long long idOf(const std::string& job) {
     const std::size_t at = job.find("\"id\":");
     return at == std::string::npos ? 0 : std::strtoll(job.c_str() + at + 5, nullptr, 10);
+  }
+  // The claim's `holding`, as the body carries it (the library's `v0.7.6`): the ids this unit says
+  // it keeps a result for, and `*stated` false when the member is not there at all - which says
+  // *this unit does not say* where `[]` says *nothing*, and is handed nothing back.
+  static std::vector<long long> holdingOf(const std::string& body, bool* stated) {
+    std::vector<long long> ids;
+    const std::size_t at = body.find("\"holding\":[");
+    *stated = at != std::string::npos;
+    if (!*stated) return ids;
+    for (std::size_t i = at + 11; i < body.size() && body[i] != ']';) {
+      if (body[i] < '0' || body[i] > '9') {
+        ++i;
+        continue;
+      }
+      ids.push_back(std::strtoll(body.c_str() + i, nullptr, 10));
+      while (i < body.size() && body[i] >= '0' && body[i] <= '9') ++i;
+    }
+    return ids;
   }
   // One job's `type`, as the claim's JSON carries it.
   static std::string typeOf(const std::string& job) {
@@ -424,10 +459,33 @@ class MeshMasterScript {
     if (path == "/agent/v1/jobs/claim") {
       ++claims;
       int max = 0;
-      std::sscanf(request.body.c_str(), "{\"max\":%d}", &max);
+      // `{"max":N}` and, since the library's `v0.7.6`, `transactionsLeft` and `holding` after it.
+      // `max` is first in all of them, so the one assignment reads the same number it always did.
+      std::sscanf(request.body.c_str(), "{\"max\":%d", &max);
       claim_maxes.push_back(max);
+      claim_bodies.push_back(request.body);
       std::vector<std::string> batch;
-      if (!queued_.empty()) {
+      // **What was leased to this unit and whose answer was lost, first and before anything new**
+      // (meshmaster.dk's task p4.47-254): handed back to a claim that states `holding` without
+      // that id. A claim that states no such member is handed nothing back - a unit that says
+      // nothing may be running the job.
+      bool stated = false;
+      const std::vector<long long> held = holdingOf(request.body, &stated);
+      if (stated) {
+        for (std::size_t i = 0; i < lost_.size();) {
+          if (static_cast<int>(batch.size()) >= max) break;
+          bool theirs = false;
+          for (long long id : held) theirs = theirs || id == lost_[i].first;
+          if (theirs) {
+            ++i;
+            continue;
+          }
+          batch.push_back(lost_[i].second);
+          ++claims_handed_back;
+          lost_.erase(lost_.begin() + static_cast<long>(i));
+        }
+      }
+      if (static_cast<int>(batch.size()) < max && !queued_.empty()) {
         // Only the types the last heartbeat offered, up to `max`; the rest stay queued, which is
         // the server keeping a job for a unit that cannot do it yet rather than leasing it out.
         std::vector<std::string>& front = queued_.front();
@@ -442,8 +500,21 @@ class MeshMasterScript {
           front.erase(front.begin() + static_cast<long>(i));
         }
         if (front.empty()) queued_.erase(queued_.begin());
-      } else {
+      } else if (queued_.empty() && batch.empty()) {
         ++withheld_claims;
+      }
+      // **The answer this unit never gets** (loseTheAnswerToClaims): the server has leased these
+      // jobs - the lease begins the moment it answers, and it did - and the call ends with nothing
+      // at all. They are remembered here, out of the queue, and the next claim that says it does
+      // not hold them is handed them back.
+      if (claim_answer_lost_ != 0) {
+        if (claim_answer_lost_ > 0) --claim_answer_lost_;
+        for (const std::string& job : batch) {
+          lease_until_ms[idOf(job)] = clock_.nowMs() + static_cast<std::uint64_t>(kClaimLeaseSeconds) * 1000u;
+          lost_.push_back(std::make_pair(idOf(job), job));
+        }
+        reply->no_response = true;
+        return true;
       }
       std::string response = "{\"serverTime\":\"" + iso(server_time) + "\",\"jobs\":[";
       for (std::size_t i = 0; i < batch.size(); ++i) {
@@ -562,6 +633,10 @@ class MeshMasterScript {
   // Task p15-04: how many more observation posts are stored and then left unanswered, and what
   // this server has stored.
   int obs_answer_lost_ = 0;
+  // The library's `v0.7.6`: how many more claims are leased with their answers lost, and the jobs
+  // this server has leased out that way - (id, the job's JSON) - waiting to be handed back.
+  int claim_answer_lost_ = 0;
+  std::vector<std::pair<long long, std::string>> lost_;
   std::set<std::string> seen_batches_;
   std::size_t stored_adverts_ = 0;
   // A scanner's lines (task p16-04): how many posts to leave unanswered, the room one job's lines

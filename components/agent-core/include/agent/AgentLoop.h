@@ -140,6 +140,21 @@ struct WakeIntent {
   // one's price would take the wake past it (task p4.14-121); this loop asks for no more than it
   // can run and prices every job it is given against what is left.
   int maxTransactionsThisWake = 0;
+  // How many **claims** this wake may make (task p1.20-69). A claim takes two jobs at most
+  // (kClaimMax) because two is the room this firmware has at a time, so a wake that is one claim
+  // does two jobs an hour at best whatever is queued - which on 21 November 2026 spread a
+  // NoiseScope sample over five wakes. A wake that has finished what it was handed therefore asks
+  // again, while the server says there is more and it has the time, the transactions and the
+  // claims for it.
+  //
+  // **0 and 1 are both one claim**, which is what every wake made before this: a caller that says
+  // nothing gets exactly the calls and the bytes it got. A larger number is the most claims this
+  // wake will make.
+  //
+  // It is **not sent to the server**, unlike the two fields above: it is this end's own bound,
+  // set by the board that knows its battery, and the server is told what the wake has left in
+  // transactions (the claim's `transactionsLeft`) and nothing about how many times it may ask.
+  int maxClaimsThisWake = 0;
 };
 
 // What one wake may spend. Everything here is a bound and 0 is "no bound", so a Budget nobody
@@ -217,9 +232,27 @@ struct WakeReport {
   // and silent, and a kept result is the buffer's answer to that (EXIT-NODES §5, *offline is
   // normal*).
   int resultsKept = 0;
+  // The claim step, over the **whole** wake: how many claims were made and how many jobs they
+  // handed over together (task p1.20-69). One claim is what a wake made before that task and is
+  // what a caller that proposes no `maxClaimsThisWake` still makes.
+  int claimsMade = 0;
+  // Why the wake stopped claiming, in a word or two, a static string - the one thing a caller
+  // cannot work out from the numbers. "" when no claim was made at all, and then the `claim`
+  // outcome above says why instead.
+  const char* claimsEndedBy = "";
+  // Claims whose answer did not come back whole and which were therefore **asked once more** in
+  // this wake (task p1.20-70): the server had leased their jobs and this end never heard. One of
+  // these is not a failure - the second claim is the one that counts - and `claimFailures` rises
+  // only when that one fails too.
+  int claimsLost = 0;
   int jobsClaimed = 0;
   int jobsRun = 0;
   int jobsNotRun = 0;          // claimed, never on the air: reported `failed`, *wake budget*
+  // Jobs the server handed over again while this end kept a result for them (task p1.20-70):
+  // **not run a second time**, their kept result posted instead. Neither run nor not-run: the job
+  // was answered the first time it was handed over. 0 against a server that reads the claim's
+  // `holding`, which is every server from meshmaster.dk's task p4.47-254 on.
+  int jobsHandedOverAgain = 0;
   int batchesPosted = 0;
   int observationsPosted = 0;
   int observationsLeft = 0;    // still in the ring when the wake ended
@@ -409,6 +442,9 @@ class AgentLoop {
   //   the claim      when the heartbeat said work waits: `max` sized from what the cap can hold
   //   the jobs       each priced before it goes on the air; one this wake has no room for is
   //                  reported `failed` with *wake budget* and **never left leased and silent**
+  //                  - and when the jobs of a claim are done and the answer to the last result
+  //                  said more waits, the claim and the jobs run **again**, as many times as
+  //                  `intent.maxClaimsThisWake` allows (task p1.20-69)
   //   the batches    the ring drained oldest first, as many batches as the byte cap allows
   //
   // A failure does not spin here: a BackOff is a wait the report carries back as
@@ -553,7 +589,12 @@ class AgentLoop {
   void wakeConfig(WakeReport& report);
   void wakeHeartbeat(WakeReport& report);
   void wakeResults(WakeReport& report);
+  // The claim step: one claim and its jobs, and then again while the server says more waits and
+  // the wake has the room for it (task p1.20-69).
   void wakeJobs(WakeReport& report);
+  // The jobs of one claim, each priced before it goes on the air. `count` is what that claim
+  // handed over.
+  void wakeRunClaimed(WakeReport& report, int count);
   void wakeObservations(WakeReport& report);
   // The end of a wake: the kept results and the waiting adverts into the store as one image, if
   // there is a store and the image would differ from what it holds (task p1.6-22).

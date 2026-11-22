@@ -26,6 +26,16 @@ ServerAction actionFor(bool reachable, int httpStatus, uint32_t retryAfterS) {
   return ServerAction::BackOff;
 }
 
+bool answerWasLost(bool reachable, int httpStatus) {
+  // No reply arrived at all - DNS, TCP, the TLS handshake, a timeout, or a connection that closed
+  // before the body was complete - and `httpStatus` is 0 and says nothing.
+  if (!reachable) return true;
+  // A 2xx that reached a caller asking this question is a 2xx whose body that caller could not
+  // read: a 200 with no body, a 204 where a document was due, a body that is not the document it
+  // should be. The server took the request and acted on it; this end does not know what it did.
+  return httpStatus >= 200 && httpStatus < 300;
+}
+
 bool saysWhenToComeBack(int httpStatus) {
   // 503 is what a deploy of meshmaster.dk answers while the new build starts, 502 and 504 what a
   // reverse proxy in front of it answers for the same seconds. All three carry Retry-After when
