@@ -37,3 +37,4 @@ order.
 | # | Task | Tag | Why it needed a session |
 |---|---|---|---|
 | 01 | [agent-core-v0-7-3](01-agent-core-v0-7-3.md) | v0.7.3 | CI red on pull request #87 |
+| 02 | [agent-core-v0-7-7](02-agent-core-v0-7-7.md) | v0.7.7 | CI red on pull request #92 |
