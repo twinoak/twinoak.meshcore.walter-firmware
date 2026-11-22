@@ -81,8 +81,16 @@ if ($newPin -notmatch '^[0-9a-f]{40}$') { throw "$Tag is not a tag of $Upstream"
 if ($newPin -eq $oldPin) { throw "$Tag is the commit this repository is already pinned at ($oldPin) - there is nothing to sync" }
 
 # The next number: the driver reads two digits, so 01..99.
-$used = @(Get-ChildItem $syncDir -Filter '[0-9][0-9]-*.md' -File -ErrorAction SilentlyContinue |
-    ForEach-Object { [int]$_.Name.Substring(0, 2) })
+#
+# **A regular expression and not `-Filter`.** `-Filter` is the file-system provider's own wildcard
+# syntax - `*` and `?` and nothing else - so `[0-9][0-9]-*.md` matched the two literal brackets and
+# found nothing: every task this script wrote was number 01, and the second one landed on top of
+# the first's name in the table while the first's report was already on `main` (the sync pile's
+# task 02 was written as a second 01 and the driver skipped it).
+$used = @()
+foreach ($one in Get-ChildItem $syncDir -File -Filter '*.md' -ErrorAction SilentlyContinue) {
+    if ($one.Name -match '^(\d\d)-') { $used += [int]$Matches[1] }
+}
 $n = if ($used.Count -gt 0) { ($used | Measure-Object -Maximum).Maximum + 1 } else { 1 }
 if ($n -gt 99) { throw 'ninety-nine sync tasks is enough' }
 $nn = '{0:d2}' -f $n
@@ -113,7 +121,12 @@ $text = $text.Replace('{{LOG}}', $logText)
 if ($text -match '\{\{([A-Z_]+)\}\}') { throw "$template has a placeholder this script does not fill: {{$($Matches[1])}}" }
 [IO.File]::WriteAllText($file, $text, (New-Object Text.UTF8Encoding($false)))
 
-# The row the driver's table needs, inserted under the header of README.md's table.
+# The row the driver's table needs, **after the last row** of README.md's table.
+#
+# Not under the header: `tasks\run-all.ps1` runs from the first row's number to the last's, so a
+# table whose newest task is its first row runs from 02 to 01 - which is no tasks at all, and is
+# how the sync pile's task 02 came to be skipped. The rows are in the order the tasks are numbered,
+# oldest first, as every other pile's table is.
 # ReadAllText, not Get-Content: PowerShell 5.1 reads a UTF-8 file without a BOM as the ANSI
 # codepage, and this README is full of em dashes that would come back as mojibake.
 $lines = New-Object Collections.Generic.List[string]
@@ -122,7 +135,9 @@ $row = "| $nn | [$slug]($nn-$slug.md) | $Tag | $(if ($Pr -gt 0) { "CI red on pul
 $header = -1
 for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\|---\|') { $header = $i; break } }
 if ($header -lt 0) { throw "no task table in $readme" }
-$lines.Insert($header + 1, $row)
+$last = $header
+while ($last + 1 -lt $lines.Count -and $lines[$last + 1].StartsWith('|')) { $last++ }
+$lines.Insert($last + 1, $row)
 # The "Empty: ..." paragraph under the table stops being true the moment the first row goes in,
 # so it goes: the line and the rest of its paragraph, up to the next blank line.
 for ($i = 0; $i -lt $lines.Count; $i++) {
