@@ -14,11 +14,15 @@ session ended `stuck` although the repeater was back.
   that never knew (the same follow-ups, *A claim whose answer was lost*).
 - **Nine of the sixteen lines** of its one `hist` step never reached the server: the port was
   not read while a call to the server was out, and its ring is 1 024 bytes.
+- **A reset pulse restarted nothing.** The supervisor wrote *cured by rung 2, a reset pulse*;
+  the radio's own uptime and reset reason have no restart to match
+  (`FOLLOWUPS.md`, *A reset pulse that restarted nothing*). Task 01 starts every flashed image
+  by that line.
 
 **What Thomas asked for.** That the Walter takes jobs until none are left or the battery says
 sleep; and that an offer and its apply can be one visit.
 
-**What this pile builds.** 01 and 03 are this repository's own and can run now. 02 turns on what the
+**What this pile builds.** 01, 03 and 04 are this repository's own. 02 turns on what the
 library brings, and waits for it: the exit-node firmware's pile 1.20 (a wake claims again; a
 lost claim is asked again), its release, this repository's `upstream` workflow and the sync
 task that follows. meshmaster.dk's half is its pile 4.47.
@@ -29,6 +33,12 @@ task that follows. meshmaster.dk's half is its pile 4.47.
   stays strict.
 - **8, 4 and 1 claims** for `plenty`, `normal` and `saving`: placeholders, like the bands'
   transaction caps, until the bench has measured what a claim costs.
+- **In 04, 01 is kept and given a way out**, not taken back: the pulse where it can work, the
+  debug port where it cannot or did not, decided by what the chip says (UICR, then the core's
+  state) and not by a timer alone.
+- **In 04, the proof waits for a scanner's watchdog** when the debug port started the image;
+  it does not forgive a restart.
+- **UICR is read and never written.** Enabling the pin reset on a module is his decision.
 
 **Not on the board.** No session opens a port. No release: Thomas presses the button.
 
@@ -39,6 +49,7 @@ task that follows. meshmaster.dk's half is its pile 4.47.
 | 01 | [the-watchdog-ends-with-the-scanner](01-the-watchdog-ends-with-the-scanner.md) | — | the image a flash wrote is started by the reset line, so no watchdog a scanner started outlives it; the simulated chip has that watchdog; a session that measured ends `restored` |
 | 02 | [the-battery-says-how-many-claims](02-the-battery-says-how-many-claims.md) | the sync of agent-core with p1.20-69 and p1.20-70 | claims a wake by band; the bound covers each; an offer and its apply, or two reports and a session, in one wake; the wake says why its last claim was the last |
 | 03 | [a-step-is-listened-to](03-a-step-is-listened-to.md) | — | no call to the server between a step's command and its end; the port's ring sized by the baud rate; bytes lost at the port counted and said; the simulated port has the ring |
+| 04 | [an-image-is-started-either-way](04-an-image-is-started-either-way.md) | 01 | what UICR says of the reset pin, read at every flash; no pulse where it cannot work; a pulse that did not work found by the core's state and the image started through the debug port; the proof begun after a scanner's watchdog; the unit says what its reset line does; the supervisor's second rung says whether anything restarted |
 
 ```powershell
 .\tasks\run-all.ps1 -Phase '18' -To 01
@@ -48,19 +59,24 @@ task that follows. meshmaster.dk's half is its pile 4.47.
 and, when the sync has merged:
 
 ```powershell
-.\tasks\run-all.ps1 -Phase '18' -From 02 -To 02
+.\tasks\run-all.ps1 -Phase '18' -From 02
 ```
+
+That runs 02, passes 03, which has landed, and runs 04. 04 waits for nothing but 01:
+`-From 04` runs it alone.
 
 **Not the whole pile before the sync.** 02 stops when the library has not arrived and writes no
 report, the driver stops there, and 03 behind it does not start.
 
 ## Models
 
-- **Opus**: 01, 02, 03.
+- **Opus**: 01, 02, 03, 04.
 
 ## Afterwards (Thomas)
 
-- **After 01 and 03:** release, offer and apply to the unit, then a session. It should end
+- **No release before 04.** With 01 alone a unit whose reset line does not reach its radio
+  cannot finish a flash.
+- **After 01, 03 and 04:** release, offer and apply to the unit, then a session. It should end
   *restored*, about twenty minutes after it began, with one outage and not two. A `hist` step
   typed by hand should leave every line it sent (what is in them is the repeater firmware's
   pile 3.15).

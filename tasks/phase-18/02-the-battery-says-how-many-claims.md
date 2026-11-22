@@ -15,6 +15,24 @@ After this task the band of the battery says how many claims a wake may make, th
 wake covers each of them as it covers the first, and a wake says in its own words how many it
 made and why the last one was the last.
 
+## What was read before the run (the reviewer, 22 November)
+
+- **The server hands back more than the sync's report says.** meshmaster.dk's task 254 as it
+  was built (`src/MeshMaster.Core/Transport/HandedBack.cs`, `Lost`): on a claim that carries
+  `holding`, **every** job leased to this exit node whose lease is still running, that has no
+  result, and whose id the claim did not name is handed over again, first, its attempt
+  unspent. The server keeps no record of an answer that did not arrive. The sync's report
+  (`tasks/sync/reports/02.md`, *`holding` in every claim*) says *only a lease whose answer it
+  never managed to deliver*, and so *nothing on this claim* for the three kinds of work this
+  firmware keeps outside the library's buffer: a job the result gate left to its lease, a
+  session the bound cut, an apply whose result waits for the next boot.
+- **With one claim a wake that mostly holds**, because those leases have run out by the next
+  wake. **With several it does not.** A fetch left to its lease for want of budget is handed
+  back by the very next claim of the same wake, and by the one after. And a wake a person asks
+  for inside a session's or an apply's lease, whose owed result did not get through, is handed
+  that job again. Deliverable 11 is the answer to both, and it is this task's because this
+  task is what makes a wake claim more than once.
+
 ## Deliverables
 
 1. **The number, band by band**, beside the transaction caps in `identity.h` and with their
@@ -52,15 +70,35 @@ made and why the last one was the last.
    one wake; the journal's line. Not run by this session.
 10. **The words.** `docs/cycle.md` where it walks through a wake; `docs/console.md`; a line in
     `release-notes/unreleased/`.
+11. **What this firmware holds is named in the claim.** The library fills `holding` from its
+    own buffer of results. Where the claim is written (`ModemUplink::claimJobs`, or where the
+    report argues is better) the ids this firmware holds are added to it, none twice, the
+    request's room sized for them:
+    - a job the result gate left to its lease, for the rest of the wake that left it, and
+      after a sleep for as long as this firmware still means to continue it;
+    - a session or an apply the journal has in progress, or whose result is owed and has not
+      been taken by the server.
+
+    A job named so is not handed back: its lease runs out and the server's own rules take it
+    from there, as before this pile. **And a wake that left a job to its lease for want of
+    budget claims no more**: the reason is *no room*. Tests, with the scripted server doing
+    the server's rule (every running lease without a result that the claim did not name comes
+    back first): a fetch that ran out of budget in a wake of several claims is not handed back
+    in that wake and the wake ends its claims there; a wake asked for five minutes after a
+    session the bound cut, with the owed result's post unanswered, is not handed the session
+    and **no flash begins**; the same for an apply's owed result; and a claim whose answer was
+    lost is still handed everything back, because nothing of it is named.
 
 ## Acceptance criteria
 
-- [ ] Without the library's member the session stopped and merged its report alone; with it, everything below.
+- [ ] Without the library's member the session stopped and wrote nothing; with it, everything below.
 - [ ] `plenty` makes up to 8 claims, `normal` 4, `saving` and below 1; the `static_assert` holds the order (tests' names).
 - [ ] A wake of several claims never meets the bound's reset, and a claim the bound cannot cover is not made (tests' names).
 - [ ] Two reports and a session queued are run in one wake, the session alone in its claim (test's name).
 - [ ] An offer answered `jobsWaiting` is followed by its apply in the same wake (test's name).
 - [ ] The report and the journal name the reason the last claim was the last, for each of the seven (tests' names).
+- [ ] A job this firmware holds outside the library's buffer is named in `holding` and is not handed back; a wake that left a job for want of budget makes no further claim (tests' names).
+- [ ] No session and no apply is begun a second time when its owed result's post went unanswered and the next claim came inside its lease (tests' names).
 - [ ] Rails R22, R23 and R24 green.
 - [ ] `tools\verify.ps1` green. CI green.
 
