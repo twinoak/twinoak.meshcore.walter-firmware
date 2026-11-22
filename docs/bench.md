@@ -645,7 +645,7 @@ radio, and the simulator can only show the documents were followed, not that the
   page 1/2`, `2/2`), the write (`erasing, writing and verifying the pages: page 1/2`, `writing
   and verifying the first page: page 2/2`), the read-back, then `rak flash-test: done in <ms> ms: 2
   pages (0 skipped, 2 written in place, 0 erased, 0 retries), 2 erases, 2048 words written, <n>
-  read`, `the radio was reset through the debug port; the next reset pulse waits out the spacing`,
+  read`, `the radio was started by a pulse on the reset line; the next reset pulse waits out the spacing`,
   `pins released`. **Write the time down** — it is the first measurement of a page write and an
   erase through the real wire. The RAK restarts (its USB console shows a boot) into the firmware it
   had; `rak hello` answers with the same version; `get name` is unchanged. If the command says
@@ -1004,6 +1004,44 @@ repeater boots inside the window, takes the clock, and stays up for the period.
   opened on this unit*, or that the last one is closed. Each wake's step 4 is skipped with *the
   scanner is running: it answers no frame*, and each wake still reaches sleep. Then
   `rak role repeater` puts it back by hand, as it always did.
+- [ ] **A session on a desk radio ends *restored*, where 21 November's ended `stuck`** (task
+  p18-01). Needs exactly what the first session item above needs, and the release that carries
+  this task. The whole point is the four journal lines the first session on a unit left - and the
+  fourth of them:
+
+  ```
+  22:30:38  flashing-golden: the golden image is going back
+  22:39:52  booting: the radio was reset: waiting for it to answer
+  22:39:54  proving: the golden image's health check
+  22:40:53  stuck: the radio restarted inside the proving period      <- was
+            restored: the golden image is back and proved             <- must be
+  ```
+
+  So: `rak session 30 sweep` as above, and then `journal` (or the console's own lines). Expected:
+  the same four stages with **`restored`** last, about **three minutes** between `proving` and it -
+  not the 59 s the watchdog allowed - and no second outage at the next wake. **What it means if it
+  is not:** a `stuck` with *the radio restarted inside the proving period* about a minute into the
+  proof is a watchdog still running, which means the pulse did not reach the chip - go to the next
+  item, and to §2's `rak reset` item, before anything else.
+- [ ] **`rak status` after a flash: the reset reason the pulse leaves** (task p18-01). Right after
+  any flash - the item above, `rak flash-test confirm`, or an update - type `rak status` and read
+  the first line:
+
+  ```
+  radio status: uptime <n> s, booted: 2 (reset pin)
+  ```
+
+  Expected `2 (reset pin)`, where the old exit left `4 (software)` or - as the unit's own report
+  did on 21 November - something else again. The repeater's reading is the one to trust: it said
+  `3 (watchdog)` after the watchdog's own reset, so it does read `RESETREAS` and is not reading a
+  register the bootloader has cleared. **Write down what it says**: it is the one reading that says
+  the reset line, and not the debug port, started the image. **What it means if it is not:**
+  `4 (software)` means something still leaves by `SYSRESETREQ`; `1 (power-on)` on a radio that did
+  come back means the bootloader cleared `RESETREAS` before the application read it, which is what
+  the scanner's own `reset: por` hinted at (`tasks/phase-17/FOLLOWUPS.md`) - then this reading
+  cannot tell the two resets apart, and the item above (a session that ends *restored*) is the one
+  that can. `RESETREAS` is cumulative and nothing here clears it, so read it after the flash and
+  before anything else power-cycles the radio.
 - [ ] **`rak update --first-install` on a module whose application was wiped** (after §5's
   power-cut item, or `rak flash-test confirm`'s region). `rak update` is refused (*there is no
   golden image to return to*); with `--first-install` the candidate is flashed, proved and becomes
