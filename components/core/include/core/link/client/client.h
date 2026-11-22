@@ -272,6 +272,13 @@ struct Counters {
   std::uint32_t text_not_ok = 0;       // of those, answered by an `ack` whose `ok` was false
   std::uint32_t text_unanswered = 0;   // of those, answered by no `ack` at all
   std::uint32_t text_full = 0;         // lendings ended because a line did not fit the room
+  // **Times the port lost what had arrived** (task p18-03): its receive ring was full, or the
+  // hardware's FIFO ran over, and whatever was behind is gone. It stands beside the two above
+  // because the three are the three ways a line of §9 does not reach whoever wanted it - too long
+  // for `kTextLineMax`, no room in the ring of kept lines, or never read off the port at all - and
+  // the last of them is the only one that loses a line **whole and silently**. Mirrored off the
+  // port at every poll, so it is the driver's own count and not one kept here.
+  std::uint32_t port_losses = 0;
   std::uint32_t long_versions = 0;    // HELLO strings longer than the session keeps, truncated
   std::uint32_t restarts = 0;        // restarts of the radio noticed
   std::uint32_t time_sets = 0;       // TIME_SETs the client sent of its own accord

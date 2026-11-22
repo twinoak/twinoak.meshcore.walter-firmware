@@ -48,6 +48,19 @@ class ByteStream {
   // Whether nothing has arrived and nothing has been written for at least this long - §2's idle
   // line. A stream just opened answers true: nothing has happened on it yet.
   virtual bool idleFor(std::uint32_t ms) = 0;
+
+  // **How many times this port lost what had arrived** (task p18-03): its receive ring was full,
+  // or the hardware's own FIFO ran over, and the bytes behind are gone. Cumulative and saturating.
+  //
+  // A count of the **moments** and not of the bytes, because neither end can say how many bytes
+  // went: ESP-IDF's `uart_event_t` carries a size for `UART_DATA` and none for `UART_BUFFER_FULL`
+  // or `UART_FIFO_OVF` (its `driver/uart.h`), and the hardware counts nothing. What the unit at
+  // Bellevue was missing on 21 November was not a number - it was any word at all that something
+  // had been lost, so the moment is what is counted and said.
+  //
+  // Not pure: a stream that cannot lose a byte - a mux that forwards, a build with no radio -
+  // says nought, and the three that can override it.
+  virtual std::uint32_t losses() const { return 0; }
 };
 
 }  // namespace interfaces

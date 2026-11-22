@@ -343,6 +343,9 @@ bool Client::pump(bool expecting, std::uint8_t wire_type, std::uint8_t seq) {
       break;  // the rest of what the port holds is read by the next pump
     }
   }
+  // **What the port lost while nobody was reading it** (task p18-03), mirrored off the driver at
+  // every pump: the count is the driver's own and cumulative, so it is taken and not added to.
+  counters_.port_losses = port_.losses();
   return found;
 }
 

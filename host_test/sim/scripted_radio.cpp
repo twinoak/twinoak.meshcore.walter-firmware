@@ -646,8 +646,37 @@ void ScriptedRadio::queue(const std::vector<std::uint8_t>& bytes, std::uint32_t 
 void ScriptedRadio::ripen() {
   const std::uint64_t now = clock_.nowMs();
   while (!pending_.empty() && pending_.front().due_ms <= now) {
-    const Pending& entry = pending_.front();
-    readable_.insert(readable_.end(), entry.bytes.begin(), entry.bytes.end());
+    Pending& entry = pending_.front();
+    // **How much of it the wire has carried** (task p18-03). A line of 7 600 bytes is 660 ms at
+    // 115 200 baud and not an instant, and a ring only means something against a wire that takes
+    // time: without this the longest line a scanner can send would arrive whole in one moment and
+    // a ring of any size would lose the end of it, which is not what a port does.
+    std::size_t carried = entry.bytes.size();
+    if (wire_rate) {
+      const std::uint64_t since = now - entry.due_ms;
+      const std::uint64_t bytes =
+          static_cast<std::uint64_t>(core::link::client::kBytesPerSecond) * since / 1000u;
+      // One byte at the moment it falls due, so that a frame does not wait a millisecond to begin.
+      carried = bytes + 1 < entry.bytes.size() ? static_cast<std::size_t>(bytes + 1)
+                                               : entry.bytes.size();
+    }
+    if (carried <= entry.at) break;  // nothing more of this one is on the wire yet
+    // **The ring, as the Walter's is**: what fits goes in, what does not is gone and the moment is
+    // counted once - the ESP32's driver counts a `UART_BUFFER_FULL` the same way, once for the
+    // stash it could not push and not once a byte.
+    std::size_t take = carried - entry.at;
+    if (wire_rate && rx_ring != 0) {
+      const std::size_t room = readable_.size() < rx_ring ? rx_ring - readable_.size() : 0;
+      if (take > room) {
+        lost_bytes += take - room;
+        ++losses_;
+        take = room;
+      }
+    }
+    readable_.insert(readable_.end(), entry.bytes.begin() + static_cast<long>(entry.at),
+                     entry.bytes.begin() + static_cast<long>(entry.at + take));
+    entry.at = carried;
+    if (entry.at < entry.bytes.size()) break;  // the rest of it is still coming
     pending_.pop_front();
   }
 }

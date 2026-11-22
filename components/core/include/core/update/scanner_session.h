@@ -117,7 +117,15 @@ constexpr std::uint32_t kSessionBoundMs = kWholeRunMs + kSessionCeilingMs;
 // How often the port is read while a step's lines are coming in. A tenth of a second, as the
 // update machine's own idle step is: a `scope` frame a second and a `sweep` line every few
 // seconds are nowhere near it, and a tighter loop would only spin.
+//
+// **It is also what sizes the driver's receive ring** (task p18-03): the ring holds what the line
+// carries while the reader is away, and this is most of that absence. The two numbers live apart
+// because the ring belongs to the port, so they are held equal here - raise this and the
+// arithmetic in `core/link/client/port.h` is raised with it, or the build stops.
 constexpr std::uint32_t kListenIdleMs = 100;
+static_assert(kListenIdleMs == link::client::kReaderIdleMs,
+              "the loop's listening idle is what the receive ring is sized for: "
+              "core/link/client/port.h's kReaderIdleMs says it too");
 
 // The most journal entries one session may write, for `protect()`: the twelve of a good run
 // (check, flashing-scanner, scanner, six steps, room, flashing-golden, booting, proving, restored)
@@ -239,6 +247,11 @@ struct StepReport {
   std::size_t used = 0;         // bytes, the line endings included
   std::size_t count = 0;        // whole lines
   bool first = false;           // the greeting's `ack`s and its `info` line are in this one
+  // **Times the port lost what had arrived while this step was running** (task p18-03), from the
+  // link client's own count: the ring was full, or the hardware's FIFO ran over, and whatever was
+  // behind it is gone. A count of the moments and not of the bytes (interfaces::ByteStream), and
+  // nought is a step nothing was lost in - which is what every step of a session ought to be.
+  std::uint32_t losses = 0;
 };
 
 // Whoever runs the session. The next step begins when this returns, and the ceiling is read again
@@ -353,6 +366,13 @@ struct SessionStep {
   // and nothing will be until something else mends the flash. A caller's loop stops here rather
   // than spinning, exactly as the radio's update machine's `kJournal` reason makes it.
   bool stalled = false;
+  // **A step's command is said and the step has not ended** (task p18-03). The one thing a caller
+  // that talks to a server needs of this answer: while it is true the port is the only thing
+  // being listened to, so nothing of the caller's may go out - not a progress post, not a lease,
+  // not a line. It is false on the answer that *enters* `kStep`, which is the moment the caller
+  // has to say *step N* and see to its lease in, and false again from the answer that ends the
+  // step (whose lines the caller is handed inside the call).
+  bool listening = false;
   const char* note = "";  // one phrase for a person, static text
 };
 
@@ -377,9 +397,11 @@ bool readMark(const Journal& journal, Mark* out);
 //    0  stage      u8   a Stage: the journal's own word for it
 //    1  step       u8   1..6 on a step's entry, 0 otherwise
 //    2  slot       u8
-//    3  flags      u8   bit 0: this entry was written by resume(); bits 4..6: the step's StepEnd
+//    3  flags      u8   bit 0: this entry was written by resume(); bit 1: this is a step's end and
+//                       it lost bytes at the port (task p18-03); bits 4..6: the step's StepEnd
 //    4  at_epoch   u32  when the session was opened, 0 when this board had no time of day
-//    8  body            the step's command (1..40 bytes, no terminator: `size` says), or the
+//    8  body            the step's command (1..40 bytes, no terminator: `size` says), the two
+//                       bytes of a lost step's count (bit 1 of `flags`, task p18-03), or the
 //                       `room` entry's six figures (24 bytes, little-endian u32)
 //
 // The body is one or the other and never both: a step's entry carries no figures and the `room`
@@ -389,6 +411,18 @@ bool readMark(const Journal& journal, Mark* out);
 // written before that task has a body of 20 bytes and is read with that figure nought, which is
 // what the line it prints means anyway: the room was the internal heap's.
 constexpr std::uint8_t kSessionFlagResumed = 0x01;
+// **A step's end that lost bytes** (task p18-03): bit 1 says this entry is the one written when a
+// step ended having lost something at the port, bits 4..6 are its `StepEnd`, and the body is the
+// count of the losses and nothing else (little-endian u16, saturating). **No command**: a slot's
+// 48 bytes are eight of header and forty of command exactly, and the command is in the entry that
+// opened the step anyway - this entry's own `step` says which one it was. It is the one entry of a
+// session that says a measurement is incomplete, and the result's journal carries it to the
+// server. A step that lost nothing writes no such entry, so an ordinary session's journal is
+// exactly what it was.
+constexpr std::uint8_t kSessionFlagLost = 0x02;
+constexpr std::size_t kSessionLostBytes = 2;
+constexpr std::uint8_t kSessionEndShift = 4;
+constexpr std::uint8_t kSessionEndMask = 0x70;
 constexpr std::size_t kSessionHeaderBytes = 8;
 constexpr std::size_t kRoomFigureBytes = 24;
 constexpr std::size_t kRoomFigureBytesBefore05 = 20;
@@ -401,6 +435,9 @@ struct SessionPayload {
   std::uint32_t at_epoch = 0;
   char command[kCommandMax + 1] = {};
   RoomFigures room;
+  // Task p18-03's two, written and read only on an entry whose `flags` has kSessionFlagLost.
+  StepEnd end = StepEnd::kNone;
+  std::uint16_t losses = 0;
 };
 
 std::size_t encode(const SessionPayload& payload, std::uint8_t out[kPayloadMax]);
@@ -447,6 +484,13 @@ class ScannerSession {
   // a journal line a turn.
   bool active() const { return isOpen(stage_) && !stuck_; }
   Stage stage() const { return stage_; }
+  // The same as the last answer's `listening`, for a caller that needs it between two step()s.
+  bool listening() const { return stage_ == Stage::kStep && said_ && !step_over_; }
+  // **The seconds of the step whose command has not been said yet**, and nought when the machine
+  // is not about to say one (task p18-03). A caller whose lease has to cover a step asks for this
+  // before it calls step() again: the entry is journalled, the caller's own line has gone, and the
+  // command is the next thing that happens.
+  std::uint32_t stepPending() const;
   Refusal refusal() const { return status_.refusal; }
   const SessionStatus& status() const { return status_; }
   // After a terminal stage the machine stays there until a caller clears it, so that `rak session`
@@ -454,9 +498,14 @@ class ScannerSession {
   void clear();
 
  private:
-  bool journal(Stage stage, const char* command = nullptr);
+  // `lost` writes task p18-03's entry: the step's end and the count of its losses go with the
+  // command, and the entry is the one thing in the journal that says a measurement is incomplete.
+  bool journal(Stage stage, const char* command = nullptr, bool lost = false,
+               StepEnd end = StepEnd::kNone, std::uint32_t losses = 0);
   SessionStep enter(Stage next, const char* note, const char* command = nullptr);
   SessionStep waiting(const char* note);
+  // One step, before `listening` is put on the answer: step() is the wrapper.
+  SessionStep stepOnce();
 
   // The check's own pieces, each answering its refusal.
   Refusal check(board::Slot slot);
@@ -465,6 +514,7 @@ class ScannerSession {
   void readFiguresAfter();
 
   SessionStep stepScanner();   // the greeting, and the first step begun
+  SessionStep sayStep();       // the command of the step whose entry is already journalled
   SessionStep stepRunning();   // one slice of the step in hand
   SessionStep stepBack();      // the switch back, mirrored out of the update machine
   SessionStep beginStep();     // the next step, or the room line and the switch back
@@ -510,6 +560,15 @@ class ScannerSession {
   // next one. The stage stays `step` between the two, because that is what the journal says and
   // what a reset has to be read as.
   bool step_over_ = false;
+  // **The command of the step in hand has been said** (task p18-03). A step is entered - its
+  // journal entry written, the stage `kStep` - by one call and its command is said by the *next*,
+  // so that whoever drives the machine has the moment between the two to tell a server what is
+  // about to happen and to see to its lease. Nothing is said to the scanner in that moment and
+  // the step's seconds have not begun.
+  bool said_ = false;
+  // What the client's loss count stood at when the command was said, so that what a step lost is
+  // the difference and not the life's total.
+  std::uint32_t losses_at_say_ = 0;
   bool stuck_ = false;               // this run entered `stuck`: there is nothing left to try
 };
 

@@ -629,12 +629,17 @@ TEST_CASE("rak events prints what the radio sent, decoded") {
 
 TEST_CASE("rak text prints a scanner's lines, and says so when there are none") {
   Rig rig;
-  CHECK(contains(rig.run("rak text"), "no scanner lines (0 seen, 0 dropped; the link is unknown"));
+  // The third count is task p18-03's: what the port lost, which is the one way a line goes
+  // missing that leaves no trace anywhere else.
+  CHECK(contains(rig.run("rak text"),
+                 "no scanner lines (0 seen, 0 dropped, the port lost bytes 0 time(s); the link is "
+                 "unknown"));
   rig.rak.scanner = true;
   CHECK(contains(rig.run("rak hello"), "the radio is running the scanner: scanner (text)"));
   rig.rak.sendLine("{\"t\":\"stat\",\"up\":12}");
   const std::string text = rig.run("rak text");
   CHECK(contains(text, "kept of "));
+  CHECK(contains(text, "the port lost bytes 0 time(s)"));
   CHECK(contains(text, "{\"t\":\"stat\",\"up\":12}\n"));
   // §9: a frame is never sent in a text session - every rak command says so instead.
   CHECK(rig.run("rak ping") ==

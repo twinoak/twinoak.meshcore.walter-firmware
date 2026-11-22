@@ -27,15 +27,22 @@ class RadioUart final : public interfaces::ByteStream {
   std::size_t write(const std::uint8_t* data, std::size_t size) override;
   bool flush(std::uint32_t timeout_ms) override;
   bool idleFor(std::uint32_t ms) override;
+  std::uint32_t losses() const override { return losses_; }
 
   bool installed() const { return installed_; }
 
  private:
-  void touch();  // something happened on the line, now
+  void touch();         // something happened on the line, now
+  void drainEvents();   // the driver's event queue, counted and thrown away (task p18-03)
 
   bool installed_ = false;
   bool open_ = false;
   std::uint64_t last_activity_ms_ = 0;
+  // The driver's event queue, which is where a ring that filled and a FIFO that ran over are
+  // said. A `QueueHandle_t`, held as void* so that this header needs no FreeRTOS include - core/
+  // sees this class through interfaces::ByteStream and nothing else.
+  void* events_ = nullptr;
+  std::uint32_t losses_ = 0;
 };
 
 }  // namespace platform

@@ -4,9 +4,11 @@
 #include "esp_rom_gpio.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "soc/gpio_sig_map.h"
 
 #include "core/board/pin_map.h"
+#include "core/link/client/port.h"
 
 namespace platform {
 
@@ -15,12 +17,30 @@ namespace {
 // UART0 is the ESP32-S3's own console (which this board does not use - the console is on USB
 // Serial/JTAG, sdkconfig.defaults) and UART1 is free. 115200 8N1, no flow control: §1's table.
 constexpr uart_port_t kPort = UART_NUM_1;
-constexpr int kBaud = 115200;
+constexpr int kBaud = static_cast<int>(core::link::client::kBaud);
 
-// The receive buffer. ESP-IDF's driver insists on at least 128 bytes; a frame of this link is at
-// most 246 (§2), and 1 KB is eight of them - enough that a task away for a tick loses nothing,
-// small enough to be invisible in 512 KB of RAM.
-constexpr int kRxBuffer = 1024;
+// **The receive ring, by arithmetic** (task p18-03). The number and the reasoning are
+// `core/link/client/port.h`'s - the baud rate and the longest the reader is away between two
+// reads - because what sizes the ring is the session loop and not the driver. 4 096 bytes: 355 ms
+// of this line, better than twice the 150 ms the reader may be away, and sixteen frames of §2.
+//
+// It was 1 024 until this task, with the note that a task away for a tick loses nothing. A task
+// away for a *call to the server* loses nine lines of a `hist`, which is what the unit at Bellevue
+// did on 21 November.
+constexpr int kRxBuffer = static_cast<int>(core::link::client::kRxRingBytes);
+
+// **The queue that says a loss happened.** The driver is installed with one from this task on, and
+// read() drains it: `UART_BUFFER_FULL` is the ring full - the ISR could not push what it had
+// stashed, dropped it and turned the receive interrupts off until the reader drains
+// (`esp_driver_uart/src/uart.c`, the `xRingbufferSendFromISR` that fails at ~L1304) - and
+// `UART_FIFO_OVF` is the hardware's own 128-byte FIFO over, after which the ISR resets it
+// (~L1371). Neither event carries a size: `uart_event_t::size` is "UART data size for UART_DATA
+// event" (`driver/uart.h`), so what is counted is the moment and not the bytes.
+//
+// Eight entries, which is what the queue needs to be useful: the events are counted and thrown
+// away at every read, and a queue that overflows loses only the *word* that a loss happened - so
+// the count is a floor and never an invention.
+constexpr int kEventQueue = 8;
 
 // The two pins, from the one place that names them (core/board/pin_map.h, which is
 // INTERCONNECT.md's table): GPIO7 is the Walter's TX into the radio's RX, GPIO8 the other way.
@@ -46,12 +66,17 @@ bool RadioUart::begin() {
       .flags = {},
   };
   // No transmit ring: uart_write_bytes then returns when the bytes are in the hardware's hands,
-  // which is what §2's "send a frame in one piece" wants of a sender.
-  if (uart_driver_install(kPort, kRxBuffer, 0, 0, nullptr, 0) != ESP_OK) {
+  // which is what §2's "send a frame in one piece" wants of a sender. **And an event queue**, so
+  // that a ring that filled or a FIFO that ran over is something this port can say (task p18-03);
+  // without one the driver drops the events and nothing anywhere knows a byte went.
+  QueueHandle_t events = nullptr;
+  if (uart_driver_install(kPort, kRxBuffer, 0, kEventQueue, &events, 0) != ESP_OK) {
     return false;
   }
+  events_ = events;
   if (uart_param_config(kPort, &config) != ESP_OK) {
-    uart_driver_delete(kPort);
+    uart_driver_delete(kPort);  // which deletes the event queue with it
+    events_ = nullptr;
     return false;
   }
   installed_ = true;
@@ -89,10 +114,28 @@ void RadioUart::close() {
   open_ = false;
 }
 
+// Whatever the driver has queued since the last read, counted and thrown away. Never blocks.
+void RadioUart::drainEvents() {
+  if (events_ == nullptr) {
+    return;
+  }
+  uart_event_t event;
+  while (xQueueReceive(static_cast<QueueHandle_t>(events_), &event, 0) == pdTRUE) {
+    if (event.type == UART_BUFFER_FULL || event.type == UART_FIFO_OVF) {
+      if (losses_ != 0xFFFFFFFFu) {
+        ++losses_;  // saturating: a count that has stopped being exact must not start being wrong
+      }
+    }
+  }
+}
+
 std::size_t RadioUart::read(std::uint8_t* out, std::size_t max) {
   if (!open_ || out == nullptr || max == 0) {
     return 0;
   }
+  // Before the bytes, so that a loss the driver noticed while this reader was away is counted
+  // with the read that follows it and not with the one after.
+  drainEvents();
   const int got = uart_read_bytes(kPort, out, static_cast<std::uint32_t>(max), 0);
   if (got <= 0) {
     return 0;

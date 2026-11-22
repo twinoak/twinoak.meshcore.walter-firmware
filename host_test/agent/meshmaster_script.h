@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -176,6 +177,9 @@ class MeshMasterScript {
     max_per_minute_ = per_minute;
     gap_seconds_ = gap_seconds;
   }
+
+  // Called with the path of every `/agent/v1` request this server answers, before it answers.
+  std::function<void(const std::string& path)> on_call;
 
   // Whether a claim is held to the types the last heartbeat advertised. True is the server.
   bool route_by_job_types = true;
@@ -333,6 +337,10 @@ class MeshMasterScript {
     // The firmware routes are files the test served: the scripted server's own range logic.
     if (path.rfind("/agent/v1/firmware/", 0) == 0) return false;
     calls.push_back(path);
+    // **Something for a test to check at every call** (task p18-03): the one hook a rule of the
+    // shape *nothing of this end goes out while X* can be held by, because it is told about every
+    // request of the API and not only the ones a test went looking for.
+    if (on_call) on_call(path);
     reply->headers.push_back("X-RateLimit-Remaining: 119");
     reply->headers.push_back("Content-Type: application/json");
     const std::string suffix = path.substr(9);  // past "/agent/v1"

@@ -42,6 +42,7 @@ struct StepTaken {
   std::size_t used = 0;
   std::size_t count = 0;
   bool first = false;
+  std::uint32_t losses = 0;  // times the port lost bytes while this step ran (task p18-03)
   std::vector<std::string> lines;
 };
 
@@ -61,6 +62,7 @@ struct RecordingSink final : upd::SessionSink {
     taken.used = report.used;
     taken.count = report.count;
     taken.first = report.first;
+    taken.losses = report.losses;
     for (std::size_t at = 0; at < report.used;) {
       std::size_t end = at;
       while (end < report.used && report.lines[end] != '\n') ++end;

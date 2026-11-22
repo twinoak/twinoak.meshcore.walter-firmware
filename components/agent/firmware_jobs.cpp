@@ -304,9 +304,27 @@ void FirmwareJobs::wipeBearer() { zeroBytes(secret_, sizeof secret_); }
 
 // -- the lease and the progress ------------------------------------------------------------------
 
+bool FirmwareJobs::quietInAStep() {
+  // **Asked of the machine and never of a copy.** A step's lines are handed over from inside
+  // step(), so a flag this end cached at the top of the loop would still say *in a step* at the
+  // one moment the lines are meant to go out. The machine knows: the step has ended before its
+  // sink is called.
+  if (parts_.session == nullptr || !parts_.session->listening()) return false;
+  // Unreachable by the loop's shape, which is exactly why it is counted rather than trusted: on
+  // 21 November a progress call fell between a step's command and its lines and took nine of
+  // sixteen with it, and the loop that did it was doing nothing wrong at the time.
+  counters_.calls_in_step = saturate(counters_.calls_in_step);
+  return true;
+}
+
 void FirmwareJobs::extendLease(long long job_id, mm::JobContext& ctx, int seconds) {
+  if (quietInAStep()) return;
   std::uint32_t until = 0;
   counters_.extends = saturate(counters_.extends);
+  // What the server grants is *now plus what was asked*, whatever it held before (task p14-04),
+  // so this is the lease whether the call was answered or not: a 409 means this end is not the
+  // holder any more, and then no number here is worth anything anyway.
+  lease_until_ms_ = clock_.nowMs() + static_cast<std::uint64_t>(seconds) * 1000u;
   if (server_.extendLease(job_id, seconds, until)) {
     ctx.log("lease extended");
   } else {
@@ -725,7 +743,7 @@ void FirmwareJobs::writeJournal(mm::JsonWriter& w) { writeJournalLines(w, lines_
 // would want a second buffer the size of the first (kResultBufferBytes is counted to the byte;
 // rail R22).
 void FirmwareJobs::postApplyProgress(long long job_id) {
-  if (line_count_ == 0) return;
+  if (line_count_ == 0 || quietInAStep()) return;
   mm::JsonWriter w(body_, kEnvelopeBytes);
   w.beginObject();
   w.key("data");
@@ -1925,6 +1943,7 @@ std::size_t FirmwareJobs::postSomeLines(long long job_id, const char* lines, std
   *count = 0;
   *answered = false;
   *full = false;
+  if (quietInAStep()) return 0;
   // **As many whole lines as fit one body** (deliverable 6): the body is cut at a line's end, so
   // every line the server holds is a line the scanner sent whole. A line longer than a body on
   // its own cannot be cut at all and goes in a post of its own rather than being split or
@@ -1970,6 +1989,18 @@ void FirmwareJobs::SessionLines::onStepLines(const core::update::StepReport& rep
   const std::size_t which = report.index > 0 && report.index <= core::update::kStepsMax
                                 ? report.index - 1
                                 : 0;
+  // **A step that lost bytes at the port says so** (task p18-03), as a journal line of its own and
+  // before its lines go out: the machine has written the same thing into the flash, and this is
+  // the copy that reaches the server with the result and with the next progress post. It is said
+  // whatever the server's room, because *nine lines are missing* is the one thing a reader of
+  // that step cannot work out for themselves.
+  if (report.losses != 0) {
+    jobs_.counters_.steps_lossy = saturate(jobs_.counters_.steps_lossy);
+    char note[kJournalNoteBytes];
+    std::snprintf(note, sizeof note, "the port lost bytes %lu time(s): lines are missing",
+                  static_cast<unsigned long>(report.losses));
+    jobs_.line(kSessionStepWords[which], note);
+  }
   // The server said its room for this job is used up: the step still ran and still ended, and
   // nothing more of it is posted (deliverable 6).
   if (full) return;
@@ -2016,7 +2047,15 @@ void FirmwareJobs::readSessionJournal() {
       if (p.stage == upd::Stage::kStep) {
         const std::size_t which = p.step > 0 && p.step <= upd::kStepsMax ? p.step - 1u : 0u;
         word = kSessionStepWords[which];
-        copyText(note, sizeof note, p.command);
+        if ((p.flags & upd::kSessionFlagLost) != 0) {
+          // Task p18-03's entry: this one is the step's **end**, and what it says is that lines
+          // the scanner numbered are not here. Read back after a restart exactly as it was said
+          // while the session ran.
+          std::snprintf(note, sizeof note, "the port lost bytes %lu time(s): lines are missing",
+                        static_cast<unsigned long>(p.losses));
+        } else {
+          copyText(note, sizeof note, p.command);
+        }
       } else if (p.stage == upd::Stage::kRoom) {
         (void)upd::roomLine(p.room, note, sizeof note);
       }
@@ -2227,16 +2266,34 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
   bool bounded = false;
   bool scanner_ran = false;
   while (parts_.session->active()) {
-    // **The lease before the step, never inside one** (deliverable 4): a flash is one call of the
-    // flasher and a quarter of an hour, and the machine cannot come back to ask for more lease in
-    // the middle of it. `kFlashing` is the scanner image's and the golden image's alike -
-    // whichever of the two kinds the machine is running - and `kRollingBack` is the scanner run
-    // putting the golden image back by itself.
-    const upd::State state = parts_.update != nullptr ? parts_.update->state() : upd::State::kIdle;
-    if (state == upd::State::kFlashing || state == upd::State::kRollingBack) {
-      extendLease(job.id, ctx, kLeaseFlashSeconds);
-    } else if (clock_.nowMs() >= extend_due_ms_) {
-      extendLease(job.id, ctx);
+    // **The lease before the step, never inside one** (deliverable 4, and task p18-03's second):
+    // a flash is one call of the flasher and a quarter of an hour, and the machine cannot come
+    // back to ask for more lease in the middle of it. `kFlashing` is the scanner image's and the
+    // golden image's alike - whichever of the two kinds the machine is running - and
+    // `kRollingBack` is the scanner run putting the golden image back by itself.
+    //
+    // **And never inside a step either** (task p18-03). `in_step_` is the machine's own answer:
+    // the command is said and the step has not ended, so the port is the only thing being
+    // listened to and a second spent on LTE-M is a second of lines lost. The timer below cannot
+    // fire there; what takes its place is `stepPending()` - the seconds of the step whose command
+    // is the next thing to happen - and a lease that would not cover the step, the posting of its
+    // lines and the calls after them is extended now, while the scanner is still silent.
+    if (!parts_.session->listening()) {
+      const upd::State state =
+          parts_.update != nullptr ? parts_.update->state() : upd::State::kIdle;
+      const std::uint32_t pending = parts_.session->stepPending();
+      const std::uint64_t needed = pending != 0
+                                       ? clock_.nowMs() +
+                                             static_cast<std::uint64_t>(pending) * 1000u +
+                                             kLeaseAfterStepMs
+                                       : 0;
+      if (state == upd::State::kFlashing || state == upd::State::kRollingBack) {
+        extendLease(job.id, ctx, kLeaseFlashSeconds);
+      } else if (needed > lease_until_ms_) {
+        extendLease(job.id, ctx);
+      } else if (clock_.nowMs() >= extend_due_ms_) {
+        extendLease(job.id, ctx);
+      }
     }
     const upd::SessionStep s = parts_.session->step();
     if (s.changed) {
