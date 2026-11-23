@@ -80,6 +80,7 @@ const char* describe(RungOutcome outcome) {
     case RungOutcome::kRefusedBattery: return "refused: the battery is too low";
     case RungOutcome::kFailed: return "it could not be done";
     case RungOutcome::kSkipped: return "skipped";
+    case RungOutcome::kCameBack: return "done, and the radio came back without restarting: not this rung's doing";
   }
   return "?";
 }
@@ -230,6 +231,7 @@ void Supervisor::onRadioRestart(std::uint32_t boot_id, std::uint8_t reset_reason
   // Called from inside a client call (an EV_BOOT read, or a HELLO with a boot_id we had not
   // seen: §5.1). It records; nothing here talks on the link.
   restart_seen_ = true;
+  pulse_restart_ = true;  // task p18-04: cleared at rung 2's pulse, read when the radio is back
   boot_id_ = boot_id;
   boot_id_known_ = true;
   if (reset_reason != link::reset_reason::kUnknown) reset_reason_ = reset_reason;
@@ -759,7 +761,10 @@ void Supervisor::noteRung(Rung rung, RungOutcome outcome) {
   storeIncidents();
 }
 
-void Supervisor::endIncident(Outcome outcome, Rung cured_at, StopReason stop) {
+// `how` is the cured rung's own outcome (task p18-04): kCured for a rung that did what it was
+// for, kCameBack for one after which the radio answered again without the rung having changed
+// anything - rung 2 when nothing restarted at its pulse.
+void Supervisor::endIncident(Outcome outcome, Rung cured_at, StopReason stop, RungOutcome how) {
   Incident* in = current();
   if (in != nullptr) {
     in->outcome = outcome;
@@ -769,7 +774,7 @@ void Supervisor::endIncident(Outcome outcome, Rung cured_at, StopReason stop) {
     in->lasted_ms = now >= in->began_ms ? low32(now - in->began_ms) : 0;
     if (cured_at != Rung::kNone) {
       const std::size_t i = static_cast<std::size_t>(cured_at) - 1;
-      if (i < kRungCount) in->rung[i] = RungOutcome::kCured;
+      if (i < kRungCount) in->rung[i] = how;
     }
     storeIncidents();
   }
@@ -1063,6 +1068,14 @@ Step Supervisor::stepClimbing() {
         return failedRung(Rung::kReset, board::describe(hold.result()), Rung::kPowerCycle,
                           static_cast<std::uint32_t>(hold.result()));
       }
+      // **What the radio's boot was before the pulse** (task p18-04, deliverable 6): *cured by a
+      // reset pulse* may only be said of a radio that restarted at it, and after
+      // `radioWasReset()` below the client's first HELLO of the next session is not news of a
+      // restart (§5.1, core/link/client/client.cpp) - so the boot id is kept here and compared in
+      // stepJudging(). An EV_BOOT sets `pulse_restart_` on its own.
+      pulse_boot_id_ = radio_.session().boot_id;
+      pulse_boot_id_known_ = boot_id_known_ || status_.ever_answered;
+      pulse_restart_ = false;
       // ARCHITECTURE §2 rule 2: the pulse waits out the spacing rather than violating it.
       const board::Outcome r = pins_.resetPulse();
       if (r != board::Outcome::kOk) {
@@ -1142,16 +1155,43 @@ Step Supervisor::stepJudging() {
   next_ask_ms_ = 0;
   asked_once_ = false;
   const bool answered = ask();
+  // **Was it the rung?** (Task p18-04, deliverable 6.) On 21 November the supervisor at Bellevue
+  // wrote *cured by rung 2, a reset pulse* and the radio's own `uptimeS` and `RESETREAS` say it
+  // never restarted: it came back by itself, and the pulse restarted nothing
+  // (tasks/phase-18/FOLLOWUPS.md). So the word is given only to a pulse a new boot answered - an
+  // EV_BOOT, or a boot id that is not the one from before the pulse, which is kept at the pulse
+  // because after `radioWasReset()` the client's first HELLO of a session is not news of a
+  // restart - and the observation goes to the reset line's own record, where `rak watch` and the
+  // report read it. Where the boot before the pulse was never known, neither word is said and
+  // nothing is recorded: the one thing worse than not knowing is writing down a guess.
+  //
+  // The judgment is made here, before the entry below, so that the journal carries it too; the
+  // ladder's order and its caps are untouched - this is what a rung is *called*, not when it is
+  // climbed.
+  RungOutcome how = RungOutcome::kCured;
+  if (answered && rung_ == Rung::kReset) {
+    const bool new_boot = pulse_boot_id_known_ && radio_.session().up &&
+                          radio_.session().boot_id != pulse_boot_id_;
+    const bool restarted = pulse_restart_ || new_boot;
+    const bool can_tell = restarted || pulse_boot_id_known_;
+    if (can_tell) {
+      pins_.noteResetLine(restarted);
+      if (!restarted) how = RungOutcome::kCameBack;
+    }
+  }
   Payload p = payloadNow(Wrote::kJudged);
   p.rung = rung_;
-  p.outcome = static_cast<std::uint8_t>(answered ? RungOutcome::kCured : RungOutcome::kDone);
+  p.outcome = static_cast<std::uint8_t>(answered ? how : RungOutcome::kDone);
   (void)journalEntry(Wrote::kJudged, p);
   if (answered) {
     // The radio is back. The rungs above this one are not used - which is the whole shape of the
     // ladder, and what the bench's "remove the jumper during the ladder" item watches.
     const Rung cured_at = rung_;
-    endIncident(Outcome::kCured, cured_at, StopReason::kNone);
-    return enter(State::kIdle, "the radio is back: the climb stops here");
+    endIncident(Outcome::kCured, cured_at, StopReason::kNone, how);
+    return enter(State::kIdle, how == RungOutcome::kCameBack
+                                   ? "the radio is back, and nothing restarted at the pulse: it came "
+                                     "back by itself"
+                                   : "the radio is back: the climb stops here");
   }
   // The scanner showing up mid-climb is an answer of a kind: something is running over there,
   // and it is not this unit's business to reflash it from under a person.

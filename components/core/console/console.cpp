@@ -1835,6 +1835,27 @@ void Console::rakSwdId() {
            static_cast<unsigned long>(id.device_id[0]));
   }
   if (opened.ok()) {
+    // **What the chip says about its reset pin** (task p18-04): UICR.PSELRESET[0] and [1], read,
+    // and written by nothing. A module whose two registers do not hold the same Connected value
+    // has no nRESET on any pin (PS 4.5.1.62), and on such a unit a flash starts the image through
+    // the debug port instead of pulsing a line that reaches nothing.
+    nrf52::ResetPin reset_pin;
+    const nrf52::Result pin = nrf.readResetPin(&reset_pin);
+    if (pin.ok()) {
+      printf("  UICR.PSELRESET: 0x%08lx, 0x%08lx - %s\n",
+             static_cast<unsigned long>(reset_pin.raw0), static_cast<unsigned long>(reset_pin.raw1),
+             reset_pin.enabled ? "the pin reset is enabled" : "NO pin reset: nRESET is on no pin");
+      if (reset_pin.enabled) {
+        printf("    nRESET is exposed on P%u.%u; a flash starts the image by pulsing it\n",
+               static_cast<unsigned>(reset_pin.port), static_cast<unsigned>(reset_pin.pin));
+      } else {
+        print("    a flash starts the image through the debug port (and a scanner's watchdog\n"
+              "    outlives that reset: the proof waits it out)\n");
+      }
+    } else {
+      describeFailure(line, sizeof line, "rak swd id: UICR.PSELRESET", pin);
+      printf("%s\n", line);
+    }
     nrf52::CoreState state = nrf52::CoreState::kUnknown;
     const nrf52::Result core = nrf.coreState(&state);
     if (core.ok()) {
@@ -1942,8 +1963,23 @@ void Console::printFlashResult(const char* what, const flasher::Result& r) {
     printf("%s - failed while %s%s%s\n", line, flasher::describe(r.step), r.why[0] != 0 ? ": " : "",
            r.why[0] != 0 ? r.why : "");
   }
-  if (r.reset_issued) {
+  // **What UICR said about the reset pin, at this flash** (task p18-04), and which of the two
+  // started the image: the pulse where the module has a reset pin, the debug port where it has
+  // not. Said whether the flash finished or not, because a flash that failed after the halt still
+  // started the image.
+  if (r.reset_pin.known) {
+    if (r.reset_pin.enabled) {
+      printf("  UICR.PSELRESET: nRESET is on P%u.%u\n", static_cast<unsigned>(r.reset_pin.port),
+             static_cast<unsigned>(r.reset_pin.pin));
+    } else {
+      print("  UICR.PSELRESET: the pin reset is NOT enabled on this module\n");
+    }
+  }
+  if (r.started == flasher::Started::kResetLine) {
     print("  the radio was started by a pulse on the reset line; the next reset pulse waits out the spacing\n");
+  } else if (r.started == flasher::Started::kDebugPort) {
+    print("  the radio was started by a reset through the debug port: a pulse on a pin that is not\n"
+          "  nRESET would start nothing\n");
   }
   print("  pins released\n");
 }
@@ -2869,6 +2905,22 @@ void Console::printUpdateEntry(std::size_t number, const update::Entry& entry, c
   if (p.step == update::ProveStep::kPassed && p.detail != 0) {
     printf(" (the health check passed; %lu ms of proving)", static_cast<unsigned long>(p.detail));
   }
+  // **What started the image** (task p18-04), off the `booting` entry's own detail: which of the
+  // two it was and what UICR said about the reset pin while the port was open for the flash. Zero
+  // is an entry from before that task, and says nothing.
+  const bool booting = p.state == update::State::kBooting || p.state == update::State::kRollbackBooting;
+  if (booting && p.reason == update::Reason::kNone && p.detail != 0) {
+    const update::StartRecord start = update::decodeStart(p.detail);
+    printf(" - started by %s", flasher::describe(start.started));
+    if (!start.uicr_read) {
+      print("; UICR.PSELRESET was not read");
+    } else if (start.pin_enabled) {
+      printf("; nRESET is on P%u.%u", static_cast<unsigned>(start.port),
+             static_cast<unsigned>(start.pin));
+    } else {
+      print("; this module has no reset pin");
+    }
+  }
   print("\n");
 }
 
@@ -3212,7 +3264,17 @@ void Console::printIncident(std::size_t number, const supervisor::Incident& in) 
   if (in.began_epoch != 0) printf(" (epoch %lu)", static_cast<unsigned long>(in.began_epoch));
   printf(": %s; %s", supervisor::describe(in.cause), supervisor::describe(in.outcome));
   if (in.outcome == supervisor::Outcome::kCured && in.cured_at != supervisor::Rung::kNone) {
-    printf(" by %s", supervisor::describe(in.cured_at));
+    // **Cured by the rung, or cured while the rung was being climbed** (task p18-04): a radio
+    // that answered again after rung 2 without anything of it restarting came back by itself, and
+    // the line below says which of the two this was.
+    const std::size_t at = static_cast<std::size_t>(in.cured_at) - 1;
+    const bool by_itself = at < supervisor::kRungCount &&
+                           in.rung[at] == supervisor::RungOutcome::kCameBack;
+    if (by_itself) {
+      printf(" by itself (%s restarted nothing)", supervisor::describe(in.cured_at));
+    } else {
+      printf(" by %s", supervisor::describe(in.cured_at));
+    }
   }
   if (in.stop != supervisor::StopReason::kNone) printf(": %s", supervisor::describe(in.stop));
   print("\n");
@@ -3281,6 +3343,23 @@ void Console::rakWatch() {
   }
   if (w.counts_from_journal) {
     print("  the counts were read back from the journal: a power cut cleared the retained record\n");
+  }
+  // **What this unit's reset line is** (task p18-04): what UICR said at the last flash, and what
+  // a pulse has been seen to do. It is for a person to read - what a flash does with the line is
+  // decided at that flash, from the chip, every time.
+  {
+    const board::ResetLineKnown& line = pins_.resetLine();
+    print("the reset line: ");
+    if (!line.uicr_read) {
+      print("UICR has not been read on this unit (a flash reads it)");
+    } else if (line.pin_enabled) {
+      printf("UICR.PSELRESET says nRESET is on P%u.%u", static_cast<unsigned>(line.port),
+             static_cast<unsigned>(line.pin));
+    } else {
+      print("UICR.PSELRESET says the pin reset is NOT enabled, so an image is started through the "
+            "debug port");
+    }
+    printf("; %s\n", board::describe(line.seen));
   }
   if (w.awaiting_first_install) {
     printf("the slot awaits its first install (rak provision, journal entry %lu): the ladder is not climbed for a silent radio\n"

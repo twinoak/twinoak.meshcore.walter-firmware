@@ -106,9 +106,8 @@ void Nrf52Chip::fillFactory() {
   for (std::uint32_t& w : uicr_) w = 0xFFFFFFFF;
   for (std::uint8_t& n : uicr_writes_since_erase_) n = 0;
   setUicrWord(regs::uicr::kNrfFw0, 0x000F4000);
-  setUicrWord(regs::uicr::kPselReset0, 18);
-  setUicrWord(regs::uicr::kPselReset1, 18);
   setUicrWord(regs::uicr::kRegOut0, 0xFFFFFFF8u | 5u);
+  resetPinIs(reset_pin_);  // PSELRESET as the wiring this chip was given says (task p18-04)
 }
 
 // Open at the factory: legacy, UICR.APPROTECT erased ("By default, access port protection is
@@ -176,7 +175,26 @@ void Nrf52Chip::hardReset() {
   if (target_ != nullptr) target_->resetDap();
 }
 
+// What this unit's reset line is (task p18-04). The UICR words follow the wiring, so that the
+// firmware's reading of PSELRESET and the chip's own behaviour cannot disagree: Connected on
+// P0.18 for the two enabled states, the erased 0xFFFFFFFF - Disconnected - for the third.
+void Nrf52Chip::resetPinIs(ResetPinIs what) {
+  reset_pin_ = what;
+  const std::uint32_t value = what == ResetPinIs::kNotEnabled ? 0xFFFFFFFFu : 18u;
+  setUicrWord(regs::uicr::kPselReset0, value);
+  setUicrWord(regs::uicr::kPselReset1, value);
+}
+
 void Nrf52Chip::pinReset() {
+  // **A pulse that reaches nothing** (task p18-04). Either the line does not reach this chip, or
+  // UICR.PSELRESET does not put nRESET on a pin at all - and in both cases the chip carries on
+  // exactly as it was: the core stays halted if the debugger halted it, the watchdog keeps
+  // counting, and nothing boots. It is counted, so that a test can say "the pulse was made and it
+  // did nothing" rather than "no pulse was made".
+  if (reset_pin_ != ResetPinIs::kEnabledAndWired) {
+    resets_.pin_lost++;
+    return;
+  }
   resets_.pin++;
   hardReset();
 }

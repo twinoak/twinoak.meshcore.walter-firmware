@@ -212,6 +212,8 @@ swd: 125 kHz: connect, power-up, control port, memory port, FICR
   memory access port: IDR 0x24770011 (Arm, class MEM-AP; the Cortex-M4's AHB-AP)
   chip: nRF52840, variant AAF0, flash 1024 KB = 256 pages of 4096 bytes (INFO.FLASH 1024 KB)
   device id 0badf00ddeadbeef
+  UICR.PSELRESET: 0x00000012, 0x00000012 - the pin reset is enabled
+    nRESET is exposed on P0.18; a flash starts the image by pulsing it
   core: running
   power-up request withdrawn; pins released;...
 > rak provision check

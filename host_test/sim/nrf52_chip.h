@@ -225,6 +225,28 @@ class Nrf52Chip {
   // 0xFFFFFF00); improved "locked by default" (UICR.APPROTECT erased, which on Fxx is enabled).
   void factoryOpen();
   void factoryLocked();
+  // ---- what the reset line of this unit is (task p18-04) --------------------------------------
+  // Three things a board can be, and the firmware must start an image on all three:
+  //
+  //   kEnabledAndWired   UICR.PSELRESET puts nRESET on P0.18 and the Walter's line reaches it.
+  //                      A pulse is a pin reset. This is the default and every board is assumed
+  //                      to be one until a test says otherwise;
+  //   kEnabledNotWired   UICR says the same, and the pulse reaches nothing - a wire that is not
+  //                      there, or an adapter that does not pass it. **This is the unit at
+  //                      Bellevue as 21 and 22 November read it**: the supervisor counted a pulse
+  //                      and the radio's own `uptimeS` and `RESETREAS` show no restart answering
+  //                      one (tasks/phase-18/FOLLOWUPS.md);
+  //   kNotEnabled        UICR.PSELRESET is erased (0xFFFFFFFF, CONNECT = Disconnected), so there
+  //                      is no nRESET function on any GPIO whatever the wire does: "the device
+  //                      will always start independently of the levels present on any of the
+  //                      GPIOs" (PS 4.5.1.62).
+  //
+  // The wiring is what `pinReset()` honours, and the UICR words follow it, so a test sets one
+  // thing and both the firmware's reading and the chip's behaviour agree. The two that do nothing
+  // are counted in `resets().pin_lost`: a pulse that reached nothing.
+  enum class ResetPinIs : std::uint8_t { kEnabledAndWired, kEnabledNotWired, kNotEnabled };
+  void resetPinIs(ResetPinIs what);
+  ResetPinIs resetPin() const { return reset_pin_; }
   // nRESET pulsed by the host (the bench wires SwdTarget::on_pin_reset to it): a pin reset.
   // Legacy: UICR.APPROTECT read again. Improved: the port is open only when UICR.APPROTECT is
   // HwDisabled and the flash holds firmware (word 0 not erased) and bootloader_opens_port. The
@@ -238,6 +260,7 @@ class Nrf52Chip {
     unsigned pin = 0;            // nRESET
     unsigned power_on = 0;       // powerOn()
     unsigned watchdog = 0;       // the WDT timed out
+    unsigned pin_lost = 0;       // nRESET pulsed, and it reached nothing (task p18-04)
   };
   const Resets& resets() const { return resets_; }
   // The SoftDevice information structure a provisioned chip carries at MBR_SIZE + 0x2000 (the
@@ -386,6 +409,7 @@ class Nrf52Chip {
   std::uint32_t demcr_ = 0;
 
   // the watchdog: what it was given, what is left of it, and when that was last counted
+  ResetPinIs reset_pin_ = ResetPinIs::kEnabledAndWired;  // task p18-04
   bool wdt_running_ = false;
   std::uint64_t wdt_timeout_us_ = 0;
   std::uint64_t wdt_left_us_ = 0;

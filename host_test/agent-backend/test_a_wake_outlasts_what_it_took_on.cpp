@@ -277,17 +277,20 @@ TEST(AWakeOutlastsWhatItTookOn, OfTwoLeasesTheLaterGoverns) {
   EXPECT_FALSE(bench.agent.world.restart_asked);
 }
 
-TEST(AWakeOutlastsWhatItTookOn, AnHourLongLeaseIsCutInsideTheCeiling) {
+// **Two hours, not one.** Since task p18-04 a wake may be raised to sixty-five minutes - a session
+// of the radio as a scanner is 60 min 35 s with the watchdog's wait in it - so an hour-long lease
+// is one this unit can cover whole and no longer shows the cut.
+TEST(AWakeOutlastsWhatItTookOn, ALeaseLongerThanTheCeilingIsCutInsideIt) {
   MeshBench bench;
   theNight(bench);
-  bench.agent.server().queue(leasedRead(830, 30, leaseIn(bench, 3600)).json());
+  bench.agent.server().queue(leasedRead(830, 30, leaseIn(bench, 7200)).json());
 
   const core::cycle::Pass& pass = bench.agent.oneWake();
 
   // The bound went to the ceiling and no further.
   EXPECT_EQ(pass.bound_ms, core::cycle::kRaisedBoundMax);
   // And the lease the library was handed was **cut**: it ended where the room for the result's
-  // call begins, and not the hour past the claim the server had put it at.
+  // call begins, and not the two hours past the claim the server had put it at.
   // `host_test/core/cycle/test_wake_room.cpp` is where that second is worked out.
   EXPECT_TRUE(bench.agent.half().server.wakesRoom().cut);
   EXPECT_EQ(bench.agent.half().server.wakesRoom().jobs, 1);

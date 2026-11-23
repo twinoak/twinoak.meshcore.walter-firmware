@@ -91,6 +91,35 @@ constexpr std::uint32_t kProvingPingIntervalMs = 3000;
 // `info` line at boot; twenty seconds is the same room a repeater gets.
 constexpr std::uint32_t kScannerWindowMs = 20000;
 
+// **The look, and the window that begins again** (task p18-04). A flash left by a pulse on the
+// reset line gets no confirmation that the chip reset; an empty boot window is the first sign
+// that it did not, and the chip is asked once (Flasher::startAgain()). Where the core is still
+// halted where the flash left it, the image is started through the debug port and the radio gets
+// a second window of exactly the same length to answer in. One look a flash, never two: a second
+// empty window is the ending it always was.
+constexpr std::uint32_t kStartAgainWindowMs = kBootWindowMs;
+
+// **The watchdog a scanner leaves behind** (task p18-04, deliverable 4). The nRF52840's WDT
+// cannot be stopped and is not cleared by a soft reset (PS 5.3.6.8's "Reset behavior" table marks
+// the WDT column for a watchdog, a pin, a brownout and a power-on reset, and for nothing else),
+// and the scanner starts it at WDT_TIMEOUT_S = 60 and feeds it from its own loop (the repeater
+// firmware's src/roles/scanner/config.h at commit eaa19a7; its comment: "which survives the soft
+// reset into the bootloader with the same timeout"). So an image the **debug port** started over
+// a scanner inherits that watchdog, feeds nothing, and is reset once inside its time - which is
+// exactly the fault of 21 November, with the reset coming 59 s into the proving period and a
+// restart there being a failure by rule (task p18-01).
+//
+// The proof therefore waits: after such a flash the proving period begins at the boot that
+// follows the watchdog's reset, or when this long has passed since the image started without one.
+// It does not forgive a restart - the proving period is what it always was once it begins.
+//
+// Sixty seconds and a quarter of it: the number is the scanner's, and the margin is for the boot
+// the watchdog's reset begins and for a clock that is not the radio's. The scanner does not say
+// its watchdog's seconds on the link yet (tasks/phase-18/FOLLOWUPS.md), so this is a constant
+// copied from that repository and not a reading, and it is the one place it is written down.
+constexpr std::uint32_t kScannerWatchdogMs = 60000;
+constexpr std::uint32_t kScannerWatchdogWaitMs = kScannerWatchdogMs + kScannerWatchdogMs / 4;
+
 // The battery below which no update starts. The pack is a single Li-ion cell of 10 Ah (the
 // hardware repository's CURRENT-SENSE.md: CV 4.200 V, precharge below 3.1 V): 3.7 V is a cell
 // with more than half its charge, enough that two MCUs awake for ten minutes of flashing and
@@ -145,9 +174,13 @@ constexpr std::uint32_t kEntriesPerRunMax = 48;
 // growth, and it is the number to raise when a release flashes slower than this.
 constexpr std::uint32_t kFlashWindowMs = 16u * 60 * 1000;
 
-// One pass of the machine: a flash, the boot window after the reset, and the proving period.
-// `check` and `committing` are a store read and seven flash operations and cost nothing beside it.
-constexpr std::uint32_t kOnePassMs = kFlashWindowMs + kBootWindowMs + kProvingPeriodMs;
+// One pass of the machine: a flash, the boot window after the reset, and the proving period -
+// **and, since task p18-04, the look and the window that begins again** (kStartAgainWindowMs),
+// because on a unit whose reset line does not reach its radio that second window is spent at
+// every flash and not as an exception. `check` and `committing` are a store read and seven flash
+// operations and cost nothing beside it.
+constexpr std::uint32_t kOnePassMs =
+    kFlashWindowMs + kBootWindowMs + kStartAgainWindowMs + kProvingPeriodMs;
 
 // **And a whole run, which is a rollback**: the candidate flashed, booted and failed at the end of
 // its proving period, then the golden image flashed, booted and proved by the same check. Two
@@ -229,6 +262,15 @@ enum class Reason : std::uint8_t {
   kNoImageToReturnTo = 46,    // a first install failed: stuck, there is no golden image
   // -- the node, not the image
   kIdentityLost = 47,         // IDENTITY is ERR_STATE: the radio refuses, and no image mends it
+  // -- **what the look and the wait of task p18-04 found**. None of these ends a run: they are
+  // what a `booting` entry says about how the image was started and what the proof is waiting
+  // for, so that the journal tells the story a person has to read off a unit whose reset line
+  // may or may not reach its radio.
+  kStartedThroughPort = 48,   // the look found the core halted: the pulse reached nothing
+  kPulseStarted = 49,         // the look found the core running: the pulse worked, the image is quiet
+  kLookFailed = 50,           // the look could not be made: the port was closed or silent
+  kAfterTheWatchdog = 51,     // the proof began at the boot that followed the scanner's watchdog
+  kWatchdogTimePassed = 52,   // ... or when its longest time had passed with no reset
 };
 
 const char* describe(Reason reason);
@@ -284,6 +326,21 @@ struct Payload {
 void encode(const Payload& payload, std::uint8_t out[kPayloadBytes]);
 bool decode(const Entry& entry, Payload* out);  // false unless the entry is a radio-update entry
 
+// **What the `booting` entry's `detail` carries** (task p18-04): what started the image this flash
+// wrote, and what `UICR.PSELRESET` said while the port was open for it. A payload is 48 bytes and
+// full; this is the one field a `booting` entry had spare, and it is what makes the journal say -
+// after the fact, on a unit nobody was watching - which of the two started the image and whether
+// the module has a reset pin at all. `rak update status` prints it.
+struct StartRecord {
+  flasher::Started started = flasher::Started::kNothing;
+  bool uicr_read = false;
+  bool pin_enabled = false;
+  std::uint8_t pin = 0;
+  std::uint8_t port = 0;
+};
+std::uint32_t encodeStart(const StartRecord& record);
+StartRecord decodeStart(std::uint32_t detail);
+
 // -- what the Walter's own update writes (task p2-04, core/update/self_update.h) ------------------
 //
 // S-7: the machine refuses to start while the Walter's own update is journalled as unconfirmed.
@@ -330,6 +387,12 @@ struct Status {
   std::uint32_t entries = 0;  // journal entries this run has written
   bool resumed = false;
   bool time_skipped = false;  // the TIME_SET check could not be made: no time to give
+  // Task p18-04: what started the image being proved, whether the chip had to be asked what the
+  // pulse did, and whether the proof waited a scanner's watchdog out first.
+  flasher::Started started = flasher::Started::kNothing;
+  bool looked = false;
+  nrf52::CoreState core_at_look = nrf52::CoreState::kUnknown;
+  bool waited_for_watchdog = false;
 };
 
 class RadioUpdate final : public link::client::RestartWatcher {
@@ -387,6 +450,15 @@ class RadioUpdate final : public link::client::RestartWatcher {
   StepResult failTime(std::uint32_t detail);
   StepResult waiting(const char* note);
 
+  // A line of the story written in the state the machine is already in: what the look found, and
+  // what the proof is waiting for (task p18-04). False when the journal refused, after which the
+  // machine stops where it is, as every other journalled step does.
+  bool note(Reason reason, ProveStep step, std::uint32_t detail = 0);
+  // The look of task p18-04, made at most once a flash, when a boot window after a pulse ended
+  // with nothing from the radio: the chip is asked what the pulse did, and the window begins
+  // again where the answer is that it did nothing.
+  StepResult lookAtTheCore(bool scanner);
+
   StepResult stepCheck();
   StepResult stepFlashing(bool rollback);
   StepResult stepBooting(bool rollback);
@@ -427,6 +499,17 @@ class RadioUpdate final : public link::client::RestartWatcher {
   std::uint32_t boot_id_ = 0;
   bool restart_seen_ = false;
   ProveStep prove_step_ = ProveStep::kNone;
+
+  // **What started the image, and what is owed because of it** (task p18-04). All four are set
+  // at the flash and read by the boot window; none survives the run, and a resumed run makes its
+  // own look if its own window ends empty.
+  bool looked_ = false;            // the look has been made for this flash: one, never two
+  bool can_look_ = false;          // an empty window here is worth a look: the start is unconfirmed
+  bool pulse_started_ = false;     // a pulse started this image, so an observation of the line is owed
+  bool over_a_scanner_ = false;    // the radio was running a scanner when this flash began
+  bool watchdog_owed_ = false;     // the debug port started an image over a scanner's watchdog
+  bool watchdog_wait_ = false;     // ... and the radio has answered: waiting that watchdog out
+  std::uint64_t started_ms_ = 0;   // when the image was started: the watchdog's time runs from it
 };
 
 }  // namespace update

@@ -449,6 +449,35 @@ Result Nrf52::writeWords(const FlashRegion& region, std::uint32_t addr, const st
   return restoreConfig(r);
 }
 
+// ---------------------------------------------------------------- what the reset pin is
+
+// UICR.PSELRESET[0] and [1], **read** (task p18-04; PS 4.5.1.62, 4.5.1.63 and 5.3.6.2). Two
+// reads of one word each - the pair is adjacent, but two reads is what the two registers are, and
+// it is what rail R3's sweep counts - and no write, here or anywhere: this firmware does not
+// decide whether a module has a reset pin, it only asks.
+//
+// The answer is `enabled` or not, by the registers' own rule: "All PSELRESET registers have to
+// contain the same value for a pin mapping to be valid. If values are not the same, there will be
+// no nRESET function exposed on a GPIO", and CONNECT (bit 31) is 0 for Connected. A module as RAK
+// ships it holds 18 in both - nRESET on P0.18 - and an erased UICR holds 0xFFFFFFFF, which is
+// Disconnected.
+Result Nrf52::readResetPin(ResetPin* out) {
+  if (out == nullptr) return refused(Status::kBadArgument);
+  *out = ResetPin{};
+  std::uint32_t word = 0;
+  Result r = read(uicr::kPselReset0, &word, 1);
+  if (!r.ok()) return r;
+  out->raw0 = word;
+  r = read(uicr::kPselReset1, &word, 1);
+  if (!r.ok()) return r;
+  out->raw1 = word;
+  out->known = true;
+  out->pin = static_cast<std::uint8_t>(out->raw0 & uicr::kPselResetPinMask);
+  out->port = static_cast<std::uint8_t>((out->raw0 & uicr::kPselResetPortBit) != 0 ? 1 : 0);
+  out->enabled = out->raw0 == out->raw1 && (out->raw0 & uicr::kPselResetConnectBit) == 0;
+  return r;
+}
+
 Result Nrf52::read(std::uint32_t addr, std::uint32_t* out, std::size_t words) {
   Result r = gate();
   if (!r.ok()) return r;

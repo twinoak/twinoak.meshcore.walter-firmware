@@ -110,10 +110,17 @@ struct SupWorld {
     u.boot_due_ms = u.clock.nowMs() + u.boot_delay_ms;
   }
 
+  // **Whether a pulse on the reset line reaches the radio** (task p18-04). False is the unit at
+  // Bellevue as 21 and 22 November read it: the supervisor makes its pulse, counts it, and
+  // nothing of the radio's restarts - its `uptimeS` and `RESETREAS` point at a boot from days
+  // before. A `cure` still arrives if a test set one, which is how a radio the pulse restarted is
+  // told from one that came back by itself.
+  bool reset_line_reaches_the_radio = true;
+
   void onResetPulse() {
     ++reset_pulses_seen;
     if (cure == Rung::kReset) cured = true;
-    radioRestarts();
+    if (reset_line_reaches_the_radio) radioRestarts();
   }
 
   void onKillCycle() {

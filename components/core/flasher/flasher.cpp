@@ -35,6 +35,17 @@ const char* describe(Step step) {
   return "?";
 }
 
+// Task p18-04: which of the two started the image, in the words the console, the journal's story
+// and a report use.
+const char* describe(Started started) {
+  switch (started) {
+    case Started::kNothing: return "nothing started the image";
+    case Started::kResetLine: return "a pulse on the reset line";
+    case Started::kDebugPort: return "a reset through the debug port";
+  }
+  return "?";
+}
+
 namespace {
 
 constexpr std::uint32_t kPage = nrf52::flash::kPageSize;
@@ -139,12 +150,10 @@ Result Flasher::readPage(std::uint32_t page_addr) {
 
 // ---------------------------------------------------------------------------- steps 1 and 2
 
-Result Flasher::begin(const Image& image, const BoardProfile& profile, board::Slot slot,
-                      Plan* plan) {
-  plan->slot = slot;
-  plan->profile = &profile;
-  plan->image = &image;
-  counters_ = Counters{};
+// Step 1 of every call that faces the chip - flash(), verify(), flashTest() and the look of task
+// p18-04 - up to and including the two words of UICR that say what the reset line is.
+Result Flasher::openChip(Plan* plan) {
+  const BoardProfile& profile = *plan->profile;
 
   // The SWD clock in force (`swd.khz`, task p3-03). Read here and not at construction: a Flasher
   // is built once at boot - the console's, the update machine's, the supervisor's - and a person
@@ -154,7 +163,7 @@ Result Flasher::begin(const Image& image, const BoardProfile& profile, board::Sl
   // 0. The slot (task p1-06): the wires are steered to that radio and held for the whole call,
   // before a pin moves - a flash must not have the debug lines taken from under it, and on a
   // single-radio unit a slot other than 0 is refused here, with nothing done.
-  const board::SelectResult selected = slots_.take(slot);
+  const board::SelectResult selected = slots_.take(plan->slot);
   if (selected != board::SelectResult::kOk) {
     return refused(Step::kSelect, board::describe(selected));
   }
@@ -183,6 +192,27 @@ Result Flasher::begin(const Image& image, const BoardProfile& profile, board::Sl
   // stall: wait for it before the first flash read, bounded by an erase's time.
   r = nrf_.waitFlashReady(nrf52::kErasePageTimeoutMs);
   if (!r.ok()) return failed(Step::kConnect, r);
+
+  // **What this module's reset line is** (task p18-04): UICR.PSELRESET[0] and [1], read here,
+  // while the port is open, at every flash and every look - and written nowhere, ever. The answer
+  // decides how finish() starts the image, and it is in the result, the journal and `rak watch`
+  // for a person. A read that fails is not a failed flash: the pair is not the image, and a port
+  // that cannot read two words of UICR will fail at the next thing it is asked anyway. It leaves
+  // `known` false, and a flash with an unknown answer is the flash task p18-01 built - a pulse.
+  (void)nrf_.readResetPin(&plan->reset_pin);
+  return Result{};
+}
+
+Result Flasher::begin(const Image& image, const BoardProfile& profile, board::Slot slot,
+                      Plan* plan) {
+  plan->slot = slot;
+  plan->profile = &profile;
+  plan->image = &image;
+  counters_ = Counters{};
+
+  Result opened = openChip(plan);
+  if (!opened.ok()) return opened;
+  nrf52::Result r;
 
   // The SoftDevice's own statement of where it ends (flasher.h, kSoftDeviceInfoAddress). An image
   // linked for the profile's start runs nowhere else; a chip without a SoftDevice, or with
@@ -527,18 +557,55 @@ Result Flasher::settingsValidate(Plan* plan) {
 // read back in DHCSR.S_RESET_ST, a pin cannot) - the boot window's HELLO is the confirmation now -
 // and a pulse the pin driver refuses leaves the radio halted, which the result says and the
 // supervisor's power cycle is the way out of.
+// **And the one case where a pulse cannot work** (task p18-04). The pulse above is a pin going
+// low, and a module whose UICR.PSELRESET does not put nRESET on a pin has no reset pin at all:
+// "If values are not the same, there will be no nRESET function exposed on a GPIO. As a result,
+// the device will always start independently of the levels present on any of the GPIOs"
+// (PS 4.5.1.62). On such a module the pulse of task p18-01 starts nothing and the image is left
+// halted where the flash left it - an apply that rolls back and ends `stuck`, and a session whose
+// scanner never speaks. So where UICR says the pin reset is **not** enabled the image is started
+// the way every flash started it before task p18-01: a soft reset over the debug port, while the
+// port is still open, which is why that happens before close() and the pulse after it.
+//
+// The cost of that exit is the one task p18-01 removed - a soft reset does not clear a watchdog a
+// scanner started (PS 5.3.6.8's "Reset behavior" table) - and it is paid where it must be: the
+// update machine waits that watchdog out before it begins proving (core/update/radio_update.h,
+// kScannerWatchdogWaitMs). Where UICR is unknown - a port that never got that far - the pulse is
+// what happens, which is task p18-01's flash unchanged.
 Result Flasher::finish(Plan* plan, Result r, bool reset) {
+  const bool start = reset && plan->halted;
+  // A module with no reset pin: the debug port, and never the pulse - a pulse that cannot work is
+  // not tried, whether or not the port manages the reset.
+  const bool no_reset_pin = plan->reset_pin.known && !plan->reset_pin.enabled;
+  if (start && no_reset_pin) {
+    const nrf52::Result reset_through_port = nrf_.systemReset();
+    if (reset_through_port.ok()) {
+      r.reset_issued = true;
+      plan->started = Started::kDebugPort;
+    } else if (r.ok()) {
+      r = failed(Step::kReset, reset_through_port);
+      r.why = "the pin reset is not enabled and the debug port would not start the image";
+    }
+  }
   if (r.step != Step::kPins && r.step != Step::kSelect) nrf_.close();
   pins_.swdRelease();
-  if (reset && plan->halted) {
+  if (start && !no_reset_pin) {
     const board::Outcome pulsed = pins_.resetPulse();
     if (pulsed == board::Outcome::kOk) {
       r.reset_issued = true;
+      plan->started = Started::kResetLine;
     } else if (r.ok()) {
       r.outcome = Outcome::kFailed;
       r.step = Step::kReset;
       r.why = board::describe(pulsed);
     }
+  }
+  r.reset_pin = plan->reset_pin;
+  r.started = plan->started;
+  r.core = plan->core;
+  // What UICR said, kept with the line's own record for `rak watch` and the report (task p18-04).
+  if (plan->reset_pin.known) {
+    pins_.noteResetPin(plan->reset_pin.enabled, plan->reset_pin.pin, plan->reset_pin.port);
   }
   // The slot last of all: nothing of this call faces the radio any more, so another slot may be
   // selected now (task p1-06).
@@ -550,6 +617,46 @@ Result Flasher::finish(Plan* plan, Result r, bool reset) {
   r.counters = counters_;
   return r;
 }
+
+// **The look** (task p18-04, deliverable 3). The flash ended in a pulse and nothing of the
+// radio's came inside the boot window. There are three things that can be, and the chip is the
+// only one who knows which: the pulse never reached it and the core is still halted where the
+// flash left it; the pulse worked and the image does not speak; or the port cannot be had at all.
+//
+// So the port is opened once more and `DHCSR` read. **Halted** is the dead line: the image is
+// started through the debug port and the caller's window begins again. Anything else - running,
+// sleeping, locked up, or a read that failed - sends nothing: a core that is running has been
+// reset already, and a flash does not reset a radio twice to find out why it is quiet.
+//
+// Nothing is written to flash here and nothing is halted: the one write this can make is
+// `AIRCR.SYSRESETREQ`, and only on a halted core.
+Result Flasher::startAgain(const BoardProfile& profile, board::Slot slot) {
+  start_ms_ = clock_.nowMs();
+  counters_ = Counters{};
+  Plan plan;
+  plan.slot = slot;
+  plan.profile = &profile;
+  Result r = openChip(&plan);
+  if (!r.ok()) return finish(&plan, r, false);
+  nrf52::CoreState state = nrf52::CoreState::kUnknown;
+  const nrf52::Result read = nrf_.coreState(&state);
+  plan.core = state;
+  if (!read.ok()) return finish(&plan, failed(Step::kReset, read), false);
+  if (state == nrf52::CoreState::kHalted) {
+    const nrf52::Result reset_through_port = nrf_.systemReset();
+    if (!reset_through_port.ok()) {
+      Result f = failed(Step::kReset, reset_through_port);
+      f.why = "the core is still halted and the debug port would not start the image";
+      return finish(&plan, f, false);
+    }
+    plan.started = Started::kDebugPort;
+    r.reset_issued = true;
+  }
+  r.step = Step::kDone;
+  return finish(&plan, r, false);
+}
+
+void Flasher::noteResetLine(bool restarted) { pins_.noteResetLine(restarted); }
 
 // ----------------------------------------------------------------------------- the three
 

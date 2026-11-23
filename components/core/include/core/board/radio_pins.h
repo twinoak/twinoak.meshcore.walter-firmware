@@ -62,6 +62,33 @@ const char* describe(RadioPower power);
 constexpr std::uint32_t kResetPulseMs = 100;
 constexpr std::uint32_t kResetSpacingMs = 1000;
 
+// **What this unit's reset line has been seen to do** (task p18-04, deliverable 5). A pulse on
+// nRESET gets no confirmation from the chip - `SYSRESETREQ` can be read back in `DHCSR`, a pin
+// cannot (task p18-01's report) - so the only evidence there is is what happened afterwards: a
+// radio that booted, or a core still halted where the flash left it. Whoever sees one says so
+// here; it is kept over a reset and a sleep in the same retained record as the spacing, and read
+// by `rak watch` and the check-in's report.
+//
+// **It is for a person to read, and nothing decides by it.** What a flash does with the line is
+// decided at that flash from what the chip says about UICR.PSELRESET, every time
+// (core/flasher/flasher.cpp): a record of what happened last week is not how a unit is flashed.
+enum class ResetLineSeen : std::uint8_t {
+  kUntried = 0,   // nothing has been seen either way
+  kRestarts = 1,  // a pulse was seen to restart the radio
+  kDead = 2,      // a pulse was seen to leave the radio exactly where it was
+};
+const char* describe(ResetLineSeen line);
+
+// What is known about the reset line, for `rak watch` and the report: the observation above, and
+// what UICR last said when a flash had the port open (core/nrf52/nrf52.h, ResetPin).
+struct ResetLineKnown {
+  ResetLineSeen seen = ResetLineSeen::kUntried;
+  bool uicr_read = false;     // a flash has read UICR.PSELRESET on this unit
+  bool pin_enabled = false;   // and said the pin reset is enabled
+  std::uint8_t pin = 0;       // on this pin
+  std::uint8_t port = 0;      // of this port
+};
+
 // The dual adapter's selector, programmed by clocking two bits in on SWDIO while nRESET is held
 // low (the hardware repository's DUAL-RAK4630-FEASIBILITY.md §3, at commit b798aab). The window
 // numbers are that section's:
@@ -139,6 +166,13 @@ class RadioPins {
 
   // Rule 2. Waits out the spacing, then output-low (open-drain) for kResetPulseMs, then input.
   Outcome resetPulse();
+
+  // What a pulse was seen to do, and what UICR said (task p18-04). Both go in the retained
+  // record; the observation replaces whatever was there, because the newest reading is the one
+  // that is true - a wire resoldered or a module reprovisioned is exactly this changing.
+  void noteResetLine(bool restarted);
+  void noteResetPin(bool enabled, std::uint8_t pin, std::uint8_t port);
+  const ResetLineKnown& resetLine() const { return line_; }
 
   // Rules 3 and 4. Releases everything, drives KILL high for off_ms, stops driving it, waits for
   // the rail to settle, and returns to the safe state - after which the UART may be enabled
@@ -230,8 +264,18 @@ class RadioPins {
     const std::uint8_t gpio_;
   };
 
-  struct Record {  // retained across resets and deep sleep: interfaces::RetainedSlot::kResetRecord
+  // Retained across resets and deep sleep: interfaces::RetainedSlot::kResetRecord. It grew by the
+  // reset line's record in task p18-04, and a record of another size is not read back
+  // (interfaces/retained.h), so the first boot of the release that carries this finds none: the
+  // spacing is then the full second, as it is after any power-up, and the line's record is
+  // *untried* until the next flash and the next pulse say otherwise.
+  struct Record {
     std::uint64_t last_reset_end_ms;
+    std::uint8_t seen;         // ResetLine
+    std::uint8_t uicr_read;
+    std::uint8_t pin_enabled;
+    std::uint8_t pin;
+    std::uint8_t port;
   };
 
   bool input(std::uint8_t gpio);
@@ -239,6 +283,7 @@ class RadioPins {
   Outcome failed();
   void waitForRail();
   void recordResetEnd();
+  void storeRecord();
 
   interfaces::Pins& pins_;
   interfaces::Clock& clock_;
@@ -253,6 +298,7 @@ class RadioPins {
   bool reset_asserted_ = false;
   bool kill_driven_ = false;
   bool last_reset_known_ = false;
+  ResetLineKnown line_;
   std::uint32_t selector_programs_ = 0;
   std::uint64_t last_reset_end_ms_ = 0;
   std::uint64_t rail_on_at_ms_ = 0;  // the rail is believed on from this time

@@ -88,16 +88,33 @@ struct Counters {
   std::uint32_t elapsed_ms = 0;
 };
 
+// What started the image this flash wrote (task p18-04). A unit whose module has the pin reset
+// enabled gets the pulse of task p18-01; one whose module has not gets the exit every flash had
+// before it, a soft reset through the debug port - because a pulse on a pin that is not nRESET
+// cannot start anything, and the image would be left halted.
+enum class Started : std::uint8_t {
+  kNothing = 0,     // nothing was started: a refusal, a failure before the halt, or a verify
+  kResetLine = 1,   // a pulse on nRESET (RadioPins::resetPulse())
+  kDebugPort = 2,   // a soft reset over the debug port (Nrf52::systemReset())
+};
+const char* describe(Started started);
+
 struct Result {
   Outcome outcome = Outcome::kOk;
   Step step = Step::kDone;    // the step that failed, or kDone
   nrf52::Result nrf;          // on kFailed: the nRF52 layer's result
   std::uint32_t address = 0;  // the flash address concerned, when there is one
   const char* why = "";       // one phrase for a person
-  // The image was started by a pulse on the reset line (task p18-01). False after a refusal, a
-  // failure before the halt, and a verify - and when the pulse itself was refused, which is a
-  // kFailed at kReset with the pin layer's word in `why`.
+  // The image was started (task p18-01, p18-04). False after a refusal, a failure before the
+  // halt, and a verify - and when the start itself was refused, which is a kFailed at kReset with
+  // the pin layer's or the nRF52 layer's word.
   bool reset_issued = false;
+  Started started = Started::kNothing;  // and by which of the two
+  // What UICR said about the reset pin at this flash, read while the port was open (task p18-04).
+  // `known` false when the port never got that far, or the read failed.
+  nrf52::ResetPin reset_pin;
+  // startAgain() only: what the core was doing when the look was made.
+  nrf52::CoreState core = nrf52::CoreState::kUnknown;
   // verify() only: the settings page holds a record the bootloader accepts for this image.
   bool settings_valid = false;
   bootloader_settings::Record settings;
@@ -136,6 +153,22 @@ class Flasher {
   Result verify(const Image& image, const BoardProfile& profile, board::Slot slot = {});
   Result flashTest(const BoardProfile& profile, ProgressSink* progress, board::Slot slot = {});
 
+  // **The look after a flash whose pulse nothing answered** (task p18-04, deliverable 3): the
+  // debug port opened once more and the core's state read, and - only where the core is still
+  // halted where the flash left it, which is a pulse that did not reach the chip - the image
+  // started through the debug port. Nothing is written to flash and nothing is sent to a core
+  // that is running. `core` says what the look found, `started` whether anything was sent, and
+  // `reset_pin` what UICR says; a port that cannot be opened is the refusal or failure it always
+  // was. The caller makes one such look a flash (core/update/radio_update.cpp).
+  Result startAgain(const BoardProfile& profile, board::Slot slot = {});
+
+  // What a pulse on the reset line was seen to do, written where the line's record lives
+  // (core/board/radio_pins.h, RadioPins::noteResetLine). The flasher is the object that both
+  // pulses the line and holds the pins, so the update machine - which is the one thing that can
+  // tell whether a boot answered a pulse - says it through here. The supervisor holds the pins
+  // itself and says it directly.
+  void noteResetLine(bool restarted);
+
   static constexpr std::uint32_t kTestPages = 2;
   static constexpr std::uint32_t kMaxPages = nrf52::flash::kPagesNrf52840;
   static constexpr std::uint32_t kPageWords = nrf52::flash::kPageSize / 4;
@@ -159,9 +192,13 @@ class Flasher {
     bool is_application = false;  // load address = the region's start: the settings page is ours
     bool any_change = false;
     bool halted = false;
+    nrf52::ResetPin reset_pin;             // what UICR said, read by openChip() (task p18-04)
+    Started started = Started::kNothing;   // what finish(), or startAgain(), started the image by
+    nrf52::CoreState core = nrf52::CoreState::kUnknown;  // startAgain()'s look
     PageClass klass[kMaxPages] = {};
   };
 
+  Result openChip(Plan* plan);  // step 1: the slot, the lines, the port, the chip, UICR's two words
   Result begin(const Image& image, const BoardProfile& profile, board::Slot slot, Plan* plan);  // steps 1 and 2 (kImage)
   Result scan(Plan* plan, ProgressSink* progress);
   Result programPages(Plan* plan, ProgressSink* progress);
