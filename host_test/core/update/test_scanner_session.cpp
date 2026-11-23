@@ -729,8 +729,17 @@ TEST_CASE("every stage and every ending has a word and a phrase, and only restor
     CHECK(std::string(upd::name(ending)) != "?");
     CHECK(std::string(upd::describe(ending)) != "?");
   }
-  // The bound a wake asks for is two passes of the update machine and the ceiling, and it is one
-  // a wake may ask for.
-  CHECK(upd::kSessionBoundMs == upd::kWholeRunMs + upd::kSessionCeilingMs);
+  // The bound a wake asks for is two passes of the update machine, the ceiling, and - since task
+  // p18-04 - the watchdog a scanner leaves running for the golden image's proof to wait out; and
+  // it is one a wake may ask for.
+  CHECK(upd::kSessionBoundMs ==
+        upd::kWholeRunMs + upd::kSessionCeilingMs + upd::kScannerWatchdogWaitMs);
   CHECK(upd::kSessionBoundMs <= core::cycle::kRaisedBoundMax);
+  // And one pass has the second boot window in it: the look, and the window that begins again
+  // where a pulse reached nothing (task p18-04).
+  CHECK(upd::kOnePassMs ==
+        upd::kFlashWindowMs + upd::kBootWindowMs + upd::kStartAgainWindowMs + upd::kProvingPeriodMs);
+  MESSAGE("a session may be given " << upd::kSessionBoundMs / 1000 << " s of a wake's "
+                                    << core::cycle::kRaisedBoundMax / 1000 << " s; one pass is "
+                                    << upd::kOnePassMs / 1000 << " s");
 }

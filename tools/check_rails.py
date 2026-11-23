@@ -277,6 +277,12 @@ FORBIDDEN_REGISTERS = ("kEraseAll", "kEraseUicr", "kErasePagePartial", "uicr::",
 REGS_HEADER = "components/core/include/core/nrf52/regs.h"
 DOOR_SOURCE = "components/core/nrf52/provision_door.cpp"
 MAY_NAME_FORBIDDEN = (REGS_HEADER, DOOR_SOURCE)
+# And since task p18-04 a third file, with a narrower licence than either: the nRF52 layer reads
+# UICR.PSELRESET[0] and [1] to find out whether the module has a pin reset at all, and that is the
+# whole of what it may name - `uicr::kPselReset...`, in a line that does not write. Anything else
+# of the list in that file, or a write beside one of these names, is a hit like any other.
+RESET_PIN_READER = "components/core/nrf52/nrf52.cpp"
+PSELRESET_NAME = re.compile(r"uicr::kPselReset\w*")
 
 
 def rail_no_chip_erase(r):
@@ -286,7 +292,23 @@ def rail_no_chip_erase(r):
     - and nowhere else under components/ and main/. Rail R3b holds the door to its one caller."""
     pattern = "|".join(re.escape(name) for name in FORBIDDEN_REGISTERS)
     files = [p for p in sources("components", "main") if p not in MAY_NAME_FORBIDDEN]
-    hits = grep(pattern, files, code_only=False)
+    hits = [h for h in grep(pattern, files, code_only=False) if h[0] != RESET_PIN_READER]
+    # The reset pin's reader, by its own rule (task p18-04): PSELRESET's names struck out, nothing
+    # else of the list may be left, and no line of it may write.
+    reader_hits = grep(pattern, [RESET_PIN_READER], code_only=False)
+    reads = 0
+    for path, line, text in reader_hits:
+        rest = PSELRESET_NAME.sub("", text)
+        if re.search(pattern, rest) or "write" in rest:
+            hits.append((path, line, text))
+        elif "read(" in text:
+            reads += 1
+    if reads != 2:
+        r.broken("%s does not read UICR.PSELRESET[0] and [1] (found %d read(s) of them): the one "
+                 "UICR read this firmware has is gone, or it is no longer a read" % (RESET_PIN_READER, reads))
+    else:
+        r.looked_at("%s names UICR in %d line(s): the two reads of PSELRESET and no write"
+                    % (RESET_PIN_READER, len(reader_hits)))
     if hits:
         r.broken("a forbidden register is named outside %s:" % " and ".join(MAY_NAME_FORBIDDEN), shown(hits))
     else:

@@ -109,10 +109,16 @@ constexpr std::size_t kStepBytesExternal = 65536;
 constexpr std::uint32_t kSessionCeilingMs = 20u * 60 * 1000;
 
 // What a wake that runs a session may be held open for: two passes of the radio's update machine
-// (the scanner flashed and proved, the golden image flashed and proved - `kWholeRunMs`, 38 min
-// 40 s by the unit's own journal) and the ceiling, and not a second more. `core/cycle/wake_guard.h`
-// caps what a wake may ask for at `kRaisedBoundMax`, and this is the number that set it.
-constexpr std::uint32_t kSessionBoundMs = kWholeRunMs + kSessionCeilingMs;
+// (the scanner flashed and proved, the golden image flashed and proved - `kWholeRunMs`) and the
+// ceiling, and not a second more. `core/cycle/wake_guard.h` caps what a wake may ask for at
+// `kRaisedBoundMax`, and this is the number that set it.
+//
+// **And the watchdog the scanner leaves behind** (task p18-04): on a unit whose reset line does
+// not reach its radio, the golden image is started by a soft reset, which does not clear the
+// watchdog the scanner started - so the proof of that one pass waits `kScannerWatchdogWaitMs`
+// before it begins. It is the session's own cost and nobody else's: the scanner's own pass feeds
+// that watchdog from its loop, so one of them is all a session ever pays.
+constexpr std::uint32_t kSessionBoundMs = kWholeRunMs + kSessionCeilingMs + kScannerWatchdogWaitMs;
 
 // How often the port is read while a step's lines are coming in. A tenth of a second, as the
 // update machine's own idle step is: a `scope` frame a second and a `sweep` line every few

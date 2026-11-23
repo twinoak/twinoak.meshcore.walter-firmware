@@ -175,6 +175,15 @@ struct ChipRadio {
       boot_pending = false;
       radioBoots();
     }
+    // **A halted core answers nothing** (task p18-04). The flasher halts the core before it
+    // writes and the image is started by a reset at the end - and where that reset reached
+    // nothing, because the line is dead or there is no reset pin, the core is still halted. A
+    // radio whose CPU is stopped is as dark as one in its bootloader, and without this the
+    // scripted radio would go on answering as the firmware the flash has just replaced.
+    if (chip.coreHalted()) {
+      radio.deaf = true;
+      radio_runs = false;
+    }
     chip.serviceWatchdog();
     if (restart_at_ms != 0 && now >= restart_at_ms) {
       restart_at_ms = 0;

@@ -28,6 +28,16 @@ const char* describe(RadioPower power) {
   return "?";
 }
 
+// Task p18-04: what a pulse on the reset line has been seen to do on this unit.
+const char* describe(ResetLineSeen line) {
+  switch (line) {
+    case ResetLineSeen::kUntried: return "nothing has been seen of it either way";
+    case ResetLineSeen::kRestarts: return "a pulse was seen to restart the radio";
+    case ResetLineSeen::kDead: return "a pulse was seen to restart nothing";
+  }
+  return "?";
+}
+
 // ---- the reset line ---------------------------------------------------------------------------
 
 // Level first, open-drain second: an open-drain pin written false drives low the moment it is
@@ -87,11 +97,21 @@ RadioPins::RadioPins(interfaces::Pins& pins, interfaces::Clock& clock,
   // ESP32-S3's own power-up glitch gave the radio (BENCH-BREADBOARD.md §6 caveat 3), so the first
   // pulse after a power-up is never the second tap of a double-tap (caveat 4).
   Record record{};
-  if (retained_.load(interfaces::RetainedSlot::kResetRecord, &record, sizeof record) &&
-      record.last_reset_end_ms <= now) {
+  const bool had_record = retained_.load(interfaces::RetainedSlot::kResetRecord, &record, sizeof record);
+  if (had_record && record.last_reset_end_ms <= now) {
     last_reset_end_ms_ = record.last_reset_end_ms;
   } else {
     last_reset_end_ms_ = now;
+  }
+  // The reset line's record (task p18-04) is kept whatever the clock did: it is not about time.
+  if (had_record) {
+    line_.seen = record.seen <= static_cast<std::uint8_t>(ResetLineSeen::kDead)
+                     ? static_cast<ResetLineSeen>(record.seen)
+                     : ResetLineSeen::kUntried;
+    line_.uicr_read = record.uicr_read != 0;
+    line_.pin_enabled = record.pin_enabled != 0;
+    line_.pin = record.pin;
+    line_.port = record.port;
   }
   last_reset_known_ = true;
   safe();
@@ -152,11 +172,36 @@ std::uint32_t RadioPins::msUntilResetAllowed() {
   return since >= kResetSpacingMs ? 0 : static_cast<std::uint32_t>(kResetSpacingMs - since);
 }
 
+void RadioPins::storeRecord() {
+  const Record record{last_reset_end_ms_,
+                      static_cast<std::uint8_t>(line_.seen),
+                      static_cast<std::uint8_t>(line_.uicr_read ? 1 : 0),
+                      static_cast<std::uint8_t>(line_.pin_enabled ? 1 : 0),
+                      line_.pin,
+                      line_.port};
+  retained_.store(interfaces::RetainedSlot::kResetRecord, &record, sizeof record);
+}
+
 void RadioPins::recordResetEnd() {
   last_reset_end_ms_ = clock_.nowMs();
   last_reset_known_ = true;
-  const Record record{last_reset_end_ms_};
-  retained_.store(interfaces::RetainedSlot::kResetRecord, &record, sizeof record);
+  storeRecord();
+}
+
+// Task p18-04: an observation of what a pulse did, from whoever could see it - the update
+// machine, when a boot window after a flash ended one way or the other, and the supervisor's
+// second rung. The newest observation wins.
+void RadioPins::noteResetLine(bool restarted) {
+  line_.seen = restarted ? ResetLineSeen::kRestarts : ResetLineSeen::kDead;
+  storeRecord();
+}
+
+void RadioPins::noteResetPin(bool enabled, std::uint8_t pin, std::uint8_t port) {
+  line_.uicr_read = true;
+  line_.pin_enabled = enabled;
+  line_.pin = pin;
+  line_.port = port;
+  storeRecord();
 }
 
 Outcome RadioPins::resetPulse() {

@@ -108,6 +108,11 @@ struct UpdateWorld {
 
   // The knobs.
   Boot boot = Boot::kNormal;
+  // Whether the scanner image on this bench starts the chip's watchdog at its boot (task p18-04).
+  // True is NoiseScope as it is built today; false is a scanner build with no Wdt.h, which is
+  // what a repeater started over it inherits nothing from - the case where the proof's wait for
+  // that watchdog has to end by the clock rather than by a reset.
+  bool scanner_starts_watchdog = true;
   std::string old_version;
   std::uint32_t boot_delay_ms = 1500;
   std::uint64_t restart_at_ms = 0;  // the radio restarts itself at this time (0 = never)
@@ -221,8 +226,10 @@ struct UpdateWorld {
       radio.scanner = true;  // NoiseScope: lines, no frames (§9)
       if (boot == Boot::kSilent) radio.deaf = true;  // a scanner build whose console never comes up
       // The hardware watchdog, started by this image and fed by its loop (kScannerWatchdogMs).
-      chip.startWatchdog(kScannerWatchdogMs);
-      chip.watchdog_fed = true;
+      if (scanner_starts_watchdog) {
+        chip.startWatchdog(kScannerWatchdogMs);
+        chip.watchdog_fed = true;
+      }
       radio.restart(false);
       return;
     }
@@ -270,6 +277,15 @@ struct UpdateWorld {
     if (boot_pending && now >= boot_due_ms) {
       boot_pending = false;
       radioBoots();
+    }
+    // **A halted core answers nothing** (task p18-04). The flasher halts the core before it
+    // writes and the image is started by a reset at the end - and where that reset reached
+    // nothing, because the line is dead or there is no reset pin, the core is still halted. A
+    // radio whose CPU is stopped is as dark as one in its bootloader, and without this the
+    // scripted radio would go on answering as the firmware the flash has just replaced.
+    if (chip.coreHalted()) {
+      radio.deaf = true;
+      radio_runs = false;
     }
     // The watchdog gets the time that has passed under whatever is running now. A soft reset did
     // not clear it, so a repeater booted over a scanner is reset here 60 s later - which is the

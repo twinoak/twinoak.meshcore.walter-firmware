@@ -236,6 +236,11 @@ enum class RungOutcome : std::uint8_t {
   kRefusedBattery = 5,   // the battery is below this rung's threshold
   kFailed = 6,           // the pins, the flasher or the update machine refused or failed
   kSkipped = 7,          // a boot loop skips rungs 1 and 2
+  // **It was done, the radio came back, and nothing of the radio's restarted** (task p18-04):
+  // rung 2's pulse where the radio's boot is the boot it was in before it. The incident is cured
+  // all the same - the radio answers - but the rung is not what cured it, and the reset line has
+  // an observation out of it (core/board/radio_pins.h, ResetLine).
+  kCameBack = 8,
 };
 const char* describe(RungOutcome outcome);
 
@@ -684,7 +689,8 @@ class Supervisor final : public link::client::RestartWatcher {
   void refreshStatus();
 
   void beginIncident(Cause cause);
-  void endIncident(Outcome outcome, Rung cured_at, StopReason stop);
+  void endIncident(Outcome outcome, Rung cured_at, StopReason stop,
+                   RungOutcome how = RungOutcome::kCured);
   void noteRung(Rung rung, RungOutcome outcome);
   Incident* current();
   Step enter(State next, const char* note);
@@ -733,6 +739,11 @@ class Supervisor final : public link::client::RestartWatcher {
   bool restart_seen_ = false;
   std::uint32_t boot_id_ = 0;
   bool boot_id_known_ = false;
+  // What rung 2's pulse was answered by (task p18-04): the boot the radio was in before the
+  // pulse, whether that was known at all, and whether any restart has been seen since it.
+  std::uint32_t pulse_boot_id_ = 0;
+  bool pulse_boot_id_known_ = false;
+  bool pulse_restart_ = false;
   std::uint8_t reset_reason_ = 0;
   // The two STATUS readings a boot loop shows in: the last uptime and when it was asked.
   std::uint32_t last_uptime_s_ = 0;

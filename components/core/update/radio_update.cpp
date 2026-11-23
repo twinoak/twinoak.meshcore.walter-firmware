@@ -113,6 +113,13 @@ const char* describe(Reason reason) {
     case Reason::kStore: return "the image store refused";
     case Reason::kNoImageToReturnTo: return "no image to return to";
     case Reason::kIdentityLost: return "the radio refuses: its identity is lost, and no image mends that";
+    case Reason::kStartedThroughPort:
+      return "the pulse reached nothing: the core was still halted, and the debug port started the image";
+    case Reason::kPulseStarted: return "the pulse started the image: it is the image that is quiet";
+    case Reason::kLookFailed: return "the chip could not be asked what the pulse did";
+    case Reason::kAfterTheWatchdog: return "the proof begins at the boot after the scanner's watchdog";
+    case Reason::kWatchdogTimePassed:
+      return "the proof begins: the scanner's watchdog has had its longest time and reset nothing";
   }
   return "?";
 }
@@ -240,6 +247,16 @@ StepResult RadioUpdate::enter(State next, const char* note, Reason reason, Prove
   return r;
 }
 
+// A line of the story in the state the machine is already in (task p18-04): what the look found,
+// and what the proof is waiting for. The journal refusing is what it is anywhere else - the
+// machine stops where it is and a resume() finds the last entry it did write.
+bool RadioUpdate::note(Reason reason, ProveStep step, std::uint32_t detail) {
+  if (journal(state_, reason, step, detail)) return true;
+  reason_ = Reason::kJournal;
+  status_.reason = reason_;
+  return false;
+}
+
 StepResult RadioUpdate::waiting(const char* note) {
   StepResult r;
   r.before = state_;
@@ -347,6 +364,14 @@ bool RadioUpdate::start(const Request& request) {
   }
   clear();
   request_ = request;
+  // Task p18-04: nothing of the last run's start is owed by this one.
+  looked_ = false;
+  can_look_ = false;
+  pulse_started_ = false;
+  over_a_scanner_ = false;
+  watchdog_owed_ = false;
+  watchdog_wait_ = false;
+  started_ms_ = 0;
   if (request.kind == Kind::kFirstInstall) request_.link_known_down = true;
   status_.kind = request_.kind;
   status_.slot = request_.slot;
@@ -456,6 +481,21 @@ bool RadioUpdate::resume() {
     next_hello_ms_ = window_started_ms_;
     restart_seen_ = false;
     radio_.radioWasReset();  // what this Walter believed about the radio is from before its own restart
+    // **A resumed boot does not know what started the image** (task p18-04), and two things
+    // follow. One: an empty window is worth the look, because a Walter that died between the
+    // pulse and the look leaves exactly the radio the look is for - halted where the flash left
+    // it - and the look sends nothing to a core that is running. Two: a watchdog a scanner
+    // started may still be counting, and the one proof that cannot afford a restart it did not
+    // cause is the golden image's - a failure there is `stuck` and the end of a session - so that
+    // proof waits the watchdog out once. Nothing of this is owed on the candidate's own path: a
+    // restart there costs a rollback, which is what a rollback is for.
+    looked_ = false;
+    can_look_ = true;
+    pulse_started_ = false;  // no pulse of this run's: no observation of the line is owed
+    over_a_scanner_ = rollback_image_;
+    watchdog_owed_ = rollback_image_;
+    watchdog_wait_ = false;
+    started_ms_ = window_started_ms_;
   }
   return true;
 }
@@ -566,18 +606,43 @@ StepResult RadioUpdate::stepFlashing(bool rollback) {
   image.source = &bytes_;
   image.load_address = image_.load_address;
   image.sha256 = image_.sha256;
+  // **What the radio was running when this flash began** (task p18-04, deliverable 4), read
+  // before the flash because afterwards there is nothing left to read it from: a scanner is the
+  // one image that starts the chip's watchdog, and a watchdog it started outlives anything but a
+  // pin, a brownout or a power-on reset.
+  over_a_scanner_ = radio_.mode() == link::client::Mode::kText ||
+                    (radio_.session().up && radio_.session().role == link::role::kScanner);
   const flasher::Result r = flasher_.flash(image, *profile, progress_, request_.slot);
   if (!r.ok()) {
     return fail(Reason::kFlashFailed, ProveStep::kNone, static_cast<std::uint32_t>(r.step));
   }
-  // **The boot that is proved is the boot the flasher's pulse started** (task p18-01). The
-  // flasher's last act is a pulse on the reset line - and its only one: there is no soft reset
-  // before it any more, so there is no earlier boot whose EV_BOOT could be read here as this
-  // one's, and none whose late arrival inside the proving period would read as a restart. The
-  // window begins now, which is after the pulse, and everything the client believed about the
-  // radio goes first.
+  // **The boot that is proved is the boot the flasher started** (task p18-01), and since task
+  // p18-04 the flash says which of the two started it. The flasher's last act is one reset and
+  // only one - a pulse on the reset line where the module has a reset pin, a soft reset over the
+  // debug port where UICR says it has not - so there is no earlier boot whose EV_BOOT could be
+  // read here as this one's, and none whose late arrival inside the proving period would read as
+  // a restart. The window begins now, which is after that reset, and everything the client
+  // believed about the radio goes first.
+  //
+  // Two things are owed from here (task p18-04):
+  //   a pulse gets no confirmation, so an empty window is worth one look at the chip;
+  //   a soft reset leaves a scanner's watchdog counting, and the image that boots feeds nothing
+  //   unless it is a scanner itself, so the proof waits that watchdog out.
+  started_ms_ = clock_.nowMs();
+  looked_ = false;
+  pulse_started_ = r.started == flasher::Started::kResetLine;
+  // A pulse is the start nothing confirms, so it is the start a look is for; a soft reset over
+  // the debug port answered S_RESET_ST before it returned and needs none.
+  can_look_ = pulse_started_;
+  watchdog_owed_ = r.started == flasher::Started::kDebugPort && over_a_scanner_ &&
+                   request_.kind != Kind::kRoleScanner;
+  watchdog_wait_ = false;
+  status_.started = r.started;
+  status_.looked = false;
+  status_.core_at_look = nrf52::CoreState::kUnknown;
+  status_.waited_for_watchdog = false;
   radio_.radioWasReset();
-  window_started_ms_ = clock_.nowMs();
+  window_started_ms_ = started_ms_;
   next_hello_ms_ = window_started_ms_;
   restart_seen_ = false;
   return enter(rollback ? State::kRollbackBooting : State::kBooting, "flashed; the radio was reset");
@@ -606,13 +671,108 @@ StepResult RadioUpdate::stepBooting(bool rollback) {
     }
   }
   if (up || (scanner && text)) {
+    // **The pulse worked** (task p18-04, deliverable 5): the radio is there, and a boot inside
+    // the window after a pulse is the only evidence this firmware can have that the reset line
+    // reaches the chip. Said once, and the record is a person's to read.
+    if (pulse_started_) {
+      flasher_.noteResetLine(true);
+      pulse_started_ = false;
+    }
+    // **And the watchdog a scanner left behind** (deliverable 4). The image that is answering was
+    // started by a soft reset over a scanner, so the watchdog that scanner started is still
+    // counting and this image feeds nothing: it will be reset once, inside kScannerWatchdogMs.
+    // The proving period begins at the boot that follows that reset - a restart in the proof is a
+    // failure, and this one is not the image's fault - or when the watchdog's longest time has
+    // passed without one.
+    if (watchdog_owed_) {
+      watchdog_owed_ = false;
+      watchdog_wait_ = true;
+      status_.waited_for_watchdog = true;
+      // The boot this is: its own EV_BOOT is a restart to everything that watches, and it is not
+      // the one being waited for.
+      restart_seen_ = false;
+    }
+    if (watchdog_wait_) {
+      if (restart_seen_) {
+        watchdog_wait_ = false;
+        if (!note(Reason::kAfterTheWatchdog, ProveStep::kHello,
+                  static_cast<std::uint32_t>(clock_.nowMs() - started_ms_))) {
+          return waiting(describe(Reason::kJournal));
+        }
+        radio_.radioWasReset();
+        window_started_ms_ = clock_.nowMs();
+        next_hello_ms_ = window_started_ms_;
+        restart_seen_ = false;
+        return waiting("the scanner's watchdog reset the radio: the boot after it is the one to prove");
+      }
+      if (clock_.nowMs() - started_ms_ < kScannerWatchdogWaitMs) {
+        return waiting("waiting out the watchdog the scanner left running");
+      }
+      watchdog_wait_ = false;
+      if (!note(Reason::kWatchdogTimePassed, ProveStep::kHello,
+                static_cast<std::uint32_t>(clock_.nowMs() - started_ms_))) {
+        return waiting(describe(Reason::kJournal));
+      }
+    }
     beginProving();
     return enter(rollback ? State::kRollbackProving : State::kProving, "the radio answered");
   }
   if (clock_.nowMs() - window_started_ms_ >= window) {
+    // **Nothing came, and the flash left by a pulse nothing confirms** (task p18-04, deliverable
+    // 3): ask the chip what that pulse did, once a flash, before this is called a dead image.
+    if (can_look_ && !looked_) return lookAtTheCore(scanner);
     return fail(scanner ? Reason::kNotAScanner : Reason::kNoBoot, scanner ? ProveStep::kScanner : ProveStep::kHello);
   }
   return waiting("waiting for the radio to boot");
+}
+
+// The look (task p18-04, deliverable 3). One a flash: `looked_` is set first, so every path out
+// of here is a path that cannot come back - a second empty window is the ending it always was.
+StepResult RadioUpdate::lookAtTheCore(bool scanner) {
+  looked_ = true;
+  status_.looked = true;
+  const Reason empty = scanner ? Reason::kNotAScanner : Reason::kNoBoot;
+  const ProveStep step = scanner ? ProveStep::kScanner : ProveStep::kHello;
+  const flasher::BoardProfile* profile = flasher::profileForSlot(request_.slot);
+  if (profile == nullptr) return fail(Reason::kNoProfile, ProveStep::kNone);
+  const flasher::Result r = flasher_.startAgain(*profile, request_.slot);
+  status_.core_at_look = r.core;
+  if (!r.ok()) {
+    // The port is closed, silent or protected: the same ending as before this task, and the
+    // journal says that the question could not be put.
+    if (!note(Reason::kLookFailed, step, static_cast<std::uint32_t>(r.step))) {
+      return waiting(describe(Reason::kJournal));
+    }
+    return fail(empty, step);
+  }
+  if (r.started != flasher::Started::kDebugPort) {
+    // The core is running, sleeping or locked up: the pulse did reset the chip, and it is the
+    // image that is not speaking. Nothing was sent to it, and the ending is the one there is.
+    flasher_.noteResetLine(true);
+    pulse_started_ = false;
+    if (!note(Reason::kPulseStarted, step, static_cast<std::uint32_t>(r.core))) {
+      return waiting(describe(Reason::kJournal));
+    }
+    return fail(empty, step);
+  }
+  // The core is still halted where the flash left it: **the pulse reached nothing**. The image
+  // has been started through the debug port, the line's record says so for a person, and the
+  // radio gets a window of its own to answer in - with the scanner's watchdog now owed, because a
+  // soft reset does not clear one.
+  flasher_.noteResetLine(false);
+  pulse_started_ = false;
+  status_.started = flasher::Started::kDebugPort;
+  if (!note(Reason::kStartedThroughPort, step, static_cast<std::uint32_t>(r.core))) {
+    return waiting(describe(Reason::kJournal));
+  }
+  started_ms_ = clock_.nowMs();
+  watchdog_owed_ = over_a_scanner_ && request_.kind != Kind::kRoleScanner;
+  watchdog_wait_ = false;
+  radio_.radioWasReset();
+  window_started_ms_ = started_ms_;
+  next_hello_ms_ = window_started_ms_;
+  restart_seen_ = false;
+  return waiting("the pulse reached nothing: the image was started through the debug port");
 }
 
 void RadioUpdate::beginProving() {

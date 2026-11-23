@@ -121,11 +121,13 @@ TEST_CASE("a claim with no lease, and one made before the unit knew what day it 
   CHECK_FALSE(no_clock.cut);
 }
 
-TEST_CASE("an hour-long lease is cut to where the room for the calls after it begins") {
+// Two hours and not one: since task p18-04 a wake may be raised to sixty-five minutes, so an
+// hour-long lease is one a wake can cover whole and no longer shows the cut.
+TEST_CASE("a two-hour lease is cut to where the room for the calls after it begins") {
   RoomBench b;
   b.aWake(30000);
 
-  const Cover cover = b.room().tookOn(1, kNow + 3600, kNow);
+  const Cover cover = b.room().tookOn(1, kNow + 7200, kNow);
 
   // The ceiling, and no further.
   CHECK(cover.bound_ms == kRaisedBoundMax);
@@ -136,7 +138,7 @@ TEST_CASE("an hour-long lease is cut to where the room for the calls after it be
   CHECK(cover.covered_s == left_s);
   CHECK(cover.lease_until_s == kNow + left_s - 2 * kCallRoomS);
   // The library's own rule then ends the job `timeout` there, with the room still to post it.
-  CHECK(cover.lease_until_s < kNow + 3600);
+  CHECK(cover.lease_until_s < kNow + 7200);
 }
 
 TEST_CASE("a wake with no room left at all hands a lease that has already run out") {
@@ -268,11 +270,13 @@ TEST_CASE("the deadline an exchange is given is a ceiling and not a promise") {
 
   // What it asked for, when the wake could be raised that far.
   CHECK(room.deadlineFor(600000) == now + 600000);
-  // ... and the most a wake may ever be raised to, when it could not: the exchange's own number
-  // is `kBackendBoundMs`, twenty seconds short of the ceiling, so a wake a minute old cannot have
-  // the whole of it.
+  // ... and the most a wake may ever be raised to, when it could not.
   CHECK(room.deadlineFor(kRaisedBoundMax) == now + kRaisedBoundMax - 60000);
-  CHECK(room.deadlineFor(core::cycle::kBackendBoundMs) == now + kRaisedBoundMax - 60000);
+  // The exchange's own number is `kBackendBoundMs`, and since task p18-04 the ceiling is three and
+  // a half minutes above it, so a wake a minute old still has the whole of it - where before that
+  // task the ceiling was twenty seconds above and this was the ceiling less the minute.
+  CHECK(core::cycle::kBackendBoundMs + 60000 <= kRaisedBoundMax);
+  CHECK(room.deadlineFor(core::cycle::kBackendBoundMs) == now + core::cycle::kBackendBoundMs);
 
   // A wake nothing is timing gets what it asked for, which is what the console's `agent wake` and
   // a test that makes an exchange by hand have always had.

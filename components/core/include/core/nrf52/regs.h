@@ -53,6 +53,25 @@ constexpr std::uint32_t kEnd = kBase + 0x308;            // REGOUT0 is the last 
 constexpr std::uint32_t kNrfFw0 = kBase + 0x014;         // NRFFW[0], "Reserved for Nordic firmware design": the bootloader's address
 constexpr std::uint32_t kPselReset0 = kBase + 0x200;     // "Mapping of the nRESET function"
 constexpr std::uint32_t kPselReset1 = kBase + 0x204;
+
+// PSELRESET[0] and [1] (PS 4.5.1.62 and 4.5.1.63, "Mapping of the nRESET function"), the two
+// registers a pin reset is configured by (5.3.6.2: "Pin reset is configured via both registers
+// PSELRESET[n]"). Their bit fields, from the two register tables: A = PIN, bits [4:0], "GPIO pin
+// number onto which nRESET is exposed"; B = PORT, bit 5, "Port number onto which nRESET is
+// exposed"; C = CONNECT, bit 31, "Connected 0 Connect, Disconnected 1 Disconnect". The reset
+// value of both is 0xFFFFFFFF, which is Disconnected.
+//
+// And the rule that makes them one answer rather than two: "All PSELRESET registers have to
+// contain the same value for a pin mapping to be valid. If values are not the same, there will be
+// no nRESET function exposed on a GPIO. As a result, the device will always start independently of
+// the levels present on any of the GPIOs."
+//
+// **This firmware reads them and writes nothing** (task p18-04): whether a module has its pin
+// reset enabled is a fact of its provisioning, and enabling one is a person's decision. Rail R3
+// holds the read to core/nrf52/nrf52.cpp and holds it to being a read.
+constexpr std::uint32_t kPselResetPinMask = 0x1F;          // A: PIN, bits [4:0]
+constexpr std::uint32_t kPselResetPortBit = 1u << 5;       // B: PORT
+constexpr std::uint32_t kPselResetConnectBit = 1u << 31;   // C: CONNECT, 0 = Connected
 constexpr std::uint32_t kApprotect = kBase + 0x208;      // "Access port protection"
 constexpr std::uint32_t kRegOut0 = kBase + 0x304;        // "Output voltage from REG0 regulator stage"
 

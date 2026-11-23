@@ -5,9 +5,16 @@
 // (S-5a) one more file may name them, the door, core/nrf52/provision_door.cpp - an exact list
 // of two, as tools/check_rails.py R3 has it - and the door's header is included by
 // core/provision/ and nothing else (R3b), which the last test here reads off the tree as well.
+//
+// **And since task p18-04 a third file may name two of them, and only to read**:
+// core/nrf52/nrf52.cpp's readResetPin(), which reads UICR.PSELRESET[0] and [1] to find out
+// whether the module has a pin reset at all. It may name `uicr::kPselReset...` and nothing else
+// of the forbidden list, and no line that names one may write: the sweep below shows the two
+// reads and no write, which is what the task asks of this rail.
 #include <doctest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -68,8 +75,10 @@ TEST_CASE("no file under components/ but regs.h and the door names a forbidden r
   const fs::path root = fs::path(TWINOAK_REPO_ROOT) / "components";
   const fs::path header = root / "core" / "include" / "core" / "nrf52" / "regs.h";
   const fs::path door = root / "core" / "nrf52" / "provision_door.cpp";
+  const fs::path reader = root / "core" / "nrf52" / "nrf52.cpp";
   REQUIRE(fs::exists(header));
   REQUIRE(fs::exists(door));
+  REQUIRE(fs::exists(reader));
   std::vector<Hit> hits;
   unsigned files = 0;
   for (const fs::directory_entry& e : fs::recursive_directory_iterator(root)) {
@@ -78,9 +87,39 @@ TEST_CASE("no file under components/ but regs.h and the door names a forbidden r
     if (ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".c") continue;
     if (fs::equivalent(e.path(), header) || fs::equivalent(e.path(), door)) continue;
     files++;
-    const std::vector<Hit> found = forbiddenReferences(readFile(e.path()), e.path().generic_string());
+    std::vector<Hit> found = forbiddenReferences(readFile(e.path()), e.path().generic_string());
+    // **The reset pin's reader** (task p18-04): the nRF52 layer may name UICR's two PSELRESET
+    // registers, and only them, and only to read. A line of it that named anything else of the
+    // list - or that wrote - is a hit like any other.
+    if (fs::equivalent(e.path(), reader)) {
+      std::vector<Hit> left;
+      for (const Hit& h : found) {
+        std::string rest = h.text;
+        for (std::string::size_type at = rest.find("uicr::kPselReset"); at != std::string::npos;
+             at = rest.find("uicr::kPselReset")) {
+          std::string::size_type end = at + 16;
+          while (end < rest.size() && (std::isalnum(static_cast<unsigned char>(rest[end])) != 0 || rest[end] == '_')) ++end;
+          rest.erase(at, end - at);
+        }
+        const bool writes = rest.find("write") != std::string::npos;
+        if (!forbiddenReferences(rest, h.file).empty() || writes) left.push_back(h);
+      }
+      found = left;
+    }
     hits.insert(hits.end(), found.begin(), found.end());
   }
+  // And it does name them: two reads, no write.
+  const std::vector<Hit> reads = forbiddenReferences(readFile(reader), "nrf52.cpp");
+  CHECK(reads.size() >= 2);
+  unsigned pselreset_reads = 0;
+  for (const Hit& h : reads) {
+    CHECK(h.text.find("uicr::kPselReset") != std::string::npos);
+    CHECK(h.text.find("write") == std::string::npos);
+    if (h.text.find("read(") != std::string::npos) pselreset_reads++;
+  }
+  CHECK(pselreset_reads == 2);
+  MESSAGE("core/nrf52/nrf52.cpp names UICR in " << reads.size() << " line(s), of which " << pselreset_reads
+                                                << " are reads of PSELRESET and none is a write");
   CHECK(files > 40);
   for (const Hit& h : hits) {
     FAIL_CHECK("a forbidden register is named outside regs.h and provision_door.cpp: " << h.file << ":" << h.line

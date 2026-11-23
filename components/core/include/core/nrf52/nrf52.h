@@ -33,7 +33,10 @@
 // What does not exist here: a function that writes NVMC.ERASEALL, NVMC.ERASEUICR, the control
 // port's ERASEALL, or any address in UICR. The names are constants in regs.h for the simulator
 // and the reader; host_test/core/nrf52/test_nrf52_forbidden.cpp fails if one of them is used
-// anywhere else under components/.
+// anywhere else under components/ - with the one exception task p18-04 made, readResetPin()
+// below, which **reads** UICR.PSELRESET and is the only function of this firmware that names an
+// address in UICR outside regs.h and the door. Rail R3 holds it to those two names and to being a
+// read.
 #pragma once
 
 #include <cstddef>
@@ -92,6 +95,21 @@ struct Result {
 
 enum class Protection : std::uint8_t { kUnknown, kOpen, kProtected };
 const char* describe(Protection protection);
+
+// What UICR says about the reset pin (task p18-04; PS 4.5.1.62 and 4.5.1.63 PSELRESET[0] and
+// [1], 5.3.6.2 "Pin reset"). Read by readResetPin() while the port is open, and never written:
+// a module without the pin reset enabled has no nRESET whatever the wire does, and enabling one
+// is an act of provisioning and a person's decision (spec/SYSTEM.md S-5a, task p18-04's *Out of
+// scope*). `enabled` is the whole rule in one bool - the two registers hold the same value and
+// CONNECT says Connected - and what a flash does with the reset line is decided from it.
+struct ResetPin {
+  bool known = false;    // the two registers were read
+  bool enabled = false;  // both hold the same value and CONNECT is Connected: nRESET is on a pin
+  std::uint8_t pin = 0;  // PIN, bits [4:0] of PSELRESET[0]
+  std::uint8_t port = 0;  // PORT, bit 5
+  std::uint32_t raw0 = 0;  // PSELRESET[0] as it was read
+  std::uint32_t raw1 = 0;  // PSELRESET[1]
+};
 
 enum class CoreState : std::uint8_t { kUnknown, kRunning, kHalted, kSleeping, kLockedUp };
 const char* describe(CoreState state);
@@ -153,6 +171,11 @@ class Nrf52 {
   // Any address the access port can reach, read-only; refused like the rest when the chip is
   // protected or not an nRF52840.
   Result read(std::uint32_t addr, std::uint32_t* out, std::size_t words);
+
+  // UICR's two PSELRESET registers, read (task p18-04). The only function of this layer that
+  // names an address in UICR, and the only one there will be: it reads two words and writes
+  // nothing. `out` is filled whatever the answer; `known` says whether both reads succeeded.
+  Result readResetPin(ResetPin* out);
   // READY awaited, bounded: for a caller that has just halted a core whose own firmware may have
   // an erase or a write in flight (the flasher, task p1-05). Writes nothing.
   Result waitFlashReady(std::uint32_t timeout_ms);
