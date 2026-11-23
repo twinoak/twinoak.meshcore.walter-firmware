@@ -46,12 +46,12 @@ runs it to the end inside the command.
 | **proving** | the health check, below | the check |
 | **committing** | the store's promotion: the golden pointer moves to the candidate's area (seven flash operations, whatever the size) | the promotion |
 | **done** | the candidate is the golden image; the candidate slot is empty — plainly empty, not a download half done: the area it now points at is the old golden image's, and the markers that image's own download left there are not read as a transfer (`ARCHITECTURE.md` §6, task p15-01) | terminal |
-| **rolling-back** | the candidate's hash is put on the bad list, then the golden image is flashed back and started by the same pulse | the rollback, with why and at which step of the check |
+| **rolling-back** | the golden image is flashed back and started by the same pulse - and the candidate's hash goes on the bad list first, **where the fault was the image's own or its proof's** (task p18-05: a debug port that gave up or a page that would not take is the unit's, and that image may be flashed again) | the rollback, with why and at which step of the check |
 | **rolling-back (booting the golden image)** | as booting, for the golden image | the wait |
 | **rolling-back (proving the golden image)** | the same health check, held against the golden image's own descriptor | the check |
 | **restored** | the golden image is back, proved and still golden; the candidate is in the store but on the bad list | terminal |
 | **stuck** | the golden image did not come back either, or there was none (a first install that failed): the radio has no proved application. The supervisor's last rung, a report, and no further attempt by this machine | terminal |
-| **refused** | a precondition failed at check; nothing was touched | terminal |
+| **refused** | a precondition failed at check, **or a flash wrote nothing twice** (task p18-05, *A flash that wrote nothing* below): nothing was touched | terminal |
 | **node-fault** | the image proved everything an image can and **the node** is the fault: today that is one thing, a radio that has lost its identity (check 1a below). No rollback is spent, nothing goes on the bad list, nothing is promoted - the candidate is on the radio and in the store, the golden image is untouched, and the way out is a person's `erase` and `reboot` at the radio. The same candidate may then be applied again | terminal |
 
 ## What starts a flashed image (task p18-04)
@@ -96,6 +96,59 @@ still a failure.
 to, or never tried is kept beside the reset spacing in RTC memory and printed by `rak watch` and in
 the check-in's `radio` section. It is for a person to read: every flash decides for itself, from
 the chip.
+
+## A flash that wrote nothing (task p18-05)
+
+On 23 November a session on the unit at Bellevue flashed no scanner. Its journal:
+*flashing-scanner* at 11:37:41Z, **`rolling-back: the flasher did not finish`** twelve seconds
+later, the whole golden image flashed back in 6 min 26 s, *restored* at 11:47:25Z. Nine minutes off
+the mesh, no line measured, and the scanner image on the bad list — and by the times of every flash
+that unit has made, **that flash had changed nothing on the chip**. Three things were wrong with
+that whatever made it fail, and this is what happens now.
+
+**1. A failed flash says what failed.** The flasher's step used to go into the journal entry's
+`detail` and be printed nowhere. The thirty-two bits now hold the step, the status of the layer
+under it (the nRF52's, and the debug port's beneath that), the address when there is one, whether
+the chip was changed, whether the core had to be started again, and whether this was the second
+try. It is printed in the journal's line at the console (`journal`, `rak update status`), in a
+report, and in the note of the line that goes to the server with the job — so the job's page says
+it without a report being asked for:
+
+```
+  5. seq 48: flashing-candidate: the flash did not begin: once more - while reading the pages
+     the image covers: the debug port failed (the target kept answering WAIT) at 0x00026000;
+     nothing was written
+```
+
+and, in the seventy characters a job's note holds, `scan: swd wait-timeout at 0x026000; nothing
+written`. An entry written before this task has the layout bit clear and prints as the step alone,
+which is all such an entry ever meant.
+
+**2. A flash that wrote nothing is made once more.** *Wrote nothing* is read off what the flasher
+did and not off the name of the step it stopped at: no page erased and no word written, of the
+image's pages or of the bootloader's settings page. Such a flash is made a second time — after
+`kFlashAgainPauseMs`, and after the radio's own `HELLO` where the first try had halted the core and
+started it again, because a flash must not take the debug lines back from a radio in the middle of
+its boot. The journal says so before the second try. **One second try and never a third**, on every
+flash this firmware makes: a candidate's, a scanner's, the golden image going back, a first
+install's and the supervisor's, because every one of them comes through this machine's
+`flashing` state.
+
+**3. Twice, and the radio is as it was.** Nothing was written either time, so there is nothing to
+put back: no flash of any kind, nothing on the bad list, no outage, and the run ends **`refused`** —
+which is what that word has always meant here. A session ends `refused` too and is **closed**, so no
+later wake has anything to end. The one exception is the golden image's own flash on a rollback:
+there is nothing to be refused into there, and its ending is `stuck`, as it has always been, with
+the step now said.
+
+**4. The bad list is for an image that is wrong or that ran and failed.** `spec/SYSTEM.md` S-5's
+*the candidate's hash is remembered and never tried again* sits under the health check's *no* in
+§6's drawing, and that is where it is held to. So an image whose flash failed **after** its first
+write is still followed by the golden image — and goes on the bad list only when the fault is its
+own: its bytes, its load address, its digest (`flasher::blamesTheImage()`, the steps `kImage` and
+`kDigest`). A debug port that gave up, a page that would not take, a core that would not halt are
+the unit's, and their image may be flashed again. `rak update` says which it was: *the candidate's
+flash failed (…) and is NOT on the bad list* is not *failed its health check*.
 
 ## The preconditions (check)
 
@@ -210,7 +263,7 @@ What the unit is in, by the entry the journal shows last:
 | Last entry | The radio | What resume does |
 |---|---|---|
 | **check** | untouched, running what it ran | the preconditions again (and may refuse) |
-| **flashing-candidate** | anything from the old application, through a half-written candidate, to the whole candidate not yet reset into. Mid-flash the bootloader's settings say *bank 0 holds nothing*, so the radio sits in its bootloader, not in half an application (`docs/ARCHITECTURE.md` §5) | the flash again - the flasher's scan skips the pages already right and writes the rest; then the reset |
+| **flashing-candidate** | anything from the old application, through a half-written candidate, to the whole candidate not yet reset into. Mid-flash the bootloader's settings say *bank 0 holds nothing*, so the radio sits in its bootloader, not in half an application (`docs/ARCHITECTURE.md` §5) | the flash again - the flasher's scan skips the pages already right and writes the rest; then the reset. **A resumed flash is one flash with one second try of its own** (task p18-05): a Walter that died between the two tries begins from nothing |
 | **booting**, **proving** | the candidate on the chip, reset into, perhaps running | **the proving over, from the start** - the whole period again. A proof interrupted is never assumed to have passed |
 | **committing** | the candidate running; the store's golden pointer moved or not | if the golden image is already this hash: *done*; otherwise the promotion |
 | **done** | the candidate, golden | nothing: the run is over |
@@ -303,6 +356,7 @@ with a sentence beside it; none has been held against a real radio yet (`docs/be
 | `kStartAgainWindowMs` | = `kBootWindowMs` | the window that begins again after a look found the core halted and the debug port started the image (task p18-04) |
 | `kScannerWatchdogMs` | 60 000 ms | the scanner's own hardware watchdog, copied from the repeater firmware's `WDT_TIMEOUT_S` (it does not say it on the link yet) |
 | `kScannerWatchdogWaitMs` | 75 000 ms | and how long a proof waits it out when the debug port started an image over a scanner: that number with a quarter of it as margin |
+| `kFlashAgainPauseMs` | 5 000 ms | the pause between the two tries at a flash that wrote nothing (task p18-05). Not a reset and not a reconnect: on 23 November the next flash met the same chip two seconds later and went through, so what this is for is an erase the application had in flight — 85 ms typical — finishing |
 | `kBatteryMinMv` | 3 700 mV | the battery below which no update starts (a single Li-ion cell: more than half its charge) |
 | `kBatteryFallingMvPerHour` | -100 mV/h | a trend steeper than this refuses the update (no trend exists until phase 3) |
 | `kStepIdleMs` | 100 ms | what `rak update` sleeps between steps that only waited |
@@ -331,6 +385,28 @@ windows above. They exist because a caller that runs this machine inside somethi
 wake cycle's step, an apply claimed from the server — needs one number to bound it by, and until
 task p14-04 those callers used numbers that were shorter than a rollback.
 
+**And the second try is inside them** (task p18-05). A pass may now spend `kSecondTryMs` as well:
+`kFlashWroteNothingMs` for a first try that got nowhere, `kFlashAgainPauseMs` for the pause, and one
+boot window for the radio the first try may have halted — 3 min 25 s. `kFlashWroteNothingMs` is
+three minutes because every way out before the first write is either a bounded wait of milliseconds
+(the debug port's two connect attempts and ten WAIT retries a transfer, the power-up's hundred
+polls, the flash controller's 300 ms) or **the scan**, which is one read of every page the image
+covers: 2048 SWD transfers a page at about 0.9 s, so the 424 kB image of 23 November is 106 pages
+and a little over a minute and a half. A flash that gets as far as writing is never tried again, so
+it is added to the flash window and does not double it. The arithmetic that follows:
+
+| | Before p18-05 | Now |
+|---|---:|---:|
+| `kOnePassMs` | 19 min 40 s | **23 min 05 s** |
+| `kWholeRunMs` (= an apply's bound) | 39 min 20 s | **46 min 10 s** |
+| `kSessionBoundMs` | 60 min 35 s | **67 min 25 s** |
+| `kBackendBoundMs` (the exchange) | 61 min 35 s | **68 min 25 s** |
+| `kRaisedBoundMax` (the most a wake may ask for) | 65 min | **70 min** |
+
+Only the last of those is a decision rather than arithmetic, and `core/cycle/wake_guard.h` says why
+seventy: the exchange's bound did not fit sixty-five. A raised bound is still a bound and still not
+a spend — an ordinary wake is five minutes, and only a machine that says what it needs raises it.
+
 ## A session: the scanner, a program, and the repeater back (task p16-03)
 
 `rak role scanner` makes the radio a scanner. It stays one until a person types `rak role
@@ -356,6 +432,12 @@ check ─► flashing-scanner ─► scanner ─► step-1 … step-6 ─► roo
 Those words are the journal's own: one entry of kind `0x000B` before each of them, with the
 command on a `step-N` entry and the room's figures on the `room` one.
 
+**And one more stage, which is a session that never began** (task p18-05): where the scanner
+image's flash wrote nothing twice, the radio was never taken off the mesh and there is nothing to
+switch back from, so the session ends `refused` — the second stage after `restored` that **closes**
+a session, because nothing was begun for a later wake to end. `check` and `flashing-scanner` are the
+only stages it can be reached from, and the journal's line before it says what the flash failed at.
+
 **The scanner's watchdog ends with the scanner** (task p18-01). NoiseScope starts the nRF52840's
 hardware watchdog at 60 s and feeds it from its own loop; once started it cannot be stopped, and
 the repeater that comes back after the session feeds nothing. A soft reset — which is what the
@@ -371,8 +453,9 @@ the proving period is still a failure, and nothing forgives a watchdog.
 
 1. **Open before the first flash.** The journal says a session is open, under a kind of its own,
    before the scanner image is flashed. It says **closed** when the golden image is back and
-   proved, and at no other moment — `restored` is the one stage that means closed, and `stuck` does
-   not.
+   proved, **or when the scanner image's flash never began** (task p18-05: nothing was touched, so
+   nothing was begun) — `restored` and `refused` are the two stages that mean closed, and `stuck`
+   does not.
 2. **An open session with nobody running it is ended by the next wake.** After a restart, a crash,
    the bound on a wake or a power cut, **step 3** of the next wake takes it up (`docs/cycle.md`),
    after any radio update the journal says is in progress: the golden image is flashed back and
@@ -539,9 +622,9 @@ PSRAM's size nought, which is the small room — which is what that line always 
 Two flashes of about a quarter of an hour (`kFlashWindowMs`) with the program and three minutes of
 proving between them: **about forty minutes off the mesh**, with this board awake for all of it.
 The wake that takes a session up is held open for two passes of the machine above and the ceiling
-— `kSessionBoundMs`, 60 min 35 s since task p18-04 added the watchdog's wait to it — which is
-the number that set `kRaisedBoundMax` in
-`core/cycle/wake_guard.h`, and a raised bound is still a bound.
+— `kSessionBoundMs`, **67 min 25 s** since task p18-05 put the one second try at a flash that wrote
+nothing inside each pass (task p18-04's watchdog wait is in it too) — which is the number that set
+`kRaisedBoundMax` in `core/cycle/wake_guard.h`, and a raised bound is still a bound.
 
 A scanner **nobody opened a session for is left alone**, as it always was: a person typed `rak role
 scanner` and means it. `rak watch` says which of the two it sees — *in a session, since …* or

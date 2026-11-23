@@ -547,6 +547,19 @@ In this order, at the console:
    *the reset line:* line (`docs/update.md`, *What starts a flashed image*). Enabling a pin reset
    that is not enabled is a person's act of provisioning; this firmware never writes `UICR`.
 
+5. **`rak update status`**, when a flash did not finish — and since task p18-05 the entry says
+   what failed: the flasher's step, the status of the layer under it (the nRF52's, or the debug
+   port's beneath it), the address when there is one, and **whether the chip was changed**. That
+   last is the thing to read first: *nothing was written* means the radio is still running what it
+   was running and no image has to be put back, and such a flash is made **once more** by itself,
+   after a pause and after the radio's `HELLO`, with a line of its own in the journal
+   (`flashing-candidate: the flash did not begin: once more`). Twice is a run that ends `refused`
+   with the radio exactly as it was — and an image that never reached the chip is on **no** bad
+   list, so the same apply or session may be asked for again once whatever was in the way has gone.
+   *The chip was changed* is the other half: the golden image has gone back (or the run is `stuck`
+   and the supervisor's power cycle is next), and the image is on the bad list only when the fault
+   was its own — its bytes, its load address, its digest.
+
 And when none of those explains it: **`dump`** is the last 4 kB this port printed, `journal` the
 last twelve entries that survived whatever happened, `reboots` why the board last restarted, and
 `wake` why it is awake. [`bench.md`](bench.md) is the rest — every step of the rig, what should be
