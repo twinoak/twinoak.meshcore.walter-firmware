@@ -131,6 +131,9 @@ bool IdentityProbe::identity(core::console::AgentIdentityView* out) {
 
   out->next_check_in_s = wanted.nextCheckInS;
   out->max_transactions_this_wake = wanted.maxTransactionsThisWake;
+  // The band's claims (task p18-02), off the same intent the heartbeat would carry - so this
+  // line and a wake cannot disagree about how many times it may ask.
+  out->max_claims_this_wake = wanted.maxClaimsThisWake;
   out->band = duty_ != nullptr && duty_->decided()
                   ? core::power::name(duty_->decision().band)
                   : (duty_ != nullptr ? core::power::name(duty_->reason().band())

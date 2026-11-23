@@ -203,7 +203,40 @@ static_assert(kPlenty > kNormal && kNormal >= kSaving && kSaving > kCritical,
 static_assert(kSaving >= mm::kTransactionsPerJobAtLeast,
               "a band that uses the modem has to be able to hold one job");
 
+// -- how many claims, band by band (task p18-02) -----------------------------------------------
+//
+// A claim takes two jobs at most (`mm::kClaimMax`), because two is the room this firmware has at
+// a time, so a wake that was one claim did two jobs an hour at best whatever was queued - which
+// on 21 November 2026 spread one NoiseScope sample over five wakes. Thomas's rule for this board
+// is that it takes jobs until none are left or the battery says sleep, and this is the battery
+// saying it: how many times one wake may ask.
+//
+// **Every number below is a PLACEHOLDER and is TO BE SET ON THE BENCH**, exactly as the caps
+// above are and against the same measurement: what a wake with an attach, a claim and two jobs
+// actually costs the pack (docs/bench.md §17). Unlike the caps they are not written in anybody's
+// arithmetic - nothing prices a *claim* - so they are plain numbers and a bench reading is the
+// only thing that can move them.
+//
+// `plenty` eight, which is sixteen jobs: a NoiseScope sample's six steps and a report in one
+// wake, which is the sample that took five wakes. `normal` half of it. `saving` one, which is the
+// one claim every wake made before this task. `critical` none - the modem is not brought up in
+// that band at all (`core/power/interval_policy.h`, `Allowance::modem`), and 0 is the library's
+// own *an agent that proposes nothing*, which is one claim if ever a wake got there.
+constexpr int kClaimsPlenty = 8;
+constexpr int kClaimsNormal = 4;
+constexpr int kClaimsSaving = 1;
+constexpr int kClaimsCritical = 0;
+// `no-reading`: the medium one, for the reason `kUnknown` above is - a Walter whose radio is
+// silent is exactly the one that has to reach its uplink and say so.
+constexpr int kClaimsUnknown = kClaimsNormal;
+
+static_assert(kClaimsPlenty > kClaimsNormal && kClaimsNormal > kClaimsSaving &&
+                  kClaimsSaving > kClaimsCritical,
+              "a worse band never promises more");
+static_assert(kClaimsSaving >= 1, "a band that uses the modem makes at least one claim");
+
 int forBand(core::power::Band band);
+int claimsFor(core::power::Band band);
 
 }  // namespace intent
 

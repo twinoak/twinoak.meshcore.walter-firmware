@@ -114,6 +114,17 @@ class WakeRoom {
   // the figure came from, for the line a call that is not begun writes.
   std::uint32_t leftForCallMs(std::uint64_t deadline_ms, bool* bounded_by_the_wake) const;
 
+  // **Could this wake be made to hold another piece of work at all?** (task p18-02) The most a
+  // wake may ever be raised to (`kRaisedBoundMax`), against where this one stands and what the
+  // work would need. A wake nothing is timing could hold anything.
+  //
+  // It is asked **before** a claim and not after: a wake may make several claims now, and one
+  // made where the bound cannot be raised far enough to hold a job's lease and the calls after it
+  // would take on work this wake cannot finish - a lease cut to this second, a job reported
+  // `timeout` at no transaction, a job the server leased for nothing. The answer to that is to
+  // ask for no more work, which is *no room* and not a failure.
+  bool couldHold(std::uint32_t want_ms) const;
+
   // **The wake has taken jobs on.** Raises the bound to the end of the latest of their leases and
   // the room for the calls after them, never past `kRaisedBoundMax`, and answers what that came
   // to. `latest_lease_s` and `now_epoch` are Unix seconds, either of them 0 meaning *no lease to

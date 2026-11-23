@@ -416,11 +416,15 @@ std::size_t describeWhere(const WakeWhere& where, char* out, std::size_t cap);
 //   37  jobs_cover  u8   claimed jobs the bound was raised to cover the leases of (task p16-06)
 //   38  bound_s     u16  the bound in force when the wake ended, counted from the boot
 //   40  no_room     u8   calls not begun because the bound had no room to finish one
+//   41  claims      u8   claims this wake made (task p18-02)
+//   42  jobs_run    u8   ... and the jobs they ran together
+//   43  claims_end  u8   an interfaces::Claims: why the last claim was the last
 //
-// **The five bytes cost nothing**: a journal slot is 64 bytes whatever the payload holds
+// **The eight bytes cost nothing**: a journal slot is 64 bytes whatever the payload holds
 // (core/update/journal.h, kEntryBytes), and kPayloadMax is 48. What they *could* have cost is the
-// entries already on a unit's flash, so the decoder reads a 32-byte payload too and answers
-// `kUnsaid` and 0 for it - which is what 0.1.2's entries honestly are, having kept neither.
+// entries already on a unit's flash, so the decoder reads the shorter payloads too and answers
+// `kUnsaid` and 0 for what they do not carry - which is what those entries honestly are, having
+// kept neither.
 //
 // **Not every wake**, and the reason is task p3-04's: the journal is 1024 entries in one 64 KB
 // partition and it exists so that an update is never guessed at, and a unit checking in every
@@ -430,7 +434,7 @@ std::size_t describeWhere(const WakeWhere& where, char* out, std::size_t cap);
 // fetch happened; an exchange happened; the wake was a crash or a watchdog. "A page a person can
 // read" is what the task asks `journal` to be after a week on a mast, and seven hundred identical
 // lines are not a page. Said again in tasks/phase-3/reports/05.md under *Deviations*.
-constexpr std::size_t kWakePayloadBytes = 41;
+constexpr std::size_t kWakePayloadBytes = 44;
 static_assert(kWakePayloadBytes <= update::kPayloadMax, "the payload has to fit a journal entry");
 
 // What every build up to and including 0.1.2 wrote. `decode()` accepts it and reads the two
@@ -442,8 +446,12 @@ static_assert(kWakePayloadBytesV1 < kWakePayloadBytes, "v1 is the shorter one");
 // And what every build up to and including 0.1.9 wrote, for the same reason: an entry of that
 // length reads back with no room taken on, which is what it honestly says (task p16-06).
 constexpr std::size_t kWakePayloadBytesV2 = 37;
-static_assert(kWakePayloadBytesV1 < kWakePayloadBytesV2 && kWakePayloadBytesV2 < kWakePayloadBytes,
-              "the three lengths are in order");
+// ... and what the builds between that task and p18-02 wrote: the room, and nothing about the
+// wake's claims, because a wake made one and there was nothing to say.
+constexpr std::size_t kWakePayloadBytesV3 = 41;
+static_assert(kWakePayloadBytesV1 < kWakePayloadBytesV2 && kWakePayloadBytesV2 < kWakePayloadBytesV3 &&
+                  kWakePayloadBytesV3 < kWakePayloadBytes,
+              "the four lengths are in order");
 
 constexpr std::uint8_t kWakeFlagOnTrial = 0x01;
 constexpr std::uint8_t kWakeFlagClockSet = 0x02;
@@ -477,6 +485,11 @@ struct WakePayload {
   std::uint8_t jobs_covered = 0;
   std::uint16_t bound_s = 0;        // the bound in force at the end, from the boot; 0 is not said
   std::uint8_t calls_no_room = 0;
+  // What the wake's claims came to (task p18-02): 0 claims is a wake that claimed nothing, which
+  // is also what an entry written before that task reads as, and `kUnsaid` is *it did not say*.
+  std::uint8_t claims = 0;
+  std::uint8_t jobs_run = 0;
+  interfaces::Claims claims_end = interfaces::Claims::kUnsaid;
 };
 
 void encode(const WakePayload& payload, std::uint8_t out[kWakePayloadBytes]);

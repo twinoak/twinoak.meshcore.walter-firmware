@@ -512,6 +512,13 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
 
   // ------------------------------------------------------------------ ResultGate
   bool withhold(long long jobId) override;
+  // **What this firmware holds that the library's buffer knows nothing of** (task p18-02,
+  // `walter_agent/modem_uplink.h`): the job the result gate is leaving to its lease, and the
+  // session or apply the journal holds as owed. Both are leased, in hand, and in no buffer of the
+  // library's, so a claim that did not name them would be handed them straight back by a server
+  // that hands back every running lease without a result (meshmaster.dk's task p4.47-254) - and
+  // this unit would download a file twice, or begin a second flash of a radio it is flashing.
+  int holdsOutsideTheBuffer(long long* out, int max) const override;
 
   // ------------------------------------------------------------------ what the console reads
   const FirmwareJobCounters& counters() const { return counters_; }
@@ -633,6 +640,18 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   core::supervisor::Health radioHealth() const {
     return parts_.supervisor != nullptr ? parts_.supervisor->health() : core::supervisor::Health::kUnknown;
   }
+
+  // **After a job that took the radio away** (task p18-02): an apply of a radio image, a session
+  // and a power cycle all end with the radio starting again, and a wake that may claim again must
+  // not take on more work when it did not. `back` is the machine's **own** ending - the apply's
+  // outcome, the session's, the HELLO inside the power cycle's boot window - and the supervisor's
+  // classification is asked beside it, because the two answer different halves: the supervisor
+  // classifies at step 3 of a wake and cannot have seen a radio this job lost, and the machine
+  // cannot know of a silence the supervisor had already found. Anything but *the radio came back
+  // and the supervisor calls it healthy* ends the wake's claims with *the radio is away*, which
+  // is conservative where the supervisor's word is merely stale - a radio that has just had its
+  // first install, say - and that is the right way round for a wake with a radio in hand.
+  void theRadioAfterAJob(bool back);
 
   Parts parts_;
   core::board::RadioPins& pins_;

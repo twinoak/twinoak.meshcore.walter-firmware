@@ -2877,10 +2877,46 @@ missing.
       tells no way back* and each reply reads *route unknown*, and a trace still says nothing
       about the way an answer will take. The Heltec's own firmware is where that gain is.
 
+## 29. A wake that takes what is waiting
+
+From task p18-02. The band of the battery now says how many claims one wake may make - eight in
+`plenty`, four in `normal`, one in `saving` - so a wake takes jobs until none are left or the
+battery says sleep. Nothing here has been on a board: every case was run against a scripted
+meshmaster.dk, and the two things no simulator settles are what a wake of several claims costs the
+pack and what it does to a real LTE plan's bytes. **meshmaster.dk's pile 4.47 has to be deployed**
+for any of it: the server's `jobsWaiting` in a result's reply is what a wake claims again on.
+
+- [ ] ★ **A report, a scanner image and a session queued, and one wake.** Queue all three on the
+      exit node's page and wake the unit once (*Wake it up*). Before this task that was five
+      wakes and the better part of five hours; it should now be **one**, with the report and the
+      offer in the first claim, the session in a claim of its own, and the unit asleep after it.
+      What to read: the exit node's page has a result for every one of them at the **same wake
+      number**, and the console's `agent wake` or a `twinoak.report` of the `jobs` section says
+      *N claim(s), M job(s) run; the last was the last: nothing waiting*.
+- [ ] **The journal's line for that wake.** `journal` at the cable, or the `journal` section of a
+      report: the wake's entry carries *N claim(s), M job(s) run; the last was the last: …* on a
+      line of its own. A wake of one claim writes no such line - it is what every wake did before
+      this - so the line itself is the evidence that the wake claimed again.
+- [ ] **What it cost the pack.** The same reading §17 asks for, now against a wake that does
+      eight claims instead of one: the battery before and after a wake that empties a full queue,
+      against a wake that claims once. That is the number `kClaimsPlenty` and its four neighbours
+      are placeholders for - and the one that decides whether eight is generous or mean.
+- [ ] **The bytes.** `kWakePostBytes` is 32 kB a wake and a wake of eight claims can reach it:
+      the host suite measures sixteen one-section reports at 19 469 bytes and six whole-console
+      reports at 32 684, which keeps two results for the next wake. On the unit: a wake whose
+      `agent wake` says *a result kept* is that cap, and the plan's own bytes for the day are the
+      other half of the reading (`tasks/phase-18/FOLLOWUPS.md` has it as Thomas's to decide).
+- [ ] **A wake after a session, and after an apply.** Both take the radio away and both end with
+      it starting again. A wake that ends *the radio is away* is the unit refusing to take more
+      work on a radio that did not come back - which is right - and a wake that ends *nothing
+      waiting* after a session is the radio back and the supervisor calling it healthy. Either is
+      a reading and not a step; what must **not** happen is a session or a flash begun twice in
+      one night, which the exit node's page shows as two results for one job.
+
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
-reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 115 of
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 120 of
 them, in 21 files. Each has a sentence beside it where it is declared; **change the number and the
 sentence together**, and nowhere else - the host tests, the console's help and the documents all
 follow the constant.
@@ -3130,11 +3166,14 @@ a tight plan is given less.
 |---|---:|---|
 | `kWakeDownloadBytes` | `1048576` | |
 
-**`components/agent/include/walter_agent/identity.h`** (5) - **§17** measures what one wake with
+**`components/agent/include/walter_agent/identity.h`** (10) - **§17** measures what one wake with
 an attach and a job actually costs the pack, which is what the per-band transaction cap promises
-the server (`maxTransactionsThisWake`). Each is written in the copied library's own arithmetic
-(the dearest-job figure above them is the library's own and is not a bench number), so what to
-bring back is *how many transactions a wake in each band can pay for* and not the arithmetic.
+the server (`maxTransactionsThisWake`). Each of the first five is written in the copied library's
+own arithmetic (the dearest-job figure above them is the library's own and is not a bench number),
+so what to bring back is *how many transactions a wake in each band can pay for* and not the
+arithmetic. **The second five are how many claims a wake in that band may make** (task p18-02):
+plain numbers, because nothing prices a claim, and the measurement is the same one - what a wake
+that claims again costs the pack against the work it gets done (§29).
 
 | Constant | Now | Measured |
 |---|---:|---|
@@ -3143,3 +3182,8 @@ bring back is *how many transactions a wake in each band can pay for* and not th
 | `kSaving` | `mm::kDefaultConfigKeyCount + mm::kConfigReadExtraCount + 1 + mm::kTransactionsForLogin + mm::kTransactionsForAclRestore` | |
 | `kCritical` | `0` | |
 | `kUnknown` | `kNormal` | |
+| `kClaimsPlenty` | `8` | |
+| `kClaimsNormal` | `4` | |
+| `kClaimsSaving` | `1` | |
+| `kClaimsCritical` | `0` | |
+| `kClaimsUnknown` | `kClaimsNormal` | |

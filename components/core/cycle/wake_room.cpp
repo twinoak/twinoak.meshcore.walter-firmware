@@ -31,6 +31,15 @@ std::uint32_t WakeRoom::leftForCallMs(std::uint64_t deadline_ms, bool* bounded_b
   return static_cast<std::uint32_t>(to_deadline);
 }
 
+bool WakeRoom::couldHold(std::uint32_t want_ms) const {
+  if (!bounded()) return true;  // nothing ends this wake: it could hold anything
+  // The guard counts from the boot, so what the wake has already spent is part of the question.
+  // In 64 bits, because `awakeMs()` plus what a session wants is past 32 on a wake nobody ended.
+  const std::uint64_t want =
+      static_cast<std::uint64_t>(guard_->awakeMs()) + static_cast<std::uint64_t>(want_ms);
+  return want <= kRaisedBoundMax;
+}
+
 Cover WakeRoom::tookOn(int jobs, std::uint32_t latest_lease_s, std::uint32_t now_epoch) const {
   Cover cover;
   cover.jobs = jobs > 255 ? 255u : (jobs > 0 ? static_cast<std::uint8_t>(jobs) : 0u);

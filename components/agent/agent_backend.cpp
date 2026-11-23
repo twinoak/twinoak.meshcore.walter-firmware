@@ -17,6 +17,11 @@ namespace {
 
 std::uint32_t saturate(std::uint32_t value) { return value == 0xFFFFFFFFu ? value : value + 1; }
 std::uint16_t saturate16(std::uint16_t value) { return value == 0xFFFFu ? value : static_cast<std::uint16_t>(value + 1); }
+// A count of the library's into one byte of the record (task p18-02): eight claims and sixteen
+// jobs are what a band allows, so 255 is not a number either of them reaches.
+std::uint8_t saturateByte(int value) {
+  return value <= 0 ? 0u : (value >= 255 ? 255u : static_cast<std::uint8_t>(value));
+}
 
 int hexValue(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -661,7 +666,41 @@ interfaces::WakesRoom AgentBackend::roomTookOn() const {
   const ModemUplink::WakesRoom& room = p_.server->wakesRoom();
   out.jobs_covered = room.jobs;
   out.calls_no_room = room.no_room;
+  // **And what the wake's claims came to** (task p18-02): the library's own two counts over the
+  // whole wake, and why the last claim was the last.
+  out.claims = saturateByte(report_.claimsMade);
+  out.jobs_run = saturateByte(report_.jobsRun);
+  out.claims_end = claimsEnded();
   return out;
+}
+
+// **Why the last claim of this wake was the last** (task p18-02), in the seven words of
+// `interfaces::Claims`.
+//
+// Two sources, and this end's comes first: where **this firmware** ended the claiming it knows
+// why, and the library can only see that the answer to a result said nothing more waits. That is
+// exactly the three cases `ModemUplink::stopClaiming` latches - a job left to its lease, a job
+// that took the radio away, a bound with no room for another claim - and in all three the
+// library's own word would be *nothing waits*, which is not what happened.
+//
+// Otherwise the library's word, translated: `mm::AgentLoop::wake` writes one of six static
+// sentences into `claimsEndedBy`, and *no time* joins *no room* because both are a wake that ran
+// out of room rather than out of work. An empty word is a wake that made no claim at all, and
+// then the claim step's own outcome is the answer (`agent wake` prints it).
+interfaces::Claims AgentBackend::claimsEnded() const {
+  if (p_.server != nullptr && p_.server->claimsStopped() != interfaces::Claims::kUnsaid) {
+    return p_.server->claimsStopped();
+  }
+  const char* word = report_.claimsEndedBy;
+  if (word == nullptr || word[0] == 0) return interfaces::Claims::kUnsaid;
+  if (std::strcmp(word, "nothing waits") == 0) return interfaces::Claims::kNothingWaiting;
+  if (std::strcmp(word, "an empty claim") == 0) return interfaces::Claims::kNothingWaiting;
+  if (std::strcmp(word, "the wake's claims") == 0) return interfaces::Claims::kTheBandsNumber;
+  if (std::strcmp(word, "a result kept") == 0) return interfaces::Claims::kAResultKept;
+  if (std::strcmp(word, "no transactions") == 0) return interfaces::Claims::kNoTransactions;
+  if (std::strcmp(word, "no time") == 0) return interfaces::Claims::kNoRoom;
+  if (std::strcmp(word, "the claim did not come back") == 0) return interfaces::Claims::kAClaimFailed;
+  return interfaces::Claims::kUnsaid;  // a sentence a later library added
 }
 
 // Why this wake sent nothing, or that it was answered (task p10-02).
@@ -703,6 +742,15 @@ void AgentBackend::printReport(interfaces::TextOut& out) const {
   sayf(&out, "  %d job(s) claimed, %d run, %d not run; %d result(s) flushed, %d kept; %d batch(es), %d advert(s) posted, %d left\n",
        r.jobsClaimed, r.jobsRun, r.jobsNotRun, r.resultsFlushed, r.resultsKept, r.batchesPosted,
        r.observationsPosted, r.observationsLeft);
+  // **How many times this wake asked for work, and why the last time was the last** (task
+  // p18-02). A line of its own, because the one above is already near the 200 bytes a console
+  // line is printed into - and because a wake of several claims is the thing a person reading
+  // this is trying to understand. A claim whose answer was lost and which was therefore asked
+  // once more is said where it is not nought (the library's `claimsLost`): the pair is one claim
+  // this wake made, not two.
+  sayf(&out, "  %d claim(s), %d job(s) run; the last claim was the last: %s%s\n",
+       r.claimsMade, r.jobsRun, interfaces::describe(claimsEnded()),
+       r.claimsLost > 0 ? "; a claim's answer was lost and it was asked once more" : "");
   sayf(&out, "  %d transaction(s), %lu byte(s) posted, %lu ms at the server of %lu; accepted interval %d s, sleep at least %lu s%s%s\n",
        r.transactionsSpent, static_cast<unsigned long>(r.bytesPosted), static_cast<unsigned long>(r.uplinkMs),
        static_cast<unsigned long>(r.elapsedMs), r.acceptedIntervalS, static_cast<unsigned long>(r.sleepAtLeastS),
@@ -796,6 +844,17 @@ void AgentBackend::jobs(interfaces::TextOut& out) {
   }
   OutAdapter adapter(out);
   p_.jobs->report(adapter);
+  // **What the last wake's claims came to** (task p18-02), before the firmware jobs' own
+  // counters: the library's report names the jobs it ran and has no line for how many times the
+  // wake asked, and this section is what a `twinoak.report` of the `jobs` section carries to
+  // meshmaster.dk. A wake that made no claim says so rather than printing a 0 with a reason.
+  if (report_.claimsMade > 0) {
+    sayf(&out, "claims    %d last wake, %d job(s) run; the last was the last: %s%s\n",
+         report_.claimsMade, report_.jobsRun, interfaces::describe(claimsEnded()),
+         report_.claimsLost > 0 ? "; one claim's answer was lost and it was asked once more" : "");
+  } else {
+    sayf(&out, "claims    none last wake (the claim step: %s)\n", mm::stepOutcomeName(report_.claim));
+  }
   if (p_.firmware != nullptr) {
     const FirmwareJobCounters& f = p_.firmware->counters();
     const UplinkCounters& u = p_.server->uplinkCounters();

@@ -341,6 +341,14 @@ class AgentBackend final : public interfaces::Backend, public core::console::Age
   // is the wake just run.
   interfaces::Reached reachedThisWake(const interfaces::BackendKnowledge& known) const;
   void printReport(interfaces::TextOut& out) const;
+
+ public:
+  // **Why the last claim of this wake was the last** (task p18-02): the latch this firmware set,
+  // or the library's own word translated. Read by the record (`roomTookOn`), by `agent wake` and
+  // by the `jobs` section of a report, so that the three cannot disagree - and by a test.
+  interfaces::Claims claimsEnded() const;
+
+ private:
   // `agent jobs`'s own two blocks about the local door (task p9-04): the door's counters, and
   // the last ten jobs by the repeater they named - which the library's report has no field for.
   void sayLocalDoor(interfaces::TextOut& out) const;

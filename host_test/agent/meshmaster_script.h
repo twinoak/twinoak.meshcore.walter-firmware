@@ -164,6 +164,18 @@ class MeshMasterScript {
   // The jobs this server has leased out and whose answers were lost, still waiting to be handed
   // back.
   std::size_t leasedAndLost() const { return lost_.size(); }
+  // **And a job this server has leased to this unit and holds no result for**, put there by hand
+  // (task p18-02). The hand-back rule does not ask *why* there is no result and cannot: the
+  // server keeps no record of an answer that did not arrive (meshmaster.dk's
+  // `Transport/HandedBack.cs`, `Lost`). So a lease whose answer was lost, a session the bound
+  // cut, an apply whose result waits for the next boot and a download the budget ended are all
+  // the same thing to it - a running lease with no result - and every one of them is handed back
+  // to a claim that states `holding` without that id. This is how a test puts the server in that
+  // state without walking the wake that got it there.
+  void leasedWithNoResult(const std::string& job) {
+    lost_.push_back(std::make_pair(idOf(job), job));
+    lease_until_ms[idOf(job)] = clock_.nowMs() + static_cast<std::uint64_t>(kClaimLeaseSeconds) * 1000u;
+  }
   // The next `count` result posts answer `status` (a server that takes everything but results).
   void failResults(int status, int count) {
     result_fail_status_ = status;
@@ -347,6 +359,13 @@ class MeshMasterScript {
     const std::size_t end = job.find('"', begin);
     return end == std::string::npos ? std::string() : job.substr(begin, end - begin);
   }
+  // **Whether a claim by this unit now would be handed a job**, which is what `jobsWaiting` says
+  // in a heartbeat's reply and in a result's (meshmaster.dk's tasks p4.47-253 and 254): something
+  // queued this unit offers a type for, **or** a lease this server has running with no result,
+  // which it hands back to a claim that does not name it. The second half was not in it while a
+  // wake made one claim and nothing could be handed back inside one.
+  bool workWaits() const { return routableQueued() > 0 || !lost_.empty(); }
+
   // How many queued jobs this unit offers a type for: what `jobsWaiting` means to the server.
   int routableQueued() const {
     int n = 0;
@@ -431,7 +450,7 @@ class MeshMasterScript {
                     "{\"serverTime\":\"%s\",\"budget\":{\"maxTransactionsPerMinute\":%d,\"minGapSeconds\":%d},"
                     "\"pollIntervalS\":%lu,\"jobsWaiting\":%s}",
                     iso(server_time).c_str(), max_per_minute_, gap_seconds_,
-                    static_cast<unsigned long>(accepted), routableQueued() > 0 ? "true" : "false");
+                    static_cast<unsigned long>(accepted), workWaits() ? "true" : "false");
       reply->body = json;
       return true;
     }
@@ -544,8 +563,16 @@ class MeshMasterScript {
         const std::uint64_t lease = lease_until_ms.count(job_id) != 0 ? lease_until_ms[job_id] : 0;
         const bool late = lease != 0 && now > lease;
         results[job_id].push_back(PostedResult{job_id, request.body, now, lease, late});
+        // **And whether a claim by this exit node now would be handed a job** (meshmaster.dk's
+        // task p4.47-253, read by the library since its `v0.7.6`): the one member a wake that may
+        // claim more than once turns on. The server writes it to an exit node whose last
+        // heartbeat stated an interval of its own, which this unit's does, and the answer is the
+        // same question `jobsWaiting` answers in a heartbeat reply - something queued this unit
+        // offers a type for - with the leases whose answers were lost beside it, because those
+        // are handed back to the next claim that says it does not hold them.
+        const bool waiting = workWaits();
         reply->body = "{\"jobId\":" + std::to_string(job_id) + ",\"state\":\"succeeded\",\"duplicate\":false,\"late\":" +
-                      (late ? "true" : "false") + "}";
+                      (late ? "true" : "false") + ",\"jobsWaiting\":" + (waiting ? "true" : "false") + "}";
         return true;
       }
       if (what == "extend") {

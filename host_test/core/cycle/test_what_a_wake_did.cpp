@@ -355,3 +355,22 @@ TEST_CASE("the documents carry every reason and every letter, in this firmware's
   CHECK(has(console, "the server answered"));
   CHECK(has(console, "a job ran"));
 }
+
+TEST_CASE("every reason a wake stopped claiming has a phrase, no two alike, and the documents carry it") {
+  // The seven of task p18-02, `kUnsaid` included: the journal's line, `agent wake` and the `jobs`
+  // section of a report all print one of them, and a person reading one a month later has to be
+  // able to look it up.
+  const std::string cycle = readDoc("cycle.md");
+  for (std::uint8_t a = 0; a < static_cast<std::uint8_t>(interfaces::Claims::kCount); ++a) {
+    const std::string phrase = interfaces::describe(static_cast<interfaces::Claims>(a));
+    CHECK_MESSAGE(phrase != "?", static_cast<unsigned>(a));
+    CHECK_MESSAGE(has(cycle, phrase.c_str()), phrase);
+    for (std::uint8_t b = 0; b < a; ++b) {
+      CHECK(phrase != std::string(interfaces::describe(static_cast<interfaces::Claims>(b))));
+    }
+  }
+  // And the zero is *it did not say*, which is what a wake that made no claim at all answers and
+  // what a backend with no jobs answers for ever.
+  CHECK(interfaces::WakesRoom{}.claims_end == interfaces::Claims::kUnsaid);
+  CHECK(interfaces::WakesRoom{}.claims == 0);
+}

@@ -516,6 +516,16 @@ bool ModemUplink::postHeartbeat(const mm::Heartbeat& hb, mm::HeartbeatReply& rep
     return false;
   }
   wipeReply();
+  // **The first claim of the wake is held to the same room as the ones after it** (task p18-02).
+  // The library claims when the heartbeat said work waits, so for the first claim this reply is
+  // where the answer is written - as a result's reply is for the rest. A wake with no room left
+  // for a claim and the calls after its jobs makes none: its remaining steps run and it sleeps.
+  if (reply.jobsWaiting && !roomForAnotherClaim()) {
+    reply.jobsWaiting = false;
+    stopClaiming(interfaces::Claims::kNoRoom);
+    LOG_I("server: work waits, and this wake has no room for a claim and the calls after its "
+          "jobs: none is made in it");
+  }
   return true;
 }
 
@@ -561,8 +571,16 @@ bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count, int trans
                             const long long* holding, int holdingCount) {
   count = 0;
   char request[mm::kMaxClaimRequestLen] = {};
-  const std::size_t request_len =
-      mm::writeClaimRequest(max, request, sizeof request, transactionsLeft, holding, holdingCount);
+  // **And the ids this firmware holds outside that buffer** (task p18-02): the library's list,
+  // then ours behind it, none twice. The member is still written by the library's own writer out
+  // of one array - a claim this firmware composed a member of itself would be a second dialect -
+  // and `mm::kMaxClaimRequestLen` is the longest body that writer can write with the list full,
+  // so the request buffer is already sized for them.
+  long long held[mm::kClaimHoldingMax];
+  const int held_count = holdingForTheClaim(holding, holdingCount, held);
+  const std::size_t request_len = mm::writeClaimRequest(max, request, sizeof request, transactionsLeft,
+                                                        held_count > 0 ? held : holding,
+                                                        held_count > 0 ? held_count : holdingCount);
   std::size_t len = 0;
   Call c;
   if (!call(CallKind::kClaim, "/jobs/claim", reinterpret_cast<const std::uint8_t*>(request), request_len, kClaimReplyBytes, len, c) ||
@@ -592,6 +610,41 @@ bool ModemUplink::claimJobs(mm::ClaimedJob* jobs, int max, int& count, int trans
   offerServerTime(server_time);
   coverTheLeases(jobs, count);
   return true;
+}
+
+// **The claim's `holding` as it goes on the wire** (task p18-02): the library's own ids, then the
+// ones this firmware holds that are not already among them.
+//
+// `holdingCount` below 0 is the library saying *this agent does not say*, and then nothing is
+// added: the member's absence is what stops the server handing anything back at all, and turning
+// it into a statement would ask for exactly what this task exists to prevent. The library states
+// it in every claim it makes (`JobRunner::claim`), so that branch is the shape of the API and not
+// a case this unit meets.
+int ModemUplink::holdingForTheClaim(const long long* holding, int holdingCount, long long* out) const {
+  if (out == nullptr || gate_ == nullptr || holdingCount < 0) return 0;
+  int n = 0;
+  for (int i = 0; i < holdingCount && n < mm::kClaimHoldingMax; ++i) {
+    if (holding == nullptr) break;
+    out[n++] = holding[i];
+  }
+  long long ours[mm::kClaimHoldingMax];
+  const int mine = gate_->holdsOutsideTheBuffer(ours, mm::kClaimHoldingMax);
+  for (int i = 0; i < mine && i < mm::kClaimHoldingMax; ++i) {
+    if (ours[i] == 0) continue;
+    bool already = false;
+    for (int k = 0; k < n; ++k) already = already || out[k] == ours[i];
+    if (already || n >= mm::kClaimHoldingMax) continue;
+    out[n++] = ours[i];
+  }
+  // 0 is *nothing was added*: the caller then passes the library's own list through untouched,
+  // which keeps `[]` and a null pointer exactly what they were.
+  return n == holdingCount ? 0 : n;
+}
+
+// **Whether this wake could cover another claim at all** (task p18-02).
+bool ModemUplink::roomForAnotherClaim() const {
+  const core::cycle::WakeRoom room(guard_, clock_);
+  return room.couldHold(kLeastCallMs + core::cycle::roomForCallsAfter(mm::kClaimMax));
 }
 
 // **The wake's bound made to cover what the claim took on** (task p16-06, `core/cycle/wake_room.h`).
@@ -658,6 +711,11 @@ bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t l
     counters_.withheld = saturate(counters_.withheld);
     LOG_I("server: job %lld: no result posted on purpose - the lease is left to expire and the "
           "next wake's claim continues the job (unit-protocol.md)", jobId);
+    // **And this wake claims no more** (task p18-02). A job left to its lease is a job this wake
+    // could not pay for; the next claim of the same wake would be handed it straight back - the
+    // server hands back every running lease without a result that the claim did not name - and
+    // the one after that again. A wake that could not finish what it had does not take on more.
+    stopClaiming(interfaces::Claims::kNoRoom);
     return true;
   }
   std::size_t reply_len = 0;
@@ -665,6 +723,20 @@ bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t l
   const bool ok = callJob(CallKind::kResult, jobId, "result", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) && c.ok;
   if (ok) jobsWaiting = mm::resultReplySaysJobsWaiting(reply_, reply_len);
   wipeReply();
+  // **And what this end has to say about another claim** (task p18-02). The library claims again
+  // on this bit and on nothing else, so it is the one place a board may end the asking without
+  // failing a call. Either something has already ended it - the gate above, a job that took the
+  // radio away - or the bound cannot be raised far enough to cover a claim and the calls after
+  // its jobs, which is *no room* and is read here because this is the last moment before the
+  // library decides.
+  if (jobsWaiting && claimsStopped() != interfaces::Claims::kUnsaid) {
+    jobsWaiting = false;
+  } else if (jobsWaiting && !roomForAnotherClaim()) {
+    jobsWaiting = false;
+    stopClaiming(interfaces::Claims::kNoRoom);
+    LOG_I("server: the server says more waits, and this wake has no room for a claim and the "
+          "calls after its jobs: no more is claimed in it");
+  }
   return ok;
 }
 
