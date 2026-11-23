@@ -1960,8 +1960,21 @@ void Console::printFlashResult(const char* what, const flasher::Result& r) {
   } else {
     char line[160];
     describeFailure(line, sizeof line, what, r.nrf);
-    printf("%s - failed while %s%s%s\n", line, flasher::describe(r.step), r.why[0] != 0 ? ": " : "",
-           r.why[0] != 0 ? r.why : "");
+    // Four calls and not one format: the nRF52 layer's phrase, the step's and `why` together can
+    // pass printf's 200-byte buffer, and a truncated line loses its newline and runs into the next
+    // one (task p18-05 made that visible; `print()` writes straight through).
+    print(line);
+    printf(" - failed while %s", flasher::describe(r.step));
+    if (r.why[0] != 0) printf(": %s", r.why);
+    print("\n");
+  }
+  // **What the flash did to the chip** (task p18-05, deliverable 1): read off what the flasher
+  // did and not off the step it stopped at, so a person at the console knows whether anything has
+  // to be put back. A flash that wrote nothing and halted the core says both.
+  if (!r.ok()) {
+    printf("  %s%s\n", r.wrote_nothing ? "nothing was written: the chip is as this flash found it"
+                                       : "the chip was changed: the radio needs an image put back",
+           r.core_halted ? "; the core was halted and started again" : "");
   }
   // **What UICR said about the reset pin, at this flash** (task p18-04), and which of the two
   // started the image: the pulse where the module has a reset pin, the debug port where it has
@@ -2783,6 +2796,12 @@ bool Console::updateOk() {
 
 void Console::printUpdateStep(const update::StepResult& s) {
   if (s.changed) {
+    // A line of the story written in the state the machine is already in - task p18-05's second
+    // try at a flash that wrote nothing. Nothing moved, so there is no arrow to print.
+    if (s.before == s.after) {
+      printf("update: %s: %s\n", update::describe(s.after), s.note);
+      return;
+    }
     printf("update: %s -> %s%s%s\n", update::describe(s.before), update::describe(s.after),
            s.note[0] != 0 ? ": " : "", s.note);
     return;
@@ -2812,9 +2831,26 @@ void Console::printUpdateOutcome() {
       break;
     case update::State::kRestored:
       // Two printf calls: the two lines together are longer than printf's 200-byte buffer.
-      printf("rak update: restored: the candidate failed its health check (%s%s%s) and is on the bad list;\n",
-             update::describe(st.fail_reason), st.fail_step != update::ProveStep::kNone ? " at " : "",
-             st.fail_step != update::ProveStep::kNone ? update::describe(st.fail_step) : "");
+      //
+      // **A flash that failed is not a health check that failed** (task p18-05, deliverable 5),
+      // and the sentence says which it was along with whether the bad list took the image: it
+      // takes an image whose own bytes, digest or descriptor are wrong, and not a debug port that
+      // gave up or a page that would not take.
+      if (st.fail_reason == update::Reason::kFlashFailed) {
+        char failure[update::kFlashFailureLineMax];
+        update::flashFailureLine(update::decodeFlashFailure(st.fail_detail), failure, sizeof failure);
+        // Three calls, not one format: the failure's line alone can be longer than printf's
+        // 200-byte buffer.
+        print("rak update: restored: the candidate's flash failed (");
+        print(failure);
+        print(st.units_fault ? ") and is NOT on the bad list: the fault was this unit's, and the\n"
+                               "  image may be flashed again;\n"
+                             : ") and is on the bad list;\n");
+      } else {
+        printf("rak update: restored: the candidate failed its health check (%s%s%s) and is on the bad list;\n",
+               update::describe(st.fail_reason), st.fail_step != update::ProveStep::kNone ? " at " : "",
+               st.fail_step != update::ProveStep::kNone ? update::describe(st.fail_step) : "");
+      }
       printf("  the golden image %s is back and proved\n", st.version);
       break;
     case update::State::kStuck:
@@ -2822,6 +2858,18 @@ void Console::printUpdateOutcome() {
              update::describe(st.reason));
       break;
     case update::State::kRefused:
+      // **Twice, and the radio is as it was** (task p18-05, deliverable 4): the flash wrote
+      // nothing either time, so this is not a refusal at `check` and saying so would be wrong.
+      if (st.reason == update::Reason::kFlashDidNotBegin) {
+        char failure[update::kFlashFailureLineMax];
+        update::flashFailureLine(update::decodeFlashFailure(st.fail_detail), failure, sizeof failure);
+        print("error: rak update: the flash did not begin, twice (");
+        print(failure);
+        print(")\n");
+        print("  nothing was written, nothing was flashed back and the image is on no bad list:\n"
+              "  the radio is as it was and the same update can be run again\n");
+        break;
+      }
       printf("error: rak update: refused at check: %s (nothing was touched)\n", update::describe(st.reason));
       break;
     case update::State::kNodeFault:
@@ -2899,6 +2947,23 @@ void Console::printUpdateEntry(std::size_t number, const update::Entry& entry, c
     printf(" - %s, slot %u, image sha256 %s...", update::describe(p.kind), static_cast<unsigned>(p.slot), hash);
   }
   if (p.reason != update::Reason::kNone) printf(": %s", update::describe(p.reason));
+  // **What a failed flash failed at** (task p18-05, deliverable 2), off the entry's own detail:
+  // the step, the status of the layer under it, the address when there is one, and whether the
+  // chip was changed. Until this task the detail was the flasher's step alone and was printed
+  // nowhere, which is why nobody could say what the flash of 23 November had stopped at. An entry
+  // written before this task has no layout bit and prints as the step alone, which is what such an
+  // entry has always meant.
+  const bool flash_said = p.reason == update::Reason::kFlashFailed ||
+                          p.reason == update::Reason::kFlashOnceMore ||
+                          p.reason == update::Reason::kFlashDidNotBegin;
+  if (flash_said) {
+    char failure[update::kFlashFailureLineMax];
+    update::flashFailureLine(update::decodeFlashFailure(p.detail), failure, sizeof failure);
+    // `print()` and not `printf()`: the longest of these lines is 250 characters and printf's own
+    // buffer is 200, which would cut it where the words that matter are.
+    print(" - ");
+    print(failure);
+  }
   if (p.step != update::ProveStep::kNone && p.step != update::ProveStep::kPassed) {
     printf(" (at: %s)", update::describe(p.step));
   }

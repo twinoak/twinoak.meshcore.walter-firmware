@@ -530,6 +530,14 @@ void SwdTarget::writeDpRegister(std::uint8_t a, std::uint32_t value) {
           fail("CSYSPWRUPREQ set without CDBGPWRUPREQ (B2.3.2: UNPREDICTABLE)");
         }
         if (req != ctrl_stat_req_) ack_countdown_ = powerup_ack_after_reads;
+        // **A host opening the debug port** (task p18-05): the write that asks for power is made
+        // exactly once per `Nrf52::open()`, so it is what a simulated chip counts debug sessions -
+        // and therefore flashes - by. Told before the acknowledges are polled, so that the chip
+        // may decide this session fails at the power-up.
+        if ((req & cs::kCdbgPwrUpReq) != 0 && (ctrl_stat_req_ & cs::kCdbgPwrUpReq) == 0 &&
+            on_power_up_request) {
+          on_power_up_request();
+        }
         ctrl_stat_req_ = req;
         if (req == 0) ctrl_stat_ack_ = 0;  // B2.3.2: the controller deasserts the acknowledge
         orun_detect_ = (value & cs::kOrunDetect) != 0;

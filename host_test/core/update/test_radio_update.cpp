@@ -632,7 +632,12 @@ TEST_CASE("a flash that fails - the target goes silent - rolls back when the chi
   CHECK(end == State::kRestored);
   CHECK(w.update.reason() == Reason::kFlashFailed);
   CHECK(unit.world.chipHolds(unit.golden));
-  CHECK(unit.world.store.store.isBad(unit.read(Which::kCandidate).sha256));
+  // **And the candidate is on no bad list** (task p18-05, deliverable 5): the flash had written
+  // before it failed, so the golden image goes back as it always did - but the fault was the
+  // unit's, a chip whose power went in the middle of a page, and S-5's *never tried again* is the
+  // health check's sentence. The image may be flashed again.
+  CHECK_FALSE(unit.world.store.store.isBad(unit.read(Which::kCandidate).sha256));
+  CHECK(w.update.status().units_fault);
 }
 
 // -- the first entry of a run names the image it is about (task p9-04) ---------------------------

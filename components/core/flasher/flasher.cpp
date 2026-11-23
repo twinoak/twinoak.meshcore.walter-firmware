@@ -35,6 +35,41 @@ const char* describe(Step step) {
   return "?";
 }
 
+// Task p18-05: the same steps in one word each, for the journal's line and for the note that
+// goes to the server with a job - where seventy characters hold the step, the status under it,
+// the address and whether the chip was changed, and `describe()`'s phrases do not fit.
+const char* name(Step step) {
+  switch (step) {
+    case Step::kNone: return "none";
+    case Step::kSelect: return "select";
+    case Step::kPins: return "pins";
+    case Step::kConnect: return "connect";
+    case Step::kProtected: return "protected";
+    case Step::kIdentify: return "identify";
+    case Step::kSoftDevice: return "softdevice";
+    case Step::kImage: return "image";
+    case Step::kScan: return "scan";
+    case Step::kHalt: return "halt";
+    case Step::kSettingsInvalidate: return "settings-invalidate";
+    case Step::kFirstPageErase: return "first-page-erase";
+    case Step::kPages: return "pages";
+    case Step::kFirstPage: return "first-page";
+    case Step::kReadBack: return "read-back";
+    case Step::kDigest: return "digest";
+    case Step::kSettingsValidate: return "settings-validate";
+    case Step::kErase: return "erase";
+    case Step::kReset: return "reset";
+    case Step::kDone: return "done";
+  }
+  return "?";
+}
+
+// Task p18-05, deliverable 5. The header says why these two and nothing else.
+bool blamesTheImage(const Result& result) {
+  if (result.ok()) return false;
+  return result.step == Step::kImage || result.step == Step::kDigest;
+}
+
 // Task p18-04: which of the two started the image, in the words the console, the journal's story
 // and a report use.
 const char* describe(Started started) {
@@ -615,6 +650,12 @@ Result Flasher::finish(Plan* plan, Result r, bool reset) {
   }
   counters_.elapsed_ms = static_cast<std::uint32_t>(clock_.nowMs() - start_ms_);
   r.counters = counters_;
+  // **Whether this call changed the chip** (task p18-05, deliverable 1), off the counters and not
+  // off the step: `erases` counts every page erase including the settings page's, and
+  // `words_written` every word of both, so the two together are "something went into flash". The
+  // halt is the plan's own record of it.
+  r.wrote_nothing = counters_.erases == 0 && counters_.words_written == 0;
+  r.core_halted = plan->halted;
   return r;
 }
 

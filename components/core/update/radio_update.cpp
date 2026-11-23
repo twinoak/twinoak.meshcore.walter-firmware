@@ -1,5 +1,7 @@
 #include "core/update/radio_update.h"
 
+#include <cstdio>
+
 #include "core/flasher/board_profile.h"
 #include "core/link/codec/wire.h"
 #include "core/link/radio_identity.h"
@@ -120,6 +122,9 @@ const char* describe(Reason reason) {
     case Reason::kAfterTheWatchdog: return "the proof begins at the boot after the scanner's watchdog";
     case Reason::kWatchdogTimePassed:
       return "the proof begins: the scanner's watchdog has had its longest time and reset nothing";
+    case Reason::kFlashOnceMore: return "the flash did not begin: once more";
+    case Reason::kFlashDidNotBegin:
+      return "the flash did not begin, twice: nothing was written and the radio is as it was";
   }
   return "?";
 }
@@ -178,6 +183,129 @@ StartRecord decodeStart(std::uint32_t detail) {
   return r;
 }
 
+// ------------------------------------------------- what a failed flash says (task p18-05)
+//
+// The layout is in the header, field by field, and bit 31 is the whole of what makes an older
+// entry read as it did.
+
+std::uint32_t encodeFlashFailure(const FlashFailure& f) {
+  std::uint32_t d = 1u << 31;
+  d |= static_cast<std::uint32_t>(f.step) & 0x3Fu;
+  d |= (static_cast<std::uint32_t>(f.status) & 0x3Fu) << 6;
+  d |= (static_cast<std::uint32_t>(f.swd) & 0xFu) << 12;
+  if (f.wrote_nothing) d |= 1u << 16;
+  if (f.core_halted) d |= 1u << 17;
+  if (f.refused) d |= 1u << 18;
+  if (f.second_try) d |= 1u << 19;
+  if (f.address_known) {
+    d |= 1u << 28;
+    d |= ((f.address >> 12) & 0xFFu) << 20;
+  }
+  return d;
+}
+
+FlashFailure decodeFlashFailure(std::uint32_t detail) {
+  FlashFailure f;
+  // An entry from before this task: the whole detail is the flasher's step. One written by it has
+  // bit 31 set, and no `Step` reaches 0x80000000 by itself.
+  const std::uint32_t step = (detail >> 31) != 0 ? (detail & 0x3Fu) : detail;
+  if (step <= static_cast<std::uint32_t>(flasher::Step::kDone)) {
+    f.step = static_cast<flasher::Step>(step);
+  }
+  if ((detail >> 31) == 0) return f;
+  f.detailed = true;
+  const std::uint32_t status = (detail >> 6) & 0x3Fu;
+  if (status <= static_cast<std::uint32_t>(nrf52::Status::kSlotBusy)) {
+    f.status = static_cast<nrf52::Status>(status);
+  }
+  const std::uint32_t swd_status = (detail >> 12) & 0xFu;
+  if (swd_status <= static_cast<std::uint32_t>(swd::Status::kNoMemAp)) {
+    f.swd = static_cast<swd::Status>(swd_status);
+  }
+  f.wrote_nothing = (detail & (1u << 16)) != 0;
+  f.core_halted = (detail & (1u << 17)) != 0;
+  f.refused = (detail & (1u << 18)) != 0;
+  f.second_try = (detail & (1u << 19)) != 0;
+  f.address_known = (detail & (1u << 28)) != 0;
+  if (f.address_known) f.address = ((detail >> 20) & 0xFFu) << 12;
+  return f;
+}
+
+FlashFailure failureOf(const flasher::Result& r) {
+  FlashFailure f;
+  f.detailed = true;
+  f.step = r.step;
+  f.status = r.nrf.status;
+  f.swd = r.nrf.swd;
+  f.wrote_nothing = r.wrote_nothing;
+  f.core_halted = r.core_halted;
+  f.refused = r.outcome == flasher::Outcome::kRefused;
+  f.address_known = r.address != 0;
+  f.address = r.address;
+  return f;
+}
+
+std::size_t flashFailureLine(const FlashFailure& f, char* out, std::size_t cap) {
+  if (out == nullptr || cap == 0) return 0;
+  // An entry from before this task carries the step and nothing else, and says so.
+  if (!f.detailed) {
+    const int n = std::snprintf(out, cap, "while %s (an entry from before this was recorded)",
+                                flasher::describe(f.step));
+    return n < 0 ? 0 : (static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1);
+  }
+  char at[24];
+  at[0] = 0;
+  if (f.address_known) {
+    std::snprintf(at, sizeof at, " at 0x%08lx", static_cast<unsigned long>(f.address));
+  }
+  char under[80];
+  under[0] = 0;
+  if (f.status == nrf52::Status::kSwd) {
+    std::snprintf(under, sizeof under, " (%s)", swd::describe(f.swd));
+  }
+  // A failure the layer under it called `kOk` is the flasher's own comparison: a page, the whole
+  // image or the settings record read back and not matching (`flasher.cpp`, `programPage`,
+  // `readBack`, `settingsWrite`). Saying *ok* there would be a lie about the only thing a person
+  // reading this line wants.
+  const char* status = f.refused               ? "refused by a check"
+                       : f.status == nrf52::Status::kOk ? "what was read back did not match"
+                                                        : nrf52::describe(f.status);
+  const int n = std::snprintf(
+      out, cap, "%swhile %s: %s%s%s; %s%s", f.second_try ? "the second try, " : "",
+      flasher::describe(f.step), status, under, at,
+      f.wrote_nothing ? "nothing was written" : "the chip was changed",
+      f.core_halted ? ", the core was halted and started again" : "");
+  return n < 0 ? 0 : (static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1);
+}
+
+std::size_t flashFailureNote(const FlashFailure& f, char* out, std::size_t cap) {
+  if (out == nullptr || cap == 0) return 0;
+  if (!f.detailed) {
+    const int n = std::snprintf(out, cap, "%s (step only)", flasher::name(f.step));
+    return n < 0 ? 0 : (static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1);
+  }
+  char at[16];
+  at[0] = 0;
+  // Six hex digits: the chip is a megabyte, so a seventh would say nothing (PS "Memory").
+  if (f.address_known) {
+    std::snprintf(at, sizeof at, " at 0x%06lx", static_cast<unsigned long>(f.address) & 0xFFFFFFu);
+  }
+  char under[24];
+  if (f.refused) {
+    std::snprintf(under, sizeof under, "refused");
+  } else if (f.status == nrf52::Status::kOk) {
+    std::snprintf(under, sizeof under, "no-match");  // the flasher's own read-back comparison
+  } else if (f.status == nrf52::Status::kSwd) {
+    std::snprintf(under, sizeof under, "swd %s", swd::name(f.swd));
+  } else {
+    std::snprintf(under, sizeof under, "%s", nrf52::name(f.status));
+  }
+  const int n = std::snprintf(out, cap, "%s%s: %s%s; %s", f.second_try ? "2nd try " : "",
+                              flasher::name(f.step), under, at,
+                              f.wrote_nothing ? "nothing written" : "chip changed");
+  return n < 0 ? 0 : (static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1);
+}
+
 bool decode(const Entry& e, Payload* out) {
   if (e.kind != kind::kRadioUpdate || e.size < kPayloadBytes || out == nullptr) return false;
   if (e.payload[0] > static_cast<std::uint8_t>(State::kNodeFault)) return false;
@@ -228,7 +356,8 @@ bool RadioUpdate::journal(State state, Reason reason, ProveStep step, std::uint3
   p.reason = reason;
   p.step = step;
   p.flags = static_cast<std::uint8_t>((request_.link_known_down ? kFlagLinkKnownDown : 0) |
-                                      (status_.resumed ? kFlagResumed : 0));
+                                      (status_.resumed ? kFlagResumed : 0) |
+                                      (units_fault_ ? kFlagUnitsFault : 0));
   for (std::size_t i = 0; i < image::kSha256Size; ++i) p.sha256[i] = status_.sha256[i];
   p.detail = detail;
   std::uint8_t bytes[kPayloadBytes];
@@ -251,6 +380,7 @@ StepResult RadioUpdate::enter(State next, const char* note, Reason reason, Prove
   r.note = note;
   r.reason = reason;
   r.step = step;
+  r.detail = detail;  // task p18-05: a caller writing the server's line reads it from here
   if (!journal(next, reason, step, detail)) {
     // Without the journal the machine does not act: it stops in the state it is in, says so, and
     // a later resume() finds the last entry it did write.
@@ -262,6 +392,16 @@ StepResult RadioUpdate::enter(State next, const char* note, Reason reason, Prove
     return r;
   }
   state_ = next;
+  // **A flashing state begun is a flash with no try spent** (task p18-05): the second try lives
+  // inside `kFlashing` without a transition, so a transition *into* one - the candidate's, the
+  // golden image's on a rollback, or either of them again at a resume - is a new flash, and one
+  // of its own two tries.
+  if (next == State::kFlashing || next == State::kRollingBack) {
+    tries_ = 0;
+    again_pending_ = false;
+    again_wants_hello_ = false;
+    status_.flash_tries = 0;
+  }
   if (reason != Reason::kNone) reason_ = reason;
   status_.state = next;
   status_.reason = reason_;
@@ -282,6 +422,21 @@ bool RadioUpdate::note(Reason reason, ProveStep step, std::uint32_t detail) {
   return false;
 }
 
+// The same line, as a step's answer rather than as a bool: the caller that writes the server's
+// line reads the reason and the detail off a `StepResult`, so a line of the story has to be one
+// (task p18-05).
+StepResult RadioUpdate::noted(Reason reason, const char* note_text, std::uint32_t detail) {
+  if (!note(reason, ProveStep::kNone, detail)) return waiting(describe(Reason::kJournal));
+  StepResult r;
+  r.before = state_;
+  r.after = state_;
+  r.changed = true;  // nothing moved, and the journal has a line: a caller posts it
+  r.reason = reason;
+  r.detail = detail;
+  r.note = note_text;
+  return r;
+}
+
 StepResult RadioUpdate::waiting(const char* note) {
   StepResult r;
   r.before = state_;
@@ -291,25 +446,36 @@ StepResult RadioUpdate::waiting(const char* note) {
   return r;
 }
 
-StepResult RadioUpdate::refuse(Reason reason) {
+StepResult RadioUpdate::refuse(Reason reason, std::uint32_t detail) {
   reason_ = reason;
-  return enter(State::kRefused, describe(reason), reason);
+  return enter(State::kRefused, describe(reason), reason, ProveStep::kNone, detail);
 }
 
 // A failure of the flash, the boot or the proof. From the candidate's path: rolling back - the
 // hash on the bad list first, then the golden image. From the golden image's own path (a
 // rollback, or a switch back): stuck. From a first install: stuck, "no image to return to".
-StepResult RadioUpdate::fail(Reason reason, ProveStep step, std::uint32_t detail) {
+StepResult RadioUpdate::fail(Reason reason, ProveStep step, std::uint32_t detail,
+                             bool blame_the_image) {
   reason_ = reason;
+  // **Whose fault it was** (task p18-05, deliverable 5), set before the entry is written so that
+  // the entry carries the flag and a resume reads it back.
+  units_fault_ = !blame_the_image;
   if (!rollback_image_) {
     status_.fail_reason = reason;
     status_.fail_step = step;
+    status_.fail_detail = detail;
+    status_.units_fault = units_fault_;
   }
   if (rollback_image_) {
     return enter(State::kStuck, describe(reason), reason, step, detail);
   }
-  // The image that failed is never tried again (S-5): first thing, before any flash.
-  const image::StoreError bad = store_.markBad(status_.sha256);
+  // The image that failed is never tried again (S-5): first thing, before any flash - and only
+  // where the fault was the image's own or its proof's, which is where the specification's
+  // sentence sits (§6's drawing: it is under the health check's *no*). A debug port that gave up,
+  // a page that would not take, a core that would not halt are the unit's: the golden image goes
+  // back as it always did, and that image may be flashed again.
+  const image::StoreError bad =
+      units_fault_ ? image::StoreError::kNone : store_.markBad(status_.sha256);
   if (request_.kind == Kind::kFirstInstall) {
     return enter(State::kStuck, describe(Reason::kNoImageToReturnTo), Reason::kNoImageToReturnTo,
                  step, detail);
@@ -397,6 +563,14 @@ bool RadioUpdate::start(const Request& request) {
   watchdog_owed_ = false;
   watchdog_wait_ = false;
   started_ms_ = 0;
+  // Task p18-05: no try, no pause and no blame carried over from the last run.
+  tries_ = 0;
+  again_pending_ = false;
+  again_wants_hello_ = false;
+  again_at_ms_ = 0;
+  again_since_ms_ = 0;
+  flash_detail_ = 0;
+  units_fault_ = false;
   if (request.kind == Kind::kFirstInstall) request_.link_known_down = true;
   status_.kind = request_.kind;
   status_.slot = request_.slot;
@@ -448,6 +622,18 @@ bool RadioUpdate::resume() {
   for (std::size_t i = 0; i < image::kSha256Size; ++i) status_.sha256[i] = p.sha256[i];
   reason_ = p.reason;
   first_seq_ = 0;
+  // **The flash begins again from nothing, and the blame does not** (task p18-05). A Walter that
+  // died in a flash resumes at `flashing` with no try spent - one flash, one possible second try
+  // - but whose fault the failure that put it on the rollback path was is the journal's, and the
+  // bad list must not be taken at the resume where it was not taken at the failure.
+  tries_ = 0;
+  again_pending_ = false;
+  again_wants_hello_ = false;
+  again_at_ms_ = 0;
+  again_since_ms_ = 0;
+  flash_detail_ = 0;
+  units_fault_ = (p.flags & kFlagUnitsFault) != 0;
+  status_.units_fault = units_fault_;
   // Where to take it up: never further along than the journal says, and never assuming a proof
   // passed - booting or proving start the proof over.
   State from = p.state;
@@ -609,13 +795,100 @@ StepResult RadioUpdate::stepCheck() {
 
 // ---------------------------------------------------------------------------- flashing
 
+// **A flash that did not finish** (task p18-05). Three answers, and which of the three is decided
+// by what the flasher *did* and not by the name of the step it stopped at:
+//
+//   the chip was changed - a page erased, a word written, the settings page touched - and the run
+//   goes on as it always did: the golden image back, and the hash on the bad list only where the
+//   fault was the image's own or its proof's (deliverable 5);
+//   nothing was written and this was the first try: the same flash is made **once more**, after a
+//   pause and after the radio's HELLO where the first try had halted it, with a line of the story
+//   in the journal before it (deliverable 3);
+//   nothing was written **twice**: the radio is exactly as the run found it, so there is nothing
+//   to put back and nothing to blame the image for. The run ends `refused` - *nothing was
+//   touched*, which is what that word has always meant here - with no flash of any kind and
+//   nothing on the bad list (deliverable 4).
+//
+// The golden image's own flash is the one exception to the third: a run that is already rolling
+// back has nothing to be refused into, and its ending is the one it is today - `stuck` - with the
+// step and the status now said. The second try is made for it just the same.
+//
+// On 23 November the scanner's flash of 11:37:43Z failed twelve seconds in, having written
+// nothing, and the machine answered by flashing the whole golden image back: nine minutes off the
+// mesh, no line measured, and the scanner image on the bad list although it had never been on the
+// chip. That is the behaviour this function replaces.
+StepResult RadioUpdate::flashWroteNothing(const flasher::Result& r) {
+  FlashFailure f = failureOf(r);
+  f.second_try = tries_ > 1;
+  const std::uint32_t detail = encodeFlashFailure(f);
+  if (!r.wrote_nothing) {
+    return fail(Reason::kFlashFailed, ProveStep::kNone, detail, flasher::blamesTheImage(r));
+  }
+  if (tries_ >= 2) {
+    if (rollback_image_) {
+      // The golden image going back, twice, with nothing written: `stuck`, as it is today.
+      return fail(Reason::kFlashFailed, ProveStep::kNone, detail, false);
+    }
+    units_fault_ = true;  // the image never reached the chip: it is not what is wrong
+    status_.fail_reason = Reason::kFlashDidNotBegin;
+    status_.fail_step = ProveStep::kNone;
+    status_.fail_detail = detail;
+    status_.units_fault = true;
+    return refuse(Reason::kFlashDidNotBegin, detail);
+  }
+  // Once more. The chip is as the flash found it, so there is nothing to undo: what stands between
+  // here and the second try is the pause, and the radio's own HELLO where the first try halted the
+  // core and started it again - a flash must not take the debug lines back from a radio in the
+  // middle of its boot.
+  flash_detail_ = detail;
+  again_pending_ = true;
+  again_wants_hello_ = r.core_halted;
+  again_since_ms_ = clock_.nowMs();
+  again_at_ms_ = again_since_ms_ + kFlashAgainPauseMs;
+  next_hello_ms_ = again_since_ms_;
+  if (r.core_halted) {
+    // The image was started again at the flasher's exit: nothing this end believed about the
+    // radio is from this boot.
+    radio_.radioWasReset();
+  }
+  return noted(Reason::kFlashOnceMore, "the flash did not begin: once more after a pause", detail);
+}
+
+// The pause, and the HELLO it may be owed. One step a call, as everything here is.
+StepResult RadioUpdate::waitBeforeTheSecondTry() {
+  const std::uint64_t now = clock_.nowMs();
+  if (now < again_at_ms_) return waiting("the pause before the second try at the flash");
+  if (again_wants_hello_) {
+    radio_.poll();
+    bool up = radio_.session().up;
+    bool text = radio_.mode() == link::client::Mode::kText;
+    if (!up && !text && now >= next_hello_ms_) {
+      next_hello_ms_ = now + kBootHelloIntervalMs;
+      up = radio_.hello().ok();
+      text = radio_.mode() == link::client::Mode::kText;
+    }
+    if (!up && !text && now - again_since_ms_ < kBootWindowMs) {
+      return waiting("waiting for the radio the first try halted and started again");
+    }
+    // Either it answered, or its window is up. The second try is made in both cases: a flash
+    // needs no link, and a radio that will not speak is the thing a flash is for.
+    again_wants_hello_ = false;
+  }
+  again_pending_ = false;
+  return waiting("the flash, once more");
+}
+
 StepResult RadioUpdate::stepFlashing(bool rollback) {
   if (reason_ == Reason::kJournal) return waiting(describe(reason_));
   const flasher::BoardProfile* profile = flasher::profileForSlot(request_.slot);
   if (profile == nullptr) return fail(Reason::kNoProfile, ProveStep::kNone);
+  // **The pause before the second try** (task p18-05): one step at a time, as everything here is.
+  if (again_pending_) return waitBeforeTheSecondTry();
   if (rollback) {
-    // The bad list first - again on a resume, where it is a no-op - then the golden image.
-    if (request_.kind != Kind::kRoleRepeater) {
+    // The bad list first - again on a resume, where it is a no-op - then the golden image. Not
+    // where the fault was the unit's (task p18-05, deliverable 5): `fail()` did not take it and
+    // this must not either, on the first pass or on a resume that reads the flag back.
+    if (request_.kind != Kind::kRoleRepeater && !units_fault_) {
       if (store_.markBad(status_.sha256) != image::StoreError::kNone) {
         return enter(State::kStuck, describe(Reason::kStore), Reason::kStore);
       }
@@ -635,12 +908,17 @@ StepResult RadioUpdate::stepFlashing(bool rollback) {
   // before the flash because afterwards there is nothing left to read it from: a scanner is the
   // one image that starts the chip's watchdog, and a watchdog it started outlives anything but a
   // pin, a brownout or a power-on reset.
-  over_a_scanner_ = radio_.mode() == link::client::Mode::kText ||
-                    (radio_.session().up && radio_.session().role == link::role::kScanner);
+  //
+  // On a second try (task p18-05) the radio may be dark - the first try halted it and the pulse
+  // that started it again may have reached nothing - and a dark radio reads as "not a scanner".
+  // So the first try's answer stands and the second can only add to it.
+  const bool scanner_now = radio_.mode() == link::client::Mode::kText ||
+                           (radio_.session().up && radio_.session().role == link::role::kScanner);
+  over_a_scanner_ = tries_ == 0 ? scanner_now : (over_a_scanner_ || scanner_now);
   const flasher::Result r = flasher_.flash(image, *profile, progress_, request_.slot);
-  if (!r.ok()) {
-    return fail(Reason::kFlashFailed, ProveStep::kNone, static_cast<std::uint32_t>(r.step));
-  }
+  ++tries_;
+  status_.flash_tries = tries_;
+  if (!r.ok()) return flashWroteNothing(r);
   // **The boot that is proved is the boot the flasher started** (task p18-01), and since task
   // p18-04 the flash says which of the two started it. The flasher's last act is one reset and
   // only one - a pulse on the reset line where the module has a reset pin, a soft reset over the

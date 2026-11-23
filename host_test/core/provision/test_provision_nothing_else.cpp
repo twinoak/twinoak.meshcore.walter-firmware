@@ -56,12 +56,16 @@ TEST_CASE("the radio's update against a factory RUI3 radio: refused or stuck, an
   ProvUnit u(Factory::kLegacyOpen, false);
   u.world.putCandidate();
   // No golden image: an update is refused at check. A first install is a person's command and
-  // the flasher refuses the chip (no SoftDevice where the profile says): stuck, nothing erased.
+  // the flasher refuses the chip (no SoftDevice where the profile says), which writes nothing -
+  // so since task p18-05 that flash is made once more and the run then ends `refused`: *the flash
+  // did not begin, twice*. It was `stuck` until then, and `refused` is the truer word for a radio
+  // nothing touched.
   std::string out = u.runLine("rak update");
   CHECK(bench::hasLine(out, "refused at check"));
   out = u.runLine("rak update --first-install");
   INFO(out);
-  CHECK(bench::hasLine(out, "STUCK"));
+  CHECK(bench::hasLine(out, "the flash did not begin, twice"));
+  CHECK(bench::hasLine(out, "checking the SoftDevice against the profile"));
   checkDoorNeverOpened(u);
   CHECK(u.chip().counters().writes == 0);
   CHECK(u.chip().counters().erases == 0);

@@ -19,6 +19,24 @@ const char* describe(Status status) {
   return "?";
 }
 
+// One word each (task p18-05): what a failed flash's journal entry and the note that goes with a
+// job say about the layer under the nRF52's, where the phrases above do not fit.
+const char* name(Status status) {
+  switch (status) {
+    case Status::kOk: return "ok";
+    case Status::kLinesLost: return "lines-lost";
+    case Status::kNoTarget: return "no-target";
+    case Status::kProtocolError: return "protocol-error";
+    case Status::kWaitTimeout: return "wait-timeout";
+    case Status::kFault: return "fault";
+    case Status::kParityError: return "parity-error";
+    case Status::kPowerUpTimeout: return "power-up-timeout";
+    case Status::kBadAddress: return "bad-address";
+    case Status::kNoMemAp: return "no-mem-ap";
+  }
+  return "?";
+}
+
 DpidrFields decodeDpidr(std::uint32_t dpidr) {
   DpidrFields f;
   f.revision = static_cast<std::uint8_t>((dpidr >> 28) & 0xF);

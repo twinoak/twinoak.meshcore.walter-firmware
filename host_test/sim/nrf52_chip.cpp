@@ -4,6 +4,7 @@
 
 #include <cstdio>
 
+#include "core/flasher/board_profile.h"
 #include "core/flasher/bootloader_settings.h"
 #include "core/nrf52/regs.h"
 #include "core/swd/mem_ap.h"
@@ -77,6 +78,31 @@ void Nrf52Chip::attachTo(SwdTarget& target) {
   target.attachAp(0, ahb_);
   target.attachAp(regs::ctrl_ap::kApsel, ctrl_);
   target_ = &target;
+  // Task p18-05: the host's request for debug power is one debug session beginning, which is one
+  // flash. The knob below decides whether this one is to fail, and where.
+  target.on_power_up_request = [this] { beginDebugSession(); };
+}
+
+// ---- where a flash fails before the halt (task p18-05) ----------------------------------------
+
+void Nrf52Chip::failFlashAt(FailFlashAt where, unsigned flashes) {
+  fail_where_ = where;
+  fail_every_ = where != FailFlashAt::kNone && flashes == 0;
+  fail_flashes_ = flashes;
+  fail_this_session_ = false;
+}
+
+void Nrf52Chip::beginDebugSession() {
+  ++debug_sessions_;
+  fail_this_session_ =
+      fail_where_ != FailFlashAt::kNone && (fail_every_ || fail_flashes_ > 0);
+  if (fail_this_session_ && !fail_every_) --fail_flashes_;
+  // The power-up's acknowledges are the debug port's and not the chip's, so that one failure is
+  // asked of the target. Touched only when this knob is the power-up's: a test that has set
+  // `powers_up` itself keeps it.
+  if (target_ != nullptr && fail_where_ == FailFlashAt::kPowerUp) {
+    target_->powers_up = !fail_this_session_;
+  }
 }
 
 // ---- the two kinds of access-port protection (task p5-02) -------------------------------------
@@ -421,7 +447,17 @@ void Nrf52Chip::setUicrWord(std::uint32_t addr, std::uint32_t value) {
 
 // ---- time and power ---------------------------------------------------------------------------
 
-bool Nrf52Chip::nvmcBusy() const { return busy_for_ever_ || clock_.nowUs() < busy_until_us_; }
+bool Nrf52Chip::nvmcBusy() const {
+  // Task p18-05: a flash controller that never becomes ready. `kFlashReady` is an erase the
+  // application had in flight when the port was opened, which outlasts the firmware's bound
+  // (nrf52::kErasePageTimeoutMs); `kAfterTheHalt` is the same once the core is halted, which is
+  // the way out that wrote nothing *and* left the core stopped.
+  if (fail_this_session_) {
+    if (fail_where_ == FailFlashAt::kFlashReady) return true;
+    if (fail_where_ == FailFlashAt::kAfterTheHalt && halted_) return true;
+  }
+  return busy_for_ever_ || clock_.nowUs() < busy_until_us_;
+}
 
 void Nrf52Chip::startBusy(std::uint64_t us) {
   if (ready_never) {
@@ -467,6 +503,17 @@ bool Nrf52Chip::AhbAp::stalls(std::uint8_t addr, bool write) {
     chip_.counters_.stalls++;
     return true;
   }
+  // **A read that stalls while the application runs** (task p18-05): the application is writing
+  // its own flash, so every access to the pages the scan is reading is answered WAIT and the
+  // debug port gives up after its ten retries. Only the application region: the SoftDevice's own
+  // information structure lies below it and reads through, as it did on 23 November, when the
+  // flash got as far as the scan's first pages.
+  if (addr == map::kDrw && chip_.inFlash(chip_.tar_) &&
+      chip_.failingAt(FailFlashAt::kScanRead) &&
+      chip_.tar_ >= chip_.applicationStart()) {
+    chip_.counters_.stalls++;
+    return true;
+  }
   return false;
 }
 
@@ -501,7 +548,8 @@ ApAccess Nrf52Chip::AhbAp::read(std::uint8_t addr, std::uint32_t* out) {
       return a;
     }
     case map::kIdr:
-      *out = chip_.ahb_ap_idr;
+      // Task p18-05's kMemoryPort: an IDR that is not a MEM-AP's (ADIv5 C2.6.6).
+      *out = chip_.failingAt(FailFlashAt::kMemoryPort) ? 0 : chip_.ahb_ap_idr;
       return ApAccess::kOk;
     case 0xF8:  // DBGDRAR, the ROM table address (DDI 0439B Table 8-5)
       *out = 0xE00FF003;
@@ -578,9 +626,15 @@ ApAccess Nrf52Chip::CtrlAp::read(std::uint8_t addr, std::uint32_t* out) {
       return ApAccess::kOk;
     case regs::ctrl_ap::kApprotectStatus:
       // "Enabled (0): Access port protection enabled. Disabled (1): Access port protection not enabled."
-      *out = chip_.approtect ? 0 : regs::ctrl_ap::kApprotectStatusOpen;
+      // Task p18-05's kProtection: the port reads as protected for this one flash.
+      *out = (chip_.approtect || chip_.failingAt(FailFlashAt::kProtection))
+                 ? 0
+                 : regs::ctrl_ap::kApprotectStatusOpen;
       return ApAccess::kOk;
-    case regs::ctrl_ap::kIdr: *out = chip_.ctrl_ap_idr; return ApAccess::kOk;
+    case regs::ctrl_ap::kIdr:
+      // Task p18-05's kControlPort: an IDR that is not Nordic's reset value.
+      *out = chip_.failingAt(FailFlashAt::kControlPort) ? 0 : chip_.ctrl_ap_idr;
+      return ApAccess::kOk;
     default: return ApAccess::kOk;
   }
 }
@@ -642,6 +696,12 @@ ApAccess Nrf52Chip::readMem(std::uint32_t addr, std::uint32_t* out) {
     return ApAccess::kError;
   }
   if (inFlash(addr)) {
+    // Task p18-05's kSoftDevice: the read of the SoftDevice information structure at
+    // MBR_SIZE + 0x2000 ends in an error response, for this one flash.
+    if (failingAt(FailFlashAt::kSoftDevice) && addr >= 0x3000 && addr < 0x3010) {
+      counters_.bus_errors++;
+      return ApAccess::kError;
+    }
     *out = flash_[addr / 4];
     return ApAccess::kOk;
   }
@@ -706,7 +766,10 @@ ApAccess Nrf52Chip::readFicr(std::uint32_t addr, std::uint32_t* out) {
     case regs::ficr::kCodeSize: *out = code_size; break;
     case regs::ficr::kDeviceId0: *out = device_id[0]; break;
     case regs::ficr::kDeviceId1: *out = device_id[1]; break;
-    case regs::ficr::kInfoPart: *out = info_part; break;
+    // Task p18-05's kIdentity: another part, for this one flash.
+    case regs::ficr::kInfoPart:
+      *out = failingAt(FailFlashAt::kIdentity) ? 0x52833u : info_part;
+      break;
     case regs::ficr::kInfoVariant: *out = info_variant; break;
     case regs::ficr::kInfoPackage: *out = info_package; break;
     case regs::ficr::kInfoRam: *out = info_ram; break;
@@ -821,6 +884,13 @@ void Nrf52Chip::writeFlash(std::uint32_t addr, std::uint32_t value) {
   }
   std::uint32_t result = old & value;
   if (stuck_mask != 0 && addr == stuck_addr) result &= ~stuck_mask;
+  // Task p18-05's kPageWillNotTake: a page of the application region that never verifies, for as
+  // many flashes as the knob was given. The bootloader's settings page at 0x000FF000 is left
+  // alone, so the failure lands at the pages - after the first write and not instead of it.
+  if (failingAt(FailFlashAt::kPageWillNotTake) && addr >= applicationStart() &&
+      addr < core::flasher::kRak4630Single.settings_page) {
+    result &= ~1u;
+  }
   flash_[addr / 4] = result;
   if (writes_since_erase_[addr / 4] < 255) writes_since_erase_[addr / 4]++;
   if (writes_since_erase_[addr / 4] > regs::nvmc::kWritesPerEraseMax) counters_.overwrites++;

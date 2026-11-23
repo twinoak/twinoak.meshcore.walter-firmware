@@ -180,6 +180,60 @@ class Nrf52Chip {
   // (resetDap): the part the door must reconnect to. False: the port survives the soft reset.
   bool soft_reset_drops_dap = false;
 
+  // ---- **where a flash can be made to fail before the halt** (task p18-05) ---------------------
+  // Each is one of the points the flasher passes on its way to its first write, and each is the
+  // chip's own behaviour at that point rather than a hook in the firmware - so what the firmware
+  // makes of it is the firmware's answer and not the test's. The flash of 23 November 11:37:43Z
+  // failed at one of these and nothing said which; these are the candidates.
+  //
+  //   kPowerUp       the power-up acknowledges never come (ADIv5 B2.3.2; `swd::kPowerUpPolls`):
+  //                  the flasher's `kConnect`;
+  //   kControlPort   the CTRL-AP's IDR is not Nordic's reset value (PS "Debug and trace >
+  //                  CTRL-AP > IDR"): `kConnect`, status `no-control-port`;
+  //   kProtection    APPROTECTSTATUS reads *enabled* (PS "Access port protection"): `kProtected`;
+  //   kMemoryPort    the AHB-AP's IDR is not a MEM-AP (ADIv5 C2.6.6): `kConnect`;
+  //   kIdentity      FICR.INFO.PART is another part (PS "FICR"): `kIdentify`;
+  //   kFlashReady    NVMC.READY never comes - an erase the application has in flight that outlasts
+  //                  `nrf52::kErasePageTimeoutMs` (PS NVMC "Electrical specification"):
+  //                  `kConnect`, status `nvmc-timeout`;
+  //   kSoftDevice    the read of the SoftDevice information structure ends in a bus error:
+  //                  `kSoftDevice`;
+  //   kScanRead      **a flash read that stalls while the application runs** - the application is
+  //                  writing its own flash, so every DRW access to the application region is
+  //                  answered WAIT and the debug port gives up after its ten retries (PS NVMC:
+  //                  the flash is not accessible during a write or erase; ADIv5 C2.2.3):
+  //                  `kScan`, status `swd wait-timeout`. This is the one the arithmetic of
+  //                  23 November points at - twelve seconds is about the scan's first pages;
+  //   kAfterTheHalt  everything goes through, the core is halted, and then the flash controller
+  //                  never becomes ready: the one way out that wrote nothing **and** left the core
+  //                  halted, so the image has to be started again before the second try.
+  //
+  // And **one that is not before the halt**, because the other side of task p18-05 needs it:
+  //
+  //   kPageWillNotTake  every word written into the image's pages comes back with its lowest bit
+  //                  clear, so the page never verifies and the flash fails after two attempts at
+  //                  it. The chip **was** changed, so that flash is not made again - and because
+  //                  the knob is scoped to a number of flashes, the golden image's flash behind it
+  //                  is clean, which is what lets one console-driven run show both.
+  //
+  // `flashes` is how many debug sessions it fails: 1 is "once", and 0 is "every time". A session
+  // is counted at the power-up request, which `Nrf52::open()` makes exactly once.
+  enum class FailFlashAt : std::uint8_t {
+    kNone,
+    kPowerUp,
+    kControlPort,
+    kProtection,
+    kMemoryPort,
+    kIdentity,
+    kFlashReady,
+    kSoftDevice,
+    kScanRead,
+    kAfterTheHalt,
+    kPageWillNotTake,
+  };
+  void failFlashAt(FailFlashAt where, unsigned flashes = 1);
+  unsigned debugSessions() const { return debug_sessions_; }
+
   // ---- the hardware watchdog (task p18-01; PS "WDT - Watchdog timer", "Reset behavior") -------
   // What the firmware **in the chip's flash** started, which is the only way this peripheral is
   // ever used here: a scanner image starts the WDT at 60 s and feeds it from its own loop (the
@@ -364,6 +418,10 @@ class Nrf52Chip {
   void localReset();
   void hardReset();                // what a pin reset and a power-on share
   void watchdogTimeout();          // the WDT's own reset
+  void beginDebugSession();        // the power-up request: task p18-05's knob decides this flash
+  bool failingAt(FailFlashAt where) const {
+    return fail_this_session_ && fail_where_ == where;
+  }
   void readProtectionAtReset();    // UICR.APPROTECT (and the firmware) read, as the kind says
   void fillFactory();              // RUI3-like contents
   void startBusy(std::uint64_t us);
@@ -407,6 +465,14 @@ class Nrf52Chip {
   bool held_in_reset_ = false;
   bool reset_sticky_ = false;
   std::uint32_t demcr_ = 0;
+
+  // task p18-05: where this chip fails a flash, for how many of them, and whether the session in
+  // hand is one of those
+  FailFlashAt fail_where_ = FailFlashAt::kNone;
+  unsigned fail_flashes_ = 0;  // 0 with fail_where_ set: every flash
+  bool fail_every_ = false;
+  bool fail_this_session_ = false;
+  unsigned debug_sessions_ = 0;
 
   // the watchdog: what it was given, what is left of it, and when that was last counted
   ResetPinIs reset_pin_ = ResetPinIs::kEnabledAndWired;  // task p18-04

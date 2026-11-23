@@ -668,6 +668,28 @@ radio, and the simulator can only show the documents were followed, not that the
   is just large. A `retries 1` or a failure `a page did not verify` names a page that would not
   take a write: note the address.
 
+- [ ] **A flash made to fail before its halt, and what the journal then says** (task p18-05).
+  **The only destructive thing here is nothing**: the point of this item is that a flash that got
+  nowhere changes nothing. With SWD wired and a candidate in the store, type `rak update` and
+  **pull the SWD jumper (SWCLK, J4/J5 on the adapter) for the first few seconds of it** - during
+  the `swd:` session lines and the first *reading the pages the image covers* lines, which is
+  before the core is halted - then put it back. Expected, in this order:
+  `update: flashing-candidate: the flash did not begin: once more after a pause`, a pause of five
+  seconds, and then the flash again from the beginning, going through. The run ends `rak update:
+  done:` and the radio never leaves the air: its own console keeps answering throughout, because
+  the core was never halted. Then `rak update status` carries the line that says what failed -
+  `flashing-candidate: the flash did not begin: once more - while <step>: <status> at 0x…; nothing
+  was written` - and **the step and the status are the measurement to bring back**: on the wire
+  they will be the debug port's (`connect`, `scan`), and which one tells a jumper pulled from the
+  thing the unit at Bellevue met on 23 November. Pull it and leave it out: the second try fails
+  too, the run ends `error: rak update: the flash did not begin, twice (…)`, nothing is flashed
+  back, `image list` shows the candidate **not** on the bad list, and the radio is still serving.
+  Put the jumper back and type `rak update` again: it runs. ★ **If instead the first try gets as
+  far as *erasing, writing and verifying the pages* before the jumper comes out**, the chip *was*
+  changed: the golden image is flashed back (`rak update: restored: the candidate's flash failed
+  (…) and is NOT on the bad list`), which is nine minutes and the behaviour this task kept - note
+  which of the two happened, because the two sentences are the whole of what this task is for.
+
 - [ ] **Flash a repeater image; the RAK restarts into it, not into its UF2 bootloader** (task
   p1-05; phase 2's `rak flash`, or until then a UF2 over USB plus `rak swd mem 0x000ff000 3` to
   see what the bootloader recorded). After the flash: `rak hello` shows the version flashed; the
@@ -2159,12 +2181,13 @@ printed **185 heartbeats, 49 jobs, 2 offers (both stored), 2 applies (1 committe
       neither `late` nor `failed`.
 - [ ] **An apply that rolls back, timed end to end** (task p14-04). From the rollback item below,
       with a stopwatch: a whole run is two flashes and two proofs and should land near 37 minutes,
-      against the 38 min 40 s this firmware now allows one wake (`core::update::kWholeRunMs`). The
+      against the 46 min 10 s this firmware now allows one wake (`core::update::kWholeRunMs`, which
+      carries the second boot window of task p18-04 and the one second try of task p18-05). The
       three things to bring back: that the **result arrives in that same wake** (and not at the
       wake after, which is what a bound too short looks like from the server); that the unit
       **slept** at the end of it rather than being reset by its own guard (`reboots` at the next
       cable shows a `wake-overrun` if it was); and the figure itself, which is the one that says
-      whether 38 min 40 s is enough or generous.
+      whether 46 min 10 s is enough or generous.
 - [ ] ★ **An apply that rolls back on a bad candidate.** The same again with a release that is
       **signed and valid but broken on purpose** (§9's deliberate bad image, offered by the server
       instead of pushed over the cable): offer it, then apply it. The flash goes in, the radio does
@@ -2938,7 +2961,7 @@ for any of it: the server's `jobsWaiting` in a result's reply is what a wake cla
 ## What to bring back
 
 Every named constant this firmware carries that **no measurement has settled** - the ones the
-reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 120 of
+reports listed as *to be set on the bench*, and the ones the source marks `PLACEHOLDER`. 122 of
 them, in 21 files. Each has a sentence beside it where it is declared; **change the number and the
 sentence together**, and nowhere else - the host tests, the console's help and the documents all
 follow the constant.
@@ -2964,10 +2987,13 @@ up after the pin reset before the debug port answers again.
 |---|---:|---|
 | `kBootloaderSettleMs` | `1500` | |
 
-**`update/radio_update.h`** (12) - **§9** measures a real repeater from reset to HELLO, and how
+**`update/radio_update.h`** (14) - **§9** measures a real repeater from reset to HELLO, and how
 long a bad build takes to show itself - and, since task p18-04, how long a scanner's own watchdog
 really leaves a repeater the debug port started over it (§2's reset-line item says which kind of
-module the board is).
+module the board is). Since task p18-05 two more belong to §2's own *a flash made to fail before
+its halt* item: how long the chip really needs between the two tries, and how long a flash that
+wrote nothing costs before it gives up - which on the wire is the scan, one read of every page the
+image covers.
 
 | Constant | Now | Measured |
 |---|---:|---|
@@ -2979,6 +3005,8 @@ module the board is).
 | `kStartAgainWindowMs` | `kBootWindowMs` | |
 | `kScannerWatchdogMs` | `60000` | |
 | `kScannerWatchdogWaitMs` | `kScannerWatchdogMs + kScannerWatchdogMs / 4` | |
+| `kFlashAgainPauseMs` | `5000` | |
+| `kFlashWroteNothingMs` | `180000` | |
 | `kBatteryMinMv` | `3700` | |
 | `kBatteryFallingMvPerHour` | `-100` | |
 | `kStepIdleMs` | `100` | |

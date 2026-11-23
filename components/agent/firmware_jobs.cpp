@@ -988,7 +988,16 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
     const upd::StepResult s = parts_.update->step();
     if (s.changed) {
       char note[kJournalNoteBytes];
-      if (s.after == upd::State::kRollingBack) {
+      // **A flash that did not finish says what failed** (task p18-05, deliverable 2): the step,
+      // the status of the layer under it, the address and whether the chip was changed, in the
+      // seventy characters a note holds - so the job's page says it without a report being asked
+      // for. Three reasons carry it: the failure, the second try and the refusal after two.
+      const bool flash_said = s.reason == upd::Reason::kFlashFailed ||
+                              s.reason == upd::Reason::kFlashOnceMore ||
+                              s.reason == upd::Reason::kFlashDidNotBegin;
+      if (flash_said) {
+        upd::flashFailureNote(upd::decodeFlashFailure(s.detail), note, sizeof note);
+      } else if (s.after == upd::State::kRollingBack) {
         std::snprintf(note, sizeof note, "%.40s at %.24s", upd::describe(s.reason), upd::describe(s.step));
       } else if (s.after == upd::State::kDone || s.after == upd::State::kRestored || s.after == upd::State::kStuck) {
         std::snprintf(note, sizeof note, "%.70s", s.note);
@@ -1075,7 +1084,13 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
   // **The radio was taken away and the machine has just said whether it came back** (task
   // p18-02): a commit and a rollback both end with an image proved, which is a HELLO; `stuck` is
   // a radio this wake must not take more work on top of.
-  theRadioAfterAJob(outcome == ApplyOutcome::kCommitted || outcome == ApplyOutcome::kRolledBack);
+  // **And a flash that never began took it nowhere** (task p18-05): nothing was written, nothing
+  // was flashed back, and the radio is serving the image it was serving before this job - so the
+  // wake may go on claiming, as it may after a commit and a rollback.
+  const bool untouched = outcome == ApplyOutcome::kRefused &&
+                         parts_.update->reason() == upd::Reason::kFlashDidNotBegin;
+  theRadioAfterAJob(outcome == ApplyOutcome::kCommitted || outcome == ApplyOutcome::kRolledBack ||
+                    untouched);
 
   const std::size_t n = writeApplyResult(outcome, from, to, refusal);
   if (n != 0) out.data(data_, n);
@@ -2343,6 +2358,15 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
       }
     }
     const upd::SessionStep s = parts_.session->step();
+    // **The flash did not begin and is being made once more** (task p18-05): the update machine
+    // journalled it, the session's own stage did not move, and this is the one line of that
+    // machine's story a session's page would otherwise never carry.
+    if (s.said == upd::Reason::kFlashOnceMore) {
+      char said[kJournalNoteBytes];
+      upd::flashFailureNote(upd::decodeFlashFailure(s.detail), said, sizeof said);
+      line(upd::name(parts_.session->stage()), said);
+      postApplyProgress(job.id);
+    }
     if (s.changed) {
       const upd::SessionStatus& status = parts_.session->status();
       const char* word = upd::name(s.after);
@@ -2388,8 +2412,16 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
 
   const upd::SessionStatus& status = parts_.session->status();
   SessionResult result;
-  result.outcome = status.ending == upd::Ending::kRestored ? SessionOutcome::kRestored
-                                                           : SessionOutcome::kStuck;
+  // **`refused` after the session was open** (task p18-05, deliverable 4): the scanner image's
+  // flash never began, twice, so nothing was written, no image was flashed back and the repeater
+  // never left the mesh. It is the contract's third word and no new one, and the `check` line
+  // above it carries what failed - the server has no word for a debug port that gave up.
+  if (status.ending == upd::Ending::kRefused) {
+    result.outcome = SessionOutcome::kRefused;
+  } else {
+    result.outcome = status.ending == upd::Ending::kRestored ? SessionOutcome::kRestored
+                                                             : SessionOutcome::kStuck;
+  }
   result.scanner = scanner_ran && scanner.present ? scanner.version : nullptr;
   result.steps = rows;
   for (std::size_t i = 0; i < rows && i < upd::kStepsMax; ++i) {
@@ -2404,15 +2436,18 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
 
   JobEntry ended = owed;
   ended.state = JobEntryState::kEnded;
-  ended.outcome = result.outcome == SessionOutcome::kRestored ? ApplyOutcome::kCommitted
-                                                              : ApplyOutcome::kStuck;
+  ended.outcome = result.outcome == SessionOutcome::kRestored  ? ApplyOutcome::kCommitted
+                  : result.outcome == SessionOutcome::kRefused ? ApplyOutcome::kRefused
+                                                               : ApplyOutcome::kStuck;
   ended.at_epoch = nowEpoch();
   (void)journal(ended);
 
   // **The radio ran another firmware for the length of this job** (task p18-02): `restored` is
   // the golden image back and proved, and `stuck` is a radio that is still a scanner or silent.
-  // A wake claims again only after the first.
-  theRadioAfterAJob(result.outcome == SessionOutcome::kRestored);
+  // A wake claims again only after the first - and after a `refused` whose flash never began
+  // (task p18-05), where the repeater never left the mesh at all.
+  theRadioAfterAJob(result.outcome == SessionOutcome::kRestored ||
+                    result.outcome == SessionOutcome::kRefused);
 
   char line_text[200];
   std::snprintf(line_text, sizeof line_text,

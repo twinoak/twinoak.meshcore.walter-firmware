@@ -67,6 +67,9 @@ enum class Step : std::uint8_t {
   kDone,
 };
 const char* describe(Step step);
+// One word, for a journal entry's line and for the note that goes to the server with a job
+// (task p18-05): `scan`, `settings-invalidate`, `first-page`. `describe()` is the phrase.
+const char* name(Step step);
 
 enum class Outcome : std::uint8_t {
   kOk,
@@ -115,6 +118,21 @@ struct Result {
   nrf52::ResetPin reset_pin;
   // startAgain() only: what the core was doing when the look was made.
   nrf52::CoreState core = nrf52::CoreState::kUnknown;
+  // **What this flash did to the chip** (task p18-05, deliverable 1), worked out from what the
+  // flasher did and not from the name of the step it stopped at.
+  //
+  // `wrote_nothing` is true while no word has been written and no page erased - of the image's
+  // pages or of the bootloader's settings page - which is every way out before the first write:
+  // a refusal, the slot, the lines, the port, the chip's identity, the SoftDevice, the image's
+  // own checks, the scan, the halt, and the settings page's read. It is read off the counters,
+  // so a path added later cannot forget to set it. A `verify()` and the look of
+  // `startAgain()` write nothing and say so too.
+  //
+  // `core_halted` is true when the core was halted by this call, and so had to be started again
+  // at the exit - which is what tells a flash that wrote nothing *and* left the radio running
+  // from one that wrote nothing and had to restart it.
+  bool wrote_nothing = true;
+  bool core_halted = false;
   // verify() only: the settings page holds a record the bootloader accepts for this image.
   bool settings_valid = false;
   bootloader_settings::Record settings;
@@ -122,6 +140,21 @@ struct Result {
   Counters counters;
   bool ok() const { return outcome == Outcome::kOk; }
 };
+
+// **Whose fault a failed flash was** (task p18-05, deliverable 5): the image's own - its bytes,
+// its load address, its digest - or the unit's, which is everything else: the slot, the lines,
+// the debug port, the chip's identity, its SoftDevice, a page that would not take, a core that
+// would not halt. `spec/SYSTEM.md` S-5's *the candidate's hash is remembered and never tried
+// again* stands under the health check's *no* in §6's drawing, so only an image's own fault puts
+// its hash on the store's bad list; a debug port that gave up is the unit's, and that image may
+// be flashed again.
+//
+// Two steps are the image's: `kImage`, whose every way out is a statement about the file (empty,
+// not page-aligned, not inside the region, more pages than the chip has, bytes the store would
+// not read), and `kDigest`, which is the image's proof - the SHA-256 of what came back off the
+// chip is not the one the record gave. `kReadBack`'s own mismatch is not: the bytes went in and
+// the flash did not hold them, which is the chip's.
+bool blamesTheImage(const Result& result);
 
 struct Progress {
   Step step;  // kScan, kPages, kFirstPage, kReadBack

@@ -88,12 +88,23 @@ constexpr std::uint32_t kWakeBoundMs = 5u * 60 * 1000;
 // a machine that says what it needs raises it - and a wake that overruns it is still reset with
 // its work in the journal.
 //
+// **And then the second try at a flash that wrote nothing** (task p18-05, deliverable 9). A pass
+// of the radio's update machine may now spend `core::update::kSecondTryMs` - a first try that
+// wrote nothing (`kFlashWroteNothingMs`, three minutes: the scan is the only long way out before
+// the first write), the pause between the two tries (`kFlashAgainPauseMs`, five seconds) and the
+// boot window the radio gets to answer in where the first try had halted it - and then the flash
+// itself. A pass is 23 min 05 s with it, a whole run 46 min 10 s, a session 67 min 25 s and the
+// exchange's bound a minute more: **68 min 25 s**, which did not fit sixty-five. So the ceiling is
+// **seventy minutes**, which is that session with a minute and a half beside it. Nothing else
+// moved, and the static assertions in `core/cycle/wake_cycle.h` are what hold it to the arithmetic
+// rather than to this comment.
+//
 // A raised bound is still a bound: a wake that overruns *it* is reset, the work is in the
 // journal, and the next boot resumes it (`core/update/journal.h`). That is the whole reason the
 // reset is safe - and it is why raising this number costs nothing but the worst case of a wake
 // that has something unfinished in hand: `arm()` is five minutes and only a machine that says
 // what it needs raises it.
-constexpr std::uint32_t kRaisedBoundMax = 65u * 60 * 1000;
+constexpr std::uint32_t kRaisedBoundMax = 70u * 60 * 1000;
 static_assert(kRaisedBoundMax > kWakeBoundMs, "a raised bound is longer than the ordinary one");
 
 // How long `stay` keeps the Walter awake without a cable. Twelve hours: a bench day, and not a

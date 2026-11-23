@@ -715,6 +715,8 @@ TEST_CASE("every stage and every ending has a word and a phrase, and only restor
   }
   CHECK_FALSE(upd::isOpen(Stage::kIdle));
   CHECK_FALSE(upd::isOpen(Stage::kRestored));
+  // Task p18-05: the flash never began, so nothing was begun that a later wake has to end.
+  CHECK_FALSE(upd::isOpen(Stage::kRefused));
   CHECK(upd::isOpen(Stage::kStuck));
   CHECK(upd::isOpen(Stage::kCheck));
   CHECK(upd::isOpen(Stage::kStep));
@@ -736,9 +738,12 @@ TEST_CASE("every stage and every ending has a word and a phrase, and only restor
         upd::kWholeRunMs + upd::kSessionCeilingMs + upd::kScannerWatchdogWaitMs);
   CHECK(upd::kSessionBoundMs <= core::cycle::kRaisedBoundMax);
   // And one pass has the second boot window in it: the look, and the window that begins again
-  // where a pulse reached nothing (task p18-04).
-  CHECK(upd::kOnePassMs ==
-        upd::kFlashWindowMs + upd::kBootWindowMs + upd::kStartAgainWindowMs + upd::kProvingPeriodMs);
+  // where a pulse reached nothing (task p18-04) - and, since task p18-05, the one second try at a
+  // flash that wrote nothing, which is a first try that got nowhere, the pause and a boot window.
+  CHECK(upd::kOnePassMs == upd::kFlashWindowMs + upd::kSecondTryMs + upd::kBootWindowMs +
+                               upd::kStartAgainWindowMs + upd::kProvingPeriodMs);
+  CHECK(upd::kSecondTryMs ==
+        upd::kFlashWroteNothingMs + upd::kFlashAgainPauseMs + upd::kBootWindowMs);
   MESSAGE("a session may be given " << upd::kSessionBoundMs / 1000 << " s of a wake's "
                                     << core::cycle::kRaisedBoundMax / 1000 << " s; one pass is "
                                     << upd::kOnePassMs / 1000 << " s");

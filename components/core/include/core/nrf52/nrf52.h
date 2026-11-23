@@ -84,6 +84,8 @@ enum class Status : std::uint8_t {
   kSlotBusy,       // open(): no such slot, or another slot's operation holds the selection (p1-06)
 };
 const char* describe(Status status);
+// One word, for a journal entry's line and a job's note (task p18-05): `swd`, `nvmc-timeout`.
+const char* name(Status status);
 
 struct Result {
   Status status = Status::kOk;

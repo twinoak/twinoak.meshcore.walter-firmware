@@ -111,10 +111,11 @@ TEST_CASE("a first install that was committed before the mark does not clear it;
   ProvUnit u(Factory::kImprovedOpen);
   u.world.wholeArray();
   u.world.putCandidate();
-  // A first install first (on a chip the flasher refuses: RUI3 has no SoftDevice structure) -
-  // stuck, not done - then a real one after the provision.
-  CHECK(bench::hasLine(u.runLine("rak update --first-install"), "STUCK"));
-  u.world.s.u.store.store.erase(Which::kCandidate, Slot{0});  // the stuck one is on the bad list
+  // A first install first (on a chip the flasher refuses: RUI3 has no SoftDevice structure) - not
+  // done, and since task p18-05 `refused` rather than `stuck`: the flash wrote nothing, so it was
+  // made once more and the radio was never touched - then a real one after the provision.
+  CHECK(bench::hasLine(u.runLine("rak update --first-install"), "the flash did not begin, twice"));
+  u.world.s.u.store.store.erase(Which::kCandidate, Slot{0});  // and it is on no bad list
   u.world.putCandidate("update-golden");
   REQUIRE(bench::hasLine(u.runLine("rak provision 0badf00ddeadbeef confirm"), "PROVISIONED"));
   CHECK(u.v().supervisor.awaitingFirstInstall());
