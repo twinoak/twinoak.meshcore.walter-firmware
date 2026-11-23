@@ -18,11 +18,15 @@ session ended `stuck` although the repeater was back.
   the radio's own uptime and reset reason have no restart to match
   (`FOLLOWUPS.md`, *A reset pulse that restarted nothing*). Task 01 starts every flashed image
   by that line.
+- **The second session flashed no scanner** (23 November, with 01 to 04 on the unit): its
+  flash failed before it had written anything, the whole golden image was flashed back for it,
+  and the scanner image went on the bad list (`FOLLOWUPS.md`, *The second session, and the
+  first flashes by the new exit*). The reset line itself turned out to work on that unit.
 
 **What Thomas asked for.** That the Walter takes jobs until none are left or the battery says
 sleep; and that an offer and its apply can be one visit.
 
-**What this pile builds.** 01, 03 and 04 are this repository's own. 02 turns on what the
+**What this pile builds.** 01, 03, 04 and 05 are this repository's own. 02 turns on what the
 library brings, and waits for it: the exit-node firmware's pile 1.20 (a wake claims again; a
 lost claim is asked again), its release, this repository's `upstream` workflow and the sync
 task that follows. meshmaster.dk's half is its pile 4.47.
@@ -39,6 +43,11 @@ task that follows. meshmaster.dk's half is its pile 4.47.
 - **In 04, the proof waits for a scanner's watchdog** when the debug port started the image;
   it does not forgive a restart.
 - **UICR is read and never written.** Enabling the pin reset on a module is his decision.
+- **In 05, one second try and never a third**, after a pause and not a reset: on 23 November
+  the next flash met the same chip two seconds later and went through.
+- **In 05, the bad list is for an image that is wrong or that ran and failed.** The
+  specification's *never tried again* stands under the health check; a flash the debug port
+  gave up on is the unit's fault and its image may be flashed again.
 
 **Not on the board.** No session opens a port. No release: Thomas presses the button.
 
@@ -50,6 +59,7 @@ task that follows. meshmaster.dk's half is its pile 4.47.
 | 02 | [the-battery-says-how-many-claims](02-the-battery-says-how-many-claims.md) | the sync of agent-core with p1.20-69 and p1.20-70 | claims a wake by band; the bound covers each; an offer and its apply, or two reports and a session, in one wake; the wake says why its last claim was the last |
 | 03 | [a-step-is-listened-to](03-a-step-is-listened-to.md) | — | no call to the server between a step's command and its end; the port's ring sized by the baud rate; bytes lost at the port counted and said; the simulated port has the ring |
 | 04 | [an-image-is-started-either-way](04-an-image-is-started-either-way.md) | 01 | what UICR says of the reset pin, read at every flash; no pulse where it cannot work; a pulse that did not work found by the core's state and the image started through the debug port; the proof begun after a scanner's watchdog; the unit says what its reset line does; the supervisor's second rung says whether anything restarted |
+| 05 | [a-flash-that-wrote-nothing](05-a-flash-that-wrote-nothing.md) | 04 | a failed flash says its step, its status and whether the chip was changed, in the journal and to the server; a flash that wrote nothing is made once more; twice ends the job with the radio as it was, no flash back; the bad list only for an image's own fault or its proof's; every wait before the halt read against a chip outside debug interface mode |
 
 ```powershell
 .\tasks\run-all.ps1 -Phase '18' -To 01
@@ -65,12 +75,18 @@ and, when the sync has merged:
 That runs 02, passes 03, which has landed, and runs 04. 04 waits for nothing but 01:
 `-From 04` runs it alone.
 
+05 was written on 23 November, after the rest had run and been released:
+
+```powershell
+.\tasks\run-all.ps1 -Phase '18' -From 05
+```
+
 **Not the whole pile before the sync.** 02 stops when the library has not arrived and writes no
 report, the driver stops there, and 03 behind it does not start.
 
 ## Models
 
-- **Opus**: 01, 02, 03, 04.
+- **Opus**: 01, 02, 03, 04, 05.
 
 ## Afterwards (Thomas)
 
@@ -84,6 +100,10 @@ report, the driver stops there, and 03 behind it does not start.
   *Run workflow* on `upstream` here; `tools\new-sync-task.ps1` and
   `.\tasks\run-all.ps1 -Phase sync`; then 02, a release, and the unit updated.
 - **Then try it:** queue a report, a scanner image and a session and wake the unit once.
+- **After 05:** release and update the Walter on the unit. Until then no session and no apply
+  of a radio image there. Then *Fetch a scanner image* (0.1.7's; the 0.1.6 one is on the unit's
+  bad list) and a session with `20 hist 869.418 869.818 25` typed in. Its journal says whether
+  a flash had to be made twice, and at which step.
 - **The bench, when there is one:** the tasks' lines in `docs/bench.md`.
 
 ## Follow-ups
