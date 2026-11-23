@@ -127,6 +127,16 @@ struct UpdateWorld {
   std::string running_version;
   int boots = 0;
 
+  // **What a person on the mesh saw** (task p18-05, deliverable 7), counted by the world itself
+  // rather than by each test watching for it: `outages` is the number of periods in which no
+  // repeater was serving - a scanner answering is an outage of the mesh, whatever it is to the
+  // Walter - and `dark_periods` the number in which the radio was not running at all, which is
+  // every flash's own and every reset that followed one. Both are edge-counted at every settle(),
+  // so a test that only delays and steps still sees them. A flash that wrote nothing and left the
+  // core running leaves both at what they were, which is the whole point of the second try.
+  unsigned outages = 0;
+  unsigned dark_periods = 0;
+
   UpdateWorld() {
     chip.installSoftDevice();
     chip.onlyTouch(profile.app.begin, profile.app.end);
@@ -299,7 +309,29 @@ struct UpdateWorld {
       silence_at_ms = 0;
       radio.deaf = true;
     }
+    countTheMesh();
   }
+
+  // The two counters above, edge-triggered. The first settle() of a world only records where it
+  // found things: a bench whose store has no golden image starts with no repeater, and that is
+  // not an outage anything caused.
+  void countTheMesh() {
+    const bool repeater = radio_runs && !radio.scanner;
+    if (!counted_once_) {
+      counted_once_ = true;
+      serving_ = repeater;
+      dark_ = !radio_runs;
+      return;
+    }
+    if (!repeater && serving_) ++outages;
+    serving_ = repeater;
+    if (!radio_runs && !dark_) ++dark_periods;
+    dark_ = !radio_runs;
+  }
+
+  bool counted_once_ = false;
+  bool serving_ = false;
+  bool dark_ = false;
 };
 
 // One life of the Walter over the world: fresh pins, a fresh debug port, a fresh flasher, link

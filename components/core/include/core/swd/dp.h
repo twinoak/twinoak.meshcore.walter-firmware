@@ -114,6 +114,8 @@ enum class Status : std::uint8_t {
   kNoMemAp,         // the access port is not a memory access port, or is not there (task p1-04)
 };
 const char* describe(Status status);
+// One word, for a journal entry's line and a job's note (task p18-05): `no-target`.
+const char* name(Status status);
 
 struct Result {
   Status status = Status::kOk;

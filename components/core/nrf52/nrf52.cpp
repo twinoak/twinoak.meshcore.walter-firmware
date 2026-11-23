@@ -23,6 +23,29 @@ const char* describe(Status status) {
   return "?";
 }
 
+// One word each, for the journal's line and the note that goes to the server with a job (task
+// p18-05): a failed flash says the step it stopped at and the status of the layer under it, and
+// seventy characters do not hold the phrases above.
+const char* name(Status status) {
+  switch (status) {
+    case Status::kOk: return "ok";
+    case Status::kSwd: return "swd";
+    case Status::kNotOpen: return "not-open";
+    case Status::kProtected: return "protected";
+    case Status::kNoControlPort: return "no-control-port";
+    case Status::kNoMemoryPort: return "no-memory-port";
+    case Status::kNotNrf52840: return "not-nrf52840";
+    case Status::kBadRegion: return "bad-region";
+    case Status::kOutsideRegion: return "outside-region";
+    case Status::kNotAligned: return "not-aligned";
+    case Status::kBadArgument: return "bad-argument";
+    case Status::kNvmcTimeout: return "nvmc-timeout";
+    case Status::kCoreTimeout: return "core-timeout";
+    case Status::kSlotBusy: return "slot-busy";
+  }
+  return "?";
+}
+
 const char* describe(Protection protection) {
   switch (protection) {
     case Protection::kUnknown: return "unknown";

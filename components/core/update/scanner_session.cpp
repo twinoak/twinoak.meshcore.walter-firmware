@@ -90,6 +90,7 @@ const char* name(Stage stage) {
     case Stage::kProving: return "proving";
     case Stage::kRestored: return "restored";
     case Stage::kStuck: return "stuck";
+    case Stage::kRefused: return "refused";
   }
   return "?";
 }
@@ -107,6 +108,9 @@ const char* describe(Stage stage) {
     case Stage::kProving: return "the golden image's health check";
     case Stage::kRestored: return "the repeater is back and proved: the session is closed";
     case Stage::kStuck: return "the golden image did not come back: the session is still open";
+    case Stage::kRefused:
+      return "the scanner image's flash never began: the radio was not touched and the session is "
+             "closed";
   }
   return "?";
 }
@@ -433,7 +437,7 @@ bool decode(const Entry& entry, SessionPayload* out) {
   if (entry.kind != kind::kScannerSession || entry.size < kSessionHeaderBytes || out == nullptr) {
     return false;
   }
-  if (entry.payload[0] > static_cast<std::uint8_t>(Stage::kStuck)) return false;
+  if (entry.payload[0] > static_cast<std::uint8_t>(Stage::kRefused)) return false;
   *out = SessionPayload{};
   out->stage = static_cast<Stage>(entry.payload[0]);
   out->step = entry.payload[1];
@@ -587,6 +591,9 @@ SessionStep ScannerSession::enter(Stage next, const char* note, const char* comm
   stage_ = next;
   status_.stage = next;
   if (next == Stage::kRestored) status_.ending = Ending::kRestored;
+  // Task p18-05: the scanner's flash never began, so nothing was touched - the one ending besides
+  // `restored` that closes a session.
+  if (next == Stage::kRefused) status_.ending = Ending::kRefused;
   if (next == Stage::kStuck) {
     status_.ending = Ending::kStuck;
     stuck_ = true;
@@ -792,10 +799,11 @@ SessionStep ScannerSession::stepOnce() {
   // **A session taken up out of the journal has no program, no sink and no room** (rail 2): what
   // is left of it is the switch back, from whatever stage it was journalled in - a step that was
   // running, a scanner image half flashed, a `check` that never got as far as the flasher.
-  if (status_.resumed && stage_ != Stage::kRestored) return stepBack();
+  if (status_.resumed && isOpen(stage_)) return stepBack();
   switch (stage_) {
     case Stage::kIdle:
     case Stage::kRestored:
+    case Stage::kRefused:
       return waiting(describe(stage_));
     case Stage::kCheck: {
       // The scanner image. The journal says a session is open already, so a reset from here on is
@@ -824,7 +832,23 @@ SessionStep ScannerSession::stepOnce() {
         const StepResult s = update_.step();
         SessionStep r = waiting(s.note);
         r.waited = s.waited;
+        // Task p18-05: the one line of the update machine's story a session's caller has to hear -
+        // the flash did not begin and is being made once more. Passed through without a stage of
+        // this session's own, because the update machine has journalled it already.
+        if (s.reason == Reason::kFlashOnceMore) {
+          r.said = s.reason;
+          r.detail = s.detail;
+        }
         return r;
+      }
+      // **The scanner image's flash never began** (task p18-05, deliverable 4): twice, with
+      // nothing written either time, so the radio is the repeater it was, the mesh never lost it
+      // and there is nothing to switch back from. The session closes `refused` - no flash of any
+      // kind, no outage, and the scanner image on no bad list - and the room goes back here as it
+      // does on every other way out of the steps. No `room` entry: nothing was measured.
+      if (update_.state() == State::kRefused && update_.reason() == Reason::kFlashDidNotBegin) {
+        giveRoom();
+        return enter(Stage::kRefused, describe(update_.reason()));
       }
       if (update_.state() == State::kDone) {
         scanner_at_ms_ = clock_.nowMs();
@@ -1102,6 +1126,10 @@ SessionStep ScannerSession::stepBack() {
     const StepResult s = update_.step();
     SessionStep r = waiting(s.note);
     r.waited = s.waited;
+    if (s.reason == Reason::kFlashOnceMore) {  // task p18-05, as above
+      r.said = s.reason;
+      r.detail = s.detail;
+    }
     return r;
   }
   if (update_.state() == State::kDone || update_.state() == State::kRestored) {

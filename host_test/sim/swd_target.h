@@ -138,6 +138,11 @@ class SwdTarget final : public interfaces::Pins {
   // nRESET after asserting it (output-low, then input: docs/ARCHITECTURE.md §2 rule 2). The
   // nRF52 bench wires it to the simulated chip's pin reset.
   std::function<void()> on_pin_reset;
+  // **A host asking for debug power** (task p18-05): the CTRL/STAT write that sets CDBGPWRUPREQ,
+  // which `Nrf52::open()` makes exactly once a session - so it is the one place a simulated chip
+  // can count the flashes made of it, and decide that this one is to fail at a step. Called
+  // before the acknowledges are polled, so `powers_up` set here still bites.
+  std::function<void()> on_power_up_request;
 
   // ---- what the tests read ----------------------------------------------------------------
   std::uint32_t ctrlStat() const;

@@ -120,6 +120,30 @@ constexpr std::uint32_t kStartAgainWindowMs = kBootWindowMs;
 constexpr std::uint32_t kScannerWatchdogMs = 60000;
 constexpr std::uint32_t kScannerWatchdogWaitMs = kScannerWatchdogMs + kScannerWatchdogMs / 4;
 
+// **The pause between the two tries at a flash that wrote nothing** (task p18-05, deliverable 3).
+// Not a reset, not a power cycle and not a reconnect: on 23 November the scanner's flash failed
+// before it had written anything and the golden image's flash met the same chip two seconds later
+// and went through, so whatever was in the way cleared itself in seconds. What a pause is for is
+// the flash controller: an application that erases one of its own pages holds the bus for
+// tERASEPAGE, 85 ms typical (PS "NVMC > Electrical specification"), and a settings write is a few
+// more. Five seconds is that with room, it is inside every bound a caller gives a flash
+// (`kOnePassMs` below counts it), and it is short enough that a radio off the mesh is not off it
+// any longer for this.
+constexpr std::uint32_t kFlashAgainPauseMs = 5000;
+
+// **What a flash that wrote nothing costs before it gives up**, which is what makes the second
+// try affordable. Every way out before the first write is either a bounded wait of milliseconds -
+// the debug port's two connect attempts and ten WAIT retries a transfer (`core/swd/dp.h`), the
+// power-up's hundred polls (100 ms), the chip's identity, the flash controller's 300 ms
+// (`nrf52::kErasePageTimeoutMs`) - or **the scan**, which is the only long one: every page the
+// image covers read once, 2048 SWD transfers a page and about 0.9 s at 125 kHz, so the 424 kB
+// image of 23 November is 106 pages and a little over a minute and a half. Three minutes is that
+// with room for a bigger image and for the idle pauses between the reads.
+//
+// So a pass that makes a second try is the first try (at most this), the pause, the window the
+// radio gets to say HELLO when the first try had halted it, and then a whole flash.
+constexpr std::uint32_t kFlashWroteNothingMs = 3u * 60 * 1000;
+
 // The battery below which no update starts. The pack is a single Li-ion cell of 10 Ah (the
 // hardware repository's CURRENT-SENSE.md: CV 4.200 V, precharge below 3.1 V): 3.7 V is a cell
 // with more than half its charge, enough that two MCUs awake for ten minutes of flashing and
@@ -179,8 +203,15 @@ constexpr std::uint32_t kFlashWindowMs = 16u * 60 * 1000;
 // because on a unit whose reset line does not reach its radio that second window is spent at
 // every flash and not as an exception. `check` and `committing` are a store read and seven flash
 // operations and cost nothing beside it.
+// **And since task p18-05 the second try**, which is a pass's worst case and not an exception: a
+// flash that wrote nothing is made once more, and a pass that does that spends the first try
+// (`kFlashWroteNothingMs`), the pause, the boot window the radio gets to answer in when the first
+// try had halted it and started it again, and then the flash. A flash that gets as far as writing
+// is never tried again, so this is added to the flash window rather than doubling it.
+constexpr std::uint32_t kSecondTryMs = kFlashWroteNothingMs + kFlashAgainPauseMs + kBootWindowMs;
+
 constexpr std::uint32_t kOnePassMs =
-    kFlashWindowMs + kBootWindowMs + kStartAgainWindowMs + kProvingPeriodMs;
+    kFlashWindowMs + kSecondTryMs + kBootWindowMs + kStartAgainWindowMs + kProvingPeriodMs;
 
 // **And a whole run, which is a rollback**: the candidate flashed, booted and failed at the end of
 // its proving period, then the golden image flashed, booted and proved by the same check. Two
@@ -271,6 +302,12 @@ enum class Reason : std::uint8_t {
   kLookFailed = 50,           // the look could not be made: the port was closed or silent
   kAfterTheWatchdog = 51,     // the proof began at the boot that followed the scanner's watchdog
   kWatchdogTimePassed = 52,   // ... or when its longest time had passed with no reset
+  // -- **a flash that wrote nothing** (task p18-05). The first of the two is a line of the story
+  // written in `flashing` before the second try; the second ends the run, and the ending is
+  // `refused` - nothing was touched, so there is nothing to put back and nothing to blame the
+  // image for. Both carry the failure's bits in `detail` (`FlashFailure` below).
+  kFlashOnceMore = 53,        // the flash did not begin: the same flash is made a second time
+  kFlashDidNotBegin = 54,     // twice, and nothing was written: the radio is as it was
 };
 
 const char* describe(Reason reason);
@@ -311,6 +348,11 @@ struct Request {
 constexpr std::size_t kPayloadBytes = 48;
 constexpr std::uint8_t kFlagLinkKnownDown = 0x01;
 constexpr std::uint8_t kFlagResumed = 0x02;  // this entry was written by resume(), after a restart
+// **The fault was the unit's and not the image's** (task p18-05, deliverable 5): a debug port
+// that gave up, a page that would not take, a core that would not halt. The bad list does not
+// take the image, and because a resumed run reads this flag back out of the journal it does not
+// take it at the resume either.
+constexpr std::uint8_t kFlagUnitsFault = 0x04;
 
 struct Payload {
   State state = State::kIdle;
@@ -341,6 +383,62 @@ struct StartRecord {
 std::uint32_t encodeStart(const StartRecord& record);
 StartRecord decodeStart(std::uint32_t detail);
 
+// **What a failed flash's `detail` carries** (task p18-05, deliverable 2). Until this task the
+// whole of it was `static_cast<std::uint32_t>(r.step)` - the flasher's step, written by
+// `stepFlashing` and printed nowhere, which is why nobody could say what the flash of
+// 23 November 11:37:43Z had failed at. The thirty-two bits now hold the step, the status of the
+// layer under it, the address when there is one, and whether the chip was changed:
+//
+//   bits [5:0]    the flasher's step (`flasher::Step`, twenty values)
+//   bits [11:6]   the nRF52 layer's status (`nrf52::Status`, fourteen values)
+//   bits [15:12]  the debug port's status (`swd::Status`, ten values); meaningful when the
+//                 nRF52's is `kSwd`, zero otherwise
+//   bit  16       **nothing was written**: the chip is as the flash found it
+//   bit  17       the core was halted, and so had to be started again
+//   bit  18       refused (a check this flasher makes) rather than failed (the chip, the port
+//                 or the lines)
+//   bit  19       this was the **second** try at the same flash
+//   bits [27:20]  the page the address lies in (`address >> 12`; the chip is 1 MB in 4 KB pages)
+//   bit  28       there is an address
+//   bits [30:29]  spare, written zero
+//   bit  31       **this detail carries the layout above**
+//
+// Bit 31 is what makes an older entry read as it did: every `kFlashFailed` entry written before
+// this task has it clear and a whole detail under 32, which `decodeFlashFailure` returns as a
+// step and nothing else (`detailed` false), and `flashFailureLine` then says the step alone -
+// exactly what such an entry has always meant.
+struct FlashFailure {
+  flasher::Step step = flasher::Step::kNone;
+  nrf52::Status status = nrf52::Status::kOk;
+  swd::Status swd = swd::Status::kOk;
+  bool wrote_nothing = false;
+  bool core_halted = false;
+  bool refused = false;
+  bool second_try = false;
+  bool address_known = false;
+  std::uint32_t address = 0;  // the page the failure named, to the page
+  bool detailed = false;      // bit 31: this came from an entry of task p18-05 or later
+};
+std::uint32_t encodeFlashFailure(const FlashFailure& failure);
+FlashFailure decodeFlashFailure(std::uint32_t detail);
+// The same, straight off a flasher result (`second_try` is the caller's to set).
+FlashFailure failureOf(const flasher::Result& result);
+
+// The longest line either of the two below writes, with its terminator. The long form's worst
+// case is the second try at `kSettingsInvalidate` with a `kSwd` status whose debug-port phrase is
+// the longest there is: 250 characters, which is more than the console's own printf buffer holds -
+// so the console prints it with `print()` and not with a format (task p18-05).
+constexpr std::size_t kFlashFailureLineMax = 256;
+
+// **One phrase for a person**, for the journal's line at the console, `rak update status` and a
+// report: `while reading the pages the image covers: the debug port failed (no target: nothing
+// answered on the line) at 0x00027000; nothing was written`. Returns the characters written.
+std::size_t flashFailureLine(const FlashFailure& failure, char* out, std::size_t cap);
+// **The same in the words seventy characters hold**, for the note of the line that goes to the
+// server with a job, so that the job's page says what failed without a report being asked for:
+// `scan: swd no-target at 0x027000; nothing written`.
+std::size_t flashFailureNote(const FlashFailure& failure, char* out, std::size_t cap);
+
 // -- what the Walter's own update writes (task p2-04, core/update/self_update.h) ------------------
 //
 // S-7: the machine refuses to start while the Walter's own update is journalled as unconfirmed.
@@ -366,6 +464,10 @@ struct StepResult {
   Reason reason = Reason::kNone;
   ProveStep step = ProveStep::kNone;
   const char* note = "";  // one phrase for a person, static text
+  // What the journal entry of this transition carries (task p18-05): on the three flash reasons
+  // the `FlashFailure` above, so that a caller writing the line that goes to the server does not
+  // have to read the journal back to say what failed.
+  std::uint32_t detail = 0;
 };
 
 // What the machine is doing now, for the console.
@@ -393,6 +495,13 @@ struct Status {
   bool looked = false;
   nrf52::CoreState core_at_look = nrf52::CoreState::kUnknown;
   bool waited_for_watchdog = false;
+  // **The flash, and what it did** (task p18-05). `fail_detail` is the `FlashFailure` of the
+  // flash that ended the candidate's run - the pair of `fail_reason` and `fail_step`, and like
+  // them it stays the candidate's across a rollback; `flash_tries` is 1 or 2, so a person can
+  // see that a flash was made twice; `units_fault` is why the bad list did not take the image.
+  std::uint32_t fail_detail = 0;
+  std::uint8_t flash_tries = 0;
+  bool units_fault = false;
 };
 
 class RadioUpdate final : public link::client::RestartWatcher {
@@ -435,8 +544,11 @@ class RadioUpdate final : public link::client::RestartWatcher {
                std::uint32_t detail = 0);
   StepResult enter(State next, const char* note, Reason reason = Reason::kNone,
                    ProveStep step = ProveStep::kNone, std::uint32_t detail = 0);
-  StepResult fail(Reason reason, ProveStep step, std::uint32_t detail = 0);
-  StepResult refuse(Reason reason);
+  // `blame_the_image` false is task p18-05's deliverable 5: the fault was the unit's, so the
+  // hash does not go on the store's bad list and the flag in the entry says so for the resume.
+  StepResult fail(Reason reason, ProveStep step, std::uint32_t detail = 0,
+                  bool blame_the_image = true);
+  StepResult refuse(Reason reason, std::uint32_t detail = 0);
   // A fault of the node and not of the image (task p10-03): terminal at once, no bad list and no
   // rollback - from the candidate's path and from the golden image's alike, because the one thing
   // a rollback could do about it is flash an image the same file system will refuse as well.
@@ -454,10 +566,19 @@ class RadioUpdate final : public link::client::RestartWatcher {
   // what the proof is waiting for (task p18-04). False when the journal refused, after which the
   // machine stops where it is, as every other journalled step does.
   bool note(Reason reason, ProveStep step, std::uint32_t detail = 0);
+  // The same as a step's answer, for a line the server is told about (task p18-05): `changed` is
+  // true with `before` and `after` the same state, which is a caller's cue to post the line
+  // without reading the journal back.
+  StepResult noted(Reason reason, const char* note_text, std::uint32_t detail = 0);
   // The look of task p18-04, made at most once a flash, when a boot window after a pulse ended
   // with nothing from the radio: the chip is asked what the pulse did, and the window begins
   // again where the answer is that it did nothing.
   StepResult lookAtTheCore(bool scanner);
+  // **The second try** (task p18-05, deliverable 3), both halves of it: what a flash that wrote
+  // nothing leaves behind, and the pause (and the HELLO) that stand between it and the one more
+  // try this firmware ever makes.
+  StepResult flashWroteNothing(const flasher::Result& r);
+  StepResult waitBeforeTheSecondTry();
 
   StepResult stepCheck();
   StepResult stepFlashing(bool rollback);
@@ -510,6 +631,22 @@ class RadioUpdate final : public link::client::RestartWatcher {
   bool watchdog_owed_ = false;     // the debug port started an image over a scanner's watchdog
   bool watchdog_wait_ = false;     // ... and the radio has answered: waiting that watchdog out
   std::uint64_t started_ms_ = 0;   // when the image was started: the watchdog's time runs from it
+
+  // **The one second try** (task p18-05). All four belong to the flash in hand: `tries_` is 1
+  // after the first and 2 after the second, and a third is never made - for a candidate's flash,
+  // a scanner's, the golden image going back, a first install's and the supervisor's alike,
+  // because every flash this firmware makes comes through `stepFlashing`. None of them survives
+  // a restart: a Walter that died between the two tries is resumed at `flashing` and its flash
+  // begins again from nothing, which is one flash and may have one second try of its own.
+  std::uint8_t tries_ = 0;
+  bool again_pending_ = false;       // the pause (and the HELLO) are being waited out
+  bool again_wants_hello_ = false;   // the first try halted the radio and started it again
+  std::uint64_t again_at_ms_ = 0;    // when the pause is up
+  std::uint64_t again_since_ms_ = 0; // when the first try ended: the HELLO's window runs from it
+  std::uint32_t flash_detail_ = 0;   // the first try's FlashFailure, for the line before the second
+  // **Whose fault the failure was** (deliverable 5), kept through the rollback and read back out
+  // of the journal's flag at a resume, so that the bad list is not taken a second time either.
+  bool units_fault_ = false;
 };
 
 }  // namespace update

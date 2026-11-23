@@ -152,6 +152,11 @@ enum class Stage : std::uint8_t {
   kProving = 8,          // the golden image's health check, as an update's
   kRestored = 9,         // terminal, and the one stage that means **closed**
   kStuck = 10,           // the golden image did not come back: the session stays open
+  // **The scanner image's flash never began** (task p18-05): twice, with nothing written, so the
+  // radio was never taken off the mesh and there is nothing to switch back from. Terminal, and -
+  // like `restored` and unlike `stuck` - it **closes** the session: no later wake has anything to
+  // end, because nothing was begun.
+  kRefused = 11,
 };
 
 // One word, which is what the journal line says: `check`, `flashing-scanner`, `step`, …
@@ -161,7 +166,9 @@ const char* describe(Stage stage);
 // Whether this stage, read back out of the journal, means a session is open and has to be ended.
 // Everything but `idle` and `restored` - **`stuck` included**: a switch back that failed is a
 // session the next wake tries again (rail 5).
-constexpr bool isOpen(Stage stage) { return stage != Stage::kIdle && stage != Stage::kRestored; }
+constexpr bool isOpen(Stage stage) {
+  return stage != Stage::kIdle && stage != Stage::kRestored && stage != Stage::kRefused;
+}
 
 // -- why a session was refused: one word each, and the radio untouched --------------------------
 
@@ -380,6 +387,13 @@ struct SessionStep {
   // step (whose lines the caller is handed inside the call).
   bool listening = false;
   const char* note = "";  // one phrase for a person, static text
+  // **A line of the radio update's own story that this session is running** (task p18-05): a flash
+  // that wrote nothing and is being made once more is journalled by the update machine, in the
+  // update machine's entries, and a caller that posts a session's lines to a server has no other
+  // way to hear of it. `said` is that reason and `detail` is its `FlashFailure`; the session
+  // journals nothing of its own for it, because its own stage has not changed.
+  Reason said = Reason::kNone;
+  std::uint32_t detail = 0;
 };
 
 // -- what the journal says, for whoever is not running the session -------------------------------
