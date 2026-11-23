@@ -81,10 +81,26 @@ int intent::forBand(core::power::Band band) {
   return kUnknown;
 }
 
+int intent::claimsFor(core::power::Band band) {
+  switch (band) {
+    case core::power::Band::kPlenty: return kClaimsPlenty;
+    case core::power::Band::kNormal: return kClaimsNormal;
+    case core::power::Band::kSaving: return kClaimsSaving;
+    case core::power::Band::kCritical: return kClaimsCritical;
+    case core::power::Band::kUnknown: return kClaimsUnknown;
+    case core::power::Band::kCount: break;
+  }
+  return kClaimsUnknown;
+}
+
 mm::WakeIntent intentFor(core::power::Band band, std::uint32_t interval_seconds) {
   mm::WakeIntent out;
   out.nextCheckInS = interval_seconds;
   out.maxTransactionsThisWake = intent::forBand(band);
+  // **How many claims this wake may make** (task p18-02). Not sent to the server, unlike the two
+  // above: it is this end's own bound, and the server is told what the wake has left in
+  // transactions and nothing about how many times it may ask (`mm::WakeIntent`).
+  out.maxClaimsThisWake = intent::claimsFor(band);
   return out;
 }
 

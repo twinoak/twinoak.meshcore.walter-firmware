@@ -25,10 +25,13 @@
 #include <agent/Log.h>
 #include <agent/ServerPolicy.h>
 
+#include "core/cycle/wake_guard.h"
+#include "core/health/health.h"
 #include "core/net/client.h"
 #include "core/settings/settings.h"
 #include "fakes/capture.h"
 #include "fakes/fake_clock.h"
+#include "fakes/fake_retained.h"
 #include "fakes/fake_wall_clock.h"
 #include "fakes/sim_key_value.h"
 #include "sim/fake_http.h"
@@ -393,6 +396,147 @@ TEST_CASE("POST /agent/v1/jobs/claim: transactionsLeft and holding, as the waiti
   CHECK(rig.last().body == std::string(longest, n));
   CHECK(rig.last().body.size() <= mm::kMaxClaimRequestLen);
   rig.tokenNowhere("after the claims");
+}
+
+// **And the ids this firmware holds that the library's buffer knows nothing of** (task p18-02):
+// the result gate's second question. They go in behind the library's own, none twice, through the
+// same writer - and a gate that says *this agent does not say* (`holdingCount` below 0) is left
+// alone, because the member's absence is what stops a server handing anything back at all.
+TEST_CASE("POST /agent/v1/jobs/claim: the ids this firmware holds outside the library's buffer go in holding") {
+  Rig rig;
+  rig.serve("/agent/v1/jobs/claim", contract("ClaimResponse"));
+  mm::ClaimedJob jobs[4];
+  int count = -1;
+
+  struct Holds final : agent::ResultGate {
+    std::vector<long long> ids;
+    bool withhold(long long) override { return false; }
+    int holdsOutsideTheBuffer(long long* out, int max) const override {
+      int n = 0;
+      for (long long id : ids) {
+        if (n >= max) break;
+        out[n++] = id;
+      }
+      return n;
+    }
+  } gate;
+  rig.uplink.setResultGate(&gate);
+
+  // The library holds nothing and this firmware holds a session the journal owes: `[]` becomes
+  // that one id.
+  gate.ids = {39502};
+  const long long none[1] = {0};
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, -1, none, 0));
+  CHECK(rig.last().body == "{\"max\":2,\"holding\":[39502]}");
+
+  // The library's own first, ours behind it, and an id both of them name only once.
+  const long long library[2] = {12345, 39502};
+  gate.ids = {39502, 777};
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, -1, library, 2));
+  CHECK(rig.last().body == "{\"max\":2,\"holding\":[12345,39502,777]}");
+
+  // A library that does not state the member at all: nothing is added, and the body is the one
+  // every claim made before the bump.
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, -1, nullptr, -1));
+  CHECK(rig.last().body == "{\"max\":2}");
+
+  // Never more than the library's writer will write, and the body still fits the buffer.
+  std::vector<long long> many;
+  for (int i = 0; i < mm::kClaimHoldingMax + 3; ++i) many.push_back(9000000000000000000LL + i);
+  gate.ids = many;
+  CHECK(rig.uplink.claimJobs(jobs, 2, count, -1, none, 0));
+  CHECK(rig.last().body.size() <= mm::kMaxClaimRequestLen);
+  std::size_t ids_in_body = 0;
+  for (std::size_t at = rig.last().body.find("900000000"); at != std::string::npos;
+       at = rig.last().body.find("900000000", at + 1)) {
+    ++ids_in_body;
+  }
+  CHECK(ids_in_body == static_cast<std::size_t>(mm::kClaimHoldingMax));
+  rig.tokenNowhere("after the claims that name what this end holds");
+}
+
+// **The room for another claim, and the latch that ends the asking** (task p18-02).
+//
+// The library claims again when the answer to a result said more work waits, and this firmware
+// writes that bit: so this is the one place a board can end a wake's claiming without failing a
+// call. Three things end it, and none of them is a failure - nothing goes out, nothing backs off.
+TEST_CASE("a wake with no room for another claim is told nothing waits, whatever the server said") {
+  Rig rig;
+  fakes::FakeRetained retained;
+  fakes::FakeRestart restart;
+  core::health::Health health{retained, rig.clock};
+  health.begin(core::health::ResetReason::kPowerOn, core::health::WakeCause::kNotFromSleep);
+  core::cycle::WakeGuard guard{rig.clock, restart, health};
+  rig.uplink.boundedBy(&guard);
+  const std::string report = contract("JobResultReport");
+  rig.serve("/agent/v1/jobs/12345/result", ahead("JobResultReplyWaiting"));
+  bool waiting = false;
+
+  SUBCASE("a fresh wake has room, and the answer is read as the server wrote it") {
+    guard.arm();
+    CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
+    CHECK(waiting);
+    CHECK(rig.uplink.claimsStopped() == interfaces::Claims::kUnsaid);
+  }
+
+  SUBCASE("a wake held open to within a minute of the ceiling has none") {
+    // What a session leaves behind: the bound raised to near `kRaisedBoundMax` and spent. There
+    // is room for this call - 60 s against the 5 s a call needs to begin - and not for a claim
+    // and the calls after its jobs, which is three times the modem's command timeout.
+    guard.arm();
+    guard.allow(core::cycle::kRaisedBoundMax);
+    rig.clock.advance(core::cycle::kRaisedBoundMax - 60000u);
+    CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
+    CHECK(rig.server().requests.size() == 1);  // the result itself went: this is not a failure
+    CHECK_FALSE(waiting);
+    CHECK(rig.uplink.claimsStopped() == interfaces::Claims::kNoRoom);
+    CHECK(rig.uplink.uplinkCounters().budget == 0);
+  }
+
+  SUBCASE("a wake something has already ended the claiming of") {
+    guard.arm();
+    rig.uplink.stopClaiming(interfaces::Claims::kTheRadioIsAway);
+    CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
+    CHECK_FALSE(waiting);
+    // The first reason wins: what ended the claiming is what ended it first.
+    rig.uplink.stopClaiming(interfaces::Claims::kNoRoom);
+    CHECK(rig.uplink.claimsStopped() == interfaces::Claims::kTheRadioIsAway);
+    // And the top of a wake clears it.
+    rig.uplink.forgetTheWakesRoom();
+    CHECK(rig.uplink.claimsStopped() == interfaces::Claims::kUnsaid);
+  }
+
+  SUBCASE("a result the gate leaves to its lease ends the claiming with no room") {
+    // A job the wake's budget could not pay for: the next claim of the same wake would be handed
+    // it straight back (meshmaster.dk hands back every running lease without a result), so the
+    // wake takes on no more.
+    struct Withhold final : agent::ResultGate {
+      bool withhold(long long) override { return true; }
+    } gate;
+    rig.uplink.setResultGate(&gate);
+    guard.arm();
+    waiting = true;
+    CHECK(rig.uplink.postJobResult(12345, report.c_str(), report.size(), waiting));
+    CHECK(rig.server().requests.empty());  // nothing went out
+    CHECK_FALSE(waiting);
+    CHECK(rig.uplink.claimsStopped() == interfaces::Claims::kNoRoom);
+  }
+
+  SUBCASE("and the heartbeat's own answer is held to the same room, for the first claim of a wake") {
+    rig.serve("/agent/v1/heartbeat", contract("HeartbeatReply"));  // `jobsWaiting` true
+    mm::Heartbeat hb;
+    mm::HeartbeatReply reply;
+    guard.arm();
+    CHECK(rig.uplink.postHeartbeat(hb, reply));
+    CHECK(reply.jobsWaiting);
+
+    guard.allow(core::cycle::kRaisedBoundMax);
+    rig.clock.advance(core::cycle::kRaisedBoundMax - 60000u);
+    mm::HeartbeatReply second;
+    CHECK(rig.uplink.postHeartbeat(hb, second));
+    CHECK_FALSE(second.jobsWaiting);
+    CHECK(rig.uplink.claimsStopped() == interfaces::Claims::kNoRoom);
+  }
 }
 
 TEST_CASE("POST /agent/v1/jobs/{id}/result, /extend and /progress: the per-job routes and their replies") {

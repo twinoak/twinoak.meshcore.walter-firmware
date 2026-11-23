@@ -465,6 +465,58 @@ to N s for 2 jobs* and, where one happened, *1 call(s) were not begun: the bound
 finish one*. A call with no room is a reason for a journal entry; a bound that was merely raised is
 not, because an ordinary claim of a leased job raises it at every wake that has a job.
 
+### A wake claims until the battery says sleep (task p18-02)
+
+A wake used to make **one** claim and run the two jobs it was handed, so a NoiseScope sample of six
+steps and a report took five wakes — which is what 21 November 2026 at Bellevue cost. The rule for
+this board is that it takes jobs until none are left or the battery says sleep, and the battery is
+what says how many times it may ask:
+
+| band | claims a wake may make | transactions it promises |
+|---|---|---|
+| `plenty` | 8 | `2 × the dearest job` |
+| `normal` | 4 | half of it |
+| `saving` | 1 | one real job's worth |
+| no reading | 4 | the medium one |
+| `critical` | none — the modem is not brought up at all | none |
+
+**Both numbers are placeholders** and the bench sets them (`docs/bench.md` §17,
+`components/agent/include/walter_agent/identity.h`): a worse band never promises more, which a
+`static_assert` holds. The claim count is **not** sent to the server — it is this end's own bound —
+and what the server is told is what the wake has left in transactions (the claim's
+`transactionsLeft`) and nothing about how many times it may ask.
+
+**The bound covers every claim, not only the first.** `coverTheLeases` runs at each one and raises
+the bound from where the wake stands then, so a wake of three claims is three leases covered and is
+never ended by the reset the bound exists for. And **a claim is not made at all** where the wake
+could no longer be raised far enough to hold a job's lease and the calls after it
+(`kRaisedBoundMax`, `WakeRoom::couldHold`): the wake ends its jobs there, which is *no room* and
+not a failure — nothing goes out, nothing backs off, and the work is still the server's.
+
+**Why the last claim was the last**, which is the one thing no number says. Seven words
+(`interfaces::Claims`), in the journal's own line, in `agent wake` and in the `jobs` section of a
+`twinoak.report`:
+
+| | |
+|---|---|
+| `nothing waiting` | the server said nothing more waits — the ordinary end of a wake that did its work |
+| `the band's number` | the battery's claims for this band are spent |
+| `no room` | the wake could not be raised to cover another claim, its seconds at the server are gone, or a job was left to its lease for want of budget: a wake that could not pay for what it had does not take on more |
+| `no transactions` | what is left of the band's airtime cap cannot hold a job at the cheapest price there is |
+| `a result kept` | a result of the last claim did not fit the bytes a wake may post and is kept for the next one |
+| `the radio is away` | a job took the radio away — an apply, a session, a power cycle — and it is not back by the supervisor's word |
+| `a claim failed` | the claim did not come back, and the server had spoken |
+| `it did not say` | no claim was made at all, and then the claim step's own outcome is the answer |
+
+**And what this firmware holds is named in the claim.** meshmaster.dk hands a claim that states
+`holding` every job it has leased to this exit node whose lease is still running, that has no
+result, and whose id the claim did not name — it keeps no record of an answer that did not arrive.
+Three kinds of work of this unit's are exactly that and are in no buffer of the library's: a job
+the result gate left to its lease, a session the bound cut, and an apply whose result waits for the
+next boot. Their ids go into `holding` behind the library's own, so no download is paid for twice
+and no flash of a radio is begun twice; the lease then lapses and the server's own rules take the
+job from there.
+
 **What this does not do.** A job the radio never answers ends `unreachable` and not `timeout`: the
 library gives a login two tries and the job is over in half a minute (`agent/LoginSequence.h`).
 `timeout` is its word for a job the **lease** ended, which is the cut lease above and a job that

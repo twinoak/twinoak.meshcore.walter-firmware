@@ -359,6 +359,45 @@ inline const char* describe(Reached reached) {
   return "?";
 }
 
+// -- why the last claim of a wake was the last (task p18-02) -----------------------------------
+//
+// A wake used to make **one** claim and run the two jobs it was handed, so *how many jobs ran*
+// said the whole of what it did. Since this pile the band of the battery says how many claims a
+// wake may make - it takes jobs until none are left or the battery says sleep - and then the one
+// thing a reader cannot work out from any number is why it stopped asking. These are the seven
+// answers, and they are in this seam rather than the agent's so that the journal, `agent wake`
+// and a report have one vocabulary for it and not three.
+//
+// **kUnsaid is the zero**: a wake that made no claim at all has no last claim to explain, and an
+// implementation with no jobs never says anything else.
+enum class Claims : std::uint8_t {
+  kUnsaid = 0,
+  kNothingWaiting = 1,   // the server said nothing more waits
+  kTheBandsNumber = 2,   // the battery's band allows no more claims this wake
+  kNoRoom = 3,           // the wake has no room left for a claim and the calls after its jobs
+  kNoTransactions = 4,   // what is left of the airtime cap cannot hold a job
+  kAResultKept = 5,      // a result of the last claim is kept for the next wake
+  kTheRadioIsAway = 6,   // a job took the radio away and it is not back by the supervisor's word
+  kAClaimFailed = 7,     // the claim did not come back
+  kCount,
+};
+
+// One phrase, for the journal, `agent wake` and a report.
+inline const char* describe(Claims claims) {
+  switch (claims) {
+    case Claims::kUnsaid: return "it did not say";
+    case Claims::kNothingWaiting: return "nothing waiting";
+    case Claims::kTheBandsNumber: return "the band's number";
+    case Claims::kNoRoom: return "no room";
+    case Claims::kNoTransactions: return "no transactions";
+    case Claims::kAResultKept: return "a result kept";
+    case Claims::kTheRadioIsAway: return "the radio is away";
+    case Claims::kAClaimFailed: return "a claim failed";
+    case Claims::kCount: break;
+  }
+  return "?";
+}
+
 // One setting an answer asks for. The key is the name a person would type at the console
 // (`core/settings/keys.h`), because that table is the only list of settings there is.
 struct BackendSetting {
@@ -433,9 +472,17 @@ struct BackendAnswer {
 // implementation that has jobs knows these already and this structure is a member of two objects
 // that live for the whole boot, so two bytes in it are eight bytes of the heap the agent's kept
 // scratch is carved out of (tools/heap_at_start.py). A question costs a vtable entry in flash.
+//
+// **And since task p18-02, how many times the wake asked for work and why it stopped asking.** A
+// wake may make more than one claim - the band of the battery says how many - so *claimed and
+// ran two jobs* is no longer the whole of what a wake did, and the one thing a reader cannot work
+// out from any number is why the last claim was the last.
 struct WakesRoom {
   std::uint8_t jobs_covered = 0;
   std::uint8_t calls_no_room = 0;
+  std::uint8_t claims = 0;    // claims this wake made, saturating
+  std::uint8_t jobs_run = 0;  // ... and the jobs they ran together
+  Claims claims_end = Claims::kUnsaid;
 };
 
 // How an exchange went.

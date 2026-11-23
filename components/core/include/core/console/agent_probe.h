@@ -59,6 +59,10 @@ struct AgentIdentityView {
   // What this wake promises the server (`mm::WakeIntent`), and the band it came from.
   std::uint32_t next_check_in_s = 0;
   int max_transactions_this_wake = 0;
+  // How many **claims** a wake in this band may make (task p18-02). Not sent to the server -
+  // it is this end's own bound, set by the board that knows its battery - and it is here because
+  // this line is where the band's placeholders are read on a bench.
+  int max_claims_this_wake = 0;
   const char* band = "";
 
   // The clock the library would stamp a heartbeat with, and where it came from.

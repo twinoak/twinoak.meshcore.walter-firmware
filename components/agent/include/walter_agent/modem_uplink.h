@@ -69,6 +69,7 @@
 #include "core/cycle/wake_counters.h"
 #include "core/net/client.h"
 #include "core/settings/settings.h"
+#include "interfaces/backend.h"
 #include "interfaces/clock.h"
 #include "interfaces/http.h"
 #include "interfaces/wall_clock.h"
@@ -142,6 +143,28 @@ class ResultGate {
  public:
   virtual ~ResultGate() = default;
   virtual bool withhold(long long jobId) = 0;
+
+  // **What this firmware holds that the library's buffer knows nothing of** (task p18-02): the
+  // ids, into `out` and at most `max` of them, and how many were written.
+  //
+  // The claim's `holding` is filled by `JobRunner::claim` from the runner's own offline buffer -
+  // results it made and has not had taken - and meshmaster.dk hands a claim that states the
+  // member **every** job it has leased to this exit node, whose lease is still running, that has
+  // no result, and whose id the claim did not name (its task p4.47-254,
+  // `Transport/HandedBack.cs`). The server keeps no record of an answer that did not arrive, so
+  // *whose answer was lost* is not a question it can ask. Three kinds of work of this firmware's
+  // are leased and in hand and in no buffer of the library's - a job the result gate left to its
+  // lease, a session the bound cut, an apply whose result waits for the next boot - and a wake
+  // that claims more than once would be handed each of them back, mid-flight, by its own next
+  // claim. Naming them here is how they are not.
+  //
+  // A default of none, so that a gate which only withholds - every one of them but the firmware
+  // jobs - is unchanged.
+  virtual int holdsOutsideTheBuffer(long long* out, int max) const {
+    (void)out;
+    (void)max;
+    return 0;
+  }
 };
 
 // What this object did, for the console and the tests. Saturating.
@@ -246,15 +269,35 @@ class ModemUplink final : public mm::IUplink {
   // scratch is carved out of (tools/heap_at_start.py), and these are the only figures anything
   // reads after the claim. *How far the bound reaches* is the bound itself, which the wake record
   // already carries, and *where a lease was cut to* is said in the log line that cuts it.
+  //
+  // **The fourth byte is why this wake stopped claiming, where this end stopped it** (task
+  // p18-02): it sits in the padding the three above left, so it costs nothing.
   struct WakesRoom {
     std::uint8_t jobs = 0;     // claimed jobs the bound was raised to cover; 0: nothing was
     std::uint8_t no_room = 0;  // calls not begun for want of room, saturating
     bool cut = false;          // a lease was longer than the wake could be made to cover
+    interfaces::Claims stop = interfaces::Claims::kUnsaid;  // `stopClaiming` below
   };
   const WakesRoom& wakesRoom() const { return room_; }
   // At the top of every wake, so that the figures of the wake before are not reported as this
-  // one's.
+  // one's - and the latch below with them, which is why it is cleared here and nowhere else.
   void forgetTheWakesRoom() { room_ = WakesRoom{}; }
+
+  // **No more claims this wake, and why** (task p18-02). The library asks for another claim when
+  // the answer to the last result said more work waits (`jobsWaiting`, upstream's task p1.20-69),
+  // and this firmware writes that bit: so the one place a board can end the asking without
+  // failing a call is here, where that answer is read. The first reason latches - what ended the
+  // claiming is what ended it first - and `forgetTheWakesRoom()` clears it at the top of a wake.
+  //
+  // Three callers, and all three are *this wake cannot take on more work*, never *the server said
+  // so*: the result gate leaving a job to its lease for want of budget (the firmware jobs), a job
+  // that took the radio away and did not give it back (the same), and the bound that cannot be
+  // raised far enough to cover another claim (this object, below). None of them is a failure: no
+  // call is made, nothing backs off, and the wake runs its remaining steps and sleeps.
+  void stopClaiming(interfaces::Claims why) {
+    if (room_.stop == interfaces::Claims::kUnsaid) room_.stop = why;
+  }
+  interfaces::Claims claimsStopped() const { return room_.stop; }
 
   // The payload text of a `twinoak.*` job of the last claim, by id, or nullptr: what the
   // extension reads its fields from (task p4-05). Empty text is a payload that did not fit.
@@ -338,6 +381,17 @@ class ModemUplink final : public mm::IUplink {
   // p16-06). Called by `claimJobs` with the jobs as the library parsed them, before the runner
   // sees one.
   void coverTheLeases(mm::ClaimedJob* jobs, int count);
+  // **Whether this wake could cover another claim at all** (task p18-02): the claim's own call
+  // and the calls after its jobs - a result for each and the observations - inside the most a
+  // wake may ever be raised to. The jobs' own time is not in it: a lease the ceiling cannot cover
+  // is cut and the library ends that job `timeout` with the room still there to post the result
+  // (`core/cycle/wake_room.h`), which is a job answered and not a job lost. What this refuses is
+  // a claim the wake could not even post the results of.
+  bool roomForAnotherClaim() const;
+  // The claim's `holding` as it goes on the wire: the library's own list, then the ids this
+  // firmware holds outside its buffer that are not already in it (`ResultGate` above). `out` is
+  // `mm::kClaimHoldingMax` long, which is as many as the library's writer will write.
+  int holdingForTheClaim(const long long* holding, int holdingCount, long long* out) const;
   void wipeSecret();
   void wipeReply();
   // The `twinoak.*` jobs' payloads out of a claim's bytes, before the library parses them in

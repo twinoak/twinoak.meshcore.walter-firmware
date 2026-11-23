@@ -286,6 +286,9 @@ void encode(const WakePayload& p, std::uint8_t out[kWakePayloadBytes]) {
   out[38] = static_cast<std::uint8_t>(p.bound_s & 0xFF);
   out[39] = static_cast<std::uint8_t>((p.bound_s >> 8) & 0xFF);
   out[40] = p.calls_no_room;
+  out[41] = p.claims;
+  out[42] = p.jobs_run;
+  out[43] = static_cast<std::uint8_t>(p.claims_end);
 }
 
 bool decode(const update::Entry& e, WakePayload* out) {
@@ -319,16 +322,25 @@ bool decode(const update::Entry& e, WakePayload* out) {
   out->jobs_covered = 0;
   out->bound_s = 0;
   out->calls_no_room = 0;
+  out->claims = 0;
+  out->jobs_run = 0;
+  out->claims_end = interfaces::Claims::kUnsaid;
   if (e.size >= kWakePayloadBytesV2) {
     if (e.payload[32] >= static_cast<std::uint8_t>(interfaces::Reached::kCount)) return false;
     out->reached = static_cast<interfaces::Reached>(e.payload[32]);
     out->owed_s = get32(e.payload + 33);
   }
-  if (e.size >= kWakePayloadBytes) {
+  if (e.size >= kWakePayloadBytesV3) {
     out->jobs_covered = e.payload[37];
     out->bound_s = static_cast<std::uint16_t>(e.payload[38] |
                                               (static_cast<std::uint16_t>(e.payload[39]) << 8));
     out->calls_no_room = e.payload[40];
+  }
+  if (e.size >= kWakePayloadBytes) {
+    if (e.payload[43] >= static_cast<std::uint8_t>(interfaces::Claims::kCount)) return false;
+    out->claims = e.payload[41];
+    out->jobs_run = e.payload[42];
+    out->claims_end = static_cast<interfaces::Claims>(e.payload[43]);
   }
   return true;
 }
@@ -1510,6 +1522,12 @@ void WakeCycle::journalWake() {
   // ordinary claim of a leased job raises it at every wake that has a job, and seven hundred
   // identical lines are not a page a person can read.
   if (backend_.roomTookOn().calls_no_room != 0) news = true;
+  // **And a wake that claimed more than once is news** (task p18-02). It is the new thing this
+  // pile does - the band of the battery says how many claims a wake may make - and the figure a
+  // person reading a week of the log will be looking for. One claim is what every wake made
+  // before it and is not news, so the cost is at most one entry per wake that took jobs until
+  // there were none left.
+  if (backend_.roomTookOn().claims > 1) news = true;
   if (!news) return;
 
   WakePayload p{};
@@ -1538,6 +1556,10 @@ void WakeCycle::journalWake() {
   // the boot, clamped as `lasted_s` is - no wake comes near 18 hours, raised or not.
   const interfaces::WakesRoom room = backend_.roomTookOn();
   p.jobs_covered = room.jobs_covered;
+  // ... and what its claims came to (task p18-02), from the same question.
+  p.claims = room.claims;
+  p.jobs_run = room.jobs_run;
+  p.claims_end = room.claims_end;
   const std::uint32_t bound_s = pass_.bound_ms / 1000u;
   p.bound_s = bound_s > kLastedAtMostS ? static_cast<std::uint16_t>(kLastedAtMostS)
                                        : static_cast<std::uint16_t>(bound_s);

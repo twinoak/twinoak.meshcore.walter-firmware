@@ -283,6 +283,39 @@ const char* FirmwareJobs::type(int i) const {
 
 bool FirmwareJobs::withhold(long long jobId) { return left_leased_ != 0 && jobId == left_leased_; }
 
+// **What this firmware holds outside the library's buffer** (task p18-02). Two at most, and both
+// are a job the server has leased to this unit, that is in hand or whose result is owed, and that
+// the library's own `holding` cannot know about:
+//
+//   the one the result gate is leaving to its lease - a download the wake's budget ended, a
+//   session the bound cut, an apply about to restart this board. It is named for the rest of the
+//   wake that left it;
+//   the one the journal holds as **owed** - a session this board restarted in the middle of, or a
+//   Walter apply whose result waits for its trial. It is named across the sleep, for as long as
+//   this firmware still means to answer it, which is exactly as long as that entry stands: the
+//   result's own post settles the entry (`postOwedResult`), and from then on the claim says
+//   nothing about it.
+//
+// A job named here is **not** handed back, so the server's own rules take it from there: its lease
+// runs out and it is queued again, which is what happened before a wake could claim twice.
+int FirmwareJobs::holdsOutsideTheBuffer(long long* out, int max) const {
+  if (out == nullptr || max <= 0) return 0;
+  int n = 0;
+  if (left_leased_ != 0) out[n++] = left_leased_;
+  JobEntry owed;
+  if (n < max && resultOwed(&owed) && owed.job_id != 0 && owed.job_id != left_leased_) {
+    out[n++] = owed.job_id;
+  }
+  return n;
+}
+
+void FirmwareJobs::theRadioAfterAJob(bool back) {
+  if (back && radioHealth() == core::supervisor::Health::kHealthy) return;
+  LOG_W("jobs: the radio is not back by the supervisor's word (%s): this wake claims no more",
+        core::supervisor::describe(radioHealth()));
+  server_.stopClaiming(interfaces::Claims::kTheRadioIsAway);
+}
+
 std::uint32_t FirmwareJobs::nowEpoch() const {
   interfaces::WallTime now{};
   return wall_.now(&now) ? now.epoch : 0;
@@ -1039,6 +1072,11 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
   shortOf(to, ended.to_version);
   (void)journal(ended);
 
+  // **The radio was taken away and the machine has just said whether it came back** (task
+  // p18-02): a commit and a rollback both end with an image proved, which is a HELLO; `stuck` is
+  // a radio this wake must not take more work on top of.
+  theRadioAfterAJob(outcome == ApplyOutcome::kCommitted || outcome == ApplyOutcome::kRolledBack);
+
   const std::size_t n = writeApplyResult(outcome, from, to, refusal);
   if (n != 0) out.data(data_, n);
   out.outcome(outcome == ApplyOutcome::kCommitted || outcome == ApplyOutcome::kRolledBack ? mm::Outcome::Ok
@@ -1561,6 +1599,9 @@ bool FirmwareJobs::runPowerCycle(const mm::ClaimedJob& job, const char* payload,
   std::snprintf(note, sizeof note, "rail off %lu ms; the radio %s", static_cast<unsigned long>(off_ms),
                 back ? "answered HELLO" : "did not answer inside the boot window");
   ctx.log(note);
+  // The rail went down and the radio either answered inside the boot window or did not (task
+  // p18-02): a wake whose radio did not come back claims no more work in it.
+  theRadioAfterAJob(back);
   const std::size_t n = writePowerCycleResult(off_ms, back, back, radio_.session().boot_id);
   if (n != 0) out.data(data_, n);
   out.outcome(mm::Outcome::Ok);
@@ -2367,6 +2408,11 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
                                                               : ApplyOutcome::kStuck;
   ended.at_epoch = nowEpoch();
   (void)journal(ended);
+
+  // **The radio ran another firmware for the length of this job** (task p18-02): `restored` is
+  // the golden image back and proved, and `stuck` is a radio that is still a scanner or silent.
+  // A wake claims again only after the first.
+  theRadioAfterAJob(result.outcome == SessionOutcome::kRestored);
 
   char line_text[200];
   std::snprintf(line_text, sizeof line_text,

@@ -155,6 +155,56 @@ TEST_CASE("a wake with no room left at all hands a lease that has already run ou
   CHECK(cover.lease_until_s == kNow);
 }
 
+// **Whether a wake could be made to hold another piece of work at all** (task p18-02): the
+// question asked before a claim, now that a wake may make several. What a claim needs is its own
+// call and the calls after its jobs - a result for each and the observations - and the jobs' own
+// time is not in it, because a lease the ceiling cannot cover is cut and the library ends that
+// job `timeout` with the room still there to post the result (the case above).
+TEST_CASE("another claim is held to what the wake could still be raised to") {
+  // What a claim of two jobs needs at the least: the call that makes it, and a result for each
+  // job and the observations behind it.
+  const std::uint32_t needs = 5000u + core::cycle::roomForCallsAfter(2);
+
+  SUBCASE("a fresh wake could hold it, and so could one half an hour in") {
+    RoomBench b;
+    b.aWake();
+    CHECK(b.room().couldHold(needs));
+    b.clock.advance(30u * 60 * 1000);
+    CHECK(b.room().couldHold(needs));
+  }
+
+  SUBCASE("a wake within a minute of the ceiling could not") {
+    RoomBench b;
+    b.aWake(kRaisedBoundMax - 60000u);
+    CHECK_FALSE(b.room().couldHold(needs));
+    // It could still hold one call, which is why the result of the job in hand still goes: this
+    // is a wake with no room for *more work*, not one with no room for anything.
+    CHECK(b.room().couldHold(5000u));
+  }
+
+  SUBCASE("the ceiling exactly, and a wake past it") {
+    RoomBench b;
+    b.aWake(kRaisedBoundMax - needs);
+    CHECK(b.room().couldHold(needs));
+    b.clock.advance(1);
+    CHECK_FALSE(b.room().couldHold(needs));
+    // A wake already past the ceiling - the next tick's reset - holds nothing, and the
+    // arithmetic does not wrap round to *plenty of room*.
+    b.clock.advance(kRaisedBoundMax);
+    CHECK_FALSE(b.room().couldHold(needs));
+    CHECK_FALSE(b.room().couldHold(0xFFFFFFFFu));
+  }
+
+  SUBCASE("a wake nothing is timing could hold anything") {
+    RoomBench b;  // disarmed: the bench, a person on the port
+    CHECK(b.room().couldHold(needs));
+    CHECK(b.room().couldHold(0xFFFFFFFFu));
+    b.aWake();
+    b.guard.usbHostIs(true);
+    CHECK(b.room().couldHold(0xFFFFFFFFu));
+  }
+}
+
 TEST_CASE("nothing ends a wake nobody is timing, and nothing of this applies to it") {
   RoomBench b;  // disarmed: no wake is being timed
   const WakeRoom room = b.room();

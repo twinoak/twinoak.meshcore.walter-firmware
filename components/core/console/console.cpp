@@ -3884,8 +3884,9 @@ void Console::agentId() {
              ? "status, access list, neighbours, owner info (telemetry stays LPP_GET)"
              : "none - this radio is older than link 1.2, so status, neighbours and owner info "
                "are failed and the access list silent");
-  printf("intent: next check-in %lu s, at most %d transaction(s) this wake (band %s)\n",
-         static_cast<unsigned long>(v.next_check_in_s), v.max_transactions_this_wake, v.band);
+  printf("intent: next check-in %lu s, at most %d transaction(s) and %d claim(s) this wake (band %s)\n",
+         static_cast<unsigned long>(v.next_check_in_s), v.max_transactions_this_wake,
+         v.max_claims_this_wake, v.band);
   if (v.time_known) {
     printf("clock: %lu, from the %s\n", static_cast<unsigned long>(v.epoch), v.time_source);
   } else {
@@ -4427,6 +4428,12 @@ void Console::wake() {
       printf("  %u call(s) were not begun: the bound had no room to finish one\n",
              static_cast<unsigned>(room.calls_no_room));
     }
+    // The claims of the wake this line is printed from inside (task p18-02).
+    if (room.claims != 0) {
+      printf("  %u claim(s), %u job(s) run; the last was the last: %s\n",
+             static_cast<unsigned>(room.claims), static_cast<unsigned>(room.jobs_run),
+             interfaces::describe(room.claims_end));
+    }
   }
   if (g.staying) {
     printf("  'stay' is on: %lu s left of it ('stay off' ends it)\n",
@@ -4892,6 +4899,15 @@ void Console::printWakeEntry(std::size_t number, const update::Entry& entry,
   if (p.calls_no_room != 0) {
     printf("       %u call(s) were not begun: the bound had no room to finish one\n",
            static_cast<unsigned>(p.calls_no_room));
+  }
+  // **What the wake's claims came to** (task p18-02), on a line of its own and for the same
+  // reason the two above are: a wake may claim several times now, so *two jobs* no longer says
+  // what a wake did, and why it stopped asking is the one thing no number says. An entry written
+  // before that task carries 0 claims and says nothing here.
+  if (p.claims != 0) {
+    printf("       %u claim(s), %u job(s) run; the last was the last: %s\n",
+           static_cast<unsigned>(p.claims), static_cast<unsigned>(p.jobs_run),
+           interfaces::describe(p.claims_end));
   }
 }
 
