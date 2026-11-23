@@ -126,6 +126,18 @@ TEST_CASE("Bellevue as read: UICR says the pin reset is enabled, the line is dea
   CHECK(story[4].state == State::kProving);
   CHECK(story[5].state == State::kCommitting);
   CHECK(story[6].state == State::kDone);
+  // And the flash's own `booting` entry carries what started the image and what UICR said, so
+  // that a flash nobody watched can be read off the journal afterwards.
+  const upd::StartRecord started = upd::decodeStart(story[2].detail);
+  CHECK(started.started == fl::Started::kResetLine);  // the pulse was what the flash made
+  CHECK(started.uicr_read);
+  CHECK(started.pin_enabled);
+  CHECK(started.pin == 18);
+  CHECK(started.port == 0);
+  const std::string status = w.runLine("rak update status");
+  INFO(status);
+  CHECK(status.find("started by a pulse on the reset line; nRESET is on P0.18") != std::string::npos);
+  CHECK(status.find("the pulse reached nothing") != std::string::npos);
 
   // What the machine says about it, and what the unit now remembers of its line: UICR read and
   // enabled, and a pulse seen to restart nothing.
@@ -180,7 +192,16 @@ TEST_CASE("UICR says there is no reset pin: no pulse is made on any flash, and t
   const upd::Status& st = w.update.status();
   CHECK(st.started == fl::Started::kDebugPort);
   CHECK_FALSE(st.looked);  // a reset the port made needs no look: it answered S_RESET_ST
-  CHECK(storyOf(w).size() == 6);
+  const std::vector<upd::Payload> story = storyOf(w);
+  CHECK(story.size() == 6);
+  const upd::StartRecord started = upd::decodeStart(story[2].detail);
+  CHECK(started.started == fl::Started::kDebugPort);
+  CHECK(started.uicr_read);
+  CHECK_FALSE(started.pin_enabled);
+  const std::string status = w.runLine("rak update status");
+  INFO(status);
+  CHECK(status.find("started by a reset through the debug port; this module has no reset pin") !=
+        std::string::npos);
   const core::board::ResetLineKnown& line = w.board.resetLine();
   CHECK(line.uicr_read);
   CHECK_FALSE(line.pin_enabled);

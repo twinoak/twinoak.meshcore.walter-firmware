@@ -2905,6 +2905,22 @@ void Console::printUpdateEntry(std::size_t number, const update::Entry& entry, c
   if (p.step == update::ProveStep::kPassed && p.detail != 0) {
     printf(" (the health check passed; %lu ms of proving)", static_cast<unsigned long>(p.detail));
   }
+  // **What started the image** (task p18-04), off the `booting` entry's own detail: which of the
+  // two it was and what UICR said about the reset pin while the port was open for the flash. Zero
+  // is an entry from before that task, and says nothing.
+  const bool booting = p.state == update::State::kBooting || p.state == update::State::kRollbackBooting;
+  if (booting && p.reason == update::Reason::kNone && p.detail != 0) {
+    const update::StartRecord start = update::decodeStart(p.detail);
+    printf(" - started by %s", flasher::describe(start.started));
+    if (!start.uicr_read) {
+      print("; UICR.PSELRESET was not read");
+    } else if (start.pin_enabled) {
+      printf("; nRESET is on P%u.%u", static_cast<unsigned>(start.port),
+             static_cast<unsigned>(start.pin));
+    } else {
+      print("; this module has no reset pin");
+    }
+  }
   print("\n");
 }
 

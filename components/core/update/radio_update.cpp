@@ -153,6 +153,31 @@ void encode(const Payload& p, std::uint8_t out[kPayloadBytes]) {
   put32(out + 40, p.detail);
 }
 
+// Task p18-04. Bits [1:0] what started the image, bit 2 whether UICR was read, bit 3 whether it
+// said the pin reset is enabled, bits [12:8] the pin, bit 16 the port. Zero is "nothing is
+// recorded here", which is every `booting` entry written before that task.
+std::uint32_t encodeStart(const StartRecord& r) {
+  std::uint32_t d = static_cast<std::uint32_t>(r.started) & 0x3u;
+  if (r.uicr_read) d |= 1u << 2;
+  if (r.pin_enabled) d |= 1u << 3;
+  d |= static_cast<std::uint32_t>(r.pin & 0x1Fu) << 8;
+  d |= static_cast<std::uint32_t>(r.port & 1u) << 16;
+  return d;
+}
+
+StartRecord decodeStart(std::uint32_t detail) {
+  StartRecord r;
+  const std::uint32_t started = detail & 0x3u;
+  r.started = started <= static_cast<std::uint32_t>(flasher::Started::kDebugPort)
+                  ? static_cast<flasher::Started>(started)
+                  : flasher::Started::kNothing;
+  r.uicr_read = (detail & (1u << 2)) != 0;
+  r.pin_enabled = (detail & (1u << 3)) != 0;
+  r.pin = static_cast<std::uint8_t>((detail >> 8) & 0x1Fu);
+  r.port = static_cast<std::uint8_t>((detail >> 16) & 1u);
+  return r;
+}
+
 bool decode(const Entry& e, Payload* out) {
   if (e.kind != kind::kRadioUpdate || e.size < kPayloadBytes || out == nullptr) return false;
   if (e.payload[0] > static_cast<std::uint8_t>(State::kNodeFault)) return false;
@@ -645,7 +670,16 @@ StepResult RadioUpdate::stepFlashing(bool rollback) {
   window_started_ms_ = started_ms_;
   next_hello_ms_ = window_started_ms_;
   restart_seen_ = false;
-  return enter(rollback ? State::kRollbackBooting : State::kBooting, "flashed; the radio was reset");
+  // The entry carries what started the image and what UICR said about the reset pin, so that a
+  // flash nobody watched can be read off the journal afterwards (task p18-04).
+  StartRecord record;
+  record.started = r.started;
+  record.uicr_read = r.reset_pin.known;
+  record.pin_enabled = r.reset_pin.enabled;
+  record.pin = r.reset_pin.pin;
+  record.port = r.reset_pin.port;
+  return enter(rollback ? State::kRollbackBooting : State::kBooting, "flashed; the radio was reset",
+               Reason::kNone, ProveStep::kNone, encodeStart(record));
 }
 
 // ---------------------------------------------------------------------------- booting

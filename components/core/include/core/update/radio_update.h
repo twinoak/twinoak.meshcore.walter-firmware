@@ -326,6 +326,21 @@ struct Payload {
 void encode(const Payload& payload, std::uint8_t out[kPayloadBytes]);
 bool decode(const Entry& entry, Payload* out);  // false unless the entry is a radio-update entry
 
+// **What the `booting` entry's `detail` carries** (task p18-04): what started the image this flash
+// wrote, and what `UICR.PSELRESET` said while the port was open for it. A payload is 48 bytes and
+// full; this is the one field a `booting` entry had spare, and it is what makes the journal say -
+// after the fact, on a unit nobody was watching - which of the two started the image and whether
+// the module has a reset pin at all. `rak update status` prints it.
+struct StartRecord {
+  flasher::Started started = flasher::Started::kNothing;
+  bool uicr_read = false;
+  bool pin_enabled = false;
+  std::uint8_t pin = 0;
+  std::uint8_t port = 0;
+};
+std::uint32_t encodeStart(const StartRecord& record);
+StartRecord decodeStart(std::uint32_t detail);
+
 // -- what the Walter's own update writes (task p2-04, core/update/self_update.h) ------------------
 //
 // S-7: the machine refuses to start while the Walter's own update is journalled as unconfirmed.
