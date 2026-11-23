@@ -534,6 +534,12 @@ TEST_CASE("a session the bound cut is named in the claim inside its lease, and n
   CHECK(unit.half().firmware.counters().owed_posted == 1);
   REQUIRE(unit.server().results[55000].size() == 1);
   CHECK(unit.world.chip->chipHolds(unit.golden));
+  // The server said work waited - it had that lease and no result for it - and the claim that
+  // named it was handed nothing, which is the library's *an empty claim* and this firmware's
+  // *nothing waiting*. The lease then lapses and the server's own rules take the job from there.
+  CHECK(unit.server().claims == 1);
+  CHECK(unit.half().backend.lastReport().jobsClaimed == 0);
+  CHECK(unit.half().backend.claimsEnded() == interfaces::Claims::kNothingWaiting);
 }
 
 TEST_CASE("an apply whose result waits for the next boot is named in the claim inside its lease, and nothing is applied twice") {
