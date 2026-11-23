@@ -471,7 +471,45 @@ TEST_CASE("the power pulled in the wait for the watchdog: the next wake ends it 
   CHECK_FALSE(mark.open);
 }
 
-// ---------------------------------------------------------------- 4. what a person is told
+// ---------------------------------------------------------------- 4. the spacing rule
+
+// **Does a start through the debug port count for the spacing rule?** No, and the reason is what
+// the rule is for. ARCHITECTURE §2 rule 2 exists because of BENCH-BREADBOARD.md §6 caveat 4: two
+// resets of the **pin**, less than about half a second apart, are the Adafruit bootloader's
+// double-tap and put the module into UF2 mode. A soft reset over the debug port never touches
+// nRESET, so it cannot be either tap of a double-tap - and recording it as one would only make
+// the next real pulse wait a second for nothing. So `resetPulse()` records the pulse and
+// `Nrf52::systemReset()` records nothing, which is what this holds.
+//
+// That no two pulses are ever closer than the rule allows is not this test's claim but the pin
+// rail's: `host_test/fakes/fake_pins.h` checks `reset-spacing` on the wire at every transition
+// whoever drove it, and `host_test/rails/test_rail_pins.cpp` holds the undeclared count to zero
+// over the whole suite - every flash of this file included.
+TEST_CASE("a start through the debug port is not a pulse, and does not stand in the spacing's way") {
+  ReadyUnit unit;
+  unit.world.chip.resetPinIs(Wiring::kNotEnabled);
+  bench::Walter& w = *unit.walter;
+  // A pulse by hand first, so that there is a recorded one to be spaced from, and then far enough
+  // past it that the next would be allowed at once.
+  REQUIRE(w.board.resetPulse() == core::board::Outcome::kOk);
+  w.w.clock.advance(core::board::kResetSpacingMs);
+  REQUIRE(w.board.msUntilResetAllowed() == 0);
+  const std::uint64_t pulsed_at = w.board.lastResetEndMs();
+
+  // A whole flash, which on this module ends in a soft reset over the debug port.
+  REQUIRE(w.update.start(unit.request()));
+  REQUIRE(w.run() == State::kDone);
+  CHECK(w.update.status().started == fl::Started::kDebugPort);
+  // The record of the last pulse is where the pulse left it: the flash did not touch the line, so
+  // it did not move the spacing either, and the next pulse is allowed at once.
+  CHECK(w.board.lastResetEndMs() == pulsed_at);
+  CHECK(w.board.msUntilResetAllowed() == 0);
+  CHECK(w.pins.reset_pulses == 1);
+  // And on the wire: the fake pins saw one pulse and no rule broken.
+  CHECK(w.pins.violations.empty());
+}
+
+// ---------------------------------------------------------------- 5. what a person is told
 
 TEST_CASE("the console says what UICR holds and what a pulse has been seen to do") {
   ReadyUnit unit;

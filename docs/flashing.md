@@ -537,6 +537,16 @@ In this order, at the console:
    at all is the uplink (go back to 2). A unit needs **meshmaster.dk 4.14 or newer** to be told
    anything to do.
 
+4. **`rak swd id`**, when it is a flash that did not take — an apply that ended `stuck`, a session
+   whose scanner never spoke, a radio that went quiet after a flash and came back at the
+   supervisor's power cycle. Its `UICR.PSELRESET` line says whether this module has a reset pin at
+   all: *the pin reset is enabled* with the pin it is on, or *NO pin reset: nRESET is on no pin*.
+   On a module that has one and whose radio still does not restart at `rak reset`, the wire or the
+   adapter is the thing to meter — and the firmware will find that out for itself at the next
+   flash, start the image through the debug port, and say so in the journal and in `rak watch`'s
+   *the reset line:* line (`docs/update.md`, *What starts a flashed image*). Enabling a pin reset
+   that is not enabled is a person's act of provisioning; this firmware never writes `UICR`.
+
 And when none of those explains it: **`dump`** is the last 4 kB this port printed, `journal` the
 last twelve entries that survived whatever happened, `reboots` why the board last restarted, and
 `wake` why it is awake. [`bench.md`](bench.md) is the rest — every step of the rig, what should be

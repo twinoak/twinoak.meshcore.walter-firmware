@@ -65,10 +65,21 @@ above it are not used.
 | # | Rung | What it does | Capped | Battery |
 |---:|---|---|---|---|
 | 1 | ask again later | the link's own three attempts have already gone (that is what found the silence); a pause, and three more | — | — |
-| 2 | a reset pulse | `RadioPins::resetPulse()`: open-drain low for 100 ms, and never two inside a second (§2 rule 2) | `kResetsPerDay` | — |
+| 2 | a reset pulse | `RadioPins::resetPulse()`: open-drain low for 100 ms, and never two inside a second (§2 rule 2). **It is called a cure only when the radio restarted at it** — see below | `kResetsPerDay` | — |
 | 3 | a power cycle | `RadioPins::killCycle()`: every other pin a plain input first, the kill line driven high for `kKillOffMs`, then released and the rail given its settle time (§2 rules 3 and 4) | `kPowerCyclesPerDay` | `kPowerCycleMinMv` |
 | 4 | what is on the chip | `Flasher::verify()` of the golden image against the flash, **changing nothing**. It matches and the bootloader would start it → the firmware is intact, so flashing would change nothing: rung 5. It differs → the golden image goes back through the update machine's rollback path (`rak role repeater`'s machine, journalled as one run). Protected, or unreadable → rung 5 with that reason | `kFlashesPerDay` | `kFlashMinMv` |
 | 5 | stop | *radio unresponsive after <what was tried>*, journalled and kept for the next check-in. Nothing more until a person, the server, or `kQuietPeriodMs` — after which the ladder may be tried once more | — | — |
+
+**Cured by rung 2, or came back by itself** (task p18-04). A pulse on nRESET gets no confirmation
+from the chip, and on 21 November this unit wrote *cured by rung 2, a reset pulse* about a radio
+whose own `uptimeS` and `RESETREAS` show no restart answering one: it came back on its own, and the
+word was wrong. So the boot the radio was in **before** the pulse is kept, and the rung is called a
+cure only when a new one answered it — an `EV_BOOT`, or a boot id that is not that one. A radio
+that answers again without restarting reads *cured by itself (rung 2, a reset pulse restarted
+nothing)*, and the rung's own line says *done, and the radio came back without restarting: not this
+rung's doing*. Where the boot before the pulse was never known, neither word is said. Either way
+the ladder stops there, the caps are spent as they were, and the observation goes to the reset
+line's record that `rak watch` prints (`docs/update.md`, *What starts a flashed image*).
 
 **Boot loops.** Several `EV_BOOT`s inside `kBootLoopWindowMs`, or a radio whose uptime never gets
 past `kBootLoopUptimeS` when asked twice that far apart, is a radio restarting itself. It takes the
@@ -155,6 +166,7 @@ rak watch: slot 0: the radio is silent; the supervisor is stopped
   its last reset reason 2 (reset pin); the clock was set
 today: resets 1/6, power cycles 1/3, golden-image flashes 0/1
   the day began 118 s ago of 86400 (dated: a whole day can be shown to have passed)
+the reset line: UICR.PSELRESET says nRESET is on P0.18; nothing has been seen of it either way
 battery: 4000 mV, read 77 s ago (a power cycle needs 3500 mV, a flash 3700 mV)
 the radio restarted 0 times in the last 600 s (1 in all); a boot loop is 3 of them
 STOPPED: the chip holds the golden image: this is not a firmware fault

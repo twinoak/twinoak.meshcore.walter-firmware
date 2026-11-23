@@ -41,8 +41,8 @@ runs it to the end inside the command.
 | State | What is happening | Journalled before |
 |---|---|---|
 | **check** | the preconditions, below; nothing is touched | the start of the run, with the image's SHA-256 |
-| **flashing-candidate** | the flasher (`docs/ARCHITECTURE.md` §5) writes the candidate into the application region, verifies it, writes the bootloader's settings record and **starts the image with a pulse on the reset line** — the one reset that clears a watchdog the firmware it replaced had started, and the only reset of a flash, so the boot that is proved is the boot that pulse began (task p18-01) | the flash |
-| **booting** | waiting for the radio to come up: an `EV_BOOT` or a `HELLO` answer, inside the boot window | the wait |
+| **flashing-candidate** | the flasher (`docs/ARCHITECTURE.md` §5) writes the candidate into the application region, verifies it, writes the bootloader's settings record and **starts the image** — with a pulse on the reset line, the one reset that clears a watchdog the firmware it replaced had started (task p18-01), or, on a module whose `UICR.PSELRESET` says it has no reset pin, with a reset through the debug port (task p18-04, *What starts a flashed image* below). Either way it is the **only** reset of a flash, so the boot that is proved is the boot it began | the flash |
+| **booting** | waiting for the radio to come up: an `EV_BOOT` or a `HELLO` answer, inside the boot window. A window that stays empty after a **pulse** is worth one look at the chip first (*What starts a flashed image*), and a second entry says what it found | the wait |
 | **proving** | the health check, below | the check |
 | **committing** | the store's promotion: the golden pointer moves to the candidate's area (seven flash operations, whatever the size) | the promotion |
 | **done** | the candidate is the golden image; the candidate slot is empty — plainly empty, not a download half done: the area it now points at is the old golden image's, and the markers that image's own download left there are not read as a transfer (`ARCHITECTURE.md` §6, task p15-01) | terminal |
@@ -53,6 +53,49 @@ runs it to the end inside the command.
 | **stuck** | the golden image did not come back either, or there was none (a first install that failed): the radio has no proved application. The supervisor's last rung, a report, and no further attempt by this machine | terminal |
 | **refused** | a precondition failed at check; nothing was touched | terminal |
 | **node-fault** | the image proved everything an image can and **the node** is the fault: today that is one thing, a radio that has lost its identity (check 1a below). No rollback is spent, nothing goes on the bad list, nothing is promoted - the candidate is on the radio and in the store, the golden image is untouched, and the way out is a person's `erase` and `reboot` at the radio. The same candidate may then be applied again | terminal |
+
+## What starts a flashed image (task p18-04)
+
+A flash ends with the core halted and the new image in flash; something has to start it. Which of
+the two it is, this firmware asks the chip at every flash and decides from the answer — never from
+what it decided last time.
+
+**`UICR.PSELRESET[0]` and `[1]`, read.** They are the two registers a pin reset is configured by
+(Product Specification 5.3.6.2, 4.5.1.62–63): `PIN` in bits [4:0], `PORT` in bit 5, `CONNECT` in
+bit 31 with 0 meaning connected, and the rule that "all PSELRESET registers have to contain the
+same value for a pin mapping to be valid. If values are not the same, there will be no nRESET
+function exposed on a GPIO." A provisioned RAK4630 holds 18 in both: nRESET on P0.18. **This
+firmware never writes them** — a module without a pin reset has none whatever the wire does, and
+putting one there is an act of provisioning and a person's decision. Rail R3 holds the read to one
+function of `core/nrf52/nrf52.cpp` and holds it to being a read.
+
+- **The pin reset is enabled** → the flash ends in a pulse on nRESET (task p18-01).
+- **It is not** → the flash ends in a reset through the debug port, which is what every flash
+  ended in before task p18-01. A pulse on a pin that is not nRESET starts nothing, so none is made.
+
+**A pulse gets no confirmation.** `SYSRESETREQ` can be read back in `DHCSR.S_RESET_ST`; a pin
+cannot. So when nothing of the radio's comes inside the boot window after a **pulse**, the debug
+port is opened once more and the core's state read — **one such look a flash, never two**:
+
+| What the look finds | What happens | The journal's line |
+|---|---|---|
+| the core still **halted** where the flash left it | the pulse reached nothing: the image is started through the debug port and the window begins again | `booting: the pulse reached nothing…` |
+| the core **running** (or sleeping, or locked up) | the pulse worked and it is the image that is quiet: nothing is sent to it | `booting: the pulse started the image…` |
+| the port closed or silent | the ending there has always been | `booting: the chip could not be asked…` |
+
+**And what the debug port's reset costs**: a soft reset is not among the resets that clear the
+nRF52840's watchdog (5.3.6.8's *Reset behavior* table), and NoiseScope starts one at 60 s and feeds
+it from its own loop while a repeater feeds nothing. So an image the debug port started **over a
+scanner** inherits that watchdog and is reset once inside its time — which is the fault of
+21 November exactly (task p18-01). The proving period therefore begins at the boot that follows
+that reset, or when `kScannerWatchdogWaitMs` has passed since the image started without one; the
+journal says which, and the proof itself is unchanged — a restart inside the proving period is
+still a failure.
+
+**What the unit remembers, and says.** Whether a pulse has been seen to restart the radio, seen not
+to, or never tried is kept beside the reset spacing in RTC memory and printed by `rak watch` and in
+the check-in's `radio` section. It is for a person to read: every flash decides for itself, from
+the chip.
 
 ## The preconditions (check)
 
@@ -257,6 +300,9 @@ with a sentence beside it; none has been held against a real radio yet (`docs/be
 | `kProvingPeriodMs` | 180 000 ms | how long the link must stay up after a good start, with no restart |
 | `kProvingPingIntervalMs` | 3 000 ms | a `PING` this often through the proving period |
 | `kScannerWindowMs` | 20 000 ms | how long after the reset NoiseScope must have shown itself |
+| `kStartAgainWindowMs` | = `kBootWindowMs` | the window that begins again after a look found the core halted and the debug port started the image (task p18-04) |
+| `kScannerWatchdogMs` | 60 000 ms | the scanner's own hardware watchdog, copied from the repeater firmware's `WDT_TIMEOUT_S` (it does not say it on the link yet) |
+| `kScannerWatchdogWaitMs` | 75 000 ms | and how long a proof waits it out when the debug port started an image over a scanner: that number with a quarter of it as margin |
 | `kBatteryMinMv` | 3 700 mV | the battery below which no update starts (a single Li-ion cell: more than half its charge) |
 | `kBatteryFallingMvPerHour` | -100 mV/h | a trend steeper than this refuses the update (no trend exists until phase 3) |
 | `kStepIdleMs` | 100 ms | what `rak update` sleeps between steps that only waited |
@@ -493,7 +539,8 @@ PSRAM's size nought, which is the small room — which is what that line always 
 Two flashes of about a quarter of an hour (`kFlashWindowMs`) with the program and three minutes of
 proving between them: **about forty minutes off the mesh**, with this board awake for all of it.
 The wake that takes a session up is held open for two passes of the machine above and the ceiling
-— `kSessionBoundMs`, 58 min 40 s — which is the number that set `kRaisedBoundMax` in
+— `kSessionBoundMs`, 60 min 35 s since task p18-04 added the watchdog's wait to it — which is
+the number that set `kRaisedBoundMax` in
 `core/cycle/wake_guard.h`, and a raised bound is still a bound.
 
 A scanner **nobody opened a session for is left alone**, as it always was: a person typed `rak role

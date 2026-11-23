@@ -344,6 +344,18 @@ and what the host tests proved is in `tasks/phase-0/reports/03.md`.
   radio does **not** land in its UF2 bootloader (no USB drive appears on the RAK's port, Serial1
   keeps answering).
 
+- [ ] **What the chip says about its reset pin, and what a pulse really does** (task p18-04). With
+  SWD wired: `rak swd id` prints `UICR.PSELRESET: 0x…, 0x…` and either *the pin reset is enabled*
+  with the pin it is on — a provisioned RAK4630 reads `0x00000012, 0x00000012`, nRESET on P0.18 —
+  or *NO pin reset: nRESET is on no pin*, which is a module no pulse can start and which this
+  firmware then flashes through the debug port instead. **Write down which this board is.** Then
+  `rak reset` with the RAK's own console open: if the pin reset is enabled and the line is wired,
+  the RAK prints its boot banner and `rak status` afterwards says `booted: 2 (reset pin)`. A
+  module whose UICR says *enabled* and whose radio does **not** restart is the unit at Bellevue as
+  21 November read it: the wire, or the adapter, and the meter on nRESET of the item above is what
+  settles it. Either way `rak watch` then says what this unit has seen of its line — *a pulse was
+  seen to restart the radio*, *to restart nothing*, or neither yet.
+
 ## 3. The link
 
 Needs: the Walter on USB with §2 walked, the RAK4631 on the RAK19001 with the repeater firmware on
@@ -645,8 +657,10 @@ radio, and the simulator can only show the documents were followed, not that the
   page 1/2`, `2/2`), the write (`erasing, writing and verifying the pages: page 1/2`, `writing
   and verifying the first page: page 2/2`), the read-back, then `rak flash-test: done in <ms> ms: 2
   pages (0 skipped, 2 written in place, 0 erased, 0 retries), 2 erases, 2048 words written, <n>
-  read`, `the radio was started by a pulse on the reset line; the next reset pulse waits out the spacing`,
-  `pins released`. **Write the time down** — it is the first measurement of a page write and an
+  read`, `UICR.PSELRESET: nRESET is on P0.18`, `the radio was started by a pulse on the reset line;
+  the next reset pulse waits out the spacing`, `pins released` - and, on a module whose
+  `UICR.PSELRESET` says there is no reset pin, `the pin reset is NOT enabled on this module` and
+  `the radio was started by a reset through the debug port` in their place (task p18-04). **Write the time down** — it is the first measurement of a page write and an
   erase through the real wire. The RAK restarts (its USB console shows a boot) into the firmware it
   had; `rak hello` answers with the same version; `get name` is unchanged. If the command says
   `the last two pages of the application region are not blank`, the RAK's application reaches
@@ -1251,6 +1265,14 @@ run.
   next question and stop climbing: `rak ladder: the radio is back after rung 2, a reset pulse`, with
   no power cycle in the lines and `power cycles 0/3` in `rak watch`. Pull it during rung 1's pause
   instead and it should be cured at rung 1, with **no pin having moved at all**.
+- [ ] **Cured by the pulse, or came back by itself** (task p18-04). Holding nRESET to ground is a
+  radio the pulse cannot restart, so the climb above is also the test of the new word: when the
+  jumper is pulled during rung 2's wait, `rak watch`'s incident should read *cured by itself (rung
+  2, a reset pulse restarted nothing)* and the rung's line *done, and the radio came back without
+  restarting: not this rung's doing* — the radio never rebooted, it was simply let go of. Make the
+  radio go quiet **without** holding its reset line instead (pull its UART jumper, or stop its
+  firmware's loop) and the same climb should read *cured by rung 2, a reset pulse*, because the
+  pulse really does restart it. The `the reset line:` line of `rak watch` follows the two.
 - [ ] **Flash the RAK over USB with something else** (stock MeshCore, or NoiseScope's own release
   through the RAK's UF2 bootloader) and then `rak ladder`. Rung 4 should find that the chip differs,
   flash the golden image back through the update machine (its transitions and the flasher's
@@ -2942,8 +2964,10 @@ up after the pin reset before the debug port answers again.
 |---|---:|---|
 | `kBootloaderSettleMs` | `1500` | |
 
-**`update/radio_update.h`** (9) - **§9** measures a real repeater from reset to HELLO, and how
-long a bad build takes to show itself.
+**`update/radio_update.h`** (12) - **§9** measures a real repeater from reset to HELLO, and how
+long a bad build takes to show itself - and, since task p18-04, how long a scanner's own watchdog
+really leaves a repeater the debug port started over it (§2's reset-line item says which kind of
+module the board is).
 
 | Constant | Now | Measured |
 |---|---:|---|
@@ -2952,6 +2976,9 @@ long a bad build takes to show itself.
 | `kProvingPeriodMs` | `180000` | |
 | `kProvingPingIntervalMs` | `3000` | |
 | `kScannerWindowMs` | `20000` | |
+| `kStartAgainWindowMs` | `kBootWindowMs` | |
+| `kScannerWatchdogMs` | `60000` | |
+| `kScannerWatchdogWaitMs` | `kScannerWatchdogMs + kScannerWatchdogMs / 4` | |
 | `kBatteryMinMv` | `3700` | |
 | `kBatteryFallingMvPerHour` | `-100` | |
 | `kStepIdleMs` | `100` | |
