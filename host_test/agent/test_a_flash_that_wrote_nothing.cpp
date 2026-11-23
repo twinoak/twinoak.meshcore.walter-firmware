@@ -124,6 +124,7 @@ TEST_CASE("an apply whose flash never begins: refused, with no word the server h
   INFO(notesText(notes));
   CHECK(anyNoteHas(notes, "scan: swd wait-timeout at 0x026000; nothing written"));
   CHECK(anyNoteHas(notes, "2nd try scan: swd wait-timeout at 0x026000; nothing written"));
+  MESSAGE("the journal the server was given: " << bench::objectOf(data, "journal"));
 
   // **The radio is as the job found it**: the golden image still golden and still running, the
   // candidate still in the store to be offered again, and not a word written to the chip.

@@ -106,6 +106,9 @@ bool has(const std::string& text, const char* needle) {
   return text.find(needle) != std::string::npos;
 }
 
+// doctest's stream takes a std::string, and a bare character literal in a MESSAGE is a pointer.
+const std::string NL = "\n";
+
 }  // namespace
 
 // ------------------------------------------------- 1. the second session of 23 November
@@ -573,6 +576,7 @@ TEST_CASE("what a person is told: the console's lines for a flash that did not b
                  "WAIT) at 0x00026000; nothing was written)"));
   CHECK(has(out, "the radio is as it was and the same update can be run again"));
   CHECK_FALSE(has(out, "refused at check"));
+  MESSAGE("rak update with a flash that never begins:" << NL << out);
 
   // And the journal's story, at the console and in a report: `rak update status` reads the same
   // bits back out of flash.
@@ -587,6 +591,25 @@ TEST_CASE("what a person is told: the console's lines for a flash that did not b
   const std::string journal = unit.walter->runLine("journal");
   INFO(journal);
   CHECK(has(journal, "the flash did not begin"));
+  MESSAGE("rak update status:" << NL << status);
+}
+
+TEST_CASE("the console's sentence for a flash that failed after its first write, and whose fault it was") {
+  ReadyUnit unit;
+  // A page of the application region that never verifies, for this one flash: the chip **was**
+  // changed, so the golden image goes back - and its own flash, the next debug session, is clean,
+  // which is what lets one console-driven run show both halves.
+  unit.world.chip.failFlashAt(FailAt::kPageWillNotTake, 1);
+  const std::string out = unit.walter->runLine("rak update");
+  INFO(out);
+  CHECK(has(out, "rak update: restored: the candidate's flash failed (while writing and verifying "
+                 "the first page: what was read back did not match at 0x00026"));
+  CHECK(has(out, "the chip was changed, the core was halted and started again) and is NOT on the "
+                 "bad list: the fault was this unit's, and the"));
+  CHECK(has(out, "image may be flashed again;"));
+  CHECK_FALSE(has(out, "failed its health check"));
+  CHECK(unit.world.store.store.badCount() == 0);
+  MESSAGE("rak update with a page that would not take:\n" << out);
 }
 
 TEST_CASE("a flash that failed says so at the console, whether anything was written and whether the core was halted") {
@@ -605,6 +628,7 @@ TEST_CASE("a flash that failed says so at the console, whether anything was writ
   INFO(after);
   CHECK(has(after, "nothing was written: the chip is as this flash found it; the core was halted "
                    "and started again"));
+  MESSAGE("rak flash-test, the scan:" << NL << out << NL << "and after the halt:" << NL << after);
 }
 
 TEST_CASE("the detail's thirty-two bits, and an entry from before this task reading as it did") {

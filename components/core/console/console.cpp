@@ -1960,8 +1960,13 @@ void Console::printFlashResult(const char* what, const flasher::Result& r) {
   } else {
     char line[160];
     describeFailure(line, sizeof line, what, r.nrf);
-    printf("%s - failed while %s%s%s\n", line, flasher::describe(r.step), r.why[0] != 0 ? ": " : "",
-           r.why[0] != 0 ? r.why : "");
+    // Four calls and not one format: the nRF52 layer's phrase, the step's and `why` together can
+    // pass printf's 200-byte buffer, and a truncated line loses its newline and runs into the next
+    // one (task p18-05 made that visible; `print()` writes straight through).
+    print(line);
+    printf(" - failed while %s", flasher::describe(r.step));
+    if (r.why[0] != 0) printf(": %s", r.why);
+    print("\n");
   }
   // **What the flash did to the chip** (task p18-05, deliverable 1): read off what the flasher
   // did and not off the step it stopped at, so a person at the console knows whether anything has
