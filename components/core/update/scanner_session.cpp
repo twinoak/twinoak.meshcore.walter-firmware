@@ -109,8 +109,7 @@ const char* describe(Stage stage) {
     case Stage::kRestored: return "the repeater is back and proved: the session is closed";
     case Stage::kStuck: return "the golden image did not come back: the session is still open";
     case Stage::kRefused:
-      return "the scanner image's flash never began: the radio was not touched and the session is "
-             "closed";
+      return "the scanner image's flash never began: nothing was touched";
   }
   return "?";
 }
@@ -127,6 +126,7 @@ const char* word(Refusal refusal) {
     case Refusal::kProgram: return "program";
     case Refusal::kNoMemory: return "noMemory";
     case Refusal::kJournal: return "journal";
+    case Refusal::kFlash: return "flash";
   }
   return "?";
 }
@@ -135,22 +135,21 @@ const char* describe(Refusal refusal) {
   switch (refusal) {
     case Refusal::kNone: return "nothing";
     case Refusal::kBattery:
-      return "the battery: it could not be read, is below the update threshold, or is falling fast";
+      return "the battery: unreadable, below the threshold, or falling fast";
     case Refusal::kLink: return "the radio does not answer, and nobody has said why";
     case Refusal::kClock:
-      return "this board does not know what time it is: a scanner would be given no clock";
+      return "this board does not know what time it is: no clock to give";
     case Refusal::kInProgress:
-      return "something is already in the air: a radio update is journalled unfinished, or this "
-             "firmware is on trial (S-7)";
+      return "a radio update is journalled unfinished, or this firmware is on trial";
     case Refusal::kNoGolden: return "there is no golden image to come back to";
     case Refusal::kNoScanner:
-      return "there is no scanner image this slot may hold: none stored, one that does not "
-             "verify, or one of another board or band";
+      return "no scanner image this slot may hold: none, bad, or another board";
     case Refusal::kProgram: return "the program is not one this firmware will run";
     case Refusal::kNoMemory:
       return "the heap has no block for a step's lines: nothing was touched";
     case Refusal::kJournal:
-      return "the journal would not take the entry that opens a session: nothing was touched";
+      return "the journal would not take the entry that opens a session";
+    case Refusal::kFlash: return "the flash did not begin, twice; the radio is as it was";
   }
   return "?";
 }
@@ -593,7 +592,12 @@ SessionStep ScannerSession::enter(Stage next, const char* note, const char* comm
   if (next == Stage::kRestored) status_.ending = Ending::kRestored;
   // Task p18-05: the scanner's flash never began, so nothing was touched - the one ending besides
   // `restored` that closes a session.
-  if (next == Stage::kRefused) status_.ending = Ending::kRefused;
+  // **And it is a refusal with a word** (task p18-06): the result of a session that ends here says
+  // `flash`, and a `refused` result with no word is one meshmaster.dk throws away whole.
+  if (next == Stage::kRefused) {
+    status_.ending = Ending::kRefused;
+    status_.refusal = Refusal::kFlash;
+  }
   if (next == Stage::kStuck) {
     status_.ending = Ending::kStuck;
     stuck_ = true;
@@ -835,7 +839,12 @@ SessionStep ScannerSession::stepOnce() {
         // Task p18-05: the one line of the update machine's story a session's caller has to hear -
         // the flash did not begin and is being made once more. Passed through without a stage of
         // this session's own, because the update machine has journalled it already.
-        if (s.reason == Reason::kFlashOnceMore) {
+        //
+        // **And the second try's own failure with it** (task p18-06, deliverable 4): the first
+        // try's line said what failed and the second's said nothing at all, so a person reading
+        // the job could not tell whether the two tries had failed the same way. The transition to
+        // `refused` follows on the next call and carries the ending's own sentence.
+        if (s.reason == Reason::kFlashOnceMore || s.reason == Reason::kFlashDidNotBegin) {
           r.said = s.reason;
           r.detail = s.detail;
         }

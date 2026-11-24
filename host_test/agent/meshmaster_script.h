@@ -176,6 +176,26 @@ class MeshMasterScript {
     lost_.push_back(std::make_pair(idOf(job), job));
     lease_until_ms[idOf(job)] = clock_.nowMs() + static_cast<std::uint64_t>(kClaimLeaseSeconds) * 1000u;
   }
+  // **The door's own rule about a refusal** (task p18-06, deliverable 7). meshmaster.dk holds a
+  // session's result to `NoiseScopeSessionContract.Violation`, and two of its checks are about the
+  // refusal: a `refused` session with **no** word is refused whole (*A refused session names which
+  // precondition stopped it*), and so is one whose word is not in `NoiseScopeRefusals.All`. Both
+  // are a 400, and nothing of the result is kept. Task p18-05's tests ran against a script that
+  // did not hold either, which is how a firmware that sent no word at all was green here and
+  // silent on the unit.
+  //
+  // The list is what the server has **after** its task 260 - the eight it had and the three of
+  // that task - because that is the server this firmware is written for. A test that wants the
+  // server as it is deployed today says so with `sessionRefusalsAsDeployed()`.
+  void sessionRefusals(const std::vector<std::string>& words) { session_refusals_ = words; }
+  void sessionRefusalsAsDeployed() {
+    session_refusals_ = {"battery", "link",    "clock",     "inProgress",
+                         "noGolden", "noScanner", "program", "noMemory"};
+  }
+  // Results this server refused because the refusal broke that rule, and the sentence of the last.
+  int results_refused_for_the_refusal = 0;
+  std::string last_violation;
+
   // The next `count` result posts answer `status` (a server that takes everything but results).
   void failResults(int status, int count) {
     result_fail_status_ = status;
@@ -351,6 +371,44 @@ class MeshMasterScript {
     }
     return ids;
   }
+  // What is wrong with this result's refusal, in the door's own sentence; "" when nothing is (or
+  // when the body is not a session's result at all). `NoiseScopeSessionContract.Violation`'s two
+  // checks about the refusal, in the order it makes them.
+  std::string sessionRefusalViolation(const std::string& body) const {
+    // From `"data":` on, so that the report's own `outcome` - the library's `ok`/`failed` - is not
+    // read as the session's.
+    const std::size_t at = body.find("\"data\":");
+    if (at == std::string::npos) return "";
+    const std::string data = body.substr(at);
+    if (data.find("\"linesUnanswered\"") == std::string::npos) return "";
+    const std::string refusal = textOf(data, "refusal");
+    if (!refusal.empty()) {
+      for (const std::string& known : session_refusals_) {
+        if (known == refusal) return "";
+      }
+      std::string all;
+      for (std::size_t i = 0; i < session_refusals_.size(); ++i) {
+        all += (i == 0 ? "" : ", ") + session_refusals_[i];
+      }
+      return "A refusal is one of " + all + ", and '" + refusal + "' is none of them.";
+    }
+    if (textOf(data, "outcome") == "refused") {
+      return "A refused session names which precondition stopped it.";
+    }
+    return "";
+  }
+
+  // One string member of a JSON object, by name; "" when it is not there. `clientIdOf`'s reader,
+  // for any key (this header is included before the bench's own reader is declared).
+  static std::string textOf(const std::string& json, const char* key) {
+    const std::string needle = std::string("\"") + key + "\":\"";
+    const std::size_t at = json.find(needle);
+    if (at == std::string::npos) return "";
+    const std::size_t begin = at + needle.size();
+    const std::size_t end = json.find('"', begin);
+    return end == std::string::npos ? std::string() : json.substr(begin, end - begin);
+  }
+
   // One job's `type`, as the claim's JSON carries it.
   static std::string typeOf(const std::string& job) {
     const std::size_t at = job.find("\"type\":\"");
@@ -559,6 +617,20 @@ class MeshMasterScript {
           reply->body = "{\"title\":\"scripted\"}";
           return true;
         }
+        // **The contract, before anything is kept** (task p18-06): the door reads the job's type
+        // and holds a session's result to `NoiseScopeSessionContract`. This script has no job row
+        // to read a type off for a result posted from the journal, so what it reads is the one
+        // member only a session's result carries - `linesUnanswered` - and it holds the two
+        // checks that are about the refusal. A result it refuses is a 400 and nothing of it is
+        // kept, as on the server.
+        if (std::string violation = sessionRefusalViolation(request.body); !violation.empty()) {
+          ++results_refused_for_the_refusal;
+          last_violation = violation;
+          reply->status = 400;
+          reply->body = "{\"title\":\"Request not accepted\",\"errors\":{\"refusal\":[\"" +
+                        violation + "\"]}}";
+          return true;
+        }
         const std::uint64_t now = clock_.nowMs();
         const std::uint64_t lease = lease_until_ms.count(job_id) != 0 ? lease_until_ms[job_id] : 0;
         const bool late = lease != 0 && now > lease;
@@ -657,6 +729,10 @@ class MeshMasterScript {
   std::vector<std::string> silent_routes_;
   int result_fail_status_ = 503;
   int result_fail_count_ = 0;
+  // The words `NoiseScopeRefusals.All` has after meshmaster.dk's task 260.
+  std::vector<std::string> session_refusals_{"battery", "link",      "clock",    "inProgress",
+                                             "noGolden", "noScanner", "program",  "noMemory",
+                                             "flash",   "journal"};
   // Task p15-04: how many more observation posts are stored and then left unanswered, and what
   // this server has stored.
   int obs_answer_lost_ = 0;

@@ -87,17 +87,17 @@ const char* describe(Reason reason) {
     case Reason::kNoProfile: return "no board profile for the slot";
     case Reason::kNoCandidate: return "the store holds no image to flash";
     case Reason::kImageUnreadable: return "the stored image does not verify against its record";
-    case Reason::kOnBadList: return "this image failed a health check once and is never tried again";
+    case Reason::kOnBadList: return "this image failed a health check once: never tried again";
     case Reason::kWrongRole: return "the image's role is not one this slot may hold";
     case Reason::kWrongBoard: return "the image's board is not the board in this slot";
     case Reason::kWrongBand: return "the image's band is not the golden image's";
-    case Reason::kRadioUpdateInProgress: return "the journal says a radio update is in progress: it is resumed, not restarted (S-7)";
-    case Reason::kSelfUpdateUnconfirmed: return "the Walter's own update is unconfirmed: never both at once (S-7)";
+    case Reason::kRadioUpdateInProgress: return "a radio update is in progress: resumed, not restarted";
+    case Reason::kSelfUpdateUnconfirmed: return "the Walter's own update is unconfirmed: never both at once";
     case Reason::kLinkDown: return "the link is down and nobody has said why";
     case Reason::kBatteryUnknown: return "the battery could not be read";
     case Reason::kBatteryLow: return "the battery is below the update threshold";
     case Reason::kBatteryFalling: return "the battery is falling fast";
-    case Reason::kNoGolden: return "there is no golden image to return to (a first install needs saying so)";
+    case Reason::kNoGolden: return "there is no golden image to return to (say first install)";
     case Reason::kBusy: return "an update is already running";
     case Reason::kFlashFailed: return "the flasher did not finish";
     case Reason::kNoBoot: return "no HELLO inside the boot window";
@@ -114,17 +114,36 @@ const char* describe(Reason reason) {
     case Reason::kJournal: return "the journal could not be written";
     case Reason::kStore: return "the image store refused";
     case Reason::kNoImageToReturnTo: return "no image to return to";
-    case Reason::kIdentityLost: return "the radio refuses: its identity is lost, and no image mends that";
+    case Reason::kIdentityLost: return "the radio refuses: its identity is lost; no image mends it";
     case Reason::kStartedThroughPort:
-      return "the pulse reached nothing: the core was still halted, and the debug port started the image";
+      return "the core was still halted: the debug port started the image";
     case Reason::kPulseStarted: return "the pulse started the image: it is the image that is quiet";
     case Reason::kLookFailed: return "the chip could not be asked what the pulse did";
     case Reason::kAfterTheWatchdog: return "the proof begins at the boot after the scanner's watchdog";
     case Reason::kWatchdogTimePassed:
-      return "the proof begins: the scanner's watchdog has had its longest time and reset nothing";
+      return "the proof begins: the watchdog's longest time passed";
     case Reason::kFlashOnceMore: return "the flash did not begin: once more";
     case Reason::kFlashDidNotBegin:
-      return "the flash did not begin, twice: nothing was written and the radio is as it was";
+      return "the flash did not begin, twice; the radio is as it was";
+  }
+  return "?";
+}
+
+// **One word, for a line that has to fit** (task p18-06): a journal note is 71 characters and a
+// rolling-back line is a reason *and* the step it failed at, so the step goes in as the word it is
+// known by and not as its phrase. The phrase below is for a person at the console, where the room
+// is a line of the port.
+const char* name(ProveStep step) {
+  switch (step) {
+    case ProveStep::kNone: return "-";
+    case ProveStep::kHello: return "hello";
+    case ProveStep::kTime: return "time";
+    case ProveStep::kStatus: return "status";
+    case ProveStep::kPing: return "ping";
+    case ProveStep::kPower: return "power";
+    case ProveStep::kScanner: return "scanner";
+    case ProveStep::kPassed: return "passed";
+    case ProveStep::kIdentity: return "identity";
   }
   return "?";
 }

@@ -79,13 +79,13 @@ TEST_CASE("rak update on a broken candidate: the rollback printed, the bad list,
   CHECK(has(text, "the golden image 0.3.0+golden0 is back and proved"));
   CHECK(has(w.runLine("image bad"), "image bad: 1 of at most 8 hashes"));
   CHECK(has(w.runLine("rak hello"), "firmware 0.3.0+golden0"));
-  CHECK(has(w.runLine("rak update"), "error: rak update: refused at check: this image failed a health check once and is never tried again"));
+  CHECK(has(w.runLine("rak update"), "error: rak update: refused at check: this image failed a health check once: never tried again"));
 }
 
 TEST_CASE("rak update --first-install on a unit with no golden image, and rak update refused without it") {
   ReadyUnit unit(true, false);
   bench::Walter& w = *unit.walter;
-  CHECK(has(w.runLine("rak update"), "refused at check: there is no golden image to return to (a first install needs saying so)"));
+  CHECK(has(w.runLine("rak update"), "refused at check: there is no golden image to return to (say first install)"));
   const std::string text = w.runLine("rak update --first-install");
   INFO(text);
   CHECK(has(text, "update: committing -> done"));

@@ -8,8 +8,9 @@
 // characters a note holds.
 //
 // And the other half: an apply and a session whose flash never began end `refused` - the contract's
-// own word, with no refusal word under it, because the server has none for a debug port that gave
-// up - with the radio exactly as the job found it.
+// own word - with the radio exactly as the job found it. **And with `flash` under it** (task
+// p18-06): p18-05 sent no refusal word at all, and meshmaster.dk's door turns a `refused` session
+// without one away whole, which is why session 5 of 24 November never reported.
 #include <doctest.h>
 
 #include <string>
@@ -100,7 +101,7 @@ TEST_CASE("an apply whose flash wrote nothing: the job's page says the flash did
   MESSAGE("the job's lines: " << notesText(notes));
 }
 
-TEST_CASE("an apply whose flash never begins: refused, with no word the server has not got, and the radio as the job found it") {
+TEST_CASE("an apply whose flash never begins: refused with `flash`, and the radio as the job found it") {
   AgentBench bench;
   const Candidate golden("update-golden");
   const Candidate candidate("update-candidate");
@@ -115,11 +116,11 @@ TEST_CASE("an apply whose flash never begins: refused, with no word the server h
   REQUIRE_FALSE(result.empty());
   const std::string data = bench::objectOf(result, "data");
   INFO(data);
-  // `refused` is one of the contract's four words and this task adds none: what failed is in the
-  // journal's own lines, which is where a debug port that gave up belongs.
+  // `refused` is one of the contract's four words, and `flash` is the refusal's - the word
+  // meshmaster.dk's task 260 adds to `FirmwareRefusals` for exactly this (task p18-06).
   CHECK(bench::member(data, "outcome") == "refused");
   CHECK(bench::member(result, "outcome") == "failed");
-  CHECK(bench::member(data, "refusal").empty());
+  CHECK(bench::member(data, "refusal") == "flash");
   const std::vector<std::string> notes = notesOf(bench::objectOf(data, "journal"));
   INFO(notesText(notes));
   CHECK(anyNoteHas(notes, "scan: swd wait-timeout at 0x026000; nothing written"));
@@ -150,10 +151,13 @@ TEST_CASE("a session whose scanner flash never begins: refused, no outage, and t
   const std::string data = bench::objectOf(result, "data");
   INFO(data);
   CHECK(bench::member(data, "outcome") == "refused");
-  CHECK(bench::member(data, "refusal").empty());
+  CHECK(bench::member(data, "refusal") == "flash");
   const std::vector<std::string> notes = notesOf(bench::objectOf(data, "journal"));
   INFO(notesText(notes));
   CHECK(anyNoteHas(notes, "scan: swd wait-timeout at 0x026000; nothing written"));
+  // The second try's own line, and the ending's own sentence after it (task p18-06).
+  CHECK(anyNoteHas(notes, "2nd try scan: swd wait-timeout at 0x026000; nothing written"));
+  CHECK(anyNoteHas(notes, "the flash did not begin, twice; the radio is as it was"));
 
   // Nothing was flashed, the repeater never left the mesh, and the scanner image is on no bad
   // list - so the next session the server queues can run.

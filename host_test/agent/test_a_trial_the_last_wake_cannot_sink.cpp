@@ -308,7 +308,7 @@ TEST_CASE("the owed result of a rollback is not held up either: the old image's 
   const std::string reason = bench::member(data, "reason");
   INFO(reason);
   CHECK(has(reason, "rolled back: the backend was not reached inside the trial window"));
-  CHECK(has(reason, "heartbeat(s) tried in "));
+  CHECK(has(reason, "heartbeat(s) in "));
   CHECK(has(reason, "the last: the server was not reached"));
   CHECK(has(bench::objectOf(data, "journal"), "\"step\":\"uplink\""));
   CHECK_FALSE(bench.half().firmware.resultOwed());

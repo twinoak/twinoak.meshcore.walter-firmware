@@ -137,7 +137,10 @@ TEST_CASE("Bellevue as read: UICR says the pin reset is enabled, the line is dea
   const std::string status = w.runLine("rak update status");
   INFO(status);
   CHECK(status.find("started by a pulse on the reset line; nRESET is on P0.18") != std::string::npos);
-  CHECK(status.find("the pulse reached nothing") != std::string::npos);
+  // Task p18-06: *the pulse reached nothing* is implied by the rest, and the sentence had to
+  // fit a journal note whole.
+  CHECK(status.find("the core was still halted: the debug port started the image") !=
+        std::string::npos);
 
   // What the machine says about it, and what the unit now remembers of its line: UICR read and
   // enabled, and a pulse seen to restart nothing.
