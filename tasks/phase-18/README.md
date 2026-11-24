@@ -22,11 +22,15 @@ session ended `stuck` although the repeater was back.
   flash failed before it had written anything, the whole golden image was flashed back for it,
   and the scanner image went on the bad list (`FOLLOWUPS.md`, *The second session, and the
   first flashes by the new exit*). The reset line itself turned out to work on that unit.
+- **A session that was refused never reported** (24 November, 0.1.12, session 5): two flashes
+  that wrote nothing, the ending 05 built, and a result meshmaster.dk turned away because it
+  had no `refusal` word. The job read *never reported a result* an hour later
+  (`FOLLOWUPS.md`, *Sessions 4 and 5*).
 
 **What Thomas asked for.** That the Walter takes jobs until none are left or the battery says
 sleep; and that an offer and its apply can be one visit.
 
-**What this pile builds.** 01, 03, 04 and 05 are this repository's own. 02 turns on what the
+**What this pile builds.** 01, 03, 04, 05 and 06 are this repository's own. 02 turns on what the
 library brings, and waits for it: the exit-node firmware's pile 1.20 (a wake claims again; a
 lost claim is asked again), its release, this repository's `upstream` workflow and the sync
 task that follows. meshmaster.dk's half is its pile 4.47.
@@ -48,6 +52,10 @@ task that follows. meshmaster.dk's half is its pile 4.47.
 - **In 05, the bad list is for an image that is wrong or that ran and failed.** The
   specification's *never tried again* stands under the health check; a flash the debug port
   gave up on is the unit's fault and its image may be flashed again.
+- **In 06, the word is `flash`**, for an apply and a session, and no line of a journal is cut:
+  a sentence too long for its line is written shorter.
+- **In 06, a result the server turns away is settled at once**, not posted at every wake: the
+  same body gets the same answer.
 
 **Not on the board.** No session opens a port. No release: Thomas presses the button.
 
@@ -60,6 +68,7 @@ task that follows. meshmaster.dk's half is its pile 4.47.
 | 03 | [a-step-is-listened-to](03-a-step-is-listened-to.md) | — | no call to the server between a step's command and its end; the port's ring sized by the baud rate; bytes lost at the port counted and said; the simulated port has the ring |
 | 04 | [an-image-is-started-either-way](04-an-image-is-started-either-way.md) | 01 | what UICR says of the reset pin, read at every flash; no pulse where it cannot work; a pulse that did not work found by the core's state and the image started through the debug port; the proof begun after a scanner's watchdog; the unit says what its reset line does; the supervisor's second rung says whether anything restarted |
 | 05 | [a-flash-that-wrote-nothing](05-a-flash-that-wrote-nothing.md) | 04 | a failed flash says its step, its status and whether the chip was changed, in the journal and to the server; a flash that wrote nothing is made once more; twice ends the job with the radio as it was, no flash back; the bad list only for an image's own fault or its proof's; every wait before the halt read against a chip outside debug interface mode |
+| 06 | [a-refused-session-reports](06-a-refused-session-reports.md) | 05 | `flash` and `journal` as a refusal's words, and a test that counts every refused ending; each failure its own line and no journal line ever cut; a session reported from the journal as what it was; a result the server turns away settled, not owed for ever; the script of the server holds the server's rule |
 
 ```powershell
 .\tasks\run-all.ps1 -Phase '18' -To 01
@@ -81,12 +90,18 @@ That runs 02, passes 03, which has landed, and runs 04. 04 waits for nothing but
 .\tasks\run-all.ps1 -Phase '18' -From 05
 ```
 
+06 was written on 24 November, after 05 had been released and met the server:
+
+```powershell
+.\tasks\run-all.ps1 -Phase '18' -From 06
+```
+
 **Not the whole pile before the sync.** 02 stops when the library has not arrived and writes no
 report, the driver stops there, and 03 behind it does not start.
 
 ## Models
 
-- **Opus**: 01, 02, 03, 04, 05.
+- **Opus**: 01, 02, 03, 04, 05, 06.
 
 ## Afterwards (Thomas)
 
@@ -104,6 +119,9 @@ report, the driver stops there, and 03 behind it does not start.
   of a radio image there. Then *Fetch a scanner image* (0.1.7's; the 0.1.6 one is on the unit's
   bad list) and a session with `20 hist 869.418 869.818 25` typed in. Its journal says whether
   a flash had to be made twice, and at which step.
+- **After 06:** release and update the Walter on the unit. meshmaster.dk's pile 4.48 is the
+  server's half and neither waits for the other: deployed first, it already takes what 0.1.12
+  sends. Why the first try of a scanner's flash fails every time is not in this pile.
 - **The bench, when there is one:** the tasks' lines in `docs/bench.md`.
 
 ## Follow-ups
