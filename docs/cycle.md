@@ -683,8 +683,19 @@ the agent on the other side of that line (§13), so each of these now lives **ab
   says `restored`, `refused` or `stuck`. The seam sees it as the one ask it has words for —
   `update the radio`, because that is what two passes of the radio's update machine are — and
   S-7's one-update-step rule holds it to one a wake. A board that restarts in the middle owes the
-  result: the wake that ends the session posts it from the journal
-  ([`update.md`](update.md), *A session as a job*).
+  result: the wake that ends the session posts it from the journal, and what it says is what the
+  journal's last stage was — `refused` with its word for a session that was refused, and `restored`
+  only for one the golden image came back from (task p18-06;
+  [`update.md`](update.md), *A session as a job*).
+- **A result is owed until the server has had it, and not for ever** (task p18-06). An apply's and a
+  session's result is journalled as **owed** before the thing that may cost this board its RAM, and
+  every wake that reaches the server posts what is owed. The one answer that ends the owing without
+  the result being taken is the door's verdict on the **body**: a 400, a 404 or a 409, which the
+  same bytes would be answered with at every wake from now on. Then the entry is settled — the
+  journal keeps the status, `agent jobs` counts it, and no later wake posts it again. A 401, a 403,
+  a 429, a 5xx and no answer at all leave it owed, because each of them can be different at the
+  next wake. On 24 November 2026 a session's result was refused for its shape and nothing on the
+  unit said so; the journal says it now.
 - **Partial progress and lease extension.** `agent::FirmwareJobs` (task p4-05) posts `progress`
   and asks `extend` as a `twinoak.fw.offer` downloads in resumable ranges; a wake that runs out of
   download budget stops mid-image, posts no result, and the next wake resumes — into the

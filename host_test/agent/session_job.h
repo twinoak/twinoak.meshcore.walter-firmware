@@ -158,6 +158,14 @@ struct SessionJob : AgentBench {
   // A session left open in the journal at `stage`, as a reset leaves it (the session object of
   // that life is gone and the entry is all there is), and the job that owes its result.
   void anOpenSessionOwedBy(long long job_id, sj_upd::Stage stage, std::uint8_t steps) {
+    aSessionOwedBy(job_id, stage, steps, true);
+  }
+
+  // The same for a stage that **closes** a session (task p18-06): `refused` is one, and a result
+  // owed by a session that closed is exactly the case a restart between the ending and the post
+  // leaves behind - the journal says what happened and the entry says who is owed.
+  void aSessionOwedBy(long long job_id, sj_upd::Stage stage, std::uint8_t steps,
+                      bool expect_open = false) {
     sj_upd::SessionPayload p;
     p.stage = stage;
     p.step = stage == sj_upd::Stage::kStep ? 1 : 0;
@@ -179,7 +187,9 @@ struct SessionJob : AgentBench {
                                    sj_upd::encode(p, bytes)) == sj_upd::JournalError::kNone);
     sj_upd::Mark mark;
     REQUIRE(sj_upd::readMark(walter->journal, &mark));
-    REQUIRE(mark.open);
+    REQUIRE(mark.found);
+    REQUIRE(mark.stage == stage);
+    if (expect_open) REQUIRE(mark.open);
     // And the entry the result is owed by, which a job writes before the scanner goes on.
     agent::JobEntry owed;
     owed.job_id = job_id;

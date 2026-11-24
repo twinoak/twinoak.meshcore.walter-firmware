@@ -48,6 +48,11 @@ class SimFlash final : public interfaces::FlashRegion {
   // Told after every write and erase that completed (task p2-03: the update's reset-at-every-
   // journal-entry loop watches the journal's writes go by and pulls the plug after one).
   std::function<void(const FlashOp&)> on_op;
+  // **A flash that will not be written, and reads as it always did** (task p18-06): every write
+  // and erase answers false, nothing is torn, and the power is still on. It is a journal that
+  // will take no entry - the one way a session is refused with `journal` - where `powerOff()`
+  // takes the reads with it and is a different fault altogether.
+  bool refuse_writes = false;
 
   // The power back: the contents as they were when it went, the countdown cleared. What a Walter
   // that reset in the middle sees.
@@ -77,7 +82,7 @@ class SimFlash final : public interfaces::FlashRegion {
   }
 
   bool write(std::uint32_t offset, const void* data, std::uint32_t count) override {
-    if (!powered_ || !inside(offset, count) || data == nullptr) return false;
+    if (!powered_ || refuse_writes || !inside(offset, count) || data == nullptr) return false;
     const bool cut = countdown();
     // Half the bytes when the power goes in the middle of a write, and the rest never arrive.
     const std::uint32_t n = cut ? count / 2 : count;
@@ -93,7 +98,7 @@ class SimFlash final : public interfaces::FlashRegion {
   }
 
   bool erase(std::uint32_t offset, std::uint32_t count) override {
-    if (!powered_ || !inside(offset, count)) return false;
+    if (!powered_ || refuse_writes || !inside(offset, count)) return false;
     if (offset % sector_ != 0 || count % sector_ != 0) return false;
     const bool cut = countdown();
     // Half of the first sector when the power goes in the middle of an erase; the sectors after

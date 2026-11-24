@@ -158,6 +158,19 @@ class ResultGate {
   // that claims more than once would be handed each of them back, mid-flight, by its own next
   // claim. Naming them here is how they are not.
   //
+  // **What the server's door said about a result it would not take** (task p18-06): a status that
+  // is its verdict on the **body** - a 400, a 404 or a 409 from meshmaster.dk's
+  // `AgentProtocolService.ResultAsync` - and so the answer the same bytes would get at every wake
+  // from now on. A 401, a 429, a 5xx or no answer at all is not this: those are owed as they were.
+  // The gate settles whatever it holds the job by, so that the result is not owed for ever; the
+  // uplink posts nothing more of that job's result in this wake either.
+  //
+  // A default of nothing, so that a gate which only withholds is unchanged.
+  virtual void resultNotTaken(long long jobId, int status) {
+    (void)jobId;
+    (void)status;
+  }
+
   // A default of none, so that a gate which only withholds - every one of them but the firmware
   // jobs - is unchanged.
   virtual int holdsOutsideTheBuffer(long long* out, int max) const {
@@ -185,6 +198,9 @@ struct UplinkCounters {
   std::uint32_t payloads_kept = 0;   // extension payloads kept out of claims (task p4-05)
   std::uint32_t payloads_too_long = 0;  // ... and ones that did not fit kExtensionPayloadBytes
   std::uint32_t withheld = 0;        // results not posted because the extension left the job leased
+  // A result the door would not take: its verdict on the body, which the same bytes would be
+  // answered with for ever (task p18-06). Not `denied` and not `later`: both of those are owed.
+  std::uint32_t results_not_taken = 0;
 };
 
 class ModemUplink final : public mm::IUplink {
@@ -327,6 +343,12 @@ class ModemUplink final : public mm::IUplink {
   bool claimJobs(mm::ClaimedJob* jobs, int max, int& count, int transactionsLeft,
                  const long long* holding, int holdingCount) override;
   bool postJobResult(long long jobId, const char* body, std::size_t len, bool& jobsWaiting) override;
+  // **Whether a status is the server's verdict on the body** (task p18-06): a 400, a 404 or a 409
+  // from the result door, which the same bytes would be answered with at every wake. Static and
+  // public, so that a test holds the rule rather than a copy of it.
+  static bool resultIsTheServersVerdict(int status);
+  // Whether this wake has already had such an answer for this job's result.
+  bool resultWasRefused(long long jobId) const;
   bool extendLease(long long jobId, int seconds, std::uint32_t& leaseUntil) override;
   bool postProgress(long long jobId, const char* body, std::size_t len) override;
 
@@ -392,6 +414,8 @@ class ModemUplink final : public mm::IUplink {
   // firmware holds outside its buffer that are not already in it (`ResultGate` above). `out` is
   // `mm::kClaimHoldingMax` long, which is as many as the library's writer will write.
   int holdingForTheClaim(const long long* holding, int holdingCount, long long* out) const;
+  // One id of the results this wake has had the door's verdict on (task p18-06).
+  void rememberRefusedResult(long long jobId);
   void wipeSecret();
   void wipeReply();
   // The `twinoak.*` jobs' payloads out of a claim's bytes, before the library parses them in
@@ -422,6 +446,15 @@ class ModemUplink final : public mm::IUplink {
   core::cycle::WakeGuard* guard_ = nullptr;
   KeptPayload payloads_[mm::kClaimMax];
   int payload_count_ = 0;
+  // **The results this wake has had a verdict on** (task p18-06): the ids, so that the library's
+  // own buffer - which keeps a result it was not told was taken and posts it again at the next
+  // flush - is told *taken* for a body the server has already refused. Four, which is more than
+  // the jobs of a wake; past that the oldest is forgotten and the body is posted once more, which
+  // is a wasted call and nothing worse. Gone with the sleep, as the library's buffer is; what
+  // carries the verdict over a boot is the journal entry the gate writes.
+  static constexpr int kRefusedResults = 4;
+  long long refused_results_[kRefusedResults] = {};
+  int refused_count_ = 0;
 
   // The one buffer of this object the token is copied into: `Bearer <token>`, wiped before a
   // call returns. A member and not a stack buffer, so that a test can read it back - and because

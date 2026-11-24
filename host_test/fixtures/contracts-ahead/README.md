@@ -22,6 +22,7 @@ soon as that file exists.
 | `NoiseScopeLinesReply.json` | what a post of a scanner's lines is answered with — how many the server holds, and whether its room is used up | meshmaster.dk's 236 | the same |
 | `NoiseScopeSessionResult.json` | the session's result — the outcome, the scanner's version, a row per step, the two counts, the journal, the refusal | meshmaster.dk's 236 | the same |
 | `NoiseScopeStepResult.json` | one step's row of that result — how it ended, and what it handed to its posts | meshmaster.dk's 236 | the same |
+| `NoiseScopeSessionResultRefused.json` | the session of 24 November as it should have reported — `refused` with `flash`, and a journal of five whole lines | meshmaster.dk's 260 | written here from `tasks/phase-18/06-a-refused-session-reports.md`'s *The contract*, which is task 260's own block |
 
 `tasks/phase-13/FOLLOWUPS.md` carries the item that compares the first two byte for byte once task
 216 is deployed, `tasks/phase-14/FOLLOWUPS.md` the same for the third once task 227 is, and
@@ -32,4 +33,12 @@ every other fixture is.
 The five session files are **the task's own five lines**, read at run time:
 `host_test/agent/test_a_session_is_a_job.cpp` collects every line of
 `tasks/phase-16/04-a-session-is-a-job.md` that begins a JSON object and holds each file against
-it, so a byte that drifts in either is a failing test.
+it, so a byte that drifts in either is a failing test. The sixth,
+`NoiseScopeSessionResultRefused.json`, is held the same way against
+`tasks/phase-18/06-a-refused-session-reports.md` by
+`host_test/agent/test_a_refused_session_reports.cpp`, and that test also holds **what the firmware
+writes** against it: the fixture is not a transcription of a shape, it is the result of the session
+of 24 November.
+
+The sixth is replaced by the server's own file - not merely compared with it - once
+meshmaster.dk's task 260 is deployed, as the first line of this file asks of every file here.

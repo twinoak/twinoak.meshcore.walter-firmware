@@ -296,9 +296,11 @@ bool readSessionPayload(const char* payload, std::size_t len, core::update::Prog
 enum class ApplyOutcome : std::uint8_t { kNone = 0, kCommitted = 1, kRolledBack = 2, kRefused = 3, kStuck = 4 };
 const char* name(ApplyOutcome outcome);
 
-// `FirmwareRefusals`: the seven preconditions the server has a word for. A precondition without
+// `FirmwareRefusals`: the eight preconditions the server has a word for. A precondition without
 // one (no candidate, the wrong role or board, an unreadable image, the candidate another file than
-// the one offered) is `refused` with no word and the reason in the journal's `check` line.
+// the one offered) is `refused` with no word and the reason in the journal's `check` line - and
+// `host_test/agent/test_every_refusal_has_a_word.cpp` is where the ones with none are named, one
+// by one, so that a refusal added later is in neither list and fails a test rather than a unit.
 enum class Refusal : std::uint8_t {
   kNone = 0,
   kBattery = 1,
@@ -308,6 +310,10 @@ enum class Refusal : std::uint8_t {
   kNoGolden = 5,
   kBadList = 6,
   kOrder = 7,
+  // **The flash did not begin** (task p18-06): the debug port gave up twice before anything was
+  // written, and the radio is as the job found it. `flash` in `FirmwareRefusals` and in
+  // `NoiseScopeRefusals` alike (meshmaster.dk's task 260).
+  kFlash = 8,
 };
 const char* name(Refusal refusal);
 // The machines' own reasons, in the server's words where there is one.
@@ -333,8 +339,23 @@ const char* stepWord(core::update::State state);
 //   12  at_epoch    u32   0 when the unit had no time of day
 //   16  hash16      16 B  the first sixteen bytes of the image's SHA-256
 //   32  to_version  12 B  `X.Y.Z` the slot ran afterwards (core/update/self_update.h's short form)
-//   44  spare       4 B
-enum class JobEntryState : std::uint8_t { kNone = 0, kOwed = 1, kPosted = 2, kEnded = 3 };
+//   44  steps       u8    a session's payload had this many steps
+//   45  spare       1 B
+//   46  http        u16   kNotTaken: the status the server answered the result with (0 otherwise)
+//
+// **`kNotTaken` is how a result stops being owed** (task p18-06). The server's door answers a
+// result whose body it will not take with a 400, a 404 or a 409 - its verdict on the body, which
+// the same body will get again at every wake for ever - and this entry is what says the verdict
+// was heard: it is written after the owed one, so `resultOwed()` (which reads the newest agent
+// entry) finds it and nothing is posted again, and the status it carries is the one answer the
+// journal keeps of it.
+enum class JobEntryState : std::uint8_t {
+  kNone = 0,
+  kOwed = 1,
+  kPosted = 2,
+  kEnded = 3,
+  kNotTaken = 4,
+};
 
 struct JobEntry {
   long long job_id = 0;
@@ -349,6 +370,9 @@ struct JobEntry {
   // posted after a restart has no payload to count them from, and the contract wants a row for
   // every step. 0 on an apply's entry and on every entry written before that task.
   std::uint8_t steps = 0;
+  // The status the server answered a result with, on a `kNotTaken` entry and nowhere else
+  // (task p18-06). 0 on every other entry and on every entry written before that task.
+  std::uint16_t http_status = 0;
 };
 
 // The `product` byte's three values, for the entries this object writes and reads back.
@@ -445,6 +469,11 @@ struct FirmwareJobCounters {
   // only thing holding the rule - and if the loop's shape is ever broken, no byte goes out
   // mid-step and this number says it did not. Every session test checks it.
   std::uint32_t calls_in_step = 0;
+  // **Results the server's door would not take** (task p18-06): a 400, a 404 or a 409 on the body,
+  // which is a verdict the same bytes would get again for ever. The entry is settled when one
+  // comes and the journal keeps the status; this is how many times it has happened. An eighth
+  // member after the `std::uint64_t` above, which is where the padding already was.
+  std::uint32_t results_not_taken = 0;
 };
 
 class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
@@ -519,6 +548,12 @@ class FirmwareJobs final : public mm::IJobExtension, public ResultGate {
   // that hands back every running lease without a result (meshmaster.dk's task p4.47-254) - and
   // this unit would download a file twice, or begin a second flash of a radio it is flashing.
   int holdsOutsideTheBuffer(long long* out, int max) const override;
+  // **The server's door gave its verdict on the body** (task p18-06): a 400, a 404 or a 409, which
+  // the same bytes would be answered with at every wake from now on. The journal entry of this job
+  // is settled - a `kNotTaken` entry with the status - so that nothing is posted again, and the
+  // line says it once. A result that is **owed** and one the library posted inside the job come
+  // here alike: the entry is the same entry.
+  void resultNotTaken(long long jobId, int status) override;
 
   // ------------------------------------------------------------------ what the console reads
   const FirmwareJobCounters& counters() const { return counters_; }

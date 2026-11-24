@@ -188,6 +188,12 @@ enum class Refusal : std::uint8_t {
   // but a session that cannot be journalled as open must not begin, because the entry is the
   // only thing that gets the repeater back after a reset.
   kJournal = 9,
+  // **The scanner image's flash never began** (task p18-06): the debug port gave up twice before
+  // anything was written, so the radio is the repeater it was. Not a precondition - it is the one
+  // refusal that is found *after* the session was open - but it is a refusal in every sense the
+  // word has on the wire: nothing was touched, and the server has a word for it
+  // (`NoiseScopeRefusals`, meshmaster.dk's task 260). `Stage::kRefused` is where it is set.
+  kFlash = 10,
 };
 
 // The word, for the journal, the console and a job's result: `battery`, `link`, …

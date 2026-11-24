@@ -886,6 +886,14 @@ void AgentBackend::jobs(interfaces::TextOut& out) {
          static_cast<unsigned long>(f.sessions), static_cast<unsigned long>(f.sessions_refused),
          static_cast<unsigned long>(f.lines_posted), static_cast<unsigned long>(f.lines_unanswered),
          static_cast<unsigned long>(f.steps_lossy));
+    // **And the results the server's door would not take** (task p18-06): a fifth line, for the
+    // reason the four above are four. Nought is the ordinary number; anything else says a body
+    // this firmware sent broke a contract, and the journal's `kNotTaken` entry says which job.
+    if (f.results_not_taken != 0 || u.results_not_taken != 0) {
+      sayf(&out, "          %lu result(s) the server did not take (its verdict on the body): "
+                 "settled, not owed\n",
+           static_cast<unsigned long>(f.results_not_taken));
+    }
     JobEntry owed;
     if (p_.firmware->resultOwed(&owed)) {
       if (owed.product == kProductForSession) {

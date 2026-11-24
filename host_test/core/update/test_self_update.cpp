@@ -376,7 +376,7 @@ TEST_CASE("preconditions: a radio update in progress, the running image unconfir
     upd::encode(p, bytes);
     REQUIRE(unit.walter->journal.append(upd::kind::kRadioUpdate, bytes, sizeof bytes) == upd::JournalError::kNone);
     CHECK(unit.walter->self.canReceive() == SelfReason::kRadioUpdateInProgress);
-    CHECK(has(unit.walter->runLine("self receive"), "error: self receive: the journal says a radio update is in progress: never both at once (S-7)"));
+    CHECK(has(unit.walter->runLine("self receive"), "error: self receive: a radio update is in progress: never both at once (S-7)"));
     CHECK_FALSE(unit.walter->receiver.active());
     CHECK(unit.walter->self.switchNow(upd::SwitchRequest{}) == SelfReason::kRadioUpdateInProgress);
     // Ended: allowed again.
@@ -487,7 +487,7 @@ TEST_CASE("an image at the door: the radio's offered as the Walter's, one too la
   SUBCASE("speaks link major 2 and says nothing of 1: refused by the self-update's rule") {
     const std::string text = unit.walter->pushSelf(Candidate("self-link2-silent"), &stored);
     CHECK_FALSE(stored);
-    CHECK(has(text, "does not say it tolerates the radio's"));
+    CHECK(has(text, "speaks another link major and tolerates none"));
     CHECK(unit.world.own.erases == 0);
   }
   SUBCASE("the radio's current major is the session's when it is up") {
@@ -499,7 +499,7 @@ TEST_CASE("an image at the door: the radio's offered as the Walter's, one too la
     unit.world.radio.deaf = true;
     const std::string text = unit.walter->pushSelf(Candidate("self-link2-silent"), &stored);
     CHECK_FALSE(stored);
-    CHECK(has(text, "does not say it tolerates the radio's"));
+    CHECK(has(text, "speaks another link major and tolerates none"));
   }
   SUBCASE("a second image replaces a received one: the newer is what self switch takes") {
     (void)unit.walter->pushSelf(Candidate("self-a"), &stored);
@@ -625,7 +625,7 @@ TEST_CASE("the journal's story reads correctly after a confirmed update and afte
     SelfPayload got;
     CHECK(unit.walter->self.received(&got));  // still there: say `self switch` again
     CHECK(std::string(got.to) == "0.4.0");
-    CHECK(has(unit.walter->runLine("self status"), "rolled back: the restart came before the other slot was made the next to boot"));
+    CHECK(has(unit.walter->runLine("self status"), "rolled back: the restart came before the other slot was next: nothing tried"));
     CHECK(has(unit.walter->runLine("self status"), "received: 0.4.0 in slot 1"));
   }
 }

@@ -328,6 +328,8 @@ enum class ProveStep : std::uint8_t {
 };
 
 const char* describe(ProveStep step);
+// The same step as one word, for a journal note that carries a reason beside it (task p18-06).
+const char* name(ProveStep step);
 
 // What the caller asks for.
 struct Request {

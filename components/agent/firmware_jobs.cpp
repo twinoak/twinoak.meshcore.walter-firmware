@@ -88,6 +88,16 @@ std::uint32_t get32(const std::uint8_t* at) {
          (static_cast<std::uint32_t>(at[2]) << 16) | (static_cast<std::uint32_t>(at[3]) << 24);
 }
 
+void put16(std::uint8_t* at, std::uint16_t value) {
+  at[0] = static_cast<std::uint8_t>(value);
+  at[1] = static_cast<std::uint8_t>(value >> 8);
+}
+
+std::uint16_t get16(const std::uint8_t* at) {
+  return static_cast<std::uint16_t>(static_cast<std::uint16_t>(at[0]) |
+                                    static_cast<std::uint16_t>(at[1] << 8));
+}
+
 // The `X.Y.Z` of a version, as the self-update's entries keep it.
 void shortOf(const char* version, char out[upd::kShortVersion]) { upd::shortVersion(version, out); }
 
@@ -143,6 +153,7 @@ const char* name(Refusal refusal) {
     case Refusal::kNoGolden: return "noGolden";
     case Refusal::kBadList: return "badList";
     case Refusal::kOrder: return "order";
+    case Refusal::kFlash: return "flash";
   }
   return "";
 }
@@ -155,6 +166,13 @@ const char* name(SessionOutcome outcome) {
     case SessionOutcome::kStuck: return "stuck";
   }
   return "";
+}
+
+// A session's refusal as the result carries it (task p18-06): the word, or nothing at all where
+// there was no refusal - `core::update::word` answers *none* for that, which is a word the
+// contract has not and a reader would have to know to ignore.
+const char* refusalWord(upd::Refusal refusal) {
+  return refusal == upd::Refusal::kNone ? nullptr : upd::word(refusal);
 }
 
 // The five endings are the machine's own words; the sixth - a step the session ended before - is
@@ -174,6 +192,11 @@ Refusal refusalFor(upd::Reason reason) {
     case upd::Reason::kBusy: return Refusal::kInProgress;
     case upd::Reason::kNoGolden: return Refusal::kNoGolden;
     case upd::Reason::kOnBadList: return Refusal::kBadList;
+    // **The flash did not begin, twice** (task p18-06): the one refusal of this machine that is
+    // found after the preconditions held, and the server has a word for it. Without it a
+    // `refused` result went out with no word at all, and meshmaster.dk's door threw the whole
+    // result away - which is what happened to session 5 on 24 November.
+    case upd::Reason::kFlashDidNotBegin: return Refusal::kFlash;
     default: return Refusal::kNone;
   }
 }
@@ -234,12 +257,15 @@ void encode(const JobEntry& e, std::uint8_t out[kJobEntryBytes]) {
   // that a result posted after a restart still carries a row for every one of them. 0 on an
   // apply's entry, which is what every entry written before this task holds there.
   out[44] = e.steps;
+  // And the last two (task p18-06): the status the server answered a result with, on a
+  // `kNotTaken` entry. 0 everywhere else, which is what every earlier entry holds there.
+  put16(out + 46, e.http_status);
 }
 
 bool decode(const upd::Entry& entry, JobEntry* out) {
   if (entry.kind != upd::kind::kAgentJob || entry.size < kJobEntryBytes || out == nullptr) return false;
   const std::uint8_t* p = entry.payload;
-  if (p[8] == 0 || p[8] > static_cast<std::uint8_t>(JobEntryState::kEnded)) return false;
+  if (p[8] == 0 || p[8] > static_cast<std::uint8_t>(JobEntryState::kNotTaken)) return false;
   if (p[9] > static_cast<std::uint8_t>(ApplyOutcome::kStuck)) return false;
   out->job_id = static_cast<long long>(static_cast<std::uint64_t>(get32(p)) |
                                        (static_cast<std::uint64_t>(get32(p + 4)) << 32));
@@ -252,6 +278,7 @@ bool decode(const upd::Entry& entry, JobEntry* out) {
   std::memcpy(out->to_version, p + 32, upd::kShortVersion);
   out->to_version[upd::kShortVersion - 1] = 0;
   out->steps = p[44] <= core::update::kStepsMax ? p[44] : 0;
+  out->http_status = get16(p + 46);
   return true;
 }
 
@@ -307,6 +334,52 @@ int FirmwareJobs::holdsOutsideTheBuffer(long long* out, int max) const {
     out[n++] = owed.job_id;
   }
   return n;
+}
+
+// **The door gave its verdict on the body** (task p18-06, deliverable 6). The 400 of 24 November
+// was the contract's: a `refused` session with no `refusal`, which the server keeps nothing of.
+// Nothing this end can do will change that answer, so the one thing left is to stop owing the
+// result - and to leave a line of why, because a job that reads *never reported a result* on the
+// server and nothing at all on the unit is the worst of both.
+//
+// The entry: `kNotTaken` with the status, written **after** whatever this job's last entry was.
+// `resultOwed()` reads the newest agent entry and asks whether it is `kOwed`, so this settles an
+// owed result by standing in front of it; for a result the library posted inside the job the
+// entry was already `kEnded` and this adds the one fact the journal did not have.
+void FirmwareJobs::resultNotTaken(long long job_id, int status) {
+  counters_.results_not_taken = saturate(counters_.results_not_taken);
+  JobEntry entry;
+  // What this job's own last entry said, so that the settlement keeps the slot, the hash and the
+  // outcome the result was about. A job with no entry at all - a state job, a report, a mesh job -
+  // is settled by nothing and gets the line and the counter alone.
+  bool found = false;
+  if (parts_.journal != nullptr) {
+    upd::Cursor c;
+    upd::Entry e;
+    bool more = parts_.journal->first(&c, &e);
+    int steps = 0;
+    while (more && steps++ < 1024) {
+      JobEntry j;
+      if (decode(e, &j) && j.job_id == job_id) {
+        entry = j;
+        found = true;
+        break;
+      }
+      more = parts_.journal->previous(&c, &e);
+    }
+  }
+  if (!found) {
+    LOG_W("jobs: job %lld: the server did not take the result (http %d); this unit journalled no "
+          "entry for it, so there is nothing to settle", job_id, status);
+    return;
+  }
+  if (entry.state == JobEntryState::kNotTaken) return;  // said once, and once is enough
+  entry.state = JobEntryState::kNotTaken;
+  entry.at_epoch = nowEpoch();
+  entry.http_status = static_cast<std::uint16_t>(status > 0 && status < 1000 ? status : 0);
+  (void)journal(entry);
+  LOG_W("jobs: job %lld: the server did not take the result (http %d): the entry is settled and "
+        "no wake posts it again", job_id, status);
 }
 
 void FirmwareJobs::theRadioAfterAJob(bool back) {
@@ -955,7 +1028,7 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
   request.link_known_down = core::supervisor::linkKnownDown(radioHealth());
   if (!parts_.update->start(request)) {
     char note[kJournalNoteBytes];
-    std::snprintf(note, sizeof note, "%.70s", upd::describe(parts_.update->reason()));
+    std::snprintf(note, sizeof note, "%s", upd::describe(parts_.update->reason()));
     return refuseApply(out, refusalFor(parts_.update->reason()), note, from);
   }
 
@@ -998,13 +1071,27 @@ bool FirmwareJobs::runApply(const mm::ClaimedJob& job, const char* payload, mm::
       if (flash_said) {
         upd::flashFailureNote(upd::decodeFlashFailure(s.detail), note, sizeof note);
       } else if (s.after == upd::State::kRollingBack) {
-        std::snprintf(note, sizeof note, "%.40s at %.24s", upd::describe(s.reason), upd::describe(s.step));
-      } else if (s.after == upd::State::kDone || s.after == upd::State::kRestored || s.after == upd::State::kStuck) {
-        std::snprintf(note, sizeof note, "%.70s", s.note);
+        // **The reason and the step it failed at, whole** (task p18-06): the step goes in as the
+        // word it is known by, because the reason's sentence and the step's phrase together are
+        // more than a note holds and the two of them used to be cut at forty and twenty-four
+        // characters apiece.
+        std::snprintf(note, sizeof note, "%s at %s", upd::describe(s.reason), upd::name(s.step));
       } else {
-        std::snprintf(note, sizeof note, "%.70s", s.note);
+        std::snprintf(note, sizeof note, "%s", s.note);
       }
-      line(stepWord(s.after), note);
+      // **The failure has its line and the ending has its own** (task p18-06, deliverable 4): a
+      // flash that did not begin twice is a transition *into* `refused`, and one line cannot both
+      // say what the second try met and what the run decided. So the failure is journalled under
+      // the step it happened at - as the first try's was - and the ending's own sentence follows
+      // it under `refused`. Every other transition is one line, as it always was.
+      if (s.reason == upd::Reason::kFlashDidNotBegin && s.after == upd::State::kRefused) {
+        line(stepWord(s.before), note);
+        char ended[kJournalNoteBytes];
+        std::snprintf(ended, sizeof ended, "%s", upd::describe(s.reason));
+        line(stepWord(s.after), ended);
+      } else {
+        line(stepWord(s.after), note);
+      }
       // The line is written: the job's page gets it now rather than in a quarter of an hour.
       // Between two steps of the machine and never inside one.
       postApplyProgress(job.id);
@@ -1160,7 +1247,7 @@ bool FirmwareJobs::runSelfApply(const mm::ClaimedJob& job, const char* expected_
     shortOf(from, ended.to_version);
     (void)journal(ended);
     char note[kJournalNoteBytes];
-    std::snprintf(note, sizeof note, "%.70s", upd::describe(why));
+    std::snprintf(note, sizeof note, "%s", upd::describe(why));
     return refuseApply(out, refusalFor(why), note, from);
   }
   // On a board this line is not reached: switchNow() restarted it. On the host the restart is
@@ -1300,7 +1387,10 @@ bool FirmwareJobs::postOwedResult() {
       std::snprintf(asked, sizeof asked, "no heartbeat was sent in the %lu s the window lasted",
                     static_cast<unsigned long>(tried.elapsed_ms / 1000u));
     } else {
-      std::snprintf(asked, sizeof asked, "%lu heartbeat(s) tried in %lu s; the last: %s",
+      // Shorter than it was (task p18-06): with two counters at their widest and the longest
+      // verdict behind them the old sentence was eighty-three characters, and a journal note holds
+      // seventy-one.
+      std::snprintf(asked, sizeof asked, "%lu heartbeat(s) in %lu s; the last: %s",
                     static_cast<unsigned long>(tried.tries),
                     static_cast<unsigned long>(tried.elapsed_ms / 1000u), upd::describe(tried.last));
     }
@@ -1330,7 +1420,22 @@ bool FirmwareJobs::postOwedResult() {
     // And as journal lines, for a job page that renders the story and nothing else.
     line("reset", core::health::name(trial.reason));
     if (trial.attributed) {
-      if (trial.panic[0] != 0) line("panic", trial.panic);
+      if (trial.panic[0] != 0) {
+        // **The one note that is not a sentence of ours** (task p18-06): a panic line comes off the
+        // coredump and is up to `core::health::kPanicMax` characters, where a journal note holds
+        // seventy-one. The result's own `panic` member carries it whole with `panicCut` beside it,
+        // so what this line owes a reader is to say that there is more rather than to end
+        // mid-word.
+        char said[kJournalNoteBytes];
+        if (std::strlen(trial.panic) > kJournalNoteBytes - 1) {
+          std::snprintf(said, sizeof said, "%.68s...", trial.panic);
+        } else {
+          // Bounded in the format and not only by the buffer: the board's build makes
+          // -Wformat-truncation an error, and the panic's own field is wider than a note.
+          std::snprintf(said, sizeof said, "%.71s", trial.panic);
+        }
+        line("panic", said);
+      }
       if (trial.task[0] != 0) line("task", trial.task);
     }
   }
@@ -1365,6 +1470,10 @@ bool FirmwareJobs::postOwedResult() {
   // owed from before a restart is posted outside the wake's claim step and nothing claims on it.
   bool jobs_waiting = false;
   if (!server_.postJobResult(owed.job_id, body_, len, jobs_waiting)) return false;
+  // **Taken is not the same as kept** (task p18-06): the uplink answers `taken` for a body the
+  // server's door has given its verdict on, so that nothing posts it again, and `resultNotTaken`
+  // has already settled the entry with the status. Nothing was posted and nothing is owed.
+  if (server_.resultWasRefused(owed.job_id)) return false;
   counters_.owed_posted = saturate(counters_.owed_posted);
 
   JobEntry posted = owed;
@@ -2155,7 +2264,19 @@ bool FirmwareJobs::postOwedSessionResult(const JobEntry& owed) {
   // **Open means `stuck`** (the contract): the golden image did not come back - this wake tried
   // and the next one will try again - and the server is told so rather than waiting. Closed means
   // the repeater is back and proved, whatever became of the program.
-  result.outcome = mark.open ? SessionOutcome::kStuck : SessionOutcome::kRestored;
+  //
+  // **Unless the journal's last stage is `refused`** (task p18-06, deliverable 5). Two stages
+  // close a session and this used to read one bit, so a session that ended `refused` - the
+  // scanner's flash never began, the radio never left the mesh - was reported `restored`, which
+  // says the opposite of what happened: that the golden image had been flashed back. The stage is
+  // in the mark; `refused` is the one closed stage that is not `restored`, and the only way into
+  // it is the flash that did not begin, so `flash` is its word here as it is in the run's own
+  // result.
+  const bool refused = !mark.open && mark.stage == upd::Stage::kRefused;
+  result.outcome = mark.open      ? SessionOutcome::kStuck
+                   : refused      ? SessionOutcome::kRefused
+                                  : SessionOutcome::kRestored;
+  if (refused) result.refusal = upd::word(upd::Refusal::kFlash);
   result.scanner = owed.to_version[0] != 0 ? owed.to_version : nullptr;
   result.steps = owed.steps;
   // `notRun` for every step, and counts of nought: the payload is gone with the RAM that held it,
@@ -2182,12 +2303,16 @@ bool FirmwareJobs::postOwedSessionResult(const JobEntry& owed) {
   // owed from before a restart is posted outside the wake's claim step and nothing claims on it.
   bool jobs_waiting = false;
   if (!server_.postJobResult(owed.job_id, body_, len, jobs_waiting)) return false;
+  // The same as an apply's (task p18-06): a body the door gave its verdict on is settled by
+  // `resultNotTaken` and was never taken, so this posted nothing.
+  if (server_.resultWasRefused(owed.job_id)) return false;
   counters_.owed_posted = saturate(counters_.owed_posted);
 
   JobEntry posted = owed;
   posted.state = JobEntryState::kPosted;
-  posted.outcome = result.outcome == SessionOutcome::kRestored ? ApplyOutcome::kCommitted
-                                                               : ApplyOutcome::kStuck;
+  posted.outcome = result.outcome == SessionOutcome::kRestored  ? ApplyOutcome::kCommitted
+                   : result.outcome == SessionOutcome::kRefused ? ApplyOutcome::kRefused
+                                                                : ApplyOutcome::kStuck;
   posted.at_epoch = nowEpoch();
   (void)journal(posted);
   JobEntry ended = posted;
@@ -2207,11 +2332,13 @@ bool FirmwareJobs::refuseSession(mm::ResultWriter& out, upd::Refusal refusal, co
   SessionResult result;
   result.outcome = SessionOutcome::kRefused;
   result.steps = steps;
-  // **`journal` is not one of the contract's eight words** (task p16-03's own ninth refusal): a
-  // journal that will not take the entry that opens a session is not a precondition a server can
-  // do anything about, so the outcome is `refused` with no word and the reason is the journal's
-  // `check` line - which is what an apply does with a precondition the server has no word for.
-  result.refusal = refusal == upd::Refusal::kJournal ? nullptr : upd::word(refusal);
+  // **And every one of them says which** (task p18-06). `journal` used to go out as no word at
+  // all - task p16-03 read the contract's list and did not find it there - and a `refused` result
+  // with no word is one meshmaster.dk's door throws away whole, so the one refusal that could not
+  // be said was the one the server would not have been told about either way. The word is in the
+  // list from its task 260 on, and until that is deployed a word the server does not know is no
+  // worse than none.
+  result.refusal = refusalWord(refusal);
   const std::size_t n = writeSessionResult(result, lines_, line_count_, data_, kDataBytes);
   if (n != 0) out.data(data_, n);
   out.outcome(mm::Outcome::Failed);
@@ -2265,7 +2392,7 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
   if (!parts_.session->start(program, at, &lines)) {
     const upd::Refusal refusal = parts_.session->refusal();
     char note[kJournalNoteBytes];
-    std::snprintf(note, sizeof note, "%.70s", upd::describe(refusal));
+    std::snprintf(note, sizeof note, "%s", upd::describe(refusal));
     parts_.session->clear();
     return refuseSession(out, refusal, note, rows);
   }
@@ -2361,7 +2488,11 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
     // **The flash did not begin and is being made once more** (task p18-05): the update machine
     // journalled it, the session's own stage did not move, and this is the one line of that
     // machine's story a session's page would otherwise never carry.
-    if (s.said == upd::Reason::kFlashOnceMore) {
+    // **And the second try's own failure with it** (task p18-06): what the second try met is a
+    // line of the same kind, under the same step word, with `2nd try` in front of it - and the
+    // ending's sentence follows from the transition below. On 24 November the whole of the second
+    // failure was in no line that reached the server.
+    if (s.said == upd::Reason::kFlashOnceMore || s.said == upd::Reason::kFlashDidNotBegin) {
       char said[kJournalNoteBytes];
       upd::flashFailureNote(upd::decodeFlashFailure(s.detail), said, sizeof said);
       line(upd::name(parts_.session->stage()), said);
@@ -2381,7 +2512,7 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
         // is how 8 192 bytes gets raised from what units say rather than from a guess.
         (void)upd::roomLine(status.room, note, sizeof note);
       } else {
-        std::snprintf(note, sizeof note, "%.70s", s.note);
+        std::snprintf(note, sizeof note, "%s", s.note);
       }
       line(word, note);
       postApplyProgress(job.id);
@@ -2418,6 +2549,11 @@ bool FirmwareJobs::runSession(const mm::ClaimedJob& job, const char* payload, mm
   // above it carries what failed - the server has no word for a debug port that gave up.
   if (status.ending == upd::Ending::kRefused) {
     result.outcome = SessionOutcome::kRefused;
+    // **With the word the contract has for it** (task p18-06, deliverable 1): `flash`. Task p18-05
+    // left it at none because the server's list had nothing for a debug port that gave up, and the
+    // door answered the whole result *a refused session names which precondition stopped it* - so
+    // session 5 of 24 November was never reported at all.
+    result.refusal = refusalWord(status.refusal);
   } else {
     result.outcome = status.ending == upd::Ending::kRestored ? SessionOutcome::kRestored
                                                              : SessionOutcome::kStuck;

@@ -62,29 +62,29 @@ const char* describe(SelfReason reason) {
   switch (reason) {
     case SelfReason::kNone: return "";
     case SelfReason::kNoSlots: return "the platform cannot say which application slot is running";
-    case SelfReason::kRunningUnconfirmed: return "the running image is itself on trial: never stack an update on an unconfirmed one";
-    case SelfReason::kRadioUpdateInProgress: return "the journal says a radio update is in progress: never both at once (S-7)";
+    case SelfReason::kRunningUnconfirmed: return "the running image is itself on trial: never stack two";
+    case SelfReason::kRadioUpdateInProgress: return "a radio update is in progress: never both at once (S-7)";
     case SelfReason::kTransferRunning: return "a transfer into the other slot is open";
     case SelfReason::kBatteryUnknown: return "the battery could not be read";
-    case SelfReason::kBatteryLow: return "the battery is below the update threshold (a brown-out in the trial is a wasted attempt)";
+    case SelfReason::kBatteryLow: return "the battery is below the update threshold";
     case SelfReason::kBatteryFalling: return "the battery is falling fast";
     case SelfReason::kNothingReceived: return "no image has been received into the other slot ('self receive' first)";
     case SelfReason::kOtherSlotChanged: return "the other slot does not hold the image that was received";
-    case SelfReason::kLinkDown: return "the radio does not answer HELLO and nobody has said why ('self switch radio-down' says so)";
+    case SelfReason::kLinkDown: return "the radio does not answer HELLO and nobody has said why";
     case SelfReason::kNotOnTrial: return "the running image is not on trial";
     case SelfReason::kPlatform: return "the platform refused";
     case SelfReason::kJournal: return "the journal could not be written";
     case SelfReason::kOnBadList: return "this image failed its trial once and is never tried again";
     case SelfReason::kTooLarge: return "the file is larger than the other application slot";
     case SelfReason::kLoadAddress: return "the file's load_address is not an application slot's offset";
-    case SelfReason::kLinkMajor: return "the image speaks another link major than the radio and does not say it tolerates the radio's (S-7: the Walter goes first and speaks both)";
+    case SelfReason::kLinkMajor: return "the image speaks another link major and tolerates none (S-7)";
     case SelfReason::kAlreadyRunning: return "the file is the image that is running";
     case SelfReason::kNoMainLoop: return "the main loop was not reached inside the trial window";
     case SelfReason::kNoRadio: return "the radio answered before the update and not after it";
     case SelfReason::kNoUplink: return "the backend was not reached inside the trial window";
     case SelfReason::kRestartedDuringTrial: return "the image restarted during its trial (the bootloader gave up on it)";
     case SelfReason::kNeverBooted: return "the image never reached its main loop (the bootloader gave up on it)";
-    case SelfReason::kSwitchNotTaken: return "the restart came before the other slot was made the next to boot: nothing was tried";
+    case SelfReason::kSwitchNotTaken: return "the restart came before the other slot was next: nothing tried";
     case SelfReason::kRejectedByHand: return "rejected on the console";
   }
   return "?";

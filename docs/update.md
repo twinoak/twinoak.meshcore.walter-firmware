@@ -253,6 +253,21 @@ The radio's update writes one entry per state it enters, with the state, what th
 terminal state why and at which step. A resumed entry carries a flag, and the story shows it as
 *(resumed after a restart)*.
 
+**No line of a journal that reaches the server is ever cut** (task p18-06). The journal a result and
+a progress report carry is a different thing from the flash journal above — forty lines of a step
+word and a **note of seventy-one characters** (`agent::kJournalNoteBytes`), which is the figure a
+session's `room` line was sized to. On 24 November the sentence that said why a session had been
+refused arrived as *the flash did not begin, twice: nothing was written and the radio is a*: seventy
+of seventy-eight characters, cut mid-word, with the rest of it on the unit.
+`host_test/agent/test_no_journal_line_is_cut.cpp` works out the longest text every line of every
+kind can take — each machine's reasons over the whole of its enum, the rolling-back line that
+carries a reason **and** the step it failed at, a session's refusals and stages, what a flash that
+did not finish says, the `room` line, and the lines made of numbers — and holds each under that
+bound. **A sentence too long for its line is written shorter, not cut**, which is why several of the
+phrases in this document are shorter than they were. The one exception is marked rather than silent:
+a **panic line** off a coredump is a person's text and can be longer than a note, so the line ends
+in `...` and the result's own `panic` member carries it whole with `panicCut` beside it.
+
 ## After a power cut
 
 The Walter reads its journal at boot and, when the last radio-update entry is not terminal, prints
@@ -438,6 +453,17 @@ switch back from, so the session ends `refused` — the second stage after `rest
 a session, because nothing was begun for a later wake to end. `check` and `flashing-scanner` are the
 only stages it can be reached from, and the journal's line before it says what the flash failed at.
 
+**The three endings, and the word a refusal carries** (task p18-06). A session ends
+`restored` — the golden image back and proved — `stuck` — it did not come back, and the next wake
+tries again — or `refused`: nothing was touched, and the result **always names which precondition
+stopped it**. `flash` is the word for the one refusal that is found after the check held, which is
+the flash that never began; the others are in the table below. A `refused` result with no word is
+one meshmaster.dk's door throws away whole, so there is no such thing here as a session refused for
+no reason — `host_test/agent/test_every_refusal_has_a_word.cpp` counts them and says so. **And it
+is the same word wherever the result is written from**: a session whose result a restart cut off is
+posted from the journal, and what it says is the journal's last stage — `refused` with `flash`,
+`restored` only for a session the golden image came back from, `stuck` for one still open.
+
 **The scanner's watchdog ends with the scanner** (task p18-01). NoiseScope starts the nRF52840's
 hardware watchdog at 60 s and feeds it from its own loop; once started it cannot be stopped, and
 the repeater that comes back after the session feeds nothing. A soft reset — which is what the
@@ -489,7 +515,12 @@ the proving period is still a failure, and nothing forgives a watchdog.
 | `inProgress` | a radio update is journalled unfinished, this firmware is on trial or unconfirmed (S-7), or a session is open already — an open one is **ended**, never begun again |
 | `program` | the program breaks one of the rules below |
 | `noMemory` | neither room could be had: no external room, and the internal heap has no 8 192-byte block for a step's lines |
-| `journal` | the journal would not take the entry that opens a session. Not one of the eight the task named, and `tasks/phase-16/reports/03.md` says why it is here |
+| `journal` | the journal would not take the entry that opens a session |
+| `flash` | the scanner image's flash never began: the debug port gave up twice before anything was written, so the radio is the repeater it was. The one refusal that is found **after** the check held (task p18-06) |
+
+`noMemory`, `journal` and `flash` were words the Walter had and `NoiseScopeRefusals` had not;
+meshmaster.dk's task 260 adds all three, and until it is deployed a word the server does not know
+is no worse than the none a session used to send.
 
 ### A step, and what ends it
 
@@ -672,8 +703,16 @@ What the job adds is the three things a mast needs and a cable does not:
   `refused` with one of the words above, or `stuck`, with a row for every step of the payload —
   how it ended, and what it handed to its posts — the two counts, and the session's journal. A
   board that restarts in the middle leaves the session open; the next wake ends it (rail 2) and
-  then posts `restored` or `stuck` from the journal it has, with `notRun` for every step it cannot
-  vouch for and counts of nought.
+  then posts `restored`, `refused` with its word or `stuck` **from what the journal's last stage
+  says** (task p18-06), with `notRun` for every step it cannot vouch for and counts of nought.
+- **A result the server will not take is not owed for ever** (task p18-06). The door answers a
+  result whose **body** it refuses with a 400 (its contract), a 404 (no such job, or one this exit
+  node never attempted) or a 409 (the `clientId` was used for another job) — three answers the same
+  bytes would get again at every wake. Such an answer **settles** the job's journal entry: a
+  `kNotTaken` entry with the status, which stands in front of the owed one, so nothing is posted
+  again and `agent jobs` says how many times it has happened. A 401, a 403, a 429, a 5xx and no
+  answer at all are owed as they were — each of them is a thing that can be different at the next
+  wake.
 
 **One attempt, leased an hour from the claim**, and the wake that runs a session is held open for
 its whole bound — which is why the backend exchange's own bound is the session's and a minute

@@ -585,8 +585,10 @@ TEST_CASE("what a person is told: the console's lines for a flash that did not b
   CHECK(has(status, "flashing-candidate: the flash did not begin: once more - while reading the "
                     "pages the image covers: the debug port failed (the target kept answering "
                     "WAIT) at 0x00026000; nothing was written"));
-  CHECK(has(status, "refused: the flash did not begin, twice: nothing was written and the radio is "
-                    "as it was - the second try, while reading the pages the image covers"));
+  // Task p18-06 wrote this sentence shorter, so that the journal line the server is given is
+  // whole: seventy-one characters is what a note holds, and the old one was seventy-eight.
+  CHECK(has(status, "refused: the flash did not begin, twice; the radio is as it was - the second "
+                    "try, while reading the pages the image covers"));
   // The plain `journal` command prints the same entries.
   const std::string journal = unit.walter->runLine("journal");
   INFO(journal);

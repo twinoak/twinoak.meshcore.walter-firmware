@@ -701,6 +701,33 @@ void ModemUplink::coverTheLeases(mm::ClaimedJob* jobs, int count) {
 // claims again on it; this unit's intent is one claim a wake today, so the answer is read, carried
 // back and acted on by nobody until pile 18's task 02 sets that field.
 //
+// Whether a status is the door's verdict on the **body** and not a state of the world (task
+// p18-06). The three meshmaster.dk's `ResultAsync` answers that way, and no other 4xx: a 401 is
+// the token, a 403 a scope, a 408 the call, a 429 the rate - each of them a thing that can change
+// before the next wake, and a result that waits for it is owed, not lost.
+bool ModemUplink::resultIsTheServersVerdict(int status) {
+  return status == 400 || status == 404 || status == 409;
+}
+
+bool ModemUplink::resultWasRefused(long long jobId) const {
+  for (int i = 0; i < refused_count_; ++i) {
+    if (refused_results_[i] == jobId) return true;
+  }
+  return false;
+}
+
+void ModemUplink::rememberRefusedResult(long long jobId) {
+  if (resultWasRefused(jobId)) return;
+  if (refused_count_ < kRefusedResults) {
+    refused_results_[refused_count_++] = jobId;
+    return;
+  }
+  // Full: the oldest is forgotten. A wake with five results the door refused would post the first
+  // one's body once more, which costs a call and tells the server nothing new.
+  for (int i = 1; i < kRefusedResults; ++i) refused_results_[i - 1] = refused_results_[i];
+  refused_results_[kRefusedResults - 1] = jobId;
+}
+
 // False whenever this returns false - a call that got no answer said nothing - and false for a
 // result the gate withholds, which never went out at all.
 bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t len, bool& jobsWaiting) {
@@ -718,11 +745,42 @@ bool ModemUplink::postJobResult(long long jobId, const char* body, std::size_t l
     stopClaiming(interfaces::Claims::kNoRoom);
     return true;
   }
+  // **A body this server has already given its verdict on** (task p18-06): nothing goes, and the
+  // runner is told it was taken so that it stops keeping it and posting it again. The same bytes
+  // would be answered with the same status, and a call that cannot succeed is one the modem pays
+  // for twice.
+  if (resultWasRefused(jobId)) {
+    LOG_I("server: job %lld: the result is not posted again - the server's door gave its verdict "
+          "on these bytes in this wake", jobId);
+    return true;
+  }
   std::size_t reply_len = 0;
   Call c;
   const bool ok = callJob(CallKind::kResult, jobId, "result", reinterpret_cast<const std::uint8_t*>(body), len, reply_len, c) && c.ok;
   if (ok) jobsWaiting = mm::resultReplySaysJobsWaiting(reply_, reply_len);
   wipeReply();
+  // **And a status that is the door's verdict on the body** (task p18-06). meshmaster.dk answers
+  // a result it will not take with a 400 (the contract: a `refused` session with no word, a
+  // `steps` list that does not match the program, a journal past its entry bound, a field of the
+  // envelope it refuses), a 404 (no such job, or a job this exit node never attempted) or a 409
+  // (the `clientId` was used for another job) - `AgentProtocolService.ResultAsync` and
+  // `RegisterApi.AnswerAsync`, read at 13b192e. None of the three changes with time, so the
+  // result is not owed any more: the gate settles the entry and the journal keeps the status. A
+  // 401, a 403, a 429, a 5xx and no answer at all are owed exactly as they were.
+  if (!ok && c.reachable && resultIsTheServersVerdict(c.httpStatus)) {
+    counters_.results_not_taken = saturate(counters_.results_not_taken);
+    rememberRefusedResult(jobId);
+    LOG_W("server: job %lld: the server did not take the result (http %d): it is settled, not owed",
+          jobId, c.httpStatus);
+    if (gate_ != nullptr) gate_->resultNotTaken(jobId, c.httpStatus);
+    // **And `taken` to the caller, as the withheld result above is told** (task p18-06). The
+    // library keeps a result it was not told was taken and posts it again - from its own buffer in
+    // this wake, and from the bytes it keeps across a sleep at every wake after it - and this
+    // answer will not change: the same body gets the same status. The journal's `kNotTaken` entry
+    // is where the truth of it is written down; `resultWasRefused` is how this firmware's own two
+    // owed-result paths tell this from a result that went.
+    return true;
+  }
   // **And what this end has to say about another claim** (task p18-02). The library claims again
   // on this bit and on nothing else, so it is the one place a board may end the asking without
   // failing a call. Either something has already ended it - the gate above, a job that took the
