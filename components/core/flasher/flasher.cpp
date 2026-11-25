@@ -141,6 +141,7 @@ Result Flasher::refused(Step step, const char* why, std::uint32_t address) {
 }
 
 Result Flasher::failed(Step step, const nrf52::Result& nrf, std::uint32_t address) {
+  noteWaits(step);  // task p19-01: a failure credits whatever it waited out to its own step
   Result r;
   r.outcome = Outcome::kFailed;
   r.step = step;
@@ -152,7 +153,21 @@ Result Flasher::failed(Step step, const nrf52::Result& nrf, std::uint32_t addres
 
 void Flasher::report(ProgressSink* progress, Step step, std::uint32_t done, std::uint32_t total,
                      std::uint32_t address) {
+  noteWaits(step);  // task p19-01: a page has passed, so whatever it waited out was this step's
   if (progress != nullptr) progress->onProgress(Progress{step, done, total, address});
+}
+
+// **What the debug port waited out** (task p19-01, deliverable 3). The port keeps the record for
+// one connection and a flash connects once (openChip()), so the figures are copied as they are;
+// the step is the flasher's own, and is moved only when the longest WAIT has grown since the last
+// time this was called - which is what makes it the step that was running at the time.
+void Flasher::noteWaits(Step step) {
+  const swd::Dp::Waits& w = dp_.waits();
+  if (w.longest_ms > counters_.wait_longest_ms) counters_.wait_longest_step = step;
+  counters_.waits = w.transfers;
+  counters_.wait_longest_ms = w.longest_ms;
+  counters_.wait_longest_at = w.longest_at;
+  counters_.wait_longest_at_known = w.longest_at_known;
 }
 
 // The image's bytes for one page, padded with 0xFF beyond the image's end, as words.
@@ -235,6 +250,7 @@ Result Flasher::openChip(Plan* plan) {
   // that cannot read two words of UICR will fail at the next thing it is asked anyway. It leaves
   // `known` false, and a flash with an unknown answer is the flash task p18-01 built - a pulse.
   (void)nrf_.readResetPin(&plan->reset_pin);
+  noteWaits(Step::kConnect);  // task p19-01: everything up to here is one step for this purpose
   return Result{};
 }
 
@@ -259,6 +275,7 @@ Result Flasher::begin(const Image& image, const BoardProfile& profile, board::Sl
   if (sd[2] != profile.softdevice_size) {
     return refused(Step::kSoftDevice, "the SoftDevice does not end where the profile's application region begins", sd[2]);
   }
+  noteWaits(Step::kSoftDevice);
 
   // 2. The image. Nothing has been written yet.
   if (image.source == nullptr || image.source->size() == 0) return refused(Step::kImage, "the image is empty");
@@ -548,6 +565,7 @@ Result Flasher::settingsInvalidate(Plan* plan) {
   if (current.bank_0 == settings::kBankInvalidApp && current.bank_0_crc == 0) return Result{};
   r = settingsWrite(*plan->profile, wanted, !current.blank());
   if (!r.ok()) r.step = Step::kSettingsInvalidate;
+  noteWaits(Step::kSettingsInvalidate);  // task p19-01
   return r;
 }
 
@@ -562,7 +580,9 @@ Result Flasher::settingsValidate(Plan* plan) {
   Result r = settingsRead(*plan->profile, &current);
   if (!r.ok()) return r;
   if (settingsAccept(current, *plan)) return Result{};
-  return settingsWrite(*plan->profile, settings::validRecord(plan->size), !current.blank());
+  r = settingsWrite(*plan->profile, settings::validRecord(plan->size), !current.blank());
+  noteWaits(Step::kSettingsValidate);  // task p19-01
+  return r;
 }
 
 // ------------------------------------------------------------------------------- the exits
@@ -649,6 +669,7 @@ Result Flasher::finish(Plan* plan, Result r, bool reset) {
     plan->slot_held = false;
   }
   counters_.elapsed_ms = static_cast<std::uint32_t>(clock_.nowMs() - start_ms_);
+  noteWaits(Step::kReset);  // task p19-01: the exit's own waits, and the last sync before the result
   r.counters = counters_;
   // **Whether this call changed the chip** (task p18-05, deliverable 1), off the counters and not
   // off the step: `erases` counts every page erase including the settings page's, and
@@ -717,6 +738,7 @@ Result Flasher::flash(const Image& image, const BoardProfile& profile, ProgressS
   plan.halted = true;
   n = nrf_.waitFlashReady(nrf52::kErasePageTimeoutMs);
   if (!n.ok()) return finish(&plan, failed(Step::kHalt, n), true);
+  noteWaits(Step::kHalt);
 
   if (plan.any_change) {
     if (plan.is_application) {
@@ -807,6 +829,7 @@ Result Flasher::flashTest(const BoardProfile& profile, ProgressSink* progress, b
   plan.halted = true;
   n = nrf_.waitFlashReady(nrf52::kErasePageTimeoutMs);
   if (!n.ok()) return finish(&plan, failed(Step::kHalt, n), true);
+  noteWaits(Step::kHalt);
 
   r = programPages(&plan, progress);
   if (!r.ok()) return finish(&plan, r, true);

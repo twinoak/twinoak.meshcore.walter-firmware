@@ -459,6 +459,27 @@ bool Nrf52Chip::nvmcBusy() const {
   return busy_for_ever_ || clock_.nowUs() < busy_until_us_;
 }
 
+// **A flash operation the application has in flight** (task p19-01). Armed by a test, started by
+// the first access that meets it, and over `stall_ms_` of the test's clock later.
+void Nrf52Chip::stallPageFor(std::uint32_t address, std::uint32_t ms, bool while_running) {
+  stall_page_ = address & ~(kPageBytes - 1);
+  stall_ms_ = ms;
+  stall_while_running_ = while_running;
+  stall_started_ = false;
+  stall_until_us_ = 0;
+}
+
+bool Nrf52Chip::stallsAtPage(std::uint32_t addr) {
+  if (stall_ms_ == 0 || !inFlash(addr)) return false;
+  if ((addr & ~(kPageBytes - 1)) != stall_page_) return false;
+  if (stall_while_running_ && halted_) return false;
+  if (!stall_started_) {
+    stall_started_ = true;
+    stall_until_us_ = clock_.nowUs() + static_cast<std::uint64_t>(stall_ms_) * 1000u;
+  }
+  return clock_.nowUs() < stall_until_us_;
+}
+
 void Nrf52Chip::startBusy(std::uint64_t us) {
   if (ready_never) {
     busy_for_ever_ = true;
@@ -511,6 +532,12 @@ bool Nrf52Chip::AhbAp::stalls(std::uint8_t addr, bool write) {
   if (addr == map::kDrw && chip_.inFlash(chip_.tar_) &&
       chip_.failingAt(FailFlashAt::kScanRead) &&
       chip_.tar_ >= chip_.applicationStart()) {
+    chip_.counters_.stalls++;
+    return true;
+  }
+  // **And the same for a number of milliseconds** (task p19-01, deliverable 5): one page busy
+  // with an operation of the application's own, which the port may now wait out.
+  if (addr == map::kDrw && chip_.stallsAtPage(chip_.tar_)) {
     chip_.counters_.stalls++;
     return true;
   }

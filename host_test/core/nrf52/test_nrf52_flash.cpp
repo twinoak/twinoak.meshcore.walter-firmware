@@ -192,7 +192,10 @@ TEST_CASE("a flash write while the controller is busy for ever: the bus stalls, 
   CHECK(r.swd == core::swd::Status::kWaitTimeout);
   CHECK(r.address == 0x31004);  // the second word is the one that stalled
   CHECK(b.chip.counters().writes == 1);
-  CHECK(b.chip.counters().stalls == core::swd::kWaitRetries + 1);
+  // The ten tries back to back, and then the WAIT waited out: kWaitPauses tries more with the
+  // line idle (task p19-01). A controller that is never ready outlasts the bound, and the status
+  // is the one it always was.
+  CHECK(b.chip.counters().stalls == core::swd::kWaitRetries + core::swd::kWaitPauses + 1);
   CHECK(configs(b.chip.log()) == std::vector<std::uint32_t>{1, 0});
   CHECK(b.chip.config() == regs::nvmc::kConfigRen);
   b.close();

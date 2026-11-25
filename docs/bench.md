@@ -690,6 +690,21 @@ radio, and the simulator can only show the documents were followed, not that the
   (…) and is NOT on the bad list`), which is nine minutes and the behaviour this task kept - note
   which of the two happened, because the two sentences are the whole of what this task is for.
 
+- [ ] **A WAIT waited out, and the line that says how long** (task p19-01). Nothing destructive
+  here either, and **it is the unit at Bellevue that answers this one**, not a bench: the next
+  NoiseScope session or radio update after the release either has no failed first try - *a scanner
+  is there* about five minutes after *flashing-scanner*, with no `the flash did not begin: once
+  more` between - or it fails and `rak update status` (and the job's page, through the unit's
+  report) carries **the line that says how long the port waited**: `the debug port waited a flash
+  operation of the radio's out - scan: waited 91 ms at 0x036000, once`. Three things to bring back:
+  whether the line is there at all (a flash that waited for nothing writes none, and that would
+  mean the scan never met a WAIT and the reading was wrong); **the milliseconds**, against
+  tERASEPAGE's 85 ms and the 500 ms bound (`core::swd::kWaitBoundMs`) - a figure near 85 is the
+  radio erasing one page, a figure at the bound is something else; and **how many transfers
+  waited**, because one is a single operation and many is a file system at work. On a bench the
+  same thing can be provoked by hand: `rak flash-test confirm` while the RAK's own console is made
+  to write its settings (`set name …` on the radio) should show the line with a small figure.
+
 - [ ] **Flash a repeater image; the RAK restarts into it, not into its UF2 bootloader** (task
   p1-05; phase 2's `rak flash`, or until then a UF2 over USB plus `rak swd mem 0x000ff000 3` to
   see what the bootloader recorded). After the flash: `rak hello` shows the version flashed; the
@@ -2993,7 +3008,12 @@ really leaves a repeater the debug port started over it (§2's reset-line item s
 module the board is). Since task p18-05 two more belong to §2's own *a flash made to fail before
 its halt* item: how long the chip really needs between the two tries, and how long a flash that
 wrote nothing costs before it gives up - which on the wire is the scan, one read of every page the
-image covers.
+image covers. Task p19-01's own two bounds on a WAIT
+(`core/swd/dp.h`) are **not** here and want no row: they come from the Product Specification's
+tERASEALL with a margin and from the arithmetic of these windows, not from a measurement. What the
+bench brings back for them is the *line* of §2's *a WAIT waited out* item - how long a real
+radio's flash operation really holds the bus - and either number moves only with that line and the
+specification's sentence beside it.
 
 | Constant | Now | Measured |
 |---|---:|---|

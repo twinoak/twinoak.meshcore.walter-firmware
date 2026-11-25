@@ -96,6 +96,9 @@ MemResult MemAp::read32(std::uint32_t addr) {
   m = setTar(addr);
   if (!m.ok()) return m;
   counters_.drw_reads++;
+  // Where a WAIT the debug port waits out was, for its record (task p19-01): the port knows
+  // registers, this knows the memory address TAR is pointed at.
+  dp_.noteAddress(addr);
   m = fromDp(dp_.readAp(ap_, mem_ap::kDrw), addr);
   if (m.ok()) afterDrw(addr);
   return m;
@@ -116,6 +119,7 @@ MemResult MemAp::write32(std::uint32_t addr, std::uint32_t value) {
   m = setTar(addr);
   if (!m.ok()) return m;
   counters_.drw_writes++;
+  dp_.noteAddress(addr);  // as read32: where a WAIT waited out was (task p19-01)
   m = fromDp(dp_.writeAp(ap_, mem_ap::kDrw, value), addr);
   if (m.ok()) afterDrw(addr);
   return m;

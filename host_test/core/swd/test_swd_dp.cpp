@@ -208,7 +208,7 @@ TEST_CASE("WAIT three times, then OK: three retries, the operation done once") {
   b.release();
 }
 
-TEST_CASE("WAIT for ever: bounded, then an error, and the SELECT cache is not trusted") {
+TEST_CASE("WAIT for ever: bounded in time, then an error, and the SELECT cache is not trusted") {
   sim::SwdBench b;
   REQUIRE(b.acquire() == Outcome::kOk);
   REQUIRE(b.dp.connect().ok());
@@ -217,9 +217,18 @@ TEST_CASE("WAIT for ever: bounded, then an error, and the SELECT cache is not tr
   const Result r = b.dp.writeDp(dpr::kSelect, 0x06000000);
   CHECK(r.status == Status::kWaitTimeout);
   CHECK(r.ack == core::swd::ack::kWait);
-  CHECK(b.dp.counters().transfers - before == core::swd::kWaitRetries + 1);
-  CHECK(b.dp.counters().wait_retries == core::swd::kWaitRetries);
+  // **The bound is a time** (task p19-01): the ten tries back to back, and then the same request
+  // again with the line idle between tries until kWaitBoundMs has passed - kWaitPauses of them,
+  // which is the constant the loop is bounded by as well.
+  CHECK(b.dp.counters().transfers - before == core::swd::kWaitRetries + core::swd::kWaitPauses + 1);
+  CHECK(b.dp.counters().wait_retries == core::swd::kWaitRetries + core::swd::kWaitPauses);
   CHECK(b.dp.counters().wait_timeouts == 1);
+  // And the record says what it waited: one transfer, for the bound, and it gave up.
+  CHECK(b.dp.waits().transfers == 1);
+  CHECK(b.dp.waits().gave_up);
+  CHECK(b.dp.waits().longest_ms >= core::swd::kWaitBoundMs);
+  CHECK(b.dp.waits().longest_ms < core::swd::kWaitBoundMs + core::swd::kIdlePauseMs + 1);
+  CHECK_FALSE(b.dp.waits().longest_at_known);  // a DP register, not a memory access
   CHECK(b.target.select() == 0);
   // Once the target is ready again, the next AP access rewrites SELECT: the cache knew the write
   // had not happened.
@@ -399,6 +408,7 @@ TEST_CASE("every loop in the debug port is bounded: the worst case in clocks") {
   const std::uint64_t clocks = b.wire.clocks();
   const Result r = b.dp.readAp(3, 0x00);
   CHECK(r.status == Status::kWaitTimeout);
-  CHECK(b.wire.clocks() - clocks == (core::swd::kWaitRetries + 1) * (13 + core::swd::kIdleAfterTransfer));
+  CHECK(b.wire.clocks() - clocks ==
+        (core::swd::kWaitRetries + core::swd::kWaitPauses + 1) * (13 + core::swd::kIdleAfterTransfer));
   b.release();
 }

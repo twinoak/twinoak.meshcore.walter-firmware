@@ -150,6 +150,45 @@ own: its bytes, its load address, its digest (`flasher::blamesTheImage()`, the s
 the unit's, and their image may be flashed again. `rak update` says which it was: *the candidate's
 flash failed (…) and is NOT on the bad list* is not *failed its health check*.
 
+## A WAIT is waited out (task p19-01)
+
+The eight sessions after that one failed the same way — *scan: swd wait-timeout, nothing written*,
+eight of eight, at `0x036000` after 32 to 33 s four times and at three other places and moments —
+and the second try above carried six of seven of them. A WAIT is the chip saying it cannot take
+the access now, and on an nRF52840 the thing that most often cannot is the flash: it "is not
+accessible" while the NVMC writes or erases, and a memory access port whose bus access stalls
+answers WAIT until it clears. **The radio writes its own flash** (its clock's file at the first
+clock set after a boot) and the scan reads the application's pages *while the application runs*,
+one second after the wake has set that clock — so the reading is that the scan meets a page erase
+of the radio's own. It is a reading; nothing on the unit has shown the erase.
+
+The debug port used to ask ten times back to back, a few milliseconds, and give up. It still does
+that first — it is what answers a WAIT that clears in a transfer or two, and it is what a flash
+that goes through still costs — and then it **waits the operation out**: the same request again
+with the line idle between tries (so the idle task runs and the task watchdog is fed), for
+`core::swd::kWaitBoundMs`, **500 ms**. The figure is the nRF52840 Product Specification's
+(v1.11, §4.3.10.1 *Flash programming*): tERASEALL 169 ms, tERASEPAGE 85 ms, tWRITE 41 µs, and
+§5.4.4.1 gives the internal oscillator the footnote's tolerance of ±8 %, which makes the longest
+operation an application can start 184 ms at worst. 500 ms is that with a margin of 2.7. The whole
+of one connection's waiting is bounded as well, by `kWaitBudgetMs`, **30 s**, so a chip that
+answers WAIT for ever costs a flash half a minute and not an afternoon — and 30 s is inside both
+flash windows below without moving either.
+
+**And the unit says what it waited.** A flash whose port waited gets a line of the story in
+`flashing`, written before anything is made of that flash, so a first try that goes through says
+what it cost and one that fails says how long it waited before it gave up:
+
+```
+  3. seq 46: flashing-candidate: the debug port waited a flash operation of the radio's out
+     - scan: waited 91 ms at 0x026000, once
+```
+
+A flash that waited for nothing writes no line. At the console a flash's own lines carry the long
+form — *the debug port waited 91 ms out at 0x00026000, while reading the pages the image covers;
+1 transfer waited* — and `rak update status`, `journal` and the unit's report carry the story's.
+**The second try is unchanged**: it is the net for everything this does not explain, and session
+5's second try ended *no target: nothing answered on the line*, which is not a WAIT.
+
 ## The preconditions (check)
 
 Each is a named refusal, printed as `error: rak update: refused at check: <reason> (nothing was
@@ -409,6 +448,13 @@ polls, the flash controller's 300 ms) or **the scan**, which is one read of ever
 covers: 2048 SWD transfers a page at about 0.9 s, so the 424 kB image of 23 November is 106 pages
 and a little over a minute and a half. A flash that gets as far as writing is never tried again, so
 it is added to the flash window and does not double it. The arithmetic that follows:
+
+**And a WAIT waited out is inside them too** (task p19-01), without a figure moving: one
+connection may spend at most `core::swd::kWaitBudgetMs`, 30 s, waiting WAITs out, and 30 s is
+inside the 85 s `kFlashWroteNothingMs` has over the scan it is set from and inside the 69 s
+`kFlashWindowMs` has over the 14 min 51 s the unit measured. Every transfer that waits at all is
+one that would have ended the flash before that task, so a flash that goes through costs exactly
+what it cost.
 
 | | Before p18-05 | Now |
 |---|---:|---:|
