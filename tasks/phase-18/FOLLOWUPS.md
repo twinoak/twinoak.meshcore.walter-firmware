@@ -314,7 +314,7 @@ Read on meshmaster.dk: `/noisescope/4` (restored, `scope 868.618 870.618 0 4.8 1
 points, 60 frames, 43 227 bytes, no gap in `seq`), `/noisescope/5` (job 43526), and both
 sides' code. The unit ran 0.1.12+e018a62. Times UTC.
 
-- [ ] **[06] A session that ends `refused` after two flashes that wrote nothing never
+- [x] **[06] A session that ends `refused` after two flashes that wrote nothing never
   reports.** Session 5: *flashing-scanner* 13:13:34; `scan: swd wait-timeout at 0x036000,
   nothing written` 13:14:07; **`refused: the flash did not begin, twice`** 13:15:01. The
   journal reached the server as progress. The result did not: 05 leaves the session's
@@ -336,3 +336,75 @@ sides' code. The unit ran 0.1.12+e018a62. Times UTC.
   alone.
 - [x] **[none] A scope at the narrowest filter and 417 points went through the Walter whole.**
   3.1 sweeps a second (two segments), 696 bytes a line.
+
+## After session 5, the unit completed no job (24 November)
+
+Read on meshmaster.dk at 15:35Z and in the library. Written here after pile 18's driver had
+finished.
+
+- [x] **[06] One result the server would not take held every result behind it.** From 13:15Z
+  the unit checked in every hour and took jobs, and nothing came back: Bellevue's status and
+  telemetry of 13:24Z *taken once, and no answer came*; the 14:25Z slot expired untaken; two
+  reports taken at 15:15Z and unanswered. The library keeps a result that was *not taken* and
+  posts the kept ones oldest first, stopping at the first that fails (`JobRunner::flushResults`,
+  the exit-node repo's `lib/agent-core/src/JobRunner.cpp` ~L2242); `postJobResult` says yes or
+  no, so the door's 400 on session 5's result read as a call that never arrived, at every
+  wake. 06 found the same and answers it at the uplink: a 400, a 404 or a 409 is answered
+  *taken* to the library and settled in the journal (its report, *Deliverable 6*).
+- [ ] **[Thomas] Until the unit runs 06, what frees it is meshmaster.dk's pile 4.48 deployed:**
+  the door then takes that result, late, and the kept ones follow at the next wake. Not seen:
+  the browser was signed out of meshmaster.dk at 17:34Z.
+- [ ] **[the exit-node repo] The library itself still stops at such a result.** A Heltec's
+  uplink was not read.
+
+## The review of 06 (24 November)
+
+06 merged 24 November 18:12 CET (#98, main b7adf3d). Read: its report whole. Not read: the
+code. Seven of seven criteria. Nothing that holds a release back.
+
+- [x] **[none] `flash` and `journal` are sent, a session's refused ending is exhaustive in one
+  test, each failed try has its line and the ending its own sentence**, and the result of
+  24 November is the fixture's members and values (the clock and the address are the
+  bench's own).
+- [x] **[none] My task was wrong about `noMemory`:** the server's list has had it since its
+  task 236 (I read the first lines of the list and not its end). Nothing followed for the
+  code.
+- [ ] **[later] Six refusals of an apply still carry no word** (the slot holds nothing, the
+  image does not verify, not this board's, a payload it cannot read): the contract has none
+  for them and the server now prints *the unit gave no reason*. The test holds them by name.
+- [ ] **[later] One journal note can still be cut:** a panic line off a coredump, a person's
+  text of up to 95 characters; it ends in `...` and the result carries it whole.
+- [x] **[none] A session posted from the journal says `refused` with its word;** a 401, a 403,
+  a 429, a 5xx and no answer stay owed as they were; `JobEntryState` gained `kNotTaken`.
+- [ ] **[Thomas] `VERSION` is still 0.1.12 with two notes waiting** (p18-05, p18-06): the notes
+  pull request of v0.1.12 is not merged, and a release refuses until it is.
+- [ ] **[next, offered] Still in no task: the first try of a scanner's flash stops at
+  `0x036000` after 32 s, every time.**
+
+## The unit freed itself, and session 5's second try (24 November, read 19:51Z)
+
+- [x] **[none] The kept results filled up and the oldest were dropped.** `resultsDropped` went
+  from 0 to 4 at the wake of 16:16Z, the two reports of 14:21Z came back in it, and Bellevue's
+  status and telemetry have succeeded every hour since. The session's refused result was one
+  of the four. Three hours of readings are missing (13:24Z to 15:25Z).
+- [ ] **[next, offered] Session 5's two failures, from the unit's journal:** the first try
+  *while reading the pages the image covers: the debug port failed (the target kept answering
+  WAIT) at 0x00036000*; **the second, *no target: nothing answered on the line* at
+  0x00040000.** The radio did not restart between them (its uptime at 15:15Z goes back to
+  session 4's start of 13:07:36Z). So the second is not the first again: the port stopped
+  answering at all, ten pages further on.
+- [ ] **[next, offered] The thirty-two seconds are the scan's own speed.** By the flash times
+  of 23 November the scan reads a page in about 1.9 s, so page sixteen, `0x036000`, is
+  thirty seconds in. *The same moment* and *the same address* are one observation, and
+  which of the two it is cannot be told from three sessions.
+- [ ] **[next, offered] Session 6 (24 November, 20:47Z; restored, six steps run): the first
+  try failed at `0x00034000`, thirty seconds in** (*scan: swd wait-timeout*, nothing
+  written); the second went through. The four before it failed at `0x00036000`, 32 to 33
+  seconds in. So it is not a place in the image: it is a moment, about half a minute after
+  the scan begins, give or take a page. Something on the radio happens then.
+- [ ] **[next, offered] Three more sessions on 25 November (7, 8, 9; all restored): the
+  first try failed in each, at `0x00036000` after 32 s, at `0x00029000` after 9 s, and at
+  `0x00035000` after 31 s.** With session 6 that is four places and two very different
+  moments: neither a place in the image nor a fixed time into the scan. The second try
+  went through every time, about five minutes later. Something on the radio's own schedule
+  makes it answer WAIT; what it is doing then is still unread.
