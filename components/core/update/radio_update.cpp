@@ -125,6 +125,7 @@ const char* describe(Reason reason) {
     case Reason::kFlashOnceMore: return "the flash did not begin: once more";
     case Reason::kFlashDidNotBegin:
       return "the flash did not begin, twice; the radio is as it was";
+    case Reason::kFlashWaited: return "the debug port waited a flash operation of the radio's out";
   }
   return "?";
 }
@@ -322,6 +323,75 @@ std::size_t flashFailureNote(const FlashFailure& f, char* out, std::size_t cap) 
   const int n = std::snprintf(out, cap, "%s%s: %s%s; %s", f.second_try ? "2nd try " : "",
                               flasher::name(f.step), under, at,
                               f.wrote_nothing ? "nothing written" : "chip changed");
+  return n < 0 ? 0 : (static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1);
+}
+
+// -- **what the debug port waited out** (task p19-01) -------------------------------------------
+//
+// The layout is in the header; nothing of it is a guess about an older entry, because the reason
+// that carries it is new.
+std::uint32_t encodeFlashWait(const FlashWait& w) {
+  const std::uint32_t ms = w.longest_ms > kFlashWaitMsMax ? kFlashWaitMsMax : w.longest_ms;
+  const std::uint32_t page = (w.address >> 12) & 0xFFu;
+  const std::uint32_t transfers =
+      w.transfers > kFlashWaitTransfersMax ? kFlashWaitTransfersMax : w.transfers;
+  return (static_cast<std::uint32_t>(w.step) & 0x3Fu) | (ms << 6) | (page << 18) | (transfers << 26);
+}
+
+FlashWait decodeFlashWait(std::uint32_t detail) {
+  FlashWait w;
+  const std::uint32_t step = detail & 0x3Fu;
+  if (step <= static_cast<std::uint32_t>(flasher::Step::kDone)) {
+    w.step = static_cast<flasher::Step>(step);
+  }
+  w.longest_ms = (detail >> 6) & kFlashWaitMsMax;
+  w.address = ((detail >> 18) & 0xFFu) << 12;
+  w.transfers = (detail >> 26) & 0x3Fu;
+  return w;
+}
+
+FlashWait waitsOf(const flasher::Result& r) {
+  FlashWait w;
+  w.step = r.counters.wait_longest_step;
+  w.longest_ms = r.counters.wait_longest_ms;
+  w.address = r.counters.wait_longest_at_known ? r.counters.wait_longest_at : 0;
+  w.transfers = r.counters.waits;
+  return w;
+}
+
+std::size_t flashWaitLine(const FlashWait& w, char* out, std::size_t cap) {
+  if (out == nullptr || cap == 0) return 0;
+  char at[24];
+  at[0] = 0;
+  if (w.address != 0) {
+    std::snprintf(at, sizeof at, " at 0x%08lx", static_cast<unsigned long>(w.address));
+  }
+  const int n = std::snprintf(out, cap, "the debug port waited %lu ms out%s, while %s; %lu transfer%s waited",
+                              static_cast<unsigned long>(w.longest_ms), at, flasher::describe(w.step),
+                              static_cast<unsigned long>(w.transfers), w.transfers == 1 ? "" : "s");
+  return n < 0 ? 0 : (static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1);
+}
+
+std::size_t flashWaitNote(const FlashWait& w, char* out, std::size_t cap) {
+  if (out == nullptr || cap == 0) return 0;
+  char at[16];
+  at[0] = 0;
+  // Six hex digits, as the failure's note has it: the chip is a megabyte (PS "Memory").
+  if (w.address != 0) {
+    std::snprintf(at, sizeof at, " at 0x%06lx", static_cast<unsigned long>(w.address) & 0xFFFFFFu);
+  }
+  // Forty bytes and not sixteen: `transfers` is six bits and never more than two digits, but the
+  // compiler cannot see that and -Werror=format-truncation prices %lu at twenty.
+  char many[40];
+  if (w.transfers == 1) {
+    std::snprintf(many, sizeof many, "once");
+  } else if (w.transfers >= kFlashWaitTransfersMax) {
+    std::snprintf(many, sizeof many, "%lu times or more", static_cast<unsigned long>(w.transfers));
+  } else {
+    std::snprintf(many, sizeof many, "%lu times", static_cast<unsigned long>(w.transfers));
+  }
+  const int n = std::snprintf(out, cap, "%s: waited %lu ms%s, %s", flasher::name(w.step),
+                              static_cast<unsigned long>(w.longest_ms), at, many);
   return n < 0 ? 0 : (static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1);
 }
 
@@ -937,6 +1007,17 @@ StepResult RadioUpdate::stepFlashing(bool rollback) {
   const flasher::Result r = flasher_.flash(image, *profile, progress_, request_.slot);
   ++tries_;
   status_.flash_tries = tries_;
+  // **What the debug port waited out** (task p19-01, deliverable 3), before anything is made of
+  // the flash: a line of the story in `flashing` whenever the figure is not nought, so a flash
+  // that went through says what it cost and one that failed says how long it waited before it
+  // gave up. Written only then - an ordinary flash writes no line - and its own refusal is not
+  // this flash's business: a journal that will not take this entry will refuse the next one too,
+  // and that is the entry the machine stops on.
+  const FlashWait waited_out = waitsOf(r);
+  const std::uint32_t waited_detail = waited_out.waited() ? encodeFlashWait(waited_out) : 0;
+  if (waited_detail != 0) {
+    (void)journal(state_, Reason::kFlashWaited, ProveStep::kNone, waited_detail);
+  }
   if (!r.ok()) return flashWroteNothing(r);
   // **The boot that is proved is the boot the flasher started** (task p18-01), and since task
   // p18-04 the flash says which of the two started it. The flasher's last act is one reset and

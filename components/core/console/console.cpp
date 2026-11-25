@@ -1968,6 +1968,19 @@ void Console::printFlashResult(const char* what, const flasher::Result& r) {
     if (r.why[0] != 0) printf(": %s", r.why);
     print("\n");
   }
+  // **What the debug port waited out** (task p19-01, deliverable 3): nothing at all on a flash
+  // that never waited, which is every flash a bench has seen - and on one that did, the figure
+  // that says whether the radio was writing its own flash under the scan.
+  if (c.waits != 0) {
+    update::FlashWait w;
+    w.step = c.wait_longest_step;
+    w.longest_ms = c.wait_longest_ms;
+    w.address = c.wait_longest_at_known ? c.wait_longest_at : 0;
+    w.transfers = c.waits;
+    char waited[update::kFlashWaitLineMax];
+    update::flashWaitLine(w, waited, sizeof waited);
+    printf("  %s\n", waited);
+  }
   // **What the flash did to the chip** (task p18-05, deliverable 1): read off what the flasher
   // did and not off the step it stopped at, so a person at the console knows whether anything has
   // to be put back. A flash that wrote nothing and halted the core says both.
@@ -2963,6 +2976,15 @@ void Console::printUpdateEntry(std::size_t number, const update::Entry& entry, c
     // buffer is 200, which would cut it where the words that matter are.
     print(" - ");
     print(failure);
+  }
+  // **What the debug port waited out** (task p19-01, deliverable 3), off a `kFlashWaited` entry's
+  // detail: the step, how long the longest WAIT was waited out, where it was, and how many
+  // transfers waited. The short form, which is the line the server's note carries too.
+  if (p.reason == update::Reason::kFlashWaited) {
+    char waited[update::kFlashWaitLineMax];
+    update::flashWaitNote(update::decodeFlashWait(p.detail), waited, sizeof waited);
+    print(" - ");
+    print(waited);
   }
   if (p.step != update::ProveStep::kNone && p.step != update::ProveStep::kPassed) {
     printf(" (at: %s)", update::describe(p.step));

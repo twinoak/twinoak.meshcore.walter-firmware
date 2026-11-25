@@ -546,7 +546,12 @@ CoreSight SW-DP", so the bench confirms the number), power-up through `CTRL/STAT
 wait for both acknowledges and a `powerDown()` that withdraws the request (on the nRF52840 that is
 what ends debug interface mode), `SELECT` rewritten only when the port or the bank changes, an AP
 read's posted value collected through `RDBUFF` so a caller sees the register it asked for; WAIT
-retried ten times with idle cycles between; a FAULT reported with `CTRL/STAT`'s sticky flags and
+retried ten times with idle cycles between and then **waited out** (task p19-01) — the same
+request again with the line idle between tries, for up to `kWaitBoundMs`, 500 ms, which is the
+longest flash operation an application can start with a margin (tERASEALL 169 ms, Product
+Specification v1.11 §4.3.10.1, and §5.4.4.1's ±8 % of HFINT) — the whole of one connection's
+waiting bounded by `kWaitBudgetMs`, 30 s, and what it waited reported in `Dp::waits()`; a FAULT
+reported with `CTRL/STAT`'s sticky flags and
 cleared through `ABORT`; a parity error a failed transfer, never a value (task p1-03,
 `core/swd/dp`). Memory access through AP 0 (task p1-04, `core/swd/mem_ap`; ADIv5 chapter C2):
 `IDR` read once and held to class *Memory Access Port* (an IDR of zero is no AP at all), `CSW`
@@ -693,7 +698,10 @@ catch at reset, and a Local reset's exact effect on each register. It records ev
 and write, every `CONFIG` write and `READY` read. It can be told to be protected, to re-engage
 protection at a reset (the Fxx module), to be another part or page size, to report `READY` late
 or never, to lose power at the Nth flash operation (leaving a page half-erased or a word
-half-written), and **which region alone may be touched** — and since task p3-06 a chip that was
+half-written), to fail a flash at each of the ten points before its first write (task p18-05), to
+hold **one page busy for a number of milliseconds of the test's clock** from the first access that
+meets it — an operation of the application's own, which is what the scan of task p19-01 waits out —
+and **which region alone may be touched** — and since task p3-06 a chip that was
 erased or written by a test which never declared a region fails that test at its destructor, so
 "the write log is asserted at the end of every test that flashes" is a property of the simulator
 and not of each test remembering to (rail R4; `host_test/rails/test_rail_flash_region.cpp` prints

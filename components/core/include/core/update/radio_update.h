@@ -308,6 +308,12 @@ enum class Reason : std::uint8_t {
   // image for. Both carry the failure's bits in `detail` (`FlashFailure` below).
   kFlashOnceMore = 53,        // the flash did not begin: the same flash is made a second time
   kFlashDidNotBegin = 54,     // twice, and nothing was written: the radio is as it was
+  // -- **what the debug port waited out** (task p19-01). A line of the story in `flashing`,
+  // written after a flash whose port had to wait a WAIT out and before anything is made of that
+  // flash - so a flash that went through says what it cost and a failed one says how long it
+  // waited before it gave up. It ends nothing and it is written only when the figure is not
+  // nought, which is every flash a bench has ever seen. The detail is `FlashWait` below.
+  kFlashWaited = 55,
 };
 
 const char* describe(Reason reason);
@@ -440,6 +446,50 @@ std::size_t flashFailureLine(const FlashFailure& failure, char* out, std::size_t
 // server with a job, so that the job's page says what failed without a report being asked for:
 // `scan: swd no-target at 0x027000; nothing written`.
 std::size_t flashFailureNote(const FlashFailure& failure, char* out, std::size_t cap);
+
+// -- **what the debug port waited out, in a journal entry** (task p19-01, deliverable 3) --------
+//
+// A WAIT is the chip saying it cannot take the access now, and on an nRF52840 that is most often
+// a flash operation of the application's own in flight: since task p19-01 the debug port asks
+// again with the line idle for as long as the Product Specification says one may take
+// (`core/swd/dp.h`, kWaitBoundMs) instead of giving up after ten tries back to back. What that
+// cost is what the next session on the unit at Bellevue has to say, so it goes in the journal,
+// and the thirty-two bits of a `kFlashWaited` entry's detail are:
+//
+//   bits [5:0]    the flasher's step the longest WAIT fell in (`flasher::Step`) - the same place
+//                 as `FlashFailure`'s, on purpose;
+//   bits [17:6]   **how long the longest one was waited out**, in milliseconds, 0 to 4095 (the
+//                 bound is 500, so it never saturates);
+//   bits [25:18]  the page that one was at (`address >> 12`; the chip is 1 MB in 4 KB pages).
+//                 **Zero is "no address was known"** - a WAIT on a DP or control-port register
+//                 rather than on a memory access - and costs nothing, because page 0 is the
+//                 master boot record and no flash of this firmware's ever reads it;
+//   bits [31:26]  **how many transfers waited at all**, 0 to 62, and 63 means "63 or more".
+//
+// There is no layout bit and none is needed: `kFlashWaited` is new in this task, so every entry
+// that carries this reason carries this layout.
+constexpr std::uint32_t kFlashWaitMsMax = 0xFFF;
+constexpr std::uint32_t kFlashWaitTransfersMax = 63;
+
+struct FlashWait {
+  flasher::Step step = flasher::Step::kNone;
+  std::uint32_t longest_ms = 0;
+  std::uint32_t address = 0;    // to the page; 0 when no address was known
+  std::uint32_t transfers = 0;  // kFlashWaitTransfersMax means "that many or more"
+  bool waited() const { return transfers != 0; }
+};
+std::uint32_t encodeFlashWait(const FlashWait& waited);
+FlashWait decodeFlashWait(std::uint32_t detail);
+// The same, straight off a flasher result's counters.
+FlashWait waitsOf(const flasher::Result& result);
+
+// **One phrase for a person**, for the console after a flash: `the debug port waited 86 ms out at
+// 0x036000 while reading the pages the image covers; 1 transfer waited`.
+constexpr std::size_t kFlashWaitLineMax = 160;
+std::size_t flashWaitLine(const FlashWait& waited, char* out, std::size_t cap);
+// **The same in the words seventy characters hold**, for the journal's line and for the note that
+// goes to the server with a job: `scan: waited 86 ms at 0x036000, once`.
+std::size_t flashWaitNote(const FlashWait& waited, char* out, std::size_t cap);
 
 // -- what the Walter's own update writes (task p2-04, core/update/self_update.h) ------------------
 //

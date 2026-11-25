@@ -89,6 +89,19 @@ struct Counters {
   std::uint32_t settings_erases = 0;
   std::uint32_t settings_writes = 0;  // records written
   std::uint32_t elapsed_ms = 0;
+  // **What the debug port waited out during this flash** (task p19-01, deliverable 3). A WAIT is
+  // the chip saying it cannot take the access now, and on this chip that is most often a flash
+  // operation of the application's own in flight (`core/swd/dp.h`): the port asks again with the
+  // line idle for as long as the Product Specification says one may take, and these are what it
+  // cost. `waits` is how many transfers waited at all, `wait_longest_ms` the longest of them, and
+  // `wait_longest_at`/`wait_longest_step` where that one was - the address off the access port,
+  // the step off the flasher, which is the only layer that knows it. All nought on a flash that
+  // never waited, which is every flash that has ever gone through on a bench.
+  std::uint32_t waits = 0;
+  std::uint32_t wait_longest_ms = 0;
+  std::uint32_t wait_longest_at = 0;
+  bool wait_longest_at_known = false;
+  Step wait_longest_step = Step::kNone;
 };
 
 // What started the image this flash wrote (task p18-04). A unit whose module has the pin reset
@@ -250,6 +263,10 @@ class Flasher {
   Result failed(Step step, const nrf52::Result& nrf, std::uint32_t address = 0);
   static Result refused(Step step, const char* why, std::uint32_t address = 0);
   void report(ProgressSink* progress, Step step, std::uint32_t done, std::uint32_t total, std::uint32_t address);
+  // The debug port's record of what this connection waited out, copied into the counters, with
+  // the longest WAIT credited to the step in hand (task p19-01). Called as each step passes, so a
+  // figure that grew is credited to the step that was running when it did.
+  void noteWaits(Step step);
 
   board::RadioPins& pins_;
   interfaces::Clock& clock_;

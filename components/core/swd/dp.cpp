@@ -88,8 +88,44 @@ Result Dp::rawTransfer(bool ap, bool read, std::uint8_t addr, std::uint32_t wdat
   }
 }
 
+// **A WAIT waited out** (task p19-01, deliverable 1). The back-to-back tries above are over and
+// the target still cannot take the access, which on this chip means a flash operation in flight
+// (dp.h's section says what the Product Specification gives it): so the same request again, with
+// the line **idle** between tries - `letIdleTaskRun`, which is where the idle task of this core
+// gets its slot and the task watchdog is fed - until the target answers, until kWaitBoundMs has
+// passed, or until this connection's whole budget is spent.
+//
+// The loop is bounded twice: by kWaitPauses, a constant, and by the clock. The clock is what
+// decides, because `delayMs` keeps its promise by overshooting, and the clock is also what the
+// record reports - so the unit says what it really waited and not what it meant to.
+Result Dp::waitItOut(bool ap, bool read, std::uint8_t addr, std::uint32_t wdata) {
+  waits_.transfers++;
+  Result r;
+  r.ack = ack::kWait;
+  const std::uint32_t left_ms = waits_.total_ms >= kWaitBudgetMs ? 0 : kWaitBudgetMs - waits_.total_ms;
+  const std::uint32_t bound_ms = left_ms < kWaitBoundMs ? left_ms : kWaitBoundMs;
+  const std::uint64_t began_ms = wire_.clock().nowMs();
+  std::uint32_t waited_ms = 0;
+  for (unsigned pause = 0; pause < kWaitPauses && waited_ms < bound_ms; ++pause) {
+    letIdleTaskRun(wire_.clock());
+    waited_ms = static_cast<std::uint32_t>(wire_.clock().nowMs() - began_ms);
+    counters_.wait_retries++;
+    r = rawTransfer(ap, read, addr, wdata);
+    if (r.ack != ack::kWait) break;
+  }
+  waits_.total_ms += waited_ms;
+  if (waited_ms > waits_.longest_ms) {
+    waits_.longest_ms = waited_ms;
+    waits_.longest_at = address_;
+    waits_.longest_at_known = address_known_;
+  }
+  if (r.ack == ack::kWait) waits_.gave_up = true;
+  return r;
+}
+
 // WAIT: the same request again, kWaitRetries times, with the transfer's own eight idle cycles
-// between (B4.2.3: "when a debugger receives a WAIT response it retries the same operation").
+// between (B4.2.3: "when a debugger receives a WAIT response it retries the same operation"), and
+// then waited out as above.
 // FAULT: CTRL/STAT read - a read that never WAITs or FAULTs (B4.2.3, B4.2.4) - then ABORT written
 // to clear the sticky flags (B4.2.4: "the sticky error flags are cleared to 0b0 by writing bits in
 // the ABORT register"), and the flags reported.
@@ -100,6 +136,7 @@ Result Dp::transfer(bool ap, bool read, std::uint8_t addr, std::uint32_t wdata) 
     if (r.ack != ack::kWait) break;
     if (attempt < kWaitRetries) counters_.wait_retries++;
   }
+  if (r.ack == ack::kWait) r = waitItOut(ap, read, addr, wdata);
   if (r.ack == ack::kWait) {
     counters_.wait_timeouts++;
     return failed(Status::kWaitTimeout, r.ack);
@@ -127,6 +164,10 @@ Result Dp::connect() {
   connected_ = false;
   select_known_ = false;
   counters_.connects++;
+  // A new debug session, a new record of what it waited out, and a whole kWaitBudgetMs for it
+  // (task p19-01): a flash connects once, so this is the scope the journal's line is about.
+  waits_ = Waits{};
+  address_known_ = false;
   Result r;
   for (unsigned attempt = 0; attempt < kConnectAttempts; ++attempt) {
     if (!wire_.lineReset(line_reset_clocks_) || !wire_.jtagToSwd() ||

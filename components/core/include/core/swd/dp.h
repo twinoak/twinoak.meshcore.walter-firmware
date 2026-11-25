@@ -1,7 +1,8 @@
 // The debug port (task p1-03): the SW-DP's registers as calls over the wire, with every answer a
 // result that says what happened. Arm, ADIv5.0 to ADIv5.2, IHI 0031G: the registers are chapter
 // B2.2, the protocol's behaviour chapter B4. No ESP-IDF include, no heap, no loop without a
-// constant bound: WAIT is retried kWaitRetries times, a power-up is polled kPowerUpPolls times,
+// constant bound: WAIT is retried kWaitRetries times back to back and then waited out for
+// kWaitBoundMs (kWaitPauses tries of the line idle), a power-up is polled kPowerUpPolls times,
 // a connection is tried kConnectAttempts times, and then it is an error.
 //
 // What the layer above (task 04: the memory access port, the nRF52) gets from it:
@@ -21,6 +22,7 @@
 
 #include <cstdint>
 
+#include "core/swd/idle_pause.h"
 #include "core/swd/wire.h"
 
 namespace core {
@@ -97,16 +99,69 @@ constexpr std::uint16_t kDesignerArm = (0x4u << 7) | 0x3Bu;  // 0x23B
 constexpr std::uint32_t kNrf52840Dpidr = 0x2BA01477;
 
 // The bounds.
-constexpr unsigned kWaitRetries = 10;      // then kWaitTimeout (B4.2.3: "retries the same operation")
+constexpr unsigned kWaitRetries = 10;      // back to back (B4.2.3: "retries the same operation")
 constexpr unsigned kPowerUpPolls = 100;    // CTRL/STAT reads a millisecond apart: 100 ms
 constexpr unsigned kConnectAttempts = 2;   // the reset sequence, retried once (B4.3.3)
+
+// -- **a WAIT is waited out** (task p19-01) -----------------------------------------------------
+//
+// A WAIT says the target "cannot currently process the request" (B4.2.3), and on an nRF52840 the
+// thing that most often cannot is the flash: the flash "is not accessible" while the NVMC writes
+// or erases (Product Specification, NVMC), and a MEM-AP whose bus access stalls answers WAIT
+// until it clears (ADIv5 C2.2.3). The radio's own application writes its own flash - its clock's
+// file at the first clock set after a boot - and a scan that reads the application's pages
+// *while it runs* meets that write. kWaitRetries tries back to back are a few milliseconds; a
+// page erase is tens, and from Walter 0.1.11 the first flash of every NoiseScope session on the
+// unit at Bellevue failed in the scan with `swd wait-timeout`, nothing written (eight sessions
+// of eight; `tasks/phase-19/README.md`).
+//
+// So the back-to-back tries stay - they answer the WAIT that clears in a transfer or two, and
+// they are what a flash that goes through still costs - and after them the port **waits the
+// operation out**: the same request again with the line idle between tries (idle_pause.h: the
+// idle task of this core runs, so the task watchdog is fed), for as long as the longest flash
+// operation an application can start may take.
+//
+// **The figure is the Product Specification's, not a guess.** nRF52840 Product Specification
+// v1.11 (4413_417 v1.11, 2024-10-01), section 4.3.10.1 "Flash programming": tERASEALL "Time to
+// erase all flash" **169 ms** and tERASEPAGE "Time to erase one page" **85 ms**, tWRITE "Time to
+// write one 32-bit word" 41 us - all three in the table's **Max.** column, all three footnoted
+// "Applies when HFXO is used. Timing varies according to HFINT accuracy when HFINT is used". The
+// internal oscillator's tolerance is section 5.4.4.1's fTOL_HFINT, "Frequency tolerance", max
+// **+/-8 %**, which makes 169 ms at worst 184 ms. ERASEALL is the longest of the three an
+// application can start (NVMC.ERASEALL), so 184 ms is the figure.
+//
+// kWaitBoundMs is **500 ms**: that with a margin of 2.7, which is room for one flash operation
+// that began just before the access and the next one the application has queued behind it.
+constexpr std::uint32_t kWaitBoundMs = 500;
+
+// What **all** the WAITs of one connection may cost together, so that a chip which answers WAIT
+// for ever cannot turn a flash into an afternoon: every transfer that reaches the wait-out at
+// all is one that would have ended the flash before this task, and the per-transfer bound alone
+// says nothing about how many of them there may be. Spent and reset by connect(), which is once
+// a flash (core/flasher/flasher.cpp, openChip()).
+//
+// Thirty seconds, and the arithmetic is the flash windows of core/update/radio_update.h: a flash
+// that wrote nothing is given kFlashWroteNothingMs, three minutes, of which the scan of the
+// 424 kB image of 23 November is a little over a minute and a half - 30 s more is still inside
+// it; and a whole flash is given kFlashWindowMs, sixteen minutes, of which the unit's own
+// journal says 14 min 51 s - 30 s more is 15 min 21 s, still inside it. So no window moves.
+// Half a minute is also ~350 page erases of the radio's own, where what the scan is expected to
+// meet is a handful.
+constexpr std::uint32_t kWaitBudgetMs = 30000;
+
+// How many times a WAIT is asked again while it is waited out: the bound in time divided by the
+// pause between two tries, so the loop is bounded by a constant as well as by the clock (the
+// clock is what decides, because `delayMs` may overshoot and a pause is 10 to 11 ms on the
+// board). 50.
+constexpr unsigned kWaitPauses = kWaitBoundMs / kIdlePauseMs;
+static_assert(kWaitPauses > 0, "a WAIT must get at least one try with the line idle");
 
 enum class Status : std::uint8_t {
   kOk,
   kLinesLost,       // a pin operation was refused: the lines are not held, or a kill took them
   kNoTarget,        // the acknowledge was all ones: nothing answered (an unpowered radio, or none)
   kProtocolError,   // an acknowledge that is none of the three: the line is confused
-  kWaitTimeout,     // WAIT kWaitRetries times
+  kWaitTimeout,     // WAIT kWaitRetries times, and then for kWaitBoundMs (or the budget was spent)
   kFault,           // FAULT; ctrl_stat holds the sticky flags, which ABORT then cleared
   kParityError,     // the read data's parity is wrong; the value is not trusted
   kPowerUpTimeout,  // the acknowledges did not come in kPowerUpPolls reads
@@ -155,6 +210,28 @@ class Dp {
   };
   const Counters& counters() const { return counters_; }
 
+  // **What this connection waited out** (task p19-01, deliverable 3). The counters above are the
+  // port's whole life; what a flash has to say about itself is one debug session's, so this
+  // record is cleared by connect() - which a flash makes exactly once. `longest_ms` is measured
+  // on the clock, not counted in pauses, so it is what the port really waited.
+  struct Waits {
+    std::uint32_t transfers = 0;      // transfers that still answered WAIT after the back-to-back tries
+    std::uint32_t longest_ms = 0;     // the longest of them was waited out this long
+    std::uint32_t total_ms = 0;       // all of them together: what kWaitBudgetMs bounds
+    std::uint32_t longest_at = 0;     // the memory address the longest one was at
+    bool longest_at_known = false;    // false when no access port had said one yet
+    bool gave_up = false;             // one outlasted kWaitBoundMs, or the budget was spent
+  };
+  const Waits& waits() const { return waits_; }
+
+  // The memory address the access port is about to use, so that the record above can say **where**
+  // the longest WAIT was. Set by core/swd/mem_ap.cpp before each DRW access and by nothing else;
+  // the debug port itself only knows registers.
+  void noteAddress(std::uint32_t address) {
+    address_ = address;
+    address_known_ = true;
+  }
+
   // Test-only: how many clocks the next connect()'s line resets are, so that a test can send one
   // clock too few and watch the simulator refuse it. Never called by the firmware.
   void setLineResetClocksForTest(unsigned clocks) { line_reset_clocks_ = clocks; }
@@ -164,6 +241,10 @@ class Dp {
   // requests that never WAIT or FAULT (B4.2.3, B4.2.4) go through here all the same.
   Result transfer(bool ap, bool read, std::uint8_t addr, std::uint32_t wdata);
   Result rawTransfer(bool ap, bool read, std::uint8_t addr, std::uint32_t wdata);
+  // The same request again with the line idle between tries, until the target answers or
+  // kWaitBoundMs has passed (task p19-01). Called only when kWaitRetries back-to-back tries have
+  // all answered WAIT.
+  Result waitItOut(bool ap, bool read, std::uint8_t addr, std::uint32_t wdata);
   Result ensureSelect(std::uint8_t ap, std::uint8_t ap_bank, std::uint8_t dp_bank);
   Result pollPowerUp(std::uint32_t wanted_acks);
 
@@ -173,7 +254,10 @@ class Dp {
   bool select_known_ = false;
   std::uint32_t select_ = 0;
   unsigned line_reset_clocks_ = kLineResetClocks;
+  std::uint32_t address_ = 0;    // what noteAddress() last said
+  bool address_known_ = false;
   Counters counters_;
+  Waits waits_;
 };
 
 }  // namespace swd

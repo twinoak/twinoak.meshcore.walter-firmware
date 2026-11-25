@@ -234,6 +234,21 @@ class Nrf52Chip {
   void failFlashAt(FailFlashAt where, unsigned flashes = 1);
   unsigned debugSessions() const { return debug_sessions_; }
 
+  // ---- **a flash operation the application has in flight** (task p19-01) ----------------------
+  // What `kScanRead` above is for ever, for a number of milliseconds of the test's clock: the
+  // page `address` lies in answers WAIT to every DRW access, and the **first** such access starts
+  // the clock - so a test says "the page at 0x36000 is busy for 86 ms when the scan first reaches
+  // it" and does not have to know when that will be. After `ms` the page reads and the flash goes
+  // on. This is the chip's own behaviour and not a hook in the firmware: what the firmware makes
+  // of it is the firmware's answer (PS NVMC: the flash "is not accessible" while the controller
+  // writes or erases; ADIv5 C2.2.3: a MEM-AP whose bus access stalls answers WAIT).
+  //
+  // `while_running` true is the application's own write - the thing a scan meets, and the only
+  // thing that can happen before the halt; false makes the page answer after the halt as well,
+  // which is what the firmware's own flash operations do and which the firmware polls for.
+  // `ms` 0 turns it off again.
+  void stallPageFor(std::uint32_t address, std::uint32_t ms, bool while_running = true);
+
   // ---- the hardware watchdog (task p18-01; PS "WDT - Watchdog timer", "Reset behavior") -------
   // What the firmware **in the chip's flash** started, which is the only way this peripheral is
   // ever used here: a scanner image starts the WDT at 60 s and feeds it from its own loop (the
@@ -428,6 +443,7 @@ class Nrf52Chip {
   bool flashOpCountsDown();  // the power-loss countdown: true when this operation is the one
   void autoIncrement();
   bool inFlash(std::uint32_t addr) const { return addr < flashBytes(); }
+  bool stallsAtPage(std::uint32_t addr);  // stallPageFor(): is this access in the busy page now
   void fail(const std::string& what);
   void record(FlashEvent::Kind kind, std::uint32_t addr, std::uint32_t value, std::uint32_t old_value,
               std::uint32_t result);
@@ -441,6 +457,11 @@ class Nrf52Chip {
   std::vector<std::uint32_t> flash_;
   std::vector<std::uint8_t> writes_since_erase_;
   std::vector<std::uint32_t> ram_;
+  std::uint32_t stall_page_ = 0;      // stallPageFor() (task p19-01)
+  std::uint32_t stall_ms_ = 0;        // 0: nothing is stalling
+  bool stall_while_running_ = true;
+  bool stall_started_ = false;
+  std::uint64_t stall_until_us_ = 0;
   std::uint32_t uicr_[0x308 / 4];
   std::uint8_t uicr_writes_since_erase_[0x308 / 4] = {};
 
